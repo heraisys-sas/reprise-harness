@@ -66,3 +66,9 @@ Exemple de forme (remplacer chaque identifiant par un modèle effectivement vér
 - [NLEmbedding](https://developer.apple.com/documentation/naturallanguage/nlembedding)
 - [NLContextualEmbedding](https://developer.apple.com/documentation/naturallanguage/nlcontextualembedding) — Apple recommande NLEmbedding pour la similarité sémantique ; les contextuels peuvent aussi alimenter un classificateur Create ML, ce que cette version ne fait pas.
 - [Routeur amont](https://github.com/NinjaSln-labs/dsh-subagent-router), commit `dfadfaf40f44017c5fa7bfa1f62f06cca265ae5e`, MIT.
+
+## Comparaison avec la version d’origine
+
+Même jeu diagnostique, même grille : routeur amont 0.6.0 **12/20**, règles locales seules avec repli standard **12/20**, règles + embeddings de phrases **15/20**, règles + embeddings contextuels **14/20**. Pour FR : amont 6/12 contre 8/12 pour phrases ; pour EN : 6/8 contre 7/8. L’adaptation corrige six cas et dégrade trois cas par rapport à l’amont. Cela ne prouve pas un gain sur les tâches réelles ni un gain de coût.
+
+`evaluation-baseline.json` et `evaluation-rules.json` détaillent les décisions. Le patch `baseline-tests.patch` s’applique au commit amont déjà indiqué (à la place du patch historique), dans un checkout frère nommé `harness-router-test` ; exécuter Vitest avec le filtre `baseline comparison` pour reproduire le résultat amont. Le test ne fait aucun appel LLM. La comparaison des niveaux n’évalue pas la politique d’ancrage au modèle parent, qui peut encore réduire les économies avec la configuration amont par défaut.

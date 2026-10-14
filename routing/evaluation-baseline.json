@@ -1,0 +1,147 @@
+{
+  "engine": "upstream-0.6.0",
+  "cases": 20,
+  "exact": 12,
+  "rows": [
+    {
+      "prompt": "Liste les fichiers Python.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "correct": true,
+      "ms": 2.9867920000000368
+    },
+    {
+      "prompt": "Trouve les usages de cette fonction.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "correct": true,
+      "ms": 0.6688750000000141
+    },
+    {
+      "prompt": "Corrige la couleur du libellé.",
+      "expected": "light",
+      "tier": "trivial",
+      "correct": false,
+      "ms": 0.509208000000001
+    },
+    {
+      "prompt": "Renomme cette variable.",
+      "expected": "light",
+      "tier": "trivial",
+      "correct": false,
+      "ms": 0.4481670000000122
+    },
+    {
+      "prompt": "Évalue les garanties de cohérence de ce système distribué.",
+      "expected": "complex",
+      "tier": "trivial",
+      "correct": false,
+      "ms": 0.4027499999999691
+    },
+    {
+      "prompt": "Analyse les frontières de sécurité du service.",
+      "expected": "complex",
+      "tier": "complex",
+      "correct": true,
+      "ms": 0.32920899999999165
+    },
+    {
+      "prompt": "Démontre que cet algorithme termine pour toutes les entrées.",
+      "expected": "complex",
+      "tier": "trivial",
+      "correct": false,
+      "ms": 0.37825000000003683
+    },
+    {
+      "prompt": "Liste les fichiers puis implémente le correctif et ses tests.",
+      "expected": "standard",
+      "tier": "standard",
+      "correct": true,
+      "ms": 0.3891659999999888
+    },
+    {
+      "prompt": "Ajoute un contrôle du formulaire et un test associé.",
+      "expected": "standard",
+      "tier": "standard",
+      "correct": true,
+      "ms": 0.413332999999966
+    },
+    {
+      "prompt": "Répertorie les fichiers de configuration du projet.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "correct": true,
+      "ms": 0.418124999999975
+    },
+    {
+      "prompt": "Traduis ce court message en anglais.",
+      "expected": "light",
+      "tier": "trivial",
+      "correct": false,
+      "ms": 0.36941699999999855
+    },
+    {
+      "prompt": "Élabore une approche globale pour moderniser progressivement le logiciel.",
+      "expected": "complex",
+      "tier": "trivial",
+      "correct": false,
+      "ms": 0.33499999999997954
+    },
+    {
+      "prompt": "List all configuration files.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "correct": true,
+      "ms": 0.3034590000000321
+    },
+    {
+      "prompt": "Rename the button label.",
+      "expected": "light",
+      "tier": "light",
+      "correct": true,
+      "ms": 0.29291699999998855
+    },
+    {
+      "prompt": "Evaluate consistency guarantees of this distributed system.",
+      "expected": "complex",
+      "tier": "complex",
+      "correct": true,
+      "ms": 0.2723750000000109
+    },
+    {
+      "prompt": "Explain the tradeoffs between alternative algorithms.",
+      "expected": "complex",
+      "tier": "complex",
+      "correct": true,
+      "ms": 0.2874580000000151
+    },
+    {
+      "prompt": "Write regression tests for the parser.",
+      "expected": "standard",
+      "tier": "standard",
+      "correct": true,
+      "ms": 0.2670830000000137
+    },
+    {
+      "prompt": "Locate the function declaration in the source tree.",
+      "expected": "trivial",
+      "tier": "complex",
+      "correct": false,
+      "ms": 1.2538749999999936
+    },
+    {
+      "prompt": "Translate the error message into French.",
+      "expected": "light",
+      "tier": "light",
+      "correct": true,
+      "ms": 0.33558299999998553
+    },
+    {
+      "prompt": "Improve the wording of this heading.",
+      "expected": "light",
+      "tier": "trivial",
+      "correct": false,
+      "ms": 0.29029199999996536
+    }
+  ]
+}

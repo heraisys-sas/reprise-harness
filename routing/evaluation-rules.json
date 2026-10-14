@@ -1,0 +1,147 @@
+{
+  "engine": "local-rules-only",
+  "cases": 20,
+  "exact": 12,
+  "rows": [
+    {
+      "prompt": "Liste les fichiers Python.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "source": "lookup-rule",
+      "correct": true
+    },
+    {
+      "prompt": "Trouve les usages de cette fonction.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "source": "lookup-rule",
+      "correct": true
+    },
+    {
+      "prompt": "Corrige la couleur du libellé.",
+      "expected": "light",
+      "tier": "light",
+      "source": "edit-rule",
+      "correct": true
+    },
+    {
+      "prompt": "Renomme cette variable.",
+      "expected": "light",
+      "tier": "light",
+      "source": "edit-rule",
+      "correct": true
+    },
+    {
+      "prompt": "Évalue les garanties de cohérence de ce système distribué.",
+      "expected": "complex",
+      "tier": "complex",
+      "source": "risk-rule",
+      "correct": true
+    },
+    {
+      "prompt": "Analyse les frontières de sécurité du service.",
+      "expected": "complex",
+      "tier": "standard",
+      "source": "fallback:helper-unavailable",
+      "correct": false
+    },
+    {
+      "prompt": "Démontre que cet algorithme termine pour toutes les entrées.",
+      "expected": "complex",
+      "tier": "complex",
+      "source": "risk-rule",
+      "correct": true
+    },
+    {
+      "prompt": "Liste les fichiers puis implémente le correctif et ses tests.",
+      "expected": "standard",
+      "tier": "standard",
+      "source": "fallback:helper-unavailable",
+      "correct": true
+    },
+    {
+      "prompt": "Ajoute un contrôle du formulaire et un test associé.",
+      "expected": "standard",
+      "tier": "standard",
+      "source": "fallback:helper-unavailable",
+      "correct": true
+    },
+    {
+      "prompt": "Répertorie les fichiers de configuration du projet.",
+      "expected": "trivial",
+      "tier": "standard",
+      "source": "fallback:helper-unavailable",
+      "correct": false
+    },
+    {
+      "prompt": "Traduis ce court message en anglais.",
+      "expected": "light",
+      "tier": "standard",
+      "source": "fallback:helper-unavailable",
+      "correct": false
+    },
+    {
+      "prompt": "Élabore une approche globale pour moderniser progressivement le logiciel.",
+      "expected": "complex",
+      "tier": "standard",
+      "source": "fallback:helper-unavailable",
+      "correct": false
+    },
+    {
+      "prompt": "List all configuration files.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "source": "lookup-rule",
+      "correct": true
+    },
+    {
+      "prompt": "Rename the button label.",
+      "expected": "light",
+      "tier": "light",
+      "source": "edit-rule",
+      "correct": true
+    },
+    {
+      "prompt": "Evaluate consistency guarantees of this distributed system.",
+      "expected": "complex",
+      "tier": "complex",
+      "source": "risk-rule",
+      "correct": true
+    },
+    {
+      "prompt": "Explain the tradeoffs between alternative algorithms.",
+      "expected": "complex",
+      "tier": "standard",
+      "source": "fallback:helper-unavailable",
+      "correct": false
+    },
+    {
+      "prompt": "Write regression tests for the parser.",
+      "expected": "standard",
+      "tier": "standard",
+      "source": "fallback:helper-unavailable",
+      "correct": true
+    },
+    {
+      "prompt": "Locate the function declaration in the source tree.",
+      "expected": "trivial",
+      "tier": "standard",
+      "source": "fallback:helper-unavailable",
+      "correct": false
+    },
+    {
+      "prompt": "Translate the error message into French.",
+      "expected": "light",
+      "tier": "standard",
+      "source": "fallback:helper-unavailable",
+      "correct": false
+    },
+    {
+      "prompt": "Improve the wording of this heading.",
+      "expected": "light",
+      "tier": "standard",
+      "source": "fallback:helper-unavailable",
+      "correct": false
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+diff --git a/tests/tools.spec.ts b/tests/tools.spec.ts
+index fd08129..d84eb49 100644
+--- a/tests/tools.spec.ts
++++ b/tests/tools.spec.ts
+@@ -1491,3 +1491,46 @@ describe('dsh-subagent-router host settings integration', () => {
+     expect(text(result)).toContain('policy=strongest')
+   })
+ })
++
++
++describe('Reprise: acceptance for French tasks', () => {
++  const cases = [
++    ['French concept', 'Raisonnement', 'Évalue les garanties de cohérence de ce système distribué.', 'trivial'],
++    ['English concept', 'Reasoning', 'Evaluate consistency guarantees of this distributed system.', 'complex'],
++    ['French architecture', 'Architecture', 'Conçois une architecture distribuée tolérante aux pannes.', 'complex'],
++  ] as const
++  for (const [label, description, prompt, tier] of cases) {
++    it(label, async () => {
++      const { ctx, provider } = await setup({
++        autoReroute: false, autoEscalate: false,
++        autoTierPicks: { trivial: ['deepseek-v4-flash'], light: ['deepseek-v4-flash'], standard: ['deepseek-v4-flash'], complex: ['deepseek-v4-pro'] },
++      }, { routes: AUTO_ROUTES })
++      try {
++        const result = await callTool(ctx, 'subagent_model', { description, prompt, model: 'auto' }, fakeAgentWithRoute)
++        expect(result.isError).toBe(false)
++        expect(text(result)).toContain('tier=' + tier)
++        console.log(label + ': ' + JSON.stringify(provider.starts[0]?.agentOptions))
++      } finally { /* Context lifecycle follows the upstream test fixture. */ }
++    })
++  }
++})
++
++
++describe('baseline comparison on identical diagnostic set', () => {
++  it('records upstream tiers for the same twenty prompts', async () => {
++    const { readFileSync, writeFileSync } = await import('node:fs')
++    const diagnostic = JSON.parse(readFileSync(new URL('../../routing/evaluation.json', import.meta.url), 'utf8'))
++    const rows = []
++    for (const item of diagnostic.rows) {
++      const { ctx } = await setup({ autoReroute: false, autoEscalate: false }, { routes: AUTO_ROUTES })
++      const start = performance.now()
++      const result = await callTool(ctx, 'subagent_model', { description: '', prompt: item.prompt, model: 'auto' }, fakeAgentWithRoute)
++      expect(result.isError).toBe(false)
++      const tier = text(result).match(/tier=(\w+)/)?.[1]
++      expect(tier).toBeDefined()
++      rows.push({ prompt: item.prompt, expected: item.expected, tier, correct: tier === item.expected, ms: performance.now() - start })
++    }
++    writeFileSync(new URL('../../routing/evaluation-baseline.json', import.meta.url), JSON.stringify({ engine: 'upstream-0.6.0', cases: rows.length, exact: rows.filter(r => r.correct).length, rows }, null, 2) + '\n')
++    console.log('UPSTREAM_EXACT', rows.filter(r => r.correct).length, '/', rows.length)
++  })
++})
