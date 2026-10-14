@@ -1,0 +1,3 @@
+state/
+*.zip
+__pycache__/

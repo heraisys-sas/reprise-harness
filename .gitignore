@@ -1,0 +1,19 @@
+# Local state, credentials and build outputs
+**/__pycache__/
+**/*.py[cod]
+**/.DS_Store
+**/node_modules/
+**/.env
+**/.env.*
+!**/.env.example
+**/.credentials*
+**/state/
+**/backups/
+**/*.app/
+*.zip
+*.png
+*.log
+/private/
+/harness-router-test/
+/deepseek-harness-config/evaluation-*/
+/deepseek-harness-config/ASI-*.json

@@ -1,0 +1,18 @@
+---
+name: agent-orchestration
+description: Répartir une tâche complexe entre agents parallèles ou en cascade, choisir les modèles autorisés et borner les itérations pour maîtriser le coût en tokens.
+---
+
+Utiliser un agent unique pour les tâches simples. Pour les travaux complexes, définir un résultat observable et découper en sous-tâches indépendantes avec responsables et périmètres de fichiers distincts. Ne pas confier simultanément les mêmes fichiers à plusieurs agents. Le parent reste responsable de l'intégration et des contrôles.
+
+Consulter `list_subagent_models` pour les routes autorisées. Vérifier séparément que le fournisseur est authentifié : présence au catalogue ne prouve ni disponibilité ni entitlement. Garder le fournisseur DeepSeek actif pour les travaux ordinaires. Flash et raisonnement faible pour inspection, extraction, tests et correctifs localisés; Pro et raisonnement élevé pour un blocage concret, une méthode scientifique complexe ou une revue critique. Après connexion OpenAI OAuth, Luna peut traiter les tâches courtes, Sol les changements substantiels et Astra une difficulté exceptionnelle; comparer les résultats réels avant de généraliser cette heuristique.
+
+Utiliser `subagent` avec un contexte minimal : objectif, fichiers, contraintes, critères de succès et sortie attendue. Réserver `subagent_fork` aux tâches qui ont réellement besoin de l'historique complet; son modèle reste celui du parent et son contexte peut coûter davantage. Réutiliser un agent existant avec `send_message` pour un complément ciblé plutôt que recréer le même contexte. Limiter les retours à conclusions, preuves, chemins et contrôles; éviter de recopier logs et documents entiers.
+
+Limiter à trois sous-agents actifs et deux niveaux de délégation, limites également imposées par la configuration du service. Une cascade utile : analyse indépendante, implémentation, revue, tests; paralléliser seulement les étapes indépendantes. Ne pas activer de boucle Ralph sans demande explicite et budget défini.
+
+Cache : garder un modèle et une session pour une sous-tâche cohérente; compléter le travail existant au lieu de recréer son historique. Composer les délégations avec contraintes stables en premier, objectif et faits variables ensuite. Fournir uniquement le contexte nécessaire : un fork à historique complet n'est pas automatiquement moins cher qu'un spawn court. Ne jamais allonger un prompt pour forcer le cache, multiplier les appels de préchauffage, ni bloquer une compaction ou une escalade utile. La qualité et le coût total de résolution priment sur le taux de cache. Ces règles s'appliquent au parent et aux enfants; le parent les rappelle brièvement dans une délégation lorsque le sous-agent ne charge pas les consignes globales. Le cache partagé entre sessions n'est pas garanti.
+
+Pour une correction itérative, autoriser au maximum deux cycles de correction/revue après la première proposition. Arrêter si les critères sont atteints, si aucun progrès mesurable n'apparaît, si un fournisseur est indisponible ou si le budget utilisateur est atteint. Après un échec significatif du modèle léger, escalader une fois plutôt que répéter le même prompt. Les bornes d'itération sont des instructions comportementales, pas un compteur technique de tokens.
+
+Conserver les résultats intermédiaires utiles dans un fichier court du projet pour les tâches longues. Suivre les usages et coûts réellement retournés par les fournisseurs; distinguer tokens de raisonnement, sortie et contexte lorsque les données existent. Ne jamais annoncer une économie chiffrée sans mesure comparative. Livrer le résultat intégré avec tests et limites de validation.

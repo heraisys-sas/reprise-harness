@@ -1,0 +1,26 @@
+{
+  "title" : "Verdict",
+  "type" : "object",
+  "properties" : {
+    "status" : {
+      "type" : "string"
+    },
+    "reason" : {
+      "type" : "string"
+    },
+    "evidence" : {
+      "type" : "string"
+    }
+  },
+  "x-order" : [
+    "status",
+    "reason",
+    "evidence"
+  ],
+  "required" : [
+    "status",
+    "reason",
+    "evidence"
+  ],
+  "additionalProperties" : false
+}

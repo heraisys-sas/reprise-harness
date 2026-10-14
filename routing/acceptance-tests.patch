@@ -1,0 +1,31 @@
+diff --git a/tests/tools.spec.ts b/tests/tools.spec.ts
+index fd08129..84e0036 100644
+--- a/tests/tools.spec.ts
++++ b/tests/tools.spec.ts
+@@ -1491,3 +1491,26 @@ describe('dsh-subagent-router host settings integration', () => {
+     expect(text(result)).toContain('policy=strongest')
+   })
+ })
++
++
++describe('Reprise: acceptance for French tasks', () => {
++  const cases = [
++    ['French concept', 'Raisonnement', 'Évalue les garanties de cohérence de ce système distribué.', 'trivial'],
++    ['English concept', 'Reasoning', 'Evaluate consistency guarantees of this distributed system.', 'complex'],
++    ['French architecture', 'Architecture', 'Conçois une architecture distribuée tolérante aux pannes.', 'complex'],
++  ] as const
++  for (const [label, description, prompt, tier] of cases) {
++    it(label, async () => {
++      const { ctx, provider } = await setup({
++        autoReroute: false, autoEscalate: false,
++        autoTierPicks: { trivial: ['deepseek-v4-flash'], light: ['deepseek-v4-flash'], standard: ['deepseek-v4-flash'], complex: ['deepseek-v4-pro'] },
++      }, { routes: AUTO_ROUTES })
++      try {
++        const result = await callTool(ctx, 'subagent_model', { description, prompt, model: 'auto' }, fakeAgentWithRoute)
++        expect(result.isError).toBe(false)
++        expect(text(result)).toContain('tier=' + tier)
++        console.log(label + ': ' + JSON.stringify(provider.starts[0]?.agentOptions))
++      } finally { /* Context lifecycle follows the upstream test fixture. */ }
++    })
++  }
++})

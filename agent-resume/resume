@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+import argparse
+import datetime as dt
+import fcntl
+import json
+import os
+from pathlib import Path
+import plistlib
+import shutil
+import sqlite3
+import subprocess
+import sys
+import uuid
+import zipfile
+
+ROOT = Path(__file__).resolve().parent
+STATE = Path(os.environ.get('AGENT_RESUME_STATE', ROOT / 'state'))
+LABEL = 'local.agent-resume'
+
+def database():
+    STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    db = sqlite3.connect(STATE / 'tasks.sqlite')
+    db.row_factory = sqlite3.Row
+    db.execute('CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, session TEXT, cwd TEXT, prompt TEXT, due REAL, status TEXT, attempts INTEGER DEFAULT 0)')
+    return db
+
+def command(task, executable):
+    uuid.UUID(task['session'])
+    return [executable, 'exec', '--sandbox', 'workspace-write', 'resume', task['session'], '-']
+
+def run_due(db, executable):
+    with (STATE / 'worker.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        for task in db.execute("SELECT * FROM tasks WHERE status='ready' AND due<=? ORDER BY due", (dt.datetime.now().timestamp(),)).fetchall():
+            if not Path(task['cwd']).is_dir():
+                db.execute("UPDATE tasks SET status='needs_path' WHERE id=?", (task['id'],)); db.commit(); continue
+            claimed = db.execute("UPDATE tasks SET status='running', attempts=attempts+1 WHERE id=? AND status='ready'", (task['id'],))
+            db.commit()
+            if not claimed.rowcount:
+                continue
+            env = dict(os.environ)
+            for key in ('OPENAI_API_KEY', 'OPENAI_BASE_URL'):
+                env.pop(key, None)
+            log = STATE / (task['id'] + '.log')
+            try:
+                with log.open('w') as output:
+                    result = subprocess.run(command(task, executable), input=task['prompt'], text=True, cwd=task['cwd'], env=env, stdout=output, stderr=subprocess.STDOUT, timeout=7200)
+                status = 'finished' if result.returncode == 0 else 'needs_review'
+            except (OSError, subprocess.TimeoutExpired):
+                status = 'needs_review'
+            db.execute('UPDATE tasks SET status=? WHERE id=?', (status, task['id'])); db.commit()
+
+def main():
+    os.umask(0o077)
+    parser = argparse.ArgumentParser(description='Reprise différée de sessions Codex, sans LLM pour le scheduler.')
+    sub = parser.add_subparsers(dest='action', required=True)
+    sub.add_parser('search').add_argument('query')
+    add = sub.add_parser('add')
+    add.add_argument('--session', required=True, type=lambda s: str(uuid.UUID(s)))
+    add.add_argument('--cwd', required=True)
+    add.add_argument('--at', required=True, help='ISO 8601 avec fuseau, ex. 2026-10-14T18:00:00+02:00')
+    add.add_argument('--prompt-file', required=True)
+    for name in ('status', 'tick', 'install', 'uninstall', 'share', 'dashboard', 'detect', 'analyze', 'clear-index'):
+        sub.add_parser(name)
+    for name in ('pause', 'enable'):
+        sub.add_parser(name).add_argument('id')
+    for name in ('backup', 'restore'):
+        sub.add_parser(name).add_argument('archive')
+    args = parser.parse_args()
+    db = database()
+    executable = shutil.which('codex')
+    if args.action == 'add':
+        when = dt.datetime.fromisoformat(args.at)
+        if when.tzinfo is None:
+            parser.error('--at exige un fuseau horaire')
+        cwd = Path(args.cwd).expanduser().resolve(strict=True)
+        if not cwd.is_dir():
+            parser.error('--cwd doit être un dossier')
+        ident = str(uuid.uuid4())
+        db.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?,0)', (ident, args.session, str(cwd), Path(args.prompt_file).read_text(), when.timestamp(), 'paused'))
+        db.commit(); print(f'{ident} — en pause ; activer avec ./resume enable {ident}')
+    elif args.action == 'status':
+        for row in db.execute('SELECT * FROM tasks ORDER BY due'):
+            print(json.dumps({k: row[k] for k in ('id', 'session', 'cwd', 'status', 'attempts')} | {'at': dt.datetime.fromtimestamp(row['due']).astimezone().isoformat()}, ensure_ascii=False))
+    elif args.action in ('pause', 'enable'):
+        row = db.execute('SELECT * FROM tasks WHERE id=?', (args.id,)).fetchone()
+        if not row or row['status'] == 'running':
+            parser.error('Tâche absente ou actuellement en cours')
+        if args.action == 'enable' and not Path(row['cwd']).is_dir():
+            parser.error('Dossier indisponible')
+        db.execute('UPDATE tasks SET status=? WHERE id=?', ('ready' if args.action == 'enable' else 'paused', args.id)); db.commit()
+    elif args.action == 'clear-index':
+        from private_search import cleanup
+        print(json.dumps({'removed': cleanup(STATE, clear=True)}))
+    elif args.action == 'search':
+        from private_search import search
+        print(json.dumps(search(STATE, ROOT, args.query[:500]), ensure_ascii=False))
+    elif args.action == 'analyze':
+        from local_analysis import analyze
+        analyze(STATE)
+    elif args.action == 'detect':
+        from detect import scan_all
+        print(json.dumps(scan_all(), ensure_ascii=False))
+    elif args.action == 'dashboard':
+        from dashboard import serve
+        serve(database, ROOT)
+    elif args.action == 'tick':
+        from private_search import cleanup
+        try:
+            cleanup(STATE)
+        except ValueError:
+            pass
+        if not executable:
+            parser.error('Codex CLI absent')
+        run_due(db, executable)
+    elif args.action == 'backup':
+        with zipfile.ZipFile(args.archive, 'w', zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr('manifest.json', json.dumps({'version': 1, 'tasks': [dict(r) for r in db.execute('SELECT * FROM tasks')]}))
+        print(args.archive)
+    elif args.action == 'restore':
+        with zipfile.ZipFile(args.archive) as archive:
+            info = archive.getinfo('manifest.json')
+            if info.file_size > 10_000_000:
+                parser.error('Sauvegarde trop volumineuse')
+            data = json.loads(archive.read(info))
+        if data['version'] != 1:
+            parser.error('Version incompatible')
+        rows = []
+        for task in data['tasks']:
+            uuid.UUID(task['id']); uuid.UUID(task['session'])
+            rows.append((task['id'], task['session'], task['cwd'], task['prompt'], float(task['due']), 'paused', int(task['attempts'])))
+        with db:
+            db.executemany('INSERT OR IGNORE INTO tasks VALUES (?,?,?,?,?,?,?)', rows)
+        print('Tâches importées en pause ; les identifiants déjà présents restent inchangés.')
+    elif args.action == 'share':
+        dest = Path.cwd() / 'agent-resume-share.zip'
+        with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as archive:
+            for name in ('resume', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'native-install', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
+                archive.write(ROOT / name, 'agent-resume/' + name)
+        print(dest)
+    elif args.action in ('install', 'uninstall'):
+        if sys.platform != 'darwin':
+            parser.error('Installation du service disponible sur macOS seulement')
+        plist = Path.home() / 'Library/LaunchAgents' / (LABEL + '.plist')
+        target = f'gui/{os.getuid()}'
+        if args.action == 'uninstall':
+            subprocess.run(['launchctl', 'bootout', target + '/' + LABEL], capture_output=True)
+            plist.unlink(missing_ok=True)
+        else:
+            if not executable:
+                parser.error('Installer Codex CLI et effectuer codex login au préalable')
+            if plist.exists():
+                parser.error('Service déjà installé ; désinstaller avant de réinstaller')
+            plist.parent.mkdir(parents=True, exist_ok=True)
+            settings = {'Label': LABEL, 'ProgramArguments': [sys.executable, str(ROOT / 'resume'), 'tick'], 'StartInterval': 60, 'EnvironmentVariables': {'AGENT_RESUME_STATE': str(STATE), 'PATH': str(Path(executable).parent) + ':/usr/bin:/bin'}, 'StandardOutPath': str(STATE / 'service.log'), 'StandardErrorPath': str(STATE / 'service-error.log')}
+            plist.write_bytes(plistlib.dumps(settings))
+            result = subprocess.run(['launchctl', 'bootstrap', target, str(plist)], capture_output=True, text=True)
+            if result.returncode:
+                plist.unlink(); parser.error(result.stderr)
+            print('Service installé ; aucune tâche activée automatiquement.')
+    db.close()
+
+if __name__ == '__main__':
+    main()

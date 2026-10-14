@@ -1,0 +1,93 @@
+- id: llm-deepseek
+  config:
+    thinking: enabled
+    reasoningEffort: low
+- id: llm-deepseek-account
+  config:
+    thinking: enabled
+    reasoningEffort: low
+- id: subagent
+  config:
+    maxDepth: 2
+    maxActiveSubagents: 3
+- id: subagent-model-selection-settings
+  config:
+    enabled: true
+    allowedModels:
+      - provider: deepseek-official
+        model: deepseek-flash
+      - provider: deepseek-official
+        model: deepseek-v4-pro
+      - provider: deepseek-account
+        model: deepseek-flash
+      - provider: deepseek-account
+        model: deepseek-v4-pro
+      - provider: openai-codex
+        model: gpt-6-luna
+      - provider: openai-codex
+        model: gpt-6-sol
+      - provider: openai-codex
+        model: gpt-6-astra
+      - provider: asi-cloud
+        model: asi1-mini
+      - provider: asi-cloud
+        model: asi1
+      - provider: asi-cloud
+        model: openai/gpt-oss-20b
+      - provider: asi-cloud
+        model: deepseek/deepseek-v4-flash-0731
+- id: llm-pi-ai
+  config:
+    providers:
+      openai-codex:
+        reasoning: medium
+        models:
+          - id: gpt-6-luna
+          - id: gpt-6-sol
+          - id: gpt-6-astra
+        retryPolicy:
+          mode: normal
+          maxRetries: 2
+      asi-cloud:
+        displayName: ASI:Cloud — test
+        api: openai-completions
+        baseURL: https://inference.asicloud.cudos.org/v1
+        apiKeyEnv: ASI_API_KEY
+        models:
+          - id: asi1-mini
+            contextWindow: 128000
+            maxTokens: 4096
+          - id: asi1
+            contextWindow: 128000
+            maxTokens: 4096
+          - id: openai/gpt-oss-20b
+            contextWindow: 131072
+            maxTokens: 4096
+          - id: deepseek/deepseek-v4-flash-0731
+            contextWindow: 1048576
+            maxTokens: 8192
+        retryPolicy:
+          mode: normal
+          maxRetries: 0
+        compat:
+          supportsUsageInStreaming: true
+          supportsStore: false
+- id: ui-chat
+  name: '@deepseek-ai/dsh-client-ui-chat'
+  config:
+    transcriptView: standard
+    performanceUsage: detailed
+- id: ui-settings
+  name: '@deepseek-ai/dsh-client-ui-settings'
+  config:
+    enabled: true
+- id: ui-settings-account
+  name: '@deepseek-ai/dsh-client-ui-settings-account'
+  config:
+    version: 1
+    step: done
+    usage: detailed
+    developerTools: true
+    purpose: null
+    process: standard
+    completion: api-key
