@@ -17,3 +17,6 @@
 /harness-router-test/
 /deepseek-harness-config/evaluation-*/
 /deepseek-harness-config/ASI-*.json
+
+/routing/plugin/lib/
+/routing/plugin/native/RouteEmbedding

@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+NODE=${ROUTER_NODE:-/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/node/bin/node}
+PNPM=${ROUTER_PNPM:-/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/pnpm/bin/pnpm.cjs}
+"$NODE" "$PNPM" --dir "$ROOT/plugin" install --frozen-lockfile --ignore-scripts

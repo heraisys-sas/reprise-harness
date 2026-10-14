@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+PROFILE=${1:?Usage: routing/install PROFILE (existing Harness profile)}
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+DSH=${DSH_CLI:-/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh}
+test -x "$ROOT/plugin/native/RouteEmbedding"
+test -f "$ROOT/plugin/lib/index.js"
+"$DSH" plugin --profile "$PROFILE" add "file:$ROOT/plugin" --ignore-scripts

@@ -1,0 +1,7 @@
+- insert:
+    - id: subagent-router
+      name: '@heraisys/dsh-local-router'
+      config:
+        appleEmbedding: true
+        autoEscalate: false
+        autoReroute: false

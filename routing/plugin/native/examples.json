@@ -1,0 +1,172 @@
+[
+  {
+    "language": "fr",
+    "tier": "trivial",
+    "text": "Liste les fichiers du dossier courant."
+  },
+  {
+    "language": "fr",
+    "tier": "trivial",
+    "text": "Retrouve le fichier qui définit cette fonction."
+  },
+  {
+    "language": "fr",
+    "tier": "trivial",
+    "text": "Affiche la version installée et le statut Git."
+  },
+  {
+    "language": "fr",
+    "tier": "trivial",
+    "text": "Recherche cet identifiant dans le dépôt."
+  },
+  {
+    "language": "fr",
+    "tier": "light",
+    "text": "Renomme cette variable et actualise ses références."
+  },
+  {
+    "language": "fr",
+    "tier": "light",
+    "text": "Corrige une faute de frappe dans le texte du bouton."
+  },
+  {
+    "language": "fr",
+    "tier": "light",
+    "text": "Modifie le titre et le libellé du formulaire."
+  },
+  {
+    "language": "fr",
+    "tier": "light",
+    "text": "Ajoute un champ facultatif dans cette configuration."
+  },
+  {
+    "language": "fr",
+    "tier": "standard",
+    "text": "Implémente cette fonctionnalité en respectant les tests existants."
+  },
+  {
+    "language": "fr",
+    "tier": "standard",
+    "text": "Corrige le bug de validation du formulaire et ajoute un test de régression."
+  },
+  {
+    "language": "fr",
+    "tier": "standard",
+    "text": "Écris les tests unitaires de cette fonction."
+  },
+  {
+    "language": "fr",
+    "tier": "standard",
+    "text": "Configure le pipeline de compilation et les vérifications de typage."
+  },
+  {
+    "language": "fr",
+    "tier": "complex",
+    "text": "Évalue les garanties théoriques de cohérence et de disponibilité."
+  },
+  {
+    "language": "fr",
+    "tier": "complex",
+    "text": "Conçois un protocole distribué tolérant aux pannes et démontre sa correction."
+  },
+  {
+    "language": "fr",
+    "tier": "complex",
+    "text": "Analyse les risques de sécurité et les frontières de confiance."
+  },
+  {
+    "language": "fr",
+    "tier": "complex",
+    "text": "Élabore une stratégie de migration Python vers Rust en préservant les invariants."
+  },
+  {
+    "language": "fr",
+    "tier": "complex",
+    "text": "Compare les compromis algorithmiques et prouve la complexité."
+  },
+  {
+    "language": "en",
+    "tier": "trivial",
+    "text": "List the files in the current directory."
+  },
+  {
+    "language": "en",
+    "tier": "trivial",
+    "text": "Find the file that defines this function."
+  },
+  {
+    "language": "en",
+    "tier": "trivial",
+    "text": "Show the installed version and Git status."
+  },
+  {
+    "language": "en",
+    "tier": "trivial",
+    "text": "Search the repository for this identifier."
+  },
+  {
+    "language": "en",
+    "tier": "light",
+    "text": "Rename this variable and update its references."
+  },
+  {
+    "language": "en",
+    "tier": "light",
+    "text": "Fix a typo in the button text."
+  },
+  {
+    "language": "en",
+    "tier": "light",
+    "text": "Change the form title and label."
+  },
+  {
+    "language": "en",
+    "tier": "light",
+    "text": "Add an optional field to this configuration."
+  },
+  {
+    "language": "en",
+    "tier": "standard",
+    "text": "Implement this feature using the existing tests."
+  },
+  {
+    "language": "en",
+    "tier": "standard",
+    "text": "Fix the form validation bug and add a regression test."
+  },
+  {
+    "language": "en",
+    "tier": "standard",
+    "text": "Write unit tests for this function."
+  },
+  {
+    "language": "en",
+    "tier": "standard",
+    "text": "Configure the build pipeline and type checks."
+  },
+  {
+    "language": "en",
+    "tier": "complex",
+    "text": "Evaluate theoretical consistency and availability guarantees."
+  },
+  {
+    "language": "en",
+    "tier": "complex",
+    "text": "Design a fault tolerant distributed protocol and prove its correctness."
+  },
+  {
+    "language": "en",
+    "tier": "complex",
+    "text": "Analyze security risks and trust boundaries."
+  },
+  {
+    "language": "en",
+    "tier": "complex",
+    "text": "Plan a Python to Rust migration preserving behavioral invariants."
+  },
+  {
+    "language": "en",
+    "tier": "complex",
+    "text": "Compare algorithmic tradeoffs and prove computational complexity."
+  }
+]

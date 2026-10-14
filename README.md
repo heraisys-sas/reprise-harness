@@ -8,9 +8,9 @@ Outils macOS pour suivre les sessions d’agents, rechercher leurs diagnostics l
 | --- | --- |
 | `agent-resume/` | Application native SwiftUI/AppKit, collecte locale, quotas disponibles, recherche privée et cache d’analyse chiffrés |
 | `deepseek-harness-config/` | Instructions et six compétences de développement, DevOps, sécurité, preuves scientifiques, orchestration et portage Rust ; configuration de référence |
-| `routing/` | Tests diagnostiques du plugin tiers, provenance et architecture prévue |
+| `routing/` | Adaptation du routeur avec helper Apple local, tests et comparaison des deux moteurs |
 
-Le routage enrichi par les embeddings et Apple Intelligence n’est **pas encore implémenté dans Harness**. Reprise possède déjà des composants Apple locaux réutilisables. Le plugin tiers n’est pas activé dans le profil quotidien.
+Le routage par embeddings Apple est implémenté et testé dans un profil Harness isolé. Il reste expérimental et n’est pas activé dans le profil quotidien. Le modèle génératif Apple Intelligence ne participe pas au routage.
 
 ## Démarrage de Reprise
 
@@ -34,6 +34,6 @@ Lire [les instructions](deepseek-harness-config/CONFIGURATION.md). Les fichiers 
 
 Le dépôt contient uniquement les sources et la documentation sélectionnées. Les conversations, caches, bases, clés du Trousseau, captures et binaires locaux sont exclus. Le chiffrement de Reprise couvre l’index de recherche et le cache d’analyse ; il ne couvre pas les journaux, instructions de tâches ou bases des applications sources.
 
-## Routage prévu
+## Routage local expérimental
 
-Règles françaises → comparaison locale par embeddings → classification Apple locale en cas d’ambiguïté → politique déterministe de modèles autorisés. Aucun serveur réseau ou MCP nécessaire à ce stade. Voir [la conception et les limites](routing/README.md).
+Règles françaises → comparaison locale par embeddings → repli standard en cas d’ambiguïté → politique déterministe de modèles autorisés. Aucun serveur réseau ou MCP nécessaire. Voir [la compilation, les tests et les limites](routing/README.md).

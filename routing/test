@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+NODE=${ROUTER_NODE:-/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/node/bin/node}
+NAPI_RS_FORCE_WASI=${NAPI_RS_FORCE_WASI:-true} "$NODE" "$ROOT/plugin/node_modules/vitest/vitest.mjs" run --root "$ROOT/plugin"

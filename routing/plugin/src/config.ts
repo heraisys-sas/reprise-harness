@@ -1,0 +1,119 @@
+/**
+ * dsh-subagent-router — plugin config schema.
+ *
+ * The exported schemastery `Config` documents the config shape for the
+ * settings UI (设置 → 插件配置). Only LIVE fields are configurable: they are
+ * re-read on every tool call (`getConfig()`), so a settings write takes effect
+ * on the next call without a restart.
+ *
+ * Registration-time knobs (subagent provider, tool names, background mode,
+ * depth cap, feature toggles) are NOT configurable — they are fixed module
+ * constants with sane defaults in index.ts / tools.ts (see the "fixed" block
+ * there). Making them configurable earlier produced a settings surface where
+ * "saves" silently did not apply (注册期快照, see `.handoff/` pit 10), so they were
+ * removed from the config face entirely.
+ *
+ * *** 双源警告 ***：此 schema 的 `.default()` 值与 index.ts 中
+ * `resolveConfig` 的 `??` 回退必须保持同步——Loader 路径走 schema 归一化，
+ * 直接调用路径走 resolveConfig；改一处必须改另一处。
+ */
+import z from '@deepseek-ai/schemastery'
+
+/** Per-tier auto selection mode. */
+const autoTierPolicyMode = z.union([z.const('anchor'), z.const('cheapest'), z.const('strongest')])
+
+/**
+ * 可选档位标量/数组：缺省保持 undefined（而非类型默认空值）。
+ *
+ * schemastery 的 `required(false)` 会把缺失键归一化成类型默认值（数组 → 空数组），
+ * 于是用户未配置任何档位时 `autoTierPicks` 归一化为
+ * `{trivial: [], light: [], standard: [], complex: []}`——client 端
+ * `picks !== undefined` 判定把「空数组」当成「固定」，造成「选默认保存后又回到固定」
+ * （`.handoff/` pit 8，2026-09-03 实机复现根因）。追加 `.default(undefined)` 让缺省键
+ * 保持 undefined、整段保持 `{}`，与 host `resolveConfig` 的透传语义一致
+ * （见文件头「双源警告」）。
+ */
+const optionalMode = autoTierPolicyMode.required(false).default(undefined as never).volatile()
+const optionalPicks = z.array(z.string()).required(false).default(undefined as never).volatile()
+
+/**
+ * Schemastery schema: documents the shape for the Loader and settings UI.
+ *
+ * 0.2.0-rc.2：宿主 settings 换成 `SettingsForms`（从本 schema 派生表单），旧的
+ * `installSection` 已删除。`SettingsForms` **只把标了 `.volatile()` 的字段**暴露成
+ * 可编辑表单（未标的连表单都不生成、写入直接抛错），而 volatile 字段解析出来是带
+ * `.get()` 的活体单元——所以下面每个「改完即生效」的 live 字段都标了 `.volatile()`，
+ * `resolveConfig` 经 `live()` 每次读当前快照，即活源语义（取代旧 setSource 重绑定）。
+ */
+export const Config = z.object({
+  appleEmbeddingEngine: z.union([z.const('sentence'), z.const('contextual')]).default('sentence').volatile(),
+  appleEmbedding: z.boolean().default(false).volatile(),
+  appleHelperPath: z.string().default('').volatile(),
+  /** After a failed foreground run, retry once on the next auto tier (default true). */
+  autoEscalate: z.boolean().default(true).volatile(),
+  /** Reroute to a healthy provider route when the auto-chosen route fails terminally (quota/auth) (default true). */
+  autoReroute: z.boolean().default(true).volatile(),
+  /** Max escalation steps on the same provider after repeated transient failures (default 1). */
+  autoEscalationTiers: z.number().min(0).default(1).volatile(),
+  /** Provider priority order for `model: "auto"` provider resolution (default: registry order). Unlisted providers sort after listed ones. */
+  autoProviderOrder: z.array(z.string()).default([]).volatile(),
+  /** Per-tier selection mode; omitted tiers fall back to the built-in heuristic (trivial→cheapest, light→balanced, standard→strong, complex→strongest). */
+  autoTierPolicy: z.object({
+    trivial: optionalMode,
+    light: optionalMode,
+    standard: optionalMode,
+    complex: optionalMode,
+  }).required(false),
+  /** Per-tier explicit candidate list, in priority order; when present, fully overrides the tier policy for that tier. */
+  autoTierPicks: z.object({
+    trivial: optionalPicks,
+    light: optionalPicks,
+    standard: optionalPicks,
+    complex: optionalPicks,
+  }).required(false),
+  /** Classifier timeout for `subagent_recommend`'s one-shot LLM call, in milliseconds (default 8000; range 1000–60000). Past it the tool degrades to the naming heuristic. */
+  recommendTimeoutMs: z.number().min(1000).max(60000).default(8000).volatile(),
+})
+
+/**
+ * 解包 0.2.0-rc.2 的 volatile 活体单元。
+ *
+ * 标了 `.volatile()` 的字段解析出来是 cosmokit 的 `Volatile<T>`（只有 `get()`，
+ * 写入由宿主 `SettingsForms` 持有）；未标 volatile 的字段仍是裸值。这里统一读法：
+ * 宿主运行时读单元当前快照，单测/旧路径喂裸值原样返回。每次调用都重新 `get()`——
+ * 这正是「改配置 → 下次使用即生效」的活源语义。
+ */
+export function live<T>(value: T | { get(): T } | undefined): T | undefined {
+  if (value === null || value === undefined) return undefined
+  if (typeof value === 'object' && typeof (value as { get?: unknown }).get === 'function') {
+    return (value as { get(): T }).get()
+  }
+  return value as T
+}
+
+/**
+ * 注册期固定配置（单一权威来源）：这些槽位曾是配置项，但都是「注册时快照」
+ * ——设置页改了既不生效也不报错（见 `.handoff/` pit 10 的 backgroundMode 案例），
+ * 对用户是个坑。现全部固定为合理默认，不再暴露给用户配置：
+ *
+ * - subagentProvider: 'spawn' —— dsh 主程序的默认可续子代理提供方
+ * - toolName / modelsToolName —— 标准工具名（改名没有场景价值）
+ * - enableRunInBackground: true + backgroundMode: 'continuable'
+ *   —— 与 dsh harness 原生 subagent 工具语义一致（后台默认 + 持久 subagentId +
+ *   可续聊；显式 run_in_background: false 仍可前台等待）；continuable 要求提供方
+ *   具备 prepareContinuable（挂载时 fail-loud）
+ * - enableModelList / enableAuto —— 功能开关固定打开（关闭场景无价值）
+ * - maxDepth: 'provider-managed' —— 深度上限交给提供方管理（不要求 depthLimit
+ *   能力，任何提供方可挂载）
+ */
+export const fixedConfig = {
+  subagentProvider: 'spawn',
+  toolName: 'subagent_model',
+  modelsToolName: 'subagent_models',
+  recommendToolName: 'subagent_recommend',
+  enableRunInBackground: true,
+  backgroundMode: 'continuable',
+  enableModelList: true,
+  enableAuto: true,
+  maxDepth: 'provider-managed',
+} as const

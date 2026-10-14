@@ -1,0 +1,225 @@
+{
+  "engine": "sentence",
+  "label": "Small synthetic diagnostic set; not an independent benchmark",
+  "cases": 20,
+  "exact": 15,
+  "embeddingCalls": 11,
+  "cachedMs": 0.1125409999999647,
+  "rows": [
+    {
+      "prompt": "Liste les fichiers Python.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "source": "lookup-rule",
+      "ms": 1,
+      "correct": true
+    },
+    {
+      "prompt": "Trouve les usages de cette fonction.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "source": "lookup-rule",
+      "ms": 0,
+      "correct": true
+    },
+    {
+      "prompt": "Corrige la couleur du libellé.",
+      "expected": "light",
+      "tier": "light",
+      "source": "edit-rule",
+      "ms": 0,
+      "correct": true
+    },
+    {
+      "prompt": "Renomme cette variable.",
+      "expected": "light",
+      "tier": "light",
+      "source": "edit-rule",
+      "ms": 0,
+      "correct": true
+    },
+    {
+      "prompt": "Évalue les garanties de cohérence de ce système distribué.",
+      "expected": "complex",
+      "tier": "complex",
+      "source": "risk-rule",
+      "ms": 0,
+      "correct": true
+    },
+    {
+      "prompt": "Analyse les frontières de sécurité du service.",
+      "expected": "complex",
+      "tier": "complex",
+      "source": "apple-embedding",
+      "score": 0.951178338661705,
+      "margin": 0.031110788223948527,
+      "language": "fr",
+      "revision": 1,
+      "engine": "sentence",
+      "ms": 83,
+      "correct": true
+    },
+    {
+      "prompt": "Démontre que cet algorithme termine pour toutes les entrées.",
+      "expected": "complex",
+      "tier": "complex",
+      "source": "risk-rule",
+      "ms": 0,
+      "correct": true
+    },
+    {
+      "prompt": "Liste les fichiers puis implémente le correctif et ses tests.",
+      "expected": "standard",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.9489141419928471,
+      "margin": 0.012251239236231726,
+      "language": "fr",
+      "revision": 1,
+      "engine": "sentence",
+      "ms": 81,
+      "correct": true
+    },
+    {
+      "prompt": "Ajoute un contrôle du formulaire et un test associé.",
+      "expected": "standard",
+      "tier": "complex",
+      "source": "apple-embedding",
+      "score": 0.7921656509330148,
+      "margin": 0.03467286276208248,
+      "language": "fr",
+      "revision": 1,
+      "engine": "sentence",
+      "ms": 80,
+      "correct": false
+    },
+    {
+      "prompt": "Répertorie les fichiers de configuration du projet.",
+      "expected": "trivial",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.9366435827565656,
+      "margin": 0.0045975241769538044,
+      "language": "fr",
+      "revision": 1,
+      "engine": "sentence",
+      "ms": 77,
+      "correct": false
+    },
+    {
+      "prompt": "Traduis ce court message en anglais.",
+      "expected": "light",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.898749361371471,
+      "margin": 0.0037276542030113546,
+      "language": "fr",
+      "revision": 1,
+      "engine": "sentence",
+      "ms": 80,
+      "correct": false
+    },
+    {
+      "prompt": "Élabore une approche globale pour moderniser progressivement le logiciel.",
+      "expected": "complex",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.8482969071285915,
+      "margin": 0.0039608006846576505,
+      "language": "fr",
+      "revision": 1,
+      "engine": "sentence",
+      "ms": 81,
+      "correct": false
+    },
+    {
+      "prompt": "List all configuration files.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "source": "lookup-rule",
+      "ms": 0,
+      "correct": true
+    },
+    {
+      "prompt": "Rename the button label.",
+      "expected": "light",
+      "tier": "light",
+      "source": "edit-rule",
+      "ms": 0,
+      "correct": true
+    },
+    {
+      "prompt": "Evaluate consistency guarantees of this distributed system.",
+      "expected": "complex",
+      "tier": "complex",
+      "source": "risk-rule",
+      "ms": 0,
+      "correct": true
+    },
+    {
+      "prompt": "Explain the tradeoffs between alternative algorithms.",
+      "expected": "complex",
+      "tier": "complex",
+      "source": "apple-embedding",
+      "score": 0.6073892199208781,
+      "margin": 0.053626815835217334,
+      "language": "en",
+      "revision": 1,
+      "engine": "sentence",
+      "ms": 79,
+      "correct": true
+    },
+    {
+      "prompt": "Write regression tests for the parser.",
+      "expected": "standard",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.7845084179064465,
+      "margin": 0.1547450342586465,
+      "language": "en",
+      "revision": 1,
+      "engine": "sentence",
+      "ms": 63,
+      "correct": true
+    },
+    {
+      "prompt": "Locate the function declaration in the source tree.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "source": "apple-embedding",
+      "score": 0.6271467259517829,
+      "margin": 0.0314329433759466,
+      "language": "en",
+      "revision": 1,
+      "engine": "sentence",
+      "ms": 65,
+      "correct": true
+    },
+    {
+      "prompt": "Translate the error message into French.",
+      "expected": "light",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.5065373540962077,
+      "margin": 0.009569055377387836,
+      "language": "en",
+      "revision": 1,
+      "engine": "sentence",
+      "ms": 65,
+      "correct": false
+    },
+    {
+      "prompt": "Improve the wording of this heading.",
+      "expected": "light",
+      "tier": "light",
+      "source": "apple-embedding",
+      "score": 0.5710648955085749,
+      "margin": 0.03499584467686634,
+      "language": "en",
+      "revision": 1,
+      "engine": "sentence",
+      "ms": 63,
+      "correct": true
+    }
+  ]
+}

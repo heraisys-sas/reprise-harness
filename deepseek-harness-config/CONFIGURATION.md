@@ -32,4 +32,4 @@ La sauvegarde contient le patch desktop original et un manifeste des fichiers cr
 
 ## État du routage — 14 octobre 2026
 
-La sélection de modèle reste pilotée par les instructions tant que le plugin n’est pas activé. Le test isolé de `dsh-subagent-router` 0.6.0 a réussi sur le plan logiciel, mais a reproduit un classement insuffisant de certaines demandes françaises. Voir `../routing/README.md`. Le helper Apple de routage est prévu, pas implémenté.
+La sélection de modèle reste pilotée par les instructions tant que le plugin n’est pas activé. Le test isolé de `dsh-subagent-router` 0.6.0 a réussi sur le plan logiciel, mais a reproduit un classement insuffisant de certaines demandes françaises. Voir `../routing/README.md`. Le helper Apple de routage est désormais implémenté dans `../routing/`, avec deux moteurs et un test de délégation local ; il reste expérimental et non activé dans le profil quotidien.
