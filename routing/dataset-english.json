@@ -1,0 +1,86 @@
+{
+  "language": "en",
+  "note": "English translations of the existing twenty cases; same labels, not an independent benchmark.",
+  "rows": [
+    {
+      "prompt": "List the Python files.",
+      "expected": "trivial"
+    },
+    {
+      "prompt": "Find the usages of this function.",
+      "expected": "trivial"
+    },
+    {
+      "prompt": "Fix the color of the label.",
+      "expected": "light"
+    },
+    {
+      "prompt": "Rename this variable.",
+      "expected": "light"
+    },
+    {
+      "prompt": "Evaluate the consistency guarantees of this distributed system.",
+      "expected": "complex"
+    },
+    {
+      "prompt": "Analyze the security boundaries of the service.",
+      "expected": "complex"
+    },
+    {
+      "prompt": "Prove that this algorithm terminates for every input.",
+      "expected": "complex"
+    },
+    {
+      "prompt": "List the files, then implement the fix and its tests.",
+      "expected": "standard"
+    },
+    {
+      "prompt": "Add a form validation check and an associated test.",
+      "expected": "standard"
+    },
+    {
+      "prompt": "Enumerate the configuration files in the project.",
+      "expected": "trivial"
+    },
+    {
+      "prompt": "Translate this short message into English.",
+      "expected": "light"
+    },
+    {
+      "prompt": "Develop an overall approach to progressively modernize the software.",
+      "expected": "complex"
+    },
+    {
+      "prompt": "List all configuration files.",
+      "expected": "trivial"
+    },
+    {
+      "prompt": "Rename the button label.",
+      "expected": "light"
+    },
+    {
+      "prompt": "Evaluate consistency guarantees of this distributed system.",
+      "expected": "complex"
+    },
+    {
+      "prompt": "Explain the tradeoffs between alternative algorithms.",
+      "expected": "complex"
+    },
+    {
+      "prompt": "Write regression tests for the parser.",
+      "expected": "standard"
+    },
+    {
+      "prompt": "Locate the function declaration in the source tree.",
+      "expected": "trivial"
+    },
+    {
+      "prompt": "Translate the error message into French.",
+      "expected": "light"
+    },
+    {
+      "prompt": "Improve the wording of this heading.",
+      "expected": "light"
+    }
+  ]
+}

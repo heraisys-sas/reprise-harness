@@ -1,0 +1,147 @@
+{
+  "engine": "upstream-0.6.0",
+  "cases": 20,
+  "exact": 15,
+  "rows": [
+    {
+      "prompt": "List the Python files.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "correct": true,
+      "ms": 3.134416999999985
+    },
+    {
+      "prompt": "Find the usages of this function.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "correct": true,
+      "ms": 0.7097499999999854
+    },
+    {
+      "prompt": "Fix the color of the label.",
+      "expected": "light",
+      "tier": "trivial",
+      "correct": false,
+      "ms": 0.5507080000000428
+    },
+    {
+      "prompt": "Rename this variable.",
+      "expected": "light",
+      "tier": "light",
+      "correct": true,
+      "ms": 0.4454160000000229
+    },
+    {
+      "prompt": "Evaluate the consistency guarantees of this distributed system.",
+      "expected": "complex",
+      "tier": "complex",
+      "correct": true,
+      "ms": 0.3768749999999841
+    },
+    {
+      "prompt": "Analyze the security boundaries of the service.",
+      "expected": "complex",
+      "tier": "complex",
+      "correct": true,
+      "ms": 0.3417500000000473
+    },
+    {
+      "prompt": "Prove that this algorithm terminates for every input.",
+      "expected": "complex",
+      "tier": "complex",
+      "correct": true,
+      "ms": 0.38400000000001455
+    },
+    {
+      "prompt": "List the files, then implement the fix and its tests.",
+      "expected": "standard",
+      "tier": "complex",
+      "correct": false,
+      "ms": 0.35254199999997127
+    },
+    {
+      "prompt": "Add a form validation check and an associated test.",
+      "expected": "standard",
+      "tier": "standard",
+      "correct": true,
+      "ms": 0.399708999999973
+    },
+    {
+      "prompt": "Enumerate the configuration files in the project.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "correct": true,
+      "ms": 0.42591700000002675
+    },
+    {
+      "prompt": "Translate this short message into English.",
+      "expected": "light",
+      "tier": "light",
+      "correct": true,
+      "ms": 0.37874999999996817
+    },
+    {
+      "prompt": "Develop an overall approach to progressively modernize the software.",
+      "expected": "complex",
+      "tier": "standard",
+      "correct": false,
+      "ms": 0.25979200000000446
+    },
+    {
+      "prompt": "List all configuration files.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "correct": true,
+      "ms": 0.28570799999999963
+    },
+    {
+      "prompt": "Rename the button label.",
+      "expected": "light",
+      "tier": "light",
+      "correct": true,
+      "ms": 0.28716600000001336
+    },
+    {
+      "prompt": "Evaluate consistency guarantees of this distributed system.",
+      "expected": "complex",
+      "tier": "complex",
+      "correct": true,
+      "ms": 0.27020799999996825
+    },
+    {
+      "prompt": "Explain the tradeoffs between alternative algorithms.",
+      "expected": "complex",
+      "tier": "complex",
+      "correct": true,
+      "ms": 0.27750000000003183
+    },
+    {
+      "prompt": "Write regression tests for the parser.",
+      "expected": "standard",
+      "tier": "standard",
+      "correct": true,
+      "ms": 0.2635840000000371
+    },
+    {
+      "prompt": "Locate the function declaration in the source tree.",
+      "expected": "trivial",
+      "tier": "complex",
+      "correct": false,
+      "ms": 1.2853749999999877
+    },
+    {
+      "prompt": "Translate the error message into French.",
+      "expected": "light",
+      "tier": "light",
+      "correct": true,
+      "ms": 0.297916999999984
+    },
+    {
+      "prompt": "Improve the wording of this heading.",
+      "expected": "light",
+      "tier": "trivial",
+      "correct": false,
+      "ms": 0.26987499999995634
+    }
+  ]
+}

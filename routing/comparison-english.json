@@ -1,0 +1,771 @@
+{
+  "language": "en",
+  "cases": 20,
+  "note": "English translations of the existing twenty cases; same labels, not an independent benchmark.",
+  "results": [
+    {
+      "engine": "upstream-0.6.0",
+      "exact": 15,
+      "rows": [
+        {
+          "prompt": "List the Python files.",
+          "expected": "trivial",
+          "tier": "trivial",
+          "correct": true,
+          "ms": 3.134416999999985
+        },
+        {
+          "prompt": "Find the usages of this function.",
+          "expected": "trivial",
+          "tier": "trivial",
+          "correct": true,
+          "ms": 0.7097499999999854
+        },
+        {
+          "prompt": "Fix the color of the label.",
+          "expected": "light",
+          "tier": "trivial",
+          "correct": false,
+          "ms": 0.5507080000000428
+        },
+        {
+          "prompt": "Rename this variable.",
+          "expected": "light",
+          "tier": "light",
+          "correct": true,
+          "ms": 0.4454160000000229
+        },
+        {
+          "prompt": "Evaluate the consistency guarantees of this distributed system.",
+          "expected": "complex",
+          "tier": "complex",
+          "correct": true,
+          "ms": 0.3768749999999841
+        },
+        {
+          "prompt": "Analyze the security boundaries of the service.",
+          "expected": "complex",
+          "tier": "complex",
+          "correct": true,
+          "ms": 0.3417500000000473
+        },
+        {
+          "prompt": "Prove that this algorithm terminates for every input.",
+          "expected": "complex",
+          "tier": "complex",
+          "correct": true,
+          "ms": 0.38400000000001455
+        },
+        {
+          "prompt": "List the files, then implement the fix and its tests.",
+          "expected": "standard",
+          "tier": "complex",
+          "correct": false,
+          "ms": 0.35254199999997127
+        },
+        {
+          "prompt": "Add a form validation check and an associated test.",
+          "expected": "standard",
+          "tier": "standard",
+          "correct": true,
+          "ms": 0.399708999999973
+        },
+        {
+          "prompt": "Enumerate the configuration files in the project.",
+          "expected": "trivial",
+          "tier": "trivial",
+          "correct": true,
+          "ms": 0.42591700000002675
+        },
+        {
+          "prompt": "Translate this short message into English.",
+          "expected": "light",
+          "tier": "light",
+          "correct": true,
+          "ms": 0.37874999999996817
+        },
+        {
+          "prompt": "Develop an overall approach to progressively modernize the software.",
+          "expected": "complex",
+          "tier": "standard",
+          "correct": false,
+          "ms": 0.25979200000000446
+        },
+        {
+          "prompt": "List all configuration files.",
+          "expected": "trivial",
+          "tier": "trivial",
+          "correct": true,
+          "ms": 0.28570799999999963
+        },
+        {
+          "prompt": "Rename the button label.",
+          "expected": "light",
+          "tier": "light",
+          "correct": true,
+          "ms": 0.28716600000001336
+        },
+        {
+          "prompt": "Evaluate consistency guarantees of this distributed system.",
+          "expected": "complex",
+          "tier": "complex",
+          "correct": true,
+          "ms": 0.27020799999996825
+        },
+        {
+          "prompt": "Explain the tradeoffs between alternative algorithms.",
+          "expected": "complex",
+          "tier": "complex",
+          "correct": true,
+          "ms": 0.27750000000003183
+        },
+        {
+          "prompt": "Write regression tests for the parser.",
+          "expected": "standard",
+          "tier": "standard",
+          "correct": true,
+          "ms": 0.2635840000000371
+        },
+        {
+          "prompt": "Locate the function declaration in the source tree.",
+          "expected": "trivial",
+          "tier": "complex",
+          "correct": false,
+          "ms": 1.2853749999999877
+        },
+        {
+          "prompt": "Translate the error message into French.",
+          "expected": "light",
+          "tier": "light",
+          "correct": true,
+          "ms": 0.297916999999984
+        },
+        {
+          "prompt": "Improve the wording of this heading.",
+          "expected": "light",
+          "tier": "trivial",
+          "correct": false,
+          "ms": 0.26987499999995634
+        }
+      ]
+    },
+    {
+      "engine": "rules",
+      "exact": 11,
+      "rows": [
+        {
+          "prompt": "List the Python files.",
+          "expected": "trivial",
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "correct": true,
+          "ms": 0.6474159999999998
+        },
+        {
+          "prompt": "Find the usages of this function.",
+          "expected": "trivial",
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "correct": true,
+          "ms": 0.5662920000000007
+        },
+        {
+          "prompt": "Fix the color of the label.",
+          "expected": "light",
+          "tier": "standard",
+          "source": "fallback:helper-unavailable",
+          "correct": false,
+          "ms": 2.475666999999998
+        },
+        {
+          "prompt": "Rename this variable.",
+          "expected": "light",
+          "tier": "light",
+          "source": "edit-rule",
+          "correct": true,
+          "ms": 0.1804169999999985
+        },
+        {
+          "prompt": "Evaluate the consistency guarantees of this distributed system.",
+          "expected": "complex",
+          "tier": "complex",
+          "source": "risk-rule",
+          "correct": true,
+          "ms": 0.003500000000002501
+        },
+        {
+          "prompt": "Analyze the security boundaries of the service.",
+          "expected": "complex",
+          "tier": "complex",
+          "source": "risk-rule",
+          "correct": true,
+          "ms": 0.0015420000000005984
+        },
+        {
+          "prompt": "Prove that this algorithm terminates for every input.",
+          "expected": "complex",
+          "tier": "standard",
+          "source": "fallback:helper-unavailable",
+          "correct": false,
+          "ms": 0.3042499999999997
+        },
+        {
+          "prompt": "List the files, then implement the fix and its tests.",
+          "expected": "standard",
+          "tier": "standard",
+          "source": "fallback:helper-unavailable",
+          "correct": true,
+          "ms": 0.25595800000000324
+        },
+        {
+          "prompt": "Add a form validation check and an associated test.",
+          "expected": "standard",
+          "tier": "standard",
+          "source": "fallback:helper-unavailable",
+          "correct": true,
+          "ms": 0.20583299999999838
+        },
+        {
+          "prompt": "Enumerate the configuration files in the project.",
+          "expected": "trivial",
+          "tier": "standard",
+          "source": "fallback:helper-unavailable",
+          "correct": false,
+          "ms": 0.2116250000000015
+        },
+        {
+          "prompt": "Translate this short message into English.",
+          "expected": "light",
+          "tier": "standard",
+          "source": "fallback:helper-unavailable",
+          "correct": false,
+          "ms": 0.17166599999999832
+        },
+        {
+          "prompt": "Develop an overall approach to progressively modernize the software.",
+          "expected": "complex",
+          "tier": "standard",
+          "source": "fallback:helper-unavailable",
+          "correct": false,
+          "ms": 0.14995799999999804
+        },
+        {
+          "prompt": "List all configuration files.",
+          "expected": "trivial",
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "correct": true,
+          "ms": 0.005333000000000254
+        },
+        {
+          "prompt": "Rename the button label.",
+          "expected": "light",
+          "tier": "light",
+          "source": "edit-rule",
+          "correct": true,
+          "ms": 0.1330840000000002
+        },
+        {
+          "prompt": "Evaluate consistency guarantees of this distributed system.",
+          "expected": "complex",
+          "tier": "complex",
+          "source": "risk-rule",
+          "correct": true,
+          "ms": 0.0022500000000000853
+        },
+        {
+          "prompt": "Explain the tradeoffs between alternative algorithms.",
+          "expected": "complex",
+          "tier": "standard",
+          "source": "fallback:helper-unavailable",
+          "correct": false,
+          "ms": 0.13962499999999878
+        },
+        {
+          "prompt": "Write regression tests for the parser.",
+          "expected": "standard",
+          "tier": "standard",
+          "source": "fallback:helper-unavailable",
+          "correct": true,
+          "ms": 0.1615000000000002
+        },
+        {
+          "prompt": "Locate the function declaration in the source tree.",
+          "expected": "trivial",
+          "tier": "standard",
+          "source": "fallback:helper-unavailable",
+          "correct": false,
+          "ms": 0.188917
+        },
+        {
+          "prompt": "Translate the error message into French.",
+          "expected": "light",
+          "tier": "standard",
+          "source": "fallback:helper-unavailable",
+          "correct": false,
+          "ms": 0.1307079999999985
+        },
+        {
+          "prompt": "Improve the wording of this heading.",
+          "expected": "light",
+          "tier": "standard",
+          "source": "fallback:helper-unavailable",
+          "correct": false,
+          "ms": 0.13574999999999804
+        }
+      ]
+    },
+    {
+      "engine": "sentence",
+      "exact": 17,
+      "rows": [
+        {
+          "prompt": "List the Python files.",
+          "expected": "trivial",
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "correct": true,
+          "ms": 0.002833000000002528
+        },
+        {
+          "prompt": "Find the usages of this function.",
+          "expected": "trivial",
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "correct": true,
+          "ms": 0.0012909999999983768
+        },
+        {
+          "prompt": "Fix the color of the label.",
+          "expected": "light",
+          "tier": "light",
+          "source": "apple-embedding",
+          "score": 0.664730414366963,
+          "margin": 0.11435119773463676,
+          "language": "en",
+          "revision": 1,
+          "engine": "sentence",
+          "correct": true,
+          "ms": 83.24125000000001
+        },
+        {
+          "prompt": "Rename this variable.",
+          "expected": "light",
+          "tier": "light",
+          "source": "edit-rule",
+          "correct": true,
+          "ms": 0.01929199999999298
+        },
+        {
+          "prompt": "Evaluate the consistency guarantees of this distributed system.",
+          "expected": "complex",
+          "tier": "complex",
+          "source": "risk-rule",
+          "correct": true,
+          "ms": 0.00566699999998832
+        },
+        {
+          "prompt": "Analyze the security boundaries of the service.",
+          "expected": "complex",
+          "tier": "complex",
+          "source": "risk-rule",
+          "correct": true,
+          "ms": 0.0011249999999876081
+        },
+        {
+          "prompt": "Prove that this algorithm terminates for every input.",
+          "expected": "complex",
+          "tier": "standard",
+          "source": "apple-embedding",
+          "score": 0.5420830494381268,
+          "margin": 0.011799458471975499,
+          "language": "en",
+          "revision": 1,
+          "engine": "sentence",
+          "correct": false,
+          "ms": 68.44512499999999
+        },
+        {
+          "prompt": "List the files, then implement the fix and its tests.",
+          "expected": "standard",
+          "tier": "standard",
+          "source": "apple-embedding",
+          "score": 0.6738814496292207,
+          "margin": 0.004506046374663675,
+          "language": "en",
+          "revision": 1,
+          "engine": "sentence",
+          "correct": true,
+          "ms": 65.28895800000001
+        },
+        {
+          "prompt": "Add a form validation check and an associated test.",
+          "expected": "standard",
+          "tier": "standard",
+          "source": "apple-embedding",
+          "score": 0.7572480299331841,
+          "margin": 0.07183128674436379,
+          "language": "en",
+          "revision": 1,
+          "engine": "sentence",
+          "correct": true,
+          "ms": 64.38454200000004
+        },
+        {
+          "prompt": "Enumerate the configuration files in the project.",
+          "expected": "trivial",
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "score": 0.6888275312176515,
+          "margin": 0.028115994210284434,
+          "language": "en",
+          "revision": 1,
+          "engine": "sentence",
+          "correct": true,
+          "ms": 62.892750000000035
+        },
+        {
+          "prompt": "Translate this short message into English.",
+          "expected": "light",
+          "tier": "light",
+          "source": "apple-embedding",
+          "score": 0.4146995758342773,
+          "margin": 0.03447482107669175,
+          "language": "en",
+          "revision": 1,
+          "engine": "sentence",
+          "correct": true,
+          "ms": 62.866917
+        },
+        {
+          "prompt": "Develop an overall approach to progressively modernize the software.",
+          "expected": "complex",
+          "tier": "standard",
+          "source": "apple-embedding",
+          "score": 0.4868997136046328,
+          "margin": 0.001304581460063181,
+          "language": "en",
+          "revision": 1,
+          "engine": "sentence",
+          "correct": false,
+          "ms": 63.46720799999997
+        },
+        {
+          "prompt": "List all configuration files.",
+          "expected": "trivial",
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "correct": true,
+          "ms": 0.008624999999994998
+        },
+        {
+          "prompt": "Rename the button label.",
+          "expected": "light",
+          "tier": "light",
+          "source": "edit-rule",
+          "correct": true,
+          "ms": 0.0036670000000071923
+        },
+        {
+          "prompt": "Evaluate consistency guarantees of this distributed system.",
+          "expected": "complex",
+          "tier": "complex",
+          "source": "risk-rule",
+          "correct": true,
+          "ms": 0.0012080000000196378
+        },
+        {
+          "prompt": "Explain the tradeoffs between alternative algorithms.",
+          "expected": "complex",
+          "tier": "complex",
+          "source": "apple-embedding",
+          "score": 0.6073892199208781,
+          "margin": 0.053626815835217334,
+          "language": "en",
+          "revision": 1,
+          "engine": "sentence",
+          "correct": true,
+          "ms": 62.702583000000004
+        },
+        {
+          "prompt": "Write regression tests for the parser.",
+          "expected": "standard",
+          "tier": "standard",
+          "source": "apple-embedding",
+          "score": 0.7845084179064465,
+          "margin": 0.1547450342586465,
+          "language": "en",
+          "revision": 1,
+          "engine": "sentence",
+          "correct": true,
+          "ms": 64.07983300000001
+        },
+        {
+          "prompt": "Locate the function declaration in the source tree.",
+          "expected": "trivial",
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "score": 0.6271467259517829,
+          "margin": 0.0314329433759466,
+          "language": "en",
+          "revision": 1,
+          "engine": "sentence",
+          "correct": true,
+          "ms": 64.85387500000002
+        },
+        {
+          "prompt": "Translate the error message into French.",
+          "expected": "light",
+          "tier": "standard",
+          "source": "apple-embedding",
+          "score": 0.5065373540962077,
+          "margin": 0.009569055377387836,
+          "language": "en",
+          "revision": 1,
+          "engine": "sentence",
+          "correct": false,
+          "ms": 66.604916
+        },
+        {
+          "prompt": "Improve the wording of this heading.",
+          "expected": "light",
+          "tier": "light",
+          "source": "apple-embedding",
+          "score": 0.5710648955085749,
+          "margin": 0.03499584467686634,
+          "language": "en",
+          "revision": 1,
+          "engine": "sentence",
+          "correct": true,
+          "ms": 62.813833000000045
+        }
+      ]
+    },
+    {
+      "engine": "contextual",
+      "exact": 12,
+      "rows": [
+        {
+          "prompt": "List the Python files.",
+          "expected": "trivial",
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "correct": true,
+          "ms": 0.008207999999967797
+        },
+        {
+          "prompt": "Find the usages of this function.",
+          "expected": "trivial",
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "correct": true,
+          "ms": 0.0015839999999798238
+        },
+        {
+          "prompt": "Fix the color of the label.",
+          "expected": "light",
+          "tier": "standard",
+          "source": "apple-embedding",
+          "score": 0.9206715842713853,
+          "margin": 0.011257695689062208,
+          "language": "en",
+          "revision": 1,
+          "engine": "contextual",
+          "correct": false,
+          "ms": 345.56954200000007
+        },
+        {
+          "prompt": "Rename this variable.",
+          "expected": "light",
+          "tier": "light",
+          "source": "edit-rule",
+          "correct": true,
+          "ms": 0.008667000000059488
+        },
+        {
+          "prompt": "Evaluate the consistency guarantees of this distributed system.",
+          "expected": "complex",
+          "tier": "complex",
+          "source": "risk-rule",
+          "correct": true,
+          "ms": 0.0013750000000527507
+        },
+        {
+          "prompt": "Analyze the security boundaries of the service.",
+          "expected": "complex",
+          "tier": "complex",
+          "source": "risk-rule",
+          "correct": true,
+          "ms": 0.0005830000000059954
+        },
+        {
+          "prompt": "Prove that this algorithm terminates for every input.",
+          "expected": "complex",
+          "tier": "standard",
+          "source": "apple-embedding",
+          "score": 0.9415962605923187,
+          "margin": 0.016340746234147163,
+          "language": "en",
+          "revision": 1,
+          "engine": "contextual",
+          "correct": false,
+          "ms": 226.83554099999992
+        },
+        {
+          "prompt": "List the files, then implement the fix and its tests.",
+          "expected": "standard",
+          "tier": "standard",
+          "source": "apple-embedding",
+          "score": 0.9446124270945897,
+          "margin": 0.00558825968354415,
+          "language": "en",
+          "revision": 1,
+          "engine": "contextual",
+          "correct": true,
+          "ms": 226.159625
+        },
+        {
+          "prompt": "Add a form validation check and an associated test.",
+          "expected": "standard",
+          "tier": "standard",
+          "source": "apple-embedding",
+          "score": 0.9383206391804806,
+          "margin": 0.01135621727911551,
+          "language": "en",
+          "revision": 1,
+          "engine": "contextual",
+          "correct": true,
+          "ms": 229.99683299999992
+        },
+        {
+          "prompt": "Enumerate the configuration files in the project.",
+          "expected": "trivial",
+          "tier": "standard",
+          "source": "apple-embedding",
+          "score": 0.9417593425725297,
+          "margin": 0.016472308019211623,
+          "language": "en",
+          "revision": 1,
+          "engine": "contextual",
+          "correct": false,
+          "ms": 226.5006249999999
+        },
+        {
+          "prompt": "Translate this short message into English.",
+          "expected": "light",
+          "tier": "standard",
+          "source": "apple-embedding",
+          "score": 0.8697697537372998,
+          "margin": 0.010782639888777479,
+          "language": "en",
+          "revision": 1,
+          "engine": "contextual",
+          "correct": false,
+          "ms": 228.76024999999981
+        },
+        {
+          "prompt": "Develop an overall approach to progressively modernize the software.",
+          "expected": "complex",
+          "tier": "standard",
+          "source": "apple-embedding",
+          "score": 0.8917817194935073,
+          "margin": 0.0033002267185391343,
+          "language": "en",
+          "revision": 1,
+          "engine": "contextual",
+          "correct": false,
+          "ms": 226.95874999999978
+        },
+        {
+          "prompt": "List all configuration files.",
+          "expected": "trivial",
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "correct": true,
+          "ms": 0.006750000000010914
+        },
+        {
+          "prompt": "Rename the button label.",
+          "expected": "light",
+          "tier": "light",
+          "source": "edit-rule",
+          "correct": true,
+          "ms": 0.003125000000181899
+        },
+        {
+          "prompt": "Evaluate consistency guarantees of this distributed system.",
+          "expected": "complex",
+          "tier": "complex",
+          "source": "risk-rule",
+          "correct": true,
+          "ms": 0.0008330000000569271
+        },
+        {
+          "prompt": "Explain the tradeoffs between alternative algorithms.",
+          "expected": "complex",
+          "tier": "complex",
+          "source": "apple-embedding",
+          "score": 0.9362225953323022,
+          "margin": 0.032108754766696945,
+          "language": "en",
+          "revision": 1,
+          "engine": "contextual",
+          "correct": true,
+          "ms": 229.87158299999965
+        },
+        {
+          "prompt": "Write regression tests for the parser.",
+          "expected": "standard",
+          "tier": "standard",
+          "source": "apple-embedding",
+          "score": 0.9334692513123463,
+          "margin": 0.015331736452652733,
+          "language": "en",
+          "revision": 1,
+          "engine": "contextual",
+          "correct": true,
+          "ms": 227.10033399999975
+        },
+        {
+          "prompt": "Locate the function declaration in the source tree.",
+          "expected": "trivial",
+          "tier": "standard",
+          "source": "apple-embedding",
+          "score": 0.9440934679010624,
+          "margin": 0.0018092928173238931,
+          "language": "en",
+          "revision": 1,
+          "engine": "contextual",
+          "correct": false,
+          "ms": 229.24566700000014
+        },
+        {
+          "prompt": "Translate the error message into French.",
+          "expected": "light",
+          "tier": "standard",
+          "source": "apple-embedding",
+          "score": 0.8849408401537404,
+          "margin": 0.006408803857554046,
+          "language": "en",
+          "revision": 1,
+          "engine": "contextual",
+          "correct": false,
+          "ms": 232.5817920000004
+        },
+        {
+          "prompt": "Improve the wording of this heading.",
+          "expected": "light",
+          "tier": "standard",
+          "source": "apple-embedding",
+          "score": 0.9145524207349609,
+          "margin": 0.006952309289741776,
+          "language": "en",
+          "revision": 1,
+          "engine": "contextual",
+          "correct": false,
+          "ms": 228.09241699999984
+        }
+      ]
+    }
+  ]
+}
