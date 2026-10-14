@@ -47,6 +47,7 @@ const optionalPicks = z.array(z.string()).required(false).default(undefined as n
  */
 export const Config = z.object({
   appleEmbeddingEngine: z.union([z.const('sentence'), z.const('contextual')]).default('sentence').volatile(),
+  appleHybrid: z.boolean().default(true).volatile(),
   appleEmbedding: z.boolean().default(false).volatile(),
   appleHelperPath: z.string().default('').volatile(),
   /** After a failed foreground run, retry once on the next auto tier (default true). */

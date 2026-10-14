@@ -1,0 +1,245 @@
+{
+  "note": "Jeu de validation de 40 demandes originales, étiqueté avant toute exécution : 20 demandes en français et 20 en anglais, avec cinq cas par niveau dans chaque langue. Aucun jeu existant, résultat ou classificateur n’a été consulté pour sa rédaction. Son auteur avait toutefois participé auparavant à une revue du routeur : il s’agit donc d’un jeu distinct, mais pas d’une évaluation totalement aveugle. Les étiquettes sont des jugements humains sur la difficulté du travail demandé, en supposant un projet de taille habituelle et un environnement fonctionnel. Les frontières light/standard et standard/complex restent subjectives et dépendent du contexte manquant ; les justifications rendent ces choix discutables explicitement. Un sujet technique ne suffit pas à rendre complexe une simple consultation. Les étiquettes doivent rester figées pendant l’évaluation ; toute révision ultérieure doit être documentée séparément.",
+  "rows": [
+    {
+      "prompt": "Dans le README, retrouve la commande documentée pour lancer les tests de sécurité et recopie-la sans l’exécuter.",
+      "expected": "trivial",
+      "language": "fr",
+      "rationale": "Extraction d’une information existante ; le thème de sécurité n’exige ici aucune analyse."
+    },
+    {
+      "prompt": "Quel fichier déclare le délai d’expiration des jetons d’authentification ? Donne seulement son chemin et la valeur par défaut.",
+      "expected": "trivial",
+      "language": "fr",
+      "rationale": "Recherche ciblée d’une déclaration sans jugement sur sa pertinence ni modification."
+    },
+    {
+      "prompt": "Affiche les noms des trois derniers commits, puis indique lequel touche le dossier des migrations.",
+      "expected": "trivial",
+      "language": "fr",
+      "rationale": "Consultation composée de deux vérifications Git bornées."
+    },
+    {
+      "prompt": "La documentation mentionne-t-elle un mode consensus pour le cluster ? Cite le titre de la section correspondante, sans évaluer le protocole.",
+      "expected": "trivial",
+      "language": "fr",
+      "rationale": "Repérage documentaire ; aucune expertise sur le consensus n’est nécessaire au livrable."
+    },
+    {
+      "prompt": "Ouvre le manifeste du paquet et donne les versions déclarées de Python et du client PostgreSQL.",
+      "expected": "trivial",
+      "language": "fr",
+      "rationale": "Lecture de deux valeurs explicitement déclarées."
+    },
+    {
+      "prompt": "Dans le pied de page, remplace exactement « © 2025 Atelier » par « © 2026 Atelier ».",
+      "expected": "light",
+      "language": "fr",
+      "rationale": "Substitution textuelle locale entièrement spécifiée."
+    },
+    {
+      "prompt": "Renomme la variable locale tmp en formattedDate dans la fonction formatReceipt et actualise ses références dans cette fonction.",
+      "expected": "light",
+      "language": "fr",
+      "rationale": "Renommage mécanique dans un périmètre explicitement borné."
+    },
+    {
+      "prompt": "Dans les traductions françaises, corrige « Connexion échouer » en « Connexion échouée », puis retire l’espace final de cette même chaîne.",
+      "expected": "light",
+      "language": "fr",
+      "rationale": "Deux opérations mécaniques sur une seule chaîne, sans changement de comportement."
+    },
+    {
+      "prompt": "Dans l’exemple JSON du guide d’installation, remplace le port 8080 par 8081 ; ne touche pas à la configuration exécutée.",
+      "expected": "light",
+      "language": "fr",
+      "rationale": "Édition documentaire localisée avec valeur de remplacement fournie."
+    },
+    {
+      "prompt": "Trie alphabétiquement les douze noms de contributeurs de la section Remerciements, en conservant chaque ligne telle quelle.",
+      "expected": "light",
+      "language": "fr",
+      "rationale": "Réorganisation déterministe d’un petit bloc de texte."
+    },
+    {
+      "prompt": "Ajoute au tableau des commandes un filtre par statut, en réutilisant les composants existants, et teste la remise à zéro du filtre.",
+      "expected": "standard",
+      "language": "fr",
+      "rationale": "Fonctionnalité d’interface courante avec gestion d’état et test ciblé."
+    },
+    {
+      "prompt": "Repère le lecteur CSV, puis ajoute un message d’erreur compréhensible lorsque la colonne obligatoire email manque. Couvre ce cas dans les tests.",
+      "expected": "standard",
+      "language": "fr",
+      "rationale": "La consultation initiale débouche sur une validation fonctionnelle et son test."
+    },
+    {
+      "prompt": "Configure la CI existante pour exécuter le linter et les tests unitaires à chaque pull request, en reprenant les commandes déjà documentées.",
+      "expected": "standard",
+      "language": "fr",
+      "rationale": "Configuration usuelle d’un pipeline à partir de commandes connues."
+    },
+    {
+      "prompt": "Le formulaire accepte une quantité négative : corrige la validation côté serveur et ajoute des tests pour zéro, une valeur positive et une valeur négative.",
+      "expected": "standard",
+      "language": "fr",
+      "rationale": "Correction métier locale avec critères d’acceptation explicites."
+    },
+    {
+      "prompt": "Ajoute une option --output à l’outil d’export : sans option, il écrit sur stdout ; avec un chemin, il écrit dans ce fichier. Teste les deux comportements.",
+      "expected": "standard",
+      "language": "fr",
+      "rationale": "Extension CLI conventionnelle impliquant arguments, sortie et tests."
+    },
+    {
+      "prompt": "Conçois le mécanisme qui empêche de débiter deux fois un paiement lorsque le client réessaie après une coupure, y compris si le serveur tombe entre le débit et l’enregistrement local.",
+      "expected": "complex",
+      "language": "fr",
+      "rationale": "Conception de garanties sous panne à travers plusieurs effets externes."
+    },
+    {
+      "prompt": "Étudie les accès entre organisations dans notre API multi-tenant et propose une politique qui empêche les fuites via les exports, les caches et les tâches asynchrones.",
+      "expected": "complex",
+      "language": "fr",
+      "rationale": "Analyse de sécurité transversale portant sur plusieurs frontières de confiance."
+    },
+    {
+      "prompt": "Pars du parseur Python actuel et prépare sa migration en Rust en conservant les erreurs publiques, les positions Unicode, le format sérialisé et les appels des extensions tierces.",
+      "expected": "complex",
+      "language": "fr",
+      "rationale": "Migration impliquant plusieurs contrats de compatibilité indépendants."
+    },
+    {
+      "prompt": "Propose un algorithme de rapprochement de millions d’événements désordonnés avec une mémoire bornée, puis établis ses limites d’exactitude et sa complexité.",
+      "expected": "complex",
+      "language": "fr",
+      "rationale": "Choix algorithmique sous contraintes avec argumentation formelle des limites."
+    },
+    {
+      "prompt": "Lis le schéma actuel, puis conçois le passage sans interruption d’une base unique à des partitions par client, avec retour arrière et maintien des références croisées.",
+      "expected": "complex",
+      "language": "fr",
+      "rationale": "La lecture prépare une migration architecturale combinant disponibilité, intégrité et réversibilité."
+    },
+    {
+      "prompt": "Find the documented command for rotating encryption keys and quote it without running anything.",
+      "expected": "trivial",
+      "language": "en",
+      "rationale": "Retrieval of an existing command; no security judgment or execution is requested."
+    },
+    {
+      "prompt": "Which source file defines the default retry count for the replication client? Return the path and the declared number.",
+      "expected": "trivial",
+      "language": "en",
+      "rationale": "Bounded lookup of a named configuration value."
+    },
+    {
+      "prompt": "List the filenames in the architecture decisions folder, then identify the one whose title mentions leader election.",
+      "expected": "trivial",
+      "language": "en",
+      "rationale": "Two simple inspection steps without evaluating the architecture."
+    },
+    {
+      "prompt": "Read the existing benchmark summary and report the recorded median latency for the small dataset. Do not rerun the benchmark.",
+      "expected": "trivial",
+      "language": "en",
+      "rationale": "Extraction of an explicitly reported measurement."
+    },
+    {
+      "prompt": "Locate the test named rejects_cross_tenant_access and tell me which module contains it, without assessing whether it is sufficient.",
+      "expected": "trivial",
+      "language": "en",
+      "rationale": "Finding a test is a lookup even though its subject is access control."
+    },
+    {
+      "prompt": "Change the settings page heading from “Account preferences” to “Account settings” in the English translation file.",
+      "expected": "light",
+      "language": "en",
+      "rationale": "Single exact text replacement in a specified location."
+    },
+    {
+      "prompt": "In the README installation example, rename demo-project to sample-project in the directory creation and cd commands.",
+      "expected": "light",
+      "language": "en",
+      "rationale": "Two mechanically linked documentation substitutions."
+    },
+    {
+      "prompt": "Remove the duplicate import of Decimal from invoice_format.py and leave all runtime logic unchanged.",
+      "expected": "light",
+      "language": "en",
+      "rationale": "Localized redundant-code cleanup with no design decision."
+    },
+    {
+      "prompt": "Set the existing card padding token from 12px to 16px, then update the adjacent comment to say sixteen pixels.",
+      "expected": "light",
+      "language": "en",
+      "rationale": "A specified style value and its comment are changed mechanically."
+    },
+    {
+      "prompt": "Replace the outdated support address help@example.org with support@example.org in the contact page only.",
+      "expected": "light",
+      "language": "en",
+      "rationale": "Exact replacement within one page; no workflow or integration change."
+    },
+    {
+      "prompt": "Add a clear button to the existing search box and test that it resets both the query and the displayed results.",
+      "expected": "standard",
+      "language": "en",
+      "rationale": "Routine UI behavior requiring state updates and a focused test."
+    },
+    {
+      "prompt": "Find the download endpoint, then add an optional filename parameter with a default value and cover the default and custom cases in tests.",
+      "expected": "standard",
+      "language": "en",
+      "rationale": "The initial lookup leads to a conventional endpoint extension."
+    },
+    {
+      "prompt": "Extend the configuration loader to accept a LOG_LEVEL environment variable, reject unknown values, and keep the current default when it is absent.",
+      "expected": "standard",
+      "language": "en",
+      "rationale": "Common configuration parsing and validation with explicit behavior."
+    },
+    {
+      "prompt": "The empty cart currently shows a blank panel. Add an empty-state message and a link back to the catalog using the existing UI components.",
+      "expected": "standard",
+      "language": "en",
+      "rationale": "Small feature implementation with a conditional rendering path."
+    },
+    {
+      "prompt": "Add tests to the date formatter for leap day, an invalid input string, and a missing value, using the behavior already specified in its docstring.",
+      "expected": "standard",
+      "language": "en",
+      "rationale": "Ordinary test implementation against an existing contract."
+    },
+    {
+      "prompt": "Design a synchronization protocol for offline edits from several devices, explaining which conflicting updates are preserved and how convergence is guaranteed.",
+      "expected": "complex",
+      "language": "en",
+      "rationale": "Protocol design requires explicit conflict semantics and convergence guarantees."
+    },
+    {
+      "prompt": "Review how untrusted plugins receive credentials and propose isolation boundaries that still allow scoped delegation and revocation during a running task.",
+      "expected": "complex",
+      "language": "en",
+      "rationale": "Security architecture spans isolation, credential scope and lifecycle behavior."
+    },
+    {
+      "prompt": "Plan the replacement of our JavaScript pricing engine with Rust while preserving decimal rounding, public exceptions, persisted quotes and the partner SDK interface.",
+      "expected": "complex",
+      "language": "en",
+      "rationale": "Cross-language migration must preserve numerical, API and persistence contracts."
+    },
+    {
+      "prompt": "Develop an incremental algorithm for maintaining dependency order as edges are added and removed, and justify its cycle detection and worst-case update cost.",
+      "expected": "complex",
+      "language": "en",
+      "rationale": "Algorithm design with correctness and complexity obligations."
+    },
+    {
+      "prompt": "Read the current queue consumer, then design crash recovery so a message can update inventory and publish a receipt without losing work or producing duplicate business effects.",
+      "expected": "complex",
+      "language": "en",
+      "rationale": "A composed request involving recovery guarantees across multiple state changes."
+    }
+  ]
+}

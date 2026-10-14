@@ -20,3 +20,5 @@
 
 /routing/plugin/lib/
 /routing/plugin/native/RouteEmbedding
+
+/routing/plugin/native/sentence-prototypes.plist

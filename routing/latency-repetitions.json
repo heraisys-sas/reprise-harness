@@ -1,0 +1,2801 @@
+{
+  "note": "Three alternating rounds, identical frozen tasks. Cache-cold classification; OS/model assets may be warm. Same correctness in each run.",
+  "runs": [
+    {
+      "repeat": 0,
+      "precomputed": false,
+      "mode": "hybrid",
+      "note": "Cache-cold classification in a fresh Node process; OS assets may already be warm. Latency excludes remote LLM generation.",
+      "cases": 40,
+      "exact": 20,
+      "calls": 33,
+      "firstPassP50Ms": 67.14599999999973,
+      "firstPassP95Ms": 94.90329199999996,
+      "embeddingP50Ms": 68.67558299999996,
+      "embeddingP95Ms": 94.90329199999996,
+      "cachedP50Ms": 0.011220800000000964,
+      "cachedP95Ms": 0.0259541999999783,
+      "nativePreparationP50Ms": 56.70662492047995,
+      "nativeQueryP50Ms": 6.506124977022409,
+      "nativeScoringP50Ms": 0.0463749747723341,
+      "nativeHelperP50Ms": 62.71254166495055,
+      "samples": [
+        {
+          "case": 0,
+          "ms": 96.72075000000001,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 87.15579169802368,
+            "preparationMs": 78.99379171431065,
+            "queryMs": 8.108916692435741,
+            "scoringMs": 0.05308329127728939
+          }
+        },
+        {
+          "case": 1,
+          "ms": 0.4851250000000107,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 2,
+          "ms": 81.35066699999999,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 74.80120833497494,
+            "preparationMs": 69.49983339291066,
+            "queryMs": 5.251083290204406,
+            "scoringMs": 0.050291651859879494
+          }
+        },
+        {
+          "case": 3,
+          "ms": 0.04349999999999454,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 4,
+          "ms": 82.00549999999998,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 76.01970830000937,
+            "preparationMs": 70.70295826997608,
+            "queryMs": 5.268541746772826,
+            "scoringMs": 0.04820828326046467
+          }
+        },
+        {
+          "case": 5,
+          "ms": 79.66450000000003,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 73.4871249878779,
+            "preparationMs": 67.19137507025152,
+            "queryMs": 6.246416596695781,
+            "scoringMs": 0.049333320930600166
+          }
+        },
+        {
+          "case": 6,
+          "ms": 0.17995799999999917,
+          "tier": "light",
+          "source": "edit-rule",
+          "timings": null
+        },
+        {
+          "case": 7,
+          "ms": 81.21612499999998,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 74.9733749544248,
+            "preparationMs": 67.44491658173501,
+            "queryMs": 7.4827499920502305,
+            "scoringMs": 0.04570838063955307
+          }
+        },
+        {
+          "case": 8,
+          "ms": 80.44933400000008,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 74.39154165331274,
+            "preparationMs": 67.30937503743917,
+            "queryMs": 7.036249968223274,
+            "scoringMs": 0.045916647650301456
+          }
+        },
+        {
+          "case": 9,
+          "ms": 80.40916700000002,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 74.61150002200156,
+            "preparationMs": 68.82549996953458,
+            "queryMs": 5.735833314247429,
+            "scoringMs": 0.05016673821955919
+          }
+        },
+        {
+          "case": 10,
+          "ms": 82.33687500000008,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 76.42270834185183,
+            "preparationMs": 69.04120836406946,
+            "queryMs": 7.333416608162224,
+            "scoringMs": 0.04808336962014437
+          }
+        },
+        {
+          "case": 11,
+          "ms": 84.98966700000005,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 78.93070834688842,
+            "preparationMs": 71.32745836861432,
+            "queryMs": 7.552625029347837,
+            "scoringMs": 0.05062494892627001
+          }
+        },
+        {
+          "case": 12,
+          "ms": 81.79441699999995,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 75.753333279863,
+            "preparationMs": 68.6234999448061,
+            "queryMs": 7.0824583526700735,
+            "scoringMs": 0.04737498238682747
+          }
+        },
+        {
+          "case": 13,
+          "ms": 81.03370800000005,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 75.11849992442876,
+            "preparationMs": 67.30012502521276,
+            "queryMs": 7.772499928250909,
+            "scoringMs": 0.045874970965087414
+          }
+        },
+        {
+          "case": 14,
+          "ms": 86.42720799999995,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 80.77137498185039,
+            "preparationMs": 68.09904158581048,
+            "queryMs": 12.628166703507304,
+            "scoringMs": 0.04416669253259897
+          }
+        },
+        {
+          "case": 15,
+          "ms": 86.98754199999996,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 81.43604174256325,
+            "preparationMs": 69.39650001004338,
+            "queryMs": 11.983375065028667,
+            "scoringMs": 0.056166667491197586
+          }
+        },
+        {
+          "case": 16,
+          "ms": 94.90329199999996,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 88.83287501521409,
+            "preparationMs": 79.73541668616235,
+            "queryMs": 9.049208369106054,
+            "scoringMs": 0.04824995994567871
+          }
+        },
+        {
+          "case": 17,
+          "ms": 0.05895800000007512,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 18,
+          "ms": 81.40558299999998,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 75.45720832422376,
+            "preparationMs": 68.13704164233059,
+            "queryMs": 7.273375056684017,
+            "scoringMs": 0.0467916252091527
+          }
+        },
+        {
+          "case": 19,
+          "ms": 81.77825000000007,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 75.86829166393727,
+            "preparationMs": 66.92158337682486,
+            "queryMs": 8.90033331234008,
+            "scoringMs": 0.0463749747723341
+          }
+        },
+        {
+          "case": 20,
+          "ms": 0.03279199999997218,
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "timings": null
+        },
+        {
+          "case": 21,
+          "ms": 65.41883299999995,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 59.74366667214781,
+            "preparationMs": 54.53287507407367,
+            "queryMs": 5.170291638933122,
+            "scoringMs": 0.040499959141016006
+          }
+        },
+        {
+          "case": 22,
+          "ms": 64.49399999999991,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 58.93787508830428,
+            "preparationMs": 53.949625114910305,
+            "queryMs": 4.946416593156755,
+            "scoringMs": 0.04183338023722172
+          }
+        },
+        {
+          "case": 23,
+          "ms": 0.03245799999990595,
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "timings": null
+        },
+        {
+          "case": 24,
+          "ms": 65.373333,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 59.74475003313273,
+            "preparationMs": 54.62404165882617,
+            "queryMs": 5.074208369478583,
+            "scoringMs": 0.04650000482797623
+          }
+        },
+        {
+          "case": 25,
+          "ms": 66.309125,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 60.61720836441964,
+            "preparationMs": 55.19400001503527,
+            "queryMs": 5.3769167279824615,
+            "scoringMs": 0.046291621401906013
+          }
+        },
+        {
+          "case": 26,
+          "ms": 66.55400000000009,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 60.94933324493468,
+            "preparationMs": 55.37462490610778,
+            "queryMs": 5.5290000746026635,
+            "scoringMs": 0.04570826422423124
+          }
+        },
+        {
+          "case": 27,
+          "ms": 66.56141600000001,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 60.78075000550598,
+            "preparationMs": 56.70662492047995,
+            "queryMs": 4.029416712000966,
+            "scoringMs": 0.0447083730250597
+          }
+        },
+        {
+          "case": 28,
+          "ms": 65.72220900000002,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 59.98487491160631,
+            "preparationMs": 54.65320835355669,
+            "queryMs": 5.2863749442622066,
+            "scoringMs": 0.04529161378741264
+          }
+        },
+        {
+          "case": 29,
+          "ms": 64.9792080000002,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 59.377833269536495,
+            "preparationMs": 54.790166672319174,
+            "queryMs": 4.538041655905545,
+            "scoringMs": 0.04962494131177664
+          }
+        },
+        {
+          "case": 30,
+          "ms": 65.9105840000002,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 60.19412504974753,
+            "preparationMs": 54.797666729427874,
+            "queryMs": 5.353249958716333,
+            "scoringMs": 0.043208361603319645
+          }
+        },
+        {
+          "case": 31,
+          "ms": 65.98137500000007,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 60.4879999300465,
+            "preparationMs": 54.531208239495754,
+            "queryMs": 5.914750043302774,
+            "scoringMs": 0.042041647247970104
+          }
+        },
+        {
+          "case": 32,
+          "ms": 68.67558299999996,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 62.71254166495055,
+            "preparationMs": 55.29529170598835,
+            "queryMs": 7.36629159655422,
+            "scoringMs": 0.05095836240798235
+          }
+        },
+        {
+          "case": 33,
+          "ms": 68.52841699999999,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 62.695541651919484,
+            "preparationMs": 55.80124992411584,
+            "queryMs": 6.842541741207242,
+            "scoringMs": 0.051749986596405506
+          }
+        },
+        {
+          "case": 34,
+          "ms": 68.3494169999999,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 62.64216674026102,
+            "preparationMs": 55.534416693262756,
+            "queryMs": 7.058999966830015,
+            "scoringMs": 0.04875008016824722
+          }
+        },
+        {
+          "case": 35,
+          "ms": 66.16666700000042,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 60.49554166384041,
+            "preparationMs": 54.77958335541189,
+            "queryMs": 5.6743749883025885,
+            "scoringMs": 0.04158332012593746
+          }
+        },
+        {
+          "case": 36,
+          "ms": 65.76816599999984,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 60.11470837984234,
+            "preparationMs": 54.60362508893013,
+            "queryMs": 5.468249903060496,
+            "scoringMs": 0.04283338785171509
+          }
+        },
+        {
+          "case": 37,
+          "ms": 0.038417000000208645,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 38,
+          "ms": 66.73329199999989,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 61.06512504629791,
+            "preparationMs": 54.51379169244319,
+            "queryMs": 6.506124977022409,
+            "scoringMs": 0.045208376832306385
+          }
+        },
+        {
+          "case": 39,
+          "ms": 67.14599999999973,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 61.51662499178201,
+            "preparationMs": 54.539791657589376,
+            "queryMs": 6.930833333171904,
+            "scoringMs": 0.04600000102072954
+          }
+        }
+      ]
+    },
+    {
+      "repeat": 0,
+      "precomputed": true,
+      "mode": "hybrid",
+      "note": "Cache-cold classification in a fresh Node process; OS assets may already be warm. Latency excludes remote LLM generation.",
+      "cases": 40,
+      "exact": 20,
+      "calls": 33,
+      "firstPassP50Ms": 39.09895799999998,
+      "firstPassP95Ms": 41.63175000000001,
+      "embeddingP50Ms": 39.67529200000013,
+      "embeddingP95Ms": 41.63175000000001,
+      "cachedP50Ms": 0.011070799999993141,
+      "cachedP95Ms": 0.025166699999999764,
+      "nativePreparationP50Ms": 11.618874967098236,
+      "nativeQueryP50Ms": 7.1498333709314466,
+      "nativeScoringP50Ms": 0.035499921068549156,
+      "nativeHelperP50Ms": 19.240083289332688,
+      "samples": [
+        {
+          "case": 0,
+          "ms": 40.871542,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.593625049106777,
+            "preparationMs": 10.73408336378634,
+            "queryMs": 7.82258331310004,
+            "scoringMs": 0.036958372220396996
+          }
+        },
+        {
+          "case": 1,
+          "ms": 0.5215830000000068,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 2,
+          "ms": 38.51858300000001,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 17.45062496047467,
+            "preparationMs": 10.64979168586433,
+            "queryMs": 6.760500022210181,
+            "scoringMs": 0.040333252400159836
+          }
+        },
+        {
+          "case": 3,
+          "ms": 0.049166999999997074,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 4,
+          "ms": 37.01775000000001,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 16.737874946556985,
+            "preparationMs": 10.365583351813257,
+            "queryMs": 6.3367916736751795,
+            "scoringMs": 0.035499921068549156
+          }
+        },
+        {
+          "case": 5,
+          "ms": 37.38495899999998,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 17.164458404295146,
+            "preparationMs": 9.975416702218354,
+            "queryMs": 7.1498333709314466,
+            "scoringMs": 0.039208331145346165
+          }
+        },
+        {
+          "case": 6,
+          "ms": 0.17141699999999105,
+          "tier": "light",
+          "source": "edit-rule",
+          "timings": null
+        },
+        {
+          "case": 7,
+          "ms": 40.461416000000014,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.993791705928743,
+            "preparationMs": 10.467208339832723,
+            "queryMs": 9.486916707828641,
+            "scoringMs": 0.03966665826737881
+          }
+        },
+        {
+          "case": 8,
+          "ms": 39.957750000000004,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.596708356402814,
+            "preparationMs": 10.65195829141885,
+            "queryMs": 8.905750000849366,
+            "scoringMs": 0.03900006413459778
+          }
+        },
+        {
+          "case": 9,
+          "ms": 37.358416999999974,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 17.40825001616031,
+            "preparationMs": 10.437999968416989,
+            "queryMs": 6.932583404704928,
+            "scoringMs": 0.03766664303839207
+          }
+        },
+        {
+          "case": 10,
+          "ms": 39.09895799999998,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.749333336018026,
+            "preparationMs": 10.126416571438313,
+            "queryMs": 8.584541734308004,
+            "scoringMs": 0.038375030271708965
+          }
+        },
+        {
+          "case": 11,
+          "ms": 40.48904199999998,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.659458310343325,
+            "preparationMs": 10.791874956339598,
+            "queryMs": 8.827375015243888,
+            "scoringMs": 0.040208338759839535
+          }
+        },
+        {
+          "case": 12,
+          "ms": 39.060333000000014,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.964999937452376,
+            "preparationMs": 10.156708303838968,
+            "queryMs": 8.761708275415003,
+            "scoringMs": 0.04658335819840431
+          }
+        },
+        {
+          "case": 13,
+          "ms": 39.80208299999998,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.640458398498595,
+            "preparationMs": 10.209041647613049,
+            "queryMs": 9.395916713401675,
+            "scoringMs": 0.03550003748387098
+          }
+        },
+        {
+          "case": 14,
+          "ms": 41.63175000000001,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 21.136625087819993,
+            "preparationMs": 10.079083382152021,
+            "queryMs": 11.021416634321213,
+            "scoringMs": 0.036125071346759796
+          }
+        },
+        {
+          "case": 15,
+          "ms": 41.270375,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.790416630916297,
+            "preparationMs": 10.188416694290936,
+            "queryMs": 10.565749951638281,
+            "scoringMs": 0.0362499849870801
+          }
+        },
+        {
+          "case": 16,
+          "ms": 40.39504199999999,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.297833369113505,
+            "preparationMs": 10.466666659340262,
+            "queryMs": 9.7902916604653,
+            "scoringMs": 0.04087504930794239
+          }
+        },
+        {
+          "case": 17,
+          "ms": 0.057999999999992724,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 18,
+          "ms": 39.61283300000002,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.240083289332688,
+            "preparationMs": 10.32649993430823,
+            "queryMs": 8.876666659489274,
+            "scoringMs": 0.03691669553518295
+          }
+        },
+        {
+          "case": 19,
+          "ms": 40.668541000000005,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.478666643612087,
+            "preparationMs": 10.444625047966838,
+            "queryMs": 9.996749926358461,
+            "scoringMs": 0.03729166928678751
+          }
+        },
+        {
+          "case": 20,
+          "ms": 0.03145900000004076,
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "timings": null
+        },
+        {
+          "case": 21,
+          "ms": 38.88520900000003,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.81158340256661,
+            "preparationMs": 12.362958397716284,
+            "queryMs": 6.4171666745096445,
+            "scoringMs": 0.03145833034068346
+          }
+        },
+        {
+          "case": 22,
+          "ms": 38.55558400000007,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.27537501230836,
+            "preparationMs": 12.1736666187644,
+            "queryMs": 6.068666698411107,
+            "scoringMs": 0.0330416951328516
+          }
+        },
+        {
+          "case": 23,
+          "ms": 0.03054199999996854,
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "timings": null
+        },
+        {
+          "case": 24,
+          "ms": 37.968209,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.04041664581746,
+            "preparationMs": 12.0362916495651,
+            "queryMs": 5.972625105641782,
+            "scoringMs": 0.031499890610575676
+          }
+        },
+        {
+          "case": 25,
+          "ms": 38.25566600000002,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.249083310365677,
+            "preparationMs": 11.90320833120495,
+            "queryMs": 6.316666724160314,
+            "scoringMs": 0.029208255000412464
+          }
+        },
+        {
+          "case": 26,
+          "ms": 38.47279200000003,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.375291605480015,
+            "preparationMs": 11.966999969445169,
+            "queryMs": 6.374041666276753,
+            "scoringMs": 0.03424996975809336
+          }
+        },
+        {
+          "case": 27,
+          "ms": 36.81245899999999,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 16.808999935165048,
+            "preparationMs": 11.618874967098236,
+            "queryMs": 5.158583400771022,
+            "scoringMs": 0.03154156729578972
+          }
+        },
+        {
+          "case": 28,
+          "ms": 37.79041700000005,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.015208304859698,
+            "preparationMs": 11.758291744627059,
+            "queryMs": 6.225458229891956,
+            "scoringMs": 0.03145833034068346
+          }
+        },
+        {
+          "case": 29,
+          "ms": 40.017124999999965,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.000249962322414,
+            "preparationMs": 13.061541598290205,
+            "queryMs": 6.904583307914436,
+            "scoringMs": 0.034125056117773056
+          }
+        },
+        {
+          "case": 30,
+          "ms": 38.66224999999997,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.48879165481776,
+            "preparationMs": 12.01129169203341,
+            "queryMs": 6.441208301112056,
+            "scoringMs": 0.03629166167229414
+          }
+        },
+        {
+          "case": 31,
+          "ms": 39.88087500000006,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.297333317808807,
+            "preparationMs": 12.324916664510965,
+            "queryMs": 6.9405833492055535,
+            "scoringMs": 0.03183330409228802
+          }
+        },
+        {
+          "case": 32,
+          "ms": 39.67529200000013,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.656916614621878,
+            "preparationMs": 12.603541603311896,
+            "queryMs": 7.021000026725233,
+            "scoringMs": 0.032374984584748745
+          }
+        },
+        {
+          "case": 33,
+          "ms": 40.52150000000006,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.24300000630319,
+            "preparationMs": 12.227041646838188,
+            "queryMs": 7.982708397321403,
+            "scoringMs": 0.03324996214359999
+          }
+        },
+        {
+          "case": 34,
+          "ms": 44.49537499999997,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 23.71033327654004,
+            "preparationMs": 13.67991662118584,
+            "queryMs": 9.995499975048006,
+            "scoringMs": 0.03491668030619621
+          }
+        },
+        {
+          "case": 35,
+          "ms": 39.462416000000076,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.221500027924776,
+            "preparationMs": 12.406000052578747,
+            "queryMs": 6.780791678465903,
+            "scoringMs": 0.034708296880126
+          }
+        },
+        {
+          "case": 36,
+          "ms": 39.91820899999993,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.54691670835018,
+            "preparationMs": 13.040208374150097,
+            "queryMs": 6.473166635259986,
+            "scoringMs": 0.033541698940098286
+          }
+        },
+        {
+          "case": 37,
+          "ms": 0.040792000000010376,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 38,
+          "ms": 39.9079999999999,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.509208272211254,
+            "preparationMs": 11.862791609019041,
+            "queryMs": 7.613874971866608,
+            "scoringMs": 0.032541691325604916
+          }
+        },
+        {
+          "case": 39,
+          "ms": 40.10733300000015,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.93154175579548,
+            "preparationMs": 12.044041766785085,
+            "queryMs": 7.856291602365673,
+            "scoringMs": 0.03120838664472103
+          }
+        }
+      ]
+    },
+    {
+      "repeat": 1,
+      "precomputed": true,
+      "mode": "hybrid",
+      "note": "Cache-cold classification in a fresh Node process; OS assets may already be warm. Latency excludes remote LLM generation.",
+      "cases": 40,
+      "exact": 20,
+      "calls": 33,
+      "firstPassP50Ms": 40.19929100000002,
+      "firstPassP95Ms": 44.820417000000134,
+      "embeddingP50Ms": 40.39525000000003,
+      "embeddingP95Ms": 44.820417000000134,
+      "cachedP50Ms": 0.011062499999979991,
+      "cachedP95Ms": 0.025779099999999742,
+      "nativePreparationP50Ms": 12.256500078365207,
+      "nativeQueryP50Ms": 7.497833343222737,
+      "nativeScoringP50Ms": 0.03570830449461937,
+      "nativeHelperP50Ms": 19.699375028721988,
+      "samples": [
+        {
+          "case": 0,
+          "ms": 40.672709,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.49866670090705,
+            "preparationMs": 10.570791666395962,
+            "queryMs": 7.888333406299353,
+            "scoringMs": 0.03954162821173668
+          }
+        },
+        {
+          "case": 1,
+          "ms": 0.4657499999999999,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 2,
+          "ms": 38.024875,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 17.090166686102748,
+            "preparationMs": 10.579291731119156,
+            "queryMs": 6.464333273470402,
+            "scoringMs": 0.04654168151319027
+          }
+        },
+        {
+          "case": 3,
+          "ms": 0.04620799999999292,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 4,
+          "ms": 37.183916999999994,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 16.87591674271971,
+            "preparationMs": 10.437833378091455,
+            "queryMs": 6.400666665285826,
+            "scoringMs": 0.03741669934242964
+          }
+        },
+        {
+          "case": 5,
+          "ms": 38.173833,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 17.629541573114693,
+            "preparationMs": 10.335124912671745,
+            "queryMs": 7.2570000775158405,
+            "scoringMs": 0.03741658292710781
+          }
+        },
+        {
+          "case": 6,
+          "ms": 0.1738330000000019,
+          "tier": "light",
+          "source": "edit-rule",
+          "timings": null
+        },
+        {
+          "case": 7,
+          "ms": 40.002791,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.59345827344805,
+            "preparationMs": 10.289083234965801,
+            "queryMs": 9.266541688703,
+            "scoringMs": 0.03783334977924824
+          }
+        },
+        {
+          "case": 8,
+          "ms": 41.620417,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.758124999701977,
+            "preparationMs": 12.256500078365207,
+            "queryMs": 8.45795834902674,
+            "scoringMs": 0.04366657231003046
+          }
+        },
+        {
+          "case": 9,
+          "ms": 39.352709000000004,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.507916596718132,
+            "preparationMs": 11.235416634008288,
+            "queryMs": 7.233249954879284,
+            "scoringMs": 0.03925000783056021
+          }
+        },
+        {
+          "case": 10,
+          "ms": 40.19929100000002,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.62487504351884,
+            "preparationMs": 11.008541681803763,
+            "queryMs": 8.578625041991472,
+            "scoringMs": 0.03770831972360611
+          }
+        },
+        {
+          "case": 11,
+          "ms": 41.064959000000044,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.206875051371753,
+            "preparationMs": 10.918416664935648,
+            "queryMs": 9.249708382412791,
+            "scoringMs": 0.03875000402331352
+          }
+        },
+        {
+          "case": 12,
+          "ms": 40.39525000000003,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.699375028721988,
+            "preparationMs": 11.235333397053182,
+            "queryMs": 8.425333304330707,
+            "scoringMs": 0.03870832733809948
+          }
+        },
+        {
+          "case": 13,
+          "ms": 40.461209,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.201000035740435,
+            "preparationMs": 11.002541636116803,
+            "queryMs": 9.161291643977165,
+            "scoringMs": 0.03716675564646721
+          }
+        },
+        {
+          "case": 14,
+          "ms": 45.00041599999997,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 24.454499944113195,
+            "preparationMs": 11.21099991723895,
+            "queryMs": 13.204666669480503,
+            "scoringMs": 0.03883335739374161
+          }
+        },
+        {
+          "case": 15,
+          "ms": 42.332708000000025,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 21.815874963067472,
+            "preparationMs": 10.864124982617795,
+            "queryMs": 10.914916638284922,
+            "scoringMs": 0.03683334216475487
+          }
+        },
+        {
+          "case": 16,
+          "ms": 40.888874999999985,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.577833289280534,
+            "preparationMs": 10.791333392262459,
+            "queryMs": 9.74633323494345,
+            "scoringMs": 0.04016666207462549
+          }
+        },
+        {
+          "case": 17,
+          "ms": 0.059207999999898675,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 18,
+          "ms": 39.45687499999997,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.12054163403809,
+            "preparationMs": 10.612791636958718,
+            "queryMs": 8.46933329012245,
+            "scoringMs": 0.03841670695692301
+          }
+        },
+        {
+          "case": 19,
+          "ms": 40.798958000000084,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.57520835660398,
+            "preparationMs": 10.649083415046334,
+            "queryMs": 9.887374937534332,
+            "scoringMs": 0.03875000402331352
+          }
+        },
+        {
+          "case": 20,
+          "ms": 0.031541000000061103,
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "timings": null
+        },
+        {
+          "case": 21,
+          "ms": 38.66899999999998,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.454500008374453,
+            "preparationMs": 12.224208330735564,
+            "queryMs": 6.200166651979089,
+            "scoringMs": 0.030125025659799576
+          }
+        },
+        {
+          "case": 22,
+          "ms": 39.29679199999998,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.748666625469923,
+            "preparationMs": 12.551916646771133,
+            "queryMs": 6.164041697047651,
+            "scoringMs": 0.03270828165113926
+          }
+        },
+        {
+          "case": 23,
+          "ms": 0.032958000000007814,
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "timings": null
+        },
+        {
+          "case": 24,
+          "ms": 39.50858399999993,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.097416661679745,
+            "preparationMs": 12.9570416174829,
+            "queryMs": 6.1059166910126805,
+            "scoringMs": 0.03445835318416357
+          }
+        },
+        {
+          "case": 25,
+          "ms": 40.31345799999997,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.618374994024634,
+            "preparationMs": 13.151500024832785,
+            "queryMs": 6.433708360418677,
+            "scoringMs": 0.0331666087731719
+          }
+        },
+        {
+          "case": 26,
+          "ms": 40.59066700000005,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.983291625976562,
+            "preparationMs": 12.812541681341827,
+            "queryMs": 7.136499974876642,
+            "scoringMs": 0.03424996975809336
+          }
+        },
+        {
+          "case": 27,
+          "ms": 39.26112499999999,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.631791579537094,
+            "preparationMs": 13.598833349533379,
+            "queryMs": 4.99933329410851,
+            "scoringMs": 0.033624935895204544
+          }
+        },
+        {
+          "case": 28,
+          "ms": 39.878582999999935,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.318458274938166,
+            "preparationMs": 12.675624922849238,
+            "queryMs": 6.609916687011719,
+            "scoringMs": 0.03291666507720947
+          }
+        },
+        {
+          "case": 29,
+          "ms": 38.53587500000003,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.40920839458704,
+            "preparationMs": 12.77300005313009,
+            "queryMs": 5.603583296760917,
+            "scoringMs": 0.032625044696033
+          }
+        },
+        {
+          "case": 30,
+          "ms": 43.15750000000003,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 22.664333344437182,
+            "preparationMs": 14.143166714347899,
+            "queryMs": 8.48745834082365,
+            "scoringMs": 0.03370828926563263
+          }
+        },
+        {
+          "case": 31,
+          "ms": 40.887500000000045,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.150250056758523,
+            "preparationMs": 13.041875092312694,
+            "queryMs": 7.074999972246587,
+            "scoringMs": 0.033374992199242115
+          }
+        },
+        {
+          "case": 32,
+          "ms": 40.28495799999996,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.073416642844677,
+            "preparationMs": 12.904749950394034,
+            "queryMs": 7.137291715480387,
+            "scoringMs": 0.031374976970255375
+          }
+        },
+        {
+          "case": 33,
+          "ms": 42.913125000000036,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 22.468750015832484,
+            "preparationMs": 12.593958410434425,
+            "queryMs": 9.841958293691278,
+            "scoringMs": 0.03283331170678139
+          }
+        },
+        {
+          "case": 34,
+          "ms": 44.820417000000134,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 24.308666703291237,
+            "preparationMs": 14.101500040851533,
+            "queryMs": 10.171458357945085,
+            "scoringMs": 0.03570830449461937
+          }
+        },
+        {
+          "case": 35,
+          "ms": 41.063499999999976,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.451624994166195,
+            "preparationMs": 13.66770826280117,
+            "queryMs": 6.752291694283485,
+            "scoringMs": 0.03162503708153963
+          }
+        },
+        {
+          "case": 36,
+          "ms": 40.124874999999975,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.596291705965996,
+            "preparationMs": 12.81237497460097,
+            "queryMs": 6.7494583781808615,
+            "scoringMs": 0.03445835318416357
+          }
+        },
+        {
+          "case": 37,
+          "ms": 0.04099999999993997,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 38,
+          "ms": 40.847707999999784,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.421208231709898,
+            "preparationMs": 12.889166595414281,
+            "queryMs": 7.497833343222737,
+            "scoringMs": 0.034208293072879314
+          }
+        },
+        {
+          "case": 39,
+          "ms": 41.247041999999965,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.981791662052274,
+            "preparationMs": 12.720833299681544,
+            "queryMs": 8.225666708312929,
+            "scoringMs": 0.03529165405780077
+          }
+        }
+      ]
+    },
+    {
+      "repeat": 1,
+      "precomputed": false,
+      "mode": "hybrid",
+      "note": "Cache-cold classification in a fresh Node process; OS assets may already be warm. Latency excludes remote LLM generation.",
+      "cases": 40,
+      "exact": 20,
+      "calls": 33,
+      "firstPassP50Ms": 69.1002080000003,
+      "firstPassP95Ms": 87.05845899999997,
+      "embeddingP50Ms": 75.14720899999975,
+      "embeddingP95Ms": 87.05845899999997,
+      "cachedP50Ms": 0.011587499999995999,
+      "cachedP95Ms": 0.025850000000036743,
+      "nativePreparationP50Ms": 63.97495826240629,
+      "nativeQueryP50Ms": 6.138499942608178,
+      "nativeScoringP50Ms": 0.04654168151319027,
+      "nativeHelperP50Ms": 69.0824167104438,
+      "samples": [
+        {
+          "case": 0,
+          "ms": 82.953583,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 75.2268333453685,
+            "preparationMs": 68.32608336117119,
+            "queryMs": 6.846458301879466,
+            "scoringMs": 0.054291682317852974
+          }
+        },
+        {
+          "case": 1,
+          "ms": 0.5019999999999953,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 2,
+          "ms": 79.508542,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 72.92091671843082,
+            "preparationMs": 67.62541667558253,
+            "queryMs": 5.250249989330769,
+            "scoringMs": 0.04525005351752043
+          }
+        },
+        {
+          "case": 3,
+          "ms": 0.04941700000000537,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 4,
+          "ms": 78.12804099999997,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 72.14483327697963,
+            "preparationMs": 66.88529159873724,
+            "queryMs": 5.211666692048311,
+            "scoringMs": 0.047874986194074154
+          }
+        },
+        {
+          "case": 5,
+          "ms": 79.68729100000002,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 73.5391250345856,
+            "preparationMs": 67.35304172616452,
+            "queryMs": 6.138499942608178,
+            "scoringMs": 0.04758336581289768
+          }
+        },
+        {
+          "case": 6,
+          "ms": 0.17933299999998553,
+          "tier": "light",
+          "source": "edit-rule",
+          "timings": null
+        },
+        {
+          "case": 7,
+          "ms": 82.914625,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 76.63754164241254,
+            "preparationMs": 68.40404157992452,
+            "queryMs": 8.179625030606985,
+            "scoringMs": 0.053875031881034374
+          }
+        },
+        {
+          "case": 8,
+          "ms": 82.99799999999999,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 76.95458340458572,
+            "preparationMs": 68.9433750230819,
+            "queryMs": 7.960750022903085,
+            "scoringMs": 0.050458358600735664
+          }
+        },
+        {
+          "case": 9,
+          "ms": 79.17845800000003,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 73.27379169873893,
+            "preparationMs": 67.42033327464014,
+            "queryMs": 5.803958396427333,
+            "scoringMs": 0.04950002767145634
+          }
+        },
+        {
+          "case": 10,
+          "ms": 80.72287500000004,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 74.96283331420273,
+            "preparationMs": 67.56958330515772,
+            "queryMs": 7.344166631810367,
+            "scoringMs": 0.04908337723463774
+          }
+        },
+        {
+          "case": 11,
+          "ms": 80.11754199999996,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 74.22137504909188,
+            "preparationMs": 66.64525007363409,
+            "queryMs": 7.531791576184332,
+            "scoringMs": 0.04433339927345514
+          }
+        },
+        {
+          "case": 12,
+          "ms": 79.40916600000003,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 73.72966664843261,
+            "preparationMs": 66.680624964647,
+            "queryMs": 7.0035416865721345,
+            "scoringMs": 0.04549999721348286
+          }
+        },
+        {
+          "case": 13,
+          "ms": 82.29379200000005,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 76.26258325763047,
+            "preparationMs": 67.91770830750465,
+            "queryMs": 8.296458283439279,
+            "scoringMs": 0.04841666668653488
+          }
+        },
+        {
+          "case": 14,
+          "ms": 86.84558300000003,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 81.15629164967686,
+            "preparationMs": 70.77445834875107,
+            "queryMs": 10.33087505493313,
+            "scoringMs": 0.05095824599266052
+          }
+        },
+        {
+          "case": 15,
+          "ms": 87.05845899999997,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 80.81174991093576,
+            "preparationMs": 71.35924999602139,
+            "queryMs": 9.40670829731971,
+            "scoringMs": 0.04579161759465933
+          }
+        },
+        {
+          "case": 16,
+          "ms": 91.73129199999994,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 85.93766659032553,
+            "preparationMs": 74.80941666290164,
+            "queryMs": 11.065625003539026,
+            "scoringMs": 0.06262492388486862
+          }
+        },
+        {
+          "case": 17,
+          "ms": 0.05816699999991215,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 18,
+          "ms": 80.327,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 74.60349996108562,
+            "preparationMs": 67.1902917092666,
+            "queryMs": 7.364708348177373,
+            "scoringMs": 0.04849990364164114
+          }
+        },
+        {
+          "case": 19,
+          "ms": 82.30237499999998,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 76.55487500596792,
+            "preparationMs": 67.14375002775341,
+            "queryMs": 9.357166709378362,
+            "scoringMs": 0.05395826883614063
+          }
+        },
+        {
+          "case": 20,
+          "ms": 0.03154199999994489,
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "timings": null
+        },
+        {
+          "case": 21,
+          "ms": 67.10224999999991,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 61.474958318285644,
+            "preparationMs": 56.171083357185125,
+            "queryMs": 5.257458309642971,
+            "scoringMs": 0.04641665145754814
+          }
+        },
+        {
+          "case": 22,
+          "ms": 66.77074999999991,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 61.03129161056131,
+            "preparationMs": 56.17029161658138,
+            "queryMs": 4.815916647203267,
+            "scoringMs": 0.04508334677666426
+          }
+        },
+        {
+          "case": 23,
+          "ms": 0.030917000000044936,
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "timings": null
+        },
+        {
+          "case": 24,
+          "ms": 75.04054099999985,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 69.06212493777275,
+            "preparationMs": 63.97495826240629,
+            "queryMs": 5.035625072196126,
+            "scoringMs": 0.05154160317033529
+          }
+        },
+        {
+          "case": 25,
+          "ms": 67.41429199999993,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 61.46012502722442,
+            "preparationMs": 56.25224998220801,
+            "queryMs": 5.161333363503218,
+            "scoringMs": 0.04654168151319027
+          }
+        },
+        {
+          "case": 26,
+          "ms": 65.73900000000003,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 60.08249998558313,
+            "preparationMs": 54.66725002042949,
+            "queryMs": 5.371624953113496,
+            "scoringMs": 0.043625012040138245
+          }
+        },
+        {
+          "case": 27,
+          "ms": 64.74966700000004,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 58.83962498046458,
+            "preparationMs": 54.8833750654012,
+            "queryMs": 3.913416643626988,
+            "scoringMs": 0.04283327143639326
+          }
+        },
+        {
+          "case": 28,
+          "ms": 65.99504200000001,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 60.282583348453045,
+            "preparationMs": 55.037250043824315,
+            "queryMs": 5.202875006943941,
+            "scoringMs": 0.042458297684788704
+          }
+        },
+        {
+          "case": 29,
+          "ms": 66.36908300000005,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 60.76170830056071,
+            "preparationMs": 56.17533333133906,
+            "queryMs": 4.543625051155686,
+            "scoringMs": 0.042749918065965176
+          }
+        },
+        {
+          "case": 30,
+          "ms": 67.29624999999987,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 61.32604170124978,
+            "preparationMs": 55.86304166354239,
+            "queryMs": 5.418375018052757,
+            "scoringMs": 0.044625019654631615
+          }
+        },
+        {
+          "case": 31,
+          "ms": 69.35899999999992,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 63.003749935887754,
+            "preparationMs": 57.510708342306316,
+            "queryMs": 5.443083238787949,
+            "scoringMs": 0.04995835479348898
+          }
+        },
+        {
+          "case": 32,
+          "ms": 67.07920800000011,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 61.201208271086216,
+            "preparationMs": 55.15320831909776,
+            "queryMs": 6.001208326779306,
+            "scoringMs": 0.0467916252091527
+          }
+        },
+        {
+          "case": 33,
+          "ms": 67.12804199999982,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 61.428666580468416,
+            "preparationMs": 54.773250012658536,
+            "queryMs": 6.612208322621882,
+            "scoringMs": 0.04320824518799782
+          }
+        },
+        {
+          "case": 34,
+          "ms": 66.9253749999998,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 61.186291626654565,
+            "preparationMs": 54.298499948345125,
+            "queryMs": 6.844833376817405,
+            "scoringMs": 0.04295830149203539
+          }
+        },
+        {
+          "case": 35,
+          "ms": 65.67508300000009,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 60.08625007234514,
+            "preparationMs": 54.49112504720688,
+            "queryMs": 5.553791648708284,
+            "scoringMs": 0.04133337642997503
+          }
+        },
+        {
+          "case": 36,
+          "ms": 66.22299999999996,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 60.46858325134963,
+            "preparationMs": 55.0591666251421,
+            "queryMs": 5.367166711948812,
+            "scoringMs": 0.04224991425871849
+          }
+        },
+        {
+          "case": 37,
+          "ms": 0.04554099999995742,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 38,
+          "ms": 75.14720899999975,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 69.0824167104438,
+            "preparationMs": 62.13570828549564,
+            "queryMs": 6.902750115841627,
+            "scoringMs": 0.04395830910652876
+          }
+        },
+        {
+          "case": 39,
+          "ms": 69.1002080000003,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 63.2371666142717,
+            "preparationMs": 56.255291565321386,
+            "queryMs": 6.932458374649286,
+            "scoringMs": 0.04941667430102825
+          }
+        }
+      ]
+    },
+    {
+      "repeat": 2,
+      "precomputed": false,
+      "mode": "hybrid",
+      "note": "Cache-cold classification in a fresh Node process; OS assets may already be warm. Latency excludes remote LLM generation.",
+      "cases": 40,
+      "exact": 20,
+      "calls": 33,
+      "firstPassP50Ms": 69.65579200000002,
+      "firstPassP95Ms": 88.55837500000001,
+      "embeddingP50Ms": 78.32,
+      "embeddingP95Ms": 88.55837500000001,
+      "cachedP50Ms": 0.011454200000025594,
+      "cachedP95Ms": 0.02557080000001406,
+      "nativePreparationP50Ms": 67.00979161541909,
+      "nativeQueryP50Ms": 6.092791678383946,
+      "nativeScoringP50Ms": 0.04737498238682747,
+      "nativeHelperP50Ms": 72.3146665841341,
+      "samples": [
+        {
+          "case": 0,
+          "ms": 88.55837500000001,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 81.2375417444855,
+            "preparationMs": 74.38016671221703,
+            "queryMs": 6.810666644014418,
+            "scoringMs": 0.04670838825404644
+          }
+        },
+        {
+          "case": 1,
+          "ms": 0.5028749999999889,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 2,
+          "ms": 79.91620800000001,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 73.6775416880846,
+            "preparationMs": 68.21933330502361,
+            "queryMs": 5.405458388850093,
+            "scoringMs": 0.052749994210898876
+          }
+        },
+        {
+          "case": 3,
+          "ms": 0.04775000000000773,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 4,
+          "ms": 78.32,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 72.3146665841341,
+            "preparationMs": 67.00979161541909,
+            "queryMs": 5.2588749676942825,
+            "scoringMs": 0.04600000102072954
+          }
+        },
+        {
+          "case": 5,
+          "ms": 80.24025,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 74.07945825252682,
+            "preparationMs": 67.93783325701952,
+            "queryMs": 6.090625072829425,
+            "scoringMs": 0.050999922677874565
+          }
+        },
+        {
+          "case": 6,
+          "ms": 0.1815000000000282,
+          "tier": "light",
+          "source": "edit-rule",
+          "timings": null
+        },
+        {
+          "case": 7,
+          "ms": 82.32795900000002,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 76.03508338797837,
+            "preparationMs": 68.35349998436868,
+            "queryMs": 7.6347916619852185,
+            "scoringMs": 0.046791741624474525
+          }
+        },
+        {
+          "case": 8,
+          "ms": 83.42420899999996,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 77.51500001177192,
+            "preparationMs": 70.34279161598533,
+            "queryMs": 7.1200833190232515,
+            "scoringMs": 0.05212507676333189
+          }
+        },
+        {
+          "case": 9,
+          "ms": 78.837084,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 73.07050004601479,
+            "preparationMs": 67.25358334369957,
+            "queryMs": 5.769333336502314,
+            "scoringMs": 0.04758336581289768
+          }
+        },
+        {
+          "case": 10,
+          "ms": 80.32987500000002,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 74.43058339413255,
+            "preparationMs": 67.0985416509211,
+            "queryMs": 7.28262506891042,
+            "scoringMs": 0.04941667430102825
+          }
+        },
+        {
+          "case": 11,
+          "ms": 80.94045800000004,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 75.08004165720195,
+            "preparationMs": 67.4029584042728,
+            "queryMs": 7.6296249171718955,
+            "scoringMs": 0.047458335757255554
+          }
+        },
+        {
+          "case": 12,
+          "ms": 80.34737499999994,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 74.58204170688987,
+            "preparationMs": 67.4530416727066,
+            "queryMs": 7.074875058606267,
+            "scoringMs": 0.0541249755769968
+          }
+        },
+        {
+          "case": 13,
+          "ms": 81.80995799999994,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 75.83562494255602,
+            "preparationMs": 68.07737494818866,
+            "queryMs": 7.7122083166614175,
+            "scoringMs": 0.046041677705943584
+          }
+        },
+        {
+          "case": 14,
+          "ms": 85.92979100000002,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 79.87845840398222,
+            "preparationMs": 69.76020836737007,
+            "queryMs": 10.065624956041574,
+            "scoringMs": 0.052625080570578575
+          }
+        },
+        {
+          "case": 15,
+          "ms": 90.32195899999999,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 83.95195833873004,
+            "preparationMs": 73.79699999000877,
+            "queryMs": 10.101041640155017,
+            "scoringMs": 0.05391670856624842
+          }
+        },
+        {
+          "case": 16,
+          "ms": 83.41270899999995,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 77.40625005681068,
+            "preparationMs": 68.18941666278988,
+            "queryMs": 9.167750016786158,
+            "scoringMs": 0.04908337723463774
+          }
+        },
+        {
+          "case": 17,
+          "ms": 0.0697499999998854,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 18,
+          "ms": 81.17425000000003,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 75.34912507981062,
+            "preparationMs": 67.75604165159166,
+            "queryMs": 7.542583392933011,
+            "scoringMs": 0.05050003528594971
+          }
+        },
+        {
+          "case": 19,
+          "ms": 83.58133399999997,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 77.62887491844594,
+            "preparationMs": 68.6334166675806,
+            "queryMs": 8.945208275690675,
+            "scoringMs": 0.05024997517466545
+          }
+        },
+        {
+          "case": 20,
+          "ms": 0.03491699999995035,
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "timings": null
+        },
+        {
+          "case": 21,
+          "ms": 67.33783399999993,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 61.56820827163756,
+            "preparationMs": 55.841333349235356,
+            "queryMs": 5.679499940015376,
+            "scoringMs": 0.04737498238682747
+          }
+        },
+        {
+          "case": 22,
+          "ms": 67.01037499999984,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 61.211374937556684,
+            "preparationMs": 56.093333289027214,
+            "queryMs": 5.071333376690745,
+            "scoringMs": 0.04670827183872461
+          }
+        },
+        {
+          "case": 23,
+          "ms": 0.035209000000122614,
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "timings": null
+        },
+        {
+          "case": 24,
+          "ms": 67.148459,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 61.47224991582334,
+            "preparationMs": 56.375499931164086,
+            "queryMs": 5.048833321779966,
+            "scoringMs": 0.0479166628792882
+          }
+        },
+        {
+          "case": 25,
+          "ms": 66.86175000000003,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 60.8572083292529,
+            "preparationMs": 55.647416738793254,
+            "queryMs": 5.1669583190232515,
+            "scoringMs": 0.04283327143639326
+          }
+        },
+        {
+          "case": 26,
+          "ms": 66.74295800000004,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 60.84308330900967,
+            "preparationMs": 55.41041668038815,
+            "queryMs": 5.388208315707743,
+            "scoringMs": 0.044458312913775444
+          }
+        },
+        {
+          "case": 27,
+          "ms": 65.37816700000008,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 59.43970836233348,
+            "preparationMs": 55.46220834366977,
+            "queryMs": 3.93241667188704,
+            "scoringMs": 0.04508334677666426
+          }
+        },
+        {
+          "case": 28,
+          "ms": 66.421292,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 60.66654168535024,
+            "preparationMs": 55.439833318814635,
+            "queryMs": 5.183416651561856,
+            "scoringMs": 0.04329171497374773
+          }
+        },
+        {
+          "case": 29,
+          "ms": 67.50308300000006,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 61.97379168588668,
+            "preparationMs": 57.278749998658895,
+            "queryMs": 4.652583389542997,
+            "scoringMs": 0.042458297684788704
+          }
+        },
+        {
+          "case": 30,
+          "ms": 67.98183300000005,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 62.01145832892507,
+            "preparationMs": 56.320583331398666,
+            "queryMs": 5.6475416058674455,
+            "scoringMs": 0.04333339165896177
+          }
+        },
+        {
+          "case": 31,
+          "ms": 71.00158299999998,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 65.06166665349156,
+            "preparationMs": 58.91720834188163,
+            "queryMs": 6.092791678383946,
+            "scoringMs": 0.05166663322597742
+          }
+        },
+        {
+          "case": 32,
+          "ms": 69.43079099999977,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 63.409208320081234,
+            "preparationMs": 57.36974999308586,
+            "queryMs": 5.9929166454821825,
+            "scoringMs": 0.04654168151319027
+          }
+        },
+        {
+          "case": 33,
+          "ms": 68.29525000000012,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 62.21720832400024,
+            "preparationMs": 55.60429161414504,
+            "queryMs": 6.568791694007814,
+            "scoringMs": 0.04412501584738493
+          }
+        },
+        {
+          "case": 34,
+          "ms": 69.65579200000002,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 63.6837916681543,
+            "preparationMs": 56.744583416730165,
+            "queryMs": 6.895124912261963,
+            "scoringMs": 0.04408333916217089
+          }
+        },
+        {
+          "case": 35,
+          "ms": 67.04266700000016,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 61.30366667639464,
+            "preparationMs": 55.57116668205708,
+            "queryMs": 5.686874967068434,
+            "scoringMs": 0.045625027269124985
+          }
+        },
+        {
+          "case": 36,
+          "ms": 69.11791699999958,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 63.37933335453272,
+            "preparationMs": 57.46708333026618,
+            "queryMs": 5.866125109605491,
+            "scoringMs": 0.04612491466104984
+          }
+        },
+        {
+          "case": 37,
+          "ms": 0.041625000000294676,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 38,
+          "ms": 71.87416699999994,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 65.94445835798979,
+            "preparationMs": 58.15904168412089,
+            "queryMs": 7.736500003375113,
+            "scoringMs": 0.04891667049378157
+          }
+        },
+        {
+          "case": 39,
+          "ms": 83.11895800000002,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 77.04870833549649,
+            "preparationMs": 68.65283334627748,
+            "queryMs": 8.33991658873856,
+            "scoringMs": 0.0559584004804492
+          }
+        }
+      ]
+    },
+    {
+      "repeat": 2,
+      "precomputed": true,
+      "mode": "hybrid",
+      "note": "Cache-cold classification in a fresh Node process; OS assets may already be warm. Latency excludes remote LLM generation.",
+      "cases": 40,
+      "exact": 20,
+      "calls": 33,
+      "firstPassP50Ms": 41.13904200000002,
+      "firstPassP95Ms": 47.71141700000004,
+      "embeddingP50Ms": 41.65429199999994,
+      "embeddingP95Ms": 47.71141700000004,
+      "cachedP50Ms": 0.011399999999980537,
+      "cachedP95Ms": 0.03664169999999558,
+      "nativePreparationP50Ms": 12.497625080868602,
+      "nativeQueryP50Ms": 7.920666714198887,
+      "nativeScoringP50Ms": 0.03383331932127476,
+      "nativeHelperP50Ms": 20.538041717372835,
+      "samples": [
+        {
+          "case": 0,
+          "ms": 43.503042,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.582999917678535,
+            "preparationMs": 11.930916574783623,
+            "queryMs": 8.60800000373274,
+            "scoringMs": 0.04408333916217089
+          }
+        },
+        {
+          "case": 1,
+          "ms": 0.509167000000005,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 2,
+          "ms": 38.962084000000004,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 17.698083305731416,
+            "preparationMs": 11.301541584543884,
+            "queryMs": 6.351416697725654,
+            "scoringMs": 0.0451250234618783
+          }
+        },
+        {
+          "case": 3,
+          "ms": 0.04287499999999511,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 4,
+          "ms": 40.48674999999999,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.555624923668802,
+            "preparationMs": 11.4471249980852,
+            "queryMs": 8.069749921560287,
+            "scoringMs": 0.03875000402331352
+          }
+        },
+        {
+          "case": 5,
+          "ms": 41.974041,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.538041717372835,
+            "preparationMs": 11.582958395592868,
+            "queryMs": 8.912833291105926,
+            "scoringMs": 0.04225003067404032
+          }
+        },
+        {
+          "case": 6,
+          "ms": 0.18291700000000333,
+          "tier": "light",
+          "source": "edit-rule",
+          "timings": null
+        },
+        {
+          "case": 7,
+          "ms": 50.23683399999999,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 26.54020837508142,
+            "preparationMs": 14.351166668348014,
+            "queryMs": 12.146375025622547,
+            "scoringMs": 0.04266668111085892
+          }
+        },
+        {
+          "case": 8,
+          "ms": 46.680916999999994,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 23.900916683487594,
+            "preparationMs": 13.256041682325304,
+            "queryMs": 10.602791677229106,
+            "scoringMs": 0.04208332393318415
+          }
+        },
+        {
+          "case": 9,
+          "ms": 42.381958,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.913291627541184,
+            "preparationMs": 11.638916563242674,
+            "queryMs": 7.235458353534341,
+            "scoringMs": 0.03891671076416969
+          }
+        },
+        {
+          "case": 10,
+          "ms": 43.152750000000026,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 22.459208383224905,
+            "preparationMs": 11.430833372287452,
+            "queryMs": 10.98899997305125,
+            "scoringMs": 0.039375037886202335
+          }
+        },
+        {
+          "case": 11,
+          "ms": 41.107709,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.33458335790783,
+            "preparationMs": 11.272500036284328,
+            "queryMs": 9.021958336234093,
+            "scoringMs": 0.04012498538941145
+          }
+        },
+        {
+          "case": 12,
+          "ms": 42.43120899999997,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 21.656624972820282,
+            "preparationMs": 11.077666655182838,
+            "queryMs": 10.540291666984558,
+            "scoringMs": 0.03866665065288544
+          }
+        },
+        {
+          "case": 13,
+          "ms": 45.94154199999997,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 23.849541670642793,
+            "preparationMs": 11.354666668921709,
+            "queryMs": 12.449291651137173,
+            "scoringMs": 0.04558335058391094
+          }
+        },
+        {
+          "case": 14,
+          "ms": 47.71141700000004,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 26.34941670112312,
+            "preparationMs": 12.036583386361599,
+            "queryMs": 14.260124997235835,
+            "scoringMs": 0.052708317525684834
+          }
+        },
+        {
+          "case": 15,
+          "ms": 45.96300000000008,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 25.582833332009614,
+            "preparationMs": 11.82749995496124,
+            "queryMs": 13.712333398871124,
+            "scoringMs": 0.04299997817724943
+          }
+        },
+        {
+          "case": 16,
+          "ms": 44.43700000000001,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 23.45270838122815,
+            "preparationMs": 12.356958352029324,
+            "queryMs": 11.056291637942195,
+            "scoringMs": 0.03945839125663042
+          }
+        },
+        {
+          "case": 17,
+          "ms": 0.06012500000008458,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 18,
+          "ms": 43.89033299999994,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 22.53916673362255,
+            "preparationMs": 11.673833359964192,
+            "queryMs": 10.820458293892443,
+            "scoringMs": 0.04487507976591587
+          }
+        },
+        {
+          "case": 19,
+          "ms": 46.366499999999974,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 24.897916708141565,
+            "preparationMs": 12.042416608892381,
+            "queryMs": 12.809291714802384,
+            "scoringMs": 0.046208384446799755
+          }
+        },
+        {
+          "case": 20,
+          "ms": 0.03329099999996288,
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "timings": null
+        },
+        {
+          "case": 21,
+          "ms": 42.63824999999997,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 21.53466665185988,
+            "preparationMs": 13.580458238720894,
+            "queryMs": 7.920666714198887,
+            "scoringMs": 0.033541698940098286
+          }
+        },
+        {
+          "case": 22,
+          "ms": 43.22283299999992,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 21.99558331631124,
+            "preparationMs": 14.141666702926159,
+            "queryMs": 7.821124978363514,
+            "scoringMs": 0.032791635021567345
+          }
+        },
+        {
+          "case": 23,
+          "ms": 0.0354579999999487,
+          "tier": "trivial",
+          "source": "lookup-rule",
+          "timings": null
+        },
+        {
+          "case": 24,
+          "ms": 43.129166000000055,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 21.708249929361045,
+            "preparationMs": 14.137291582301259,
+            "queryMs": 7.538416772149503,
+            "scoringMs": 0.03254157491028309
+          }
+        },
+        {
+          "case": 25,
+          "ms": 41.65429199999994,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.242749946191907,
+            "preparationMs": 13.98704166058451,
+            "queryMs": 6.222291616722941,
+            "scoringMs": 0.03341666888445616
+          }
+        },
+        {
+          "case": 26,
+          "ms": 41.42908399999999,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.473250071518123,
+            "preparationMs": 12.825375073589385,
+            "queryMs": 7.616083254106343,
+            "scoringMs": 0.0317917438223958
+          }
+        },
+        {
+          "case": 27,
+          "ms": 38.6909169999999,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 17.91058329399675,
+            "preparationMs": 12.88754167035222,
+            "queryMs": 4.990375018678606,
+            "scoringMs": 0.03266660496592522
+          }
+        },
+        {
+          "case": 28,
+          "ms": 39.461124999999925,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.032208365388215,
+            "preparationMs": 12.572083389386535,
+            "queryMs": 6.42720831092447,
+            "scoringMs": 0.03291666507720947
+          }
+        },
+        {
+          "case": 29,
+          "ms": 38.96158300000002,
+          "tier": "light",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 18.457416677847505,
+            "preparationMs": 12.913000071421266,
+            "queryMs": 5.510583287104964,
+            "scoringMs": 0.03383331932127476
+          }
+        },
+        {
+          "case": 30,
+          "ms": 39.91512499999999,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.238791661337018,
+            "preparationMs": 12.73054163902998,
+            "queryMs": 6.474666763097048,
+            "scoringMs": 0.0335832592099905
+          }
+        },
+        {
+          "case": 31,
+          "ms": 40.568915999999945,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.953625043854117,
+            "preparationMs": 12.754916679114103,
+            "queryMs": 7.167333387769759,
+            "scoringMs": 0.031374976970255375
+          }
+        },
+        {
+          "case": 32,
+          "ms": 40.49241699999993,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.84491676557809,
+            "preparationMs": 12.497625080868602,
+            "queryMs": 7.315249997191131,
+            "scoringMs": 0.03204168751835823
+          }
+        },
+        {
+          "case": 33,
+          "ms": 40.467124999999896,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.024250028654933,
+            "preparationMs": 12.287875055335462,
+            "queryMs": 7.704791612923145,
+            "scoringMs": 0.03158336039632559
+          }
+        },
+        {
+          "case": 34,
+          "ms": 41.13904200000002,
+          "tier": "standard",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.639708265662193,
+            "preparationMs": 12.539166607894003,
+            "queryMs": 8.069375064224005,
+            "scoringMs": 0.03116659354418516
+          }
+        },
+        {
+          "case": 35,
+          "ms": 39.563249999999925,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.20558325946331,
+            "preparationMs": 12.526999926194549,
+            "queryMs": 6.646999972872436,
+            "scoringMs": 0.03158336039632559
+          }
+        },
+        {
+          "case": 36,
+          "ms": 39.877792,
+          "tier": "trivial",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 19.23379162326455,
+            "preparationMs": 12.84099998883903,
+            "queryMs": 6.362291635014117,
+            "scoringMs": 0.030499999411404133
+          }
+        },
+        {
+          "case": 37,
+          "ms": 0.042625000000043656,
+          "tier": "complex",
+          "source": "risk-rule",
+          "timings": null
+        },
+        {
+          "case": 38,
+          "ms": 40.90158300000007,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.26249992195517,
+            "preparationMs": 12.316624983213842,
+            "queryMs": 7.91245826985687,
+            "scoringMs": 0.03341666888445616
+          }
+        },
+        {
+          "case": 39,
+          "ms": 41.29383399999983,
+          "tier": "complex",
+          "source": "apple-embedding",
+          "timings": {
+            "helperMs": 20.60512499883771,
+            "preparationMs": 12.523583369329572,
+            "queryMs": 8.049000054597855,
+            "scoringMs": 0.03254157491028309
+          }
+        }
+      ]
+    }
+  ]
+}

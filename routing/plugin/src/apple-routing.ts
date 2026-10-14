@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 export type Tier = 'trivial' | 'light' | 'standard' | 'complex'
-export type Classification = { tier: Tier; source: string; score?: number; margin?: number; language?: string; revision?: number; engine?: string }
+export type Classification = { tier: Tier; source: string; score?: number; margin?: number; language?: string; revision?: number; engine?: string; baseline?: Tier; arbitration?: string; timings?: Record<string, number> }
 const ranks: Tier[] = ['trivial', 'light', 'standard', 'complex']
 const cache = new Map<string, Classification>()
 let active = 0
@@ -12,7 +12,7 @@ function rule(text: string): Classification | undefined {
   if (/\b(consensus|preuve|proof|démontre|demontrer|prouve|cohérence|cryptograph\w*|chiffrement|cohérence|coherence|invariants?|deadlock|interblocage|authentification|authentication|sécurité|securite|security|distributed|distribué\w*|concurrence|concurrency)\b/iu.test(text)
       || /(?:python|javascript|typescript).{0,35}(?:rust)/iu.test(text)) return { tier: 'complex', source: 'risk-rule' }
   const compound = /(?:\b(?:puis|then|ensuite|implement|implémente|bug|cause|correctif|diagnostic|pourquoi|why|tests?)\b)/iu.test(text)
-  if (!compound && /^(?:liste|list|affiche|show|trouve|find|cherche|search|repère|repere|retrouve|read|lis)\b/iu.test(text.trim())) return { tier: 'trivial', source: 'lookup-rule' }
+  if (!compound && /^(?:liste|list|affiche|show|trouve|find|cherche|search|repère|repere|retrouve|read|lis|locate|enumerate|répertorie)\b/iu.test(text.trim())) return { tier: 'trivial', source: 'lookup-rule' }
   if (!compound && /^(?:renomme|rename|corrige|change|modifie|remove|supprime)\b/iu.test(text.trim())
       && /\b(couleur|color|libellé|label|titre|title|typo|faute|bouton|button|variable)\b/iu.test(text)) return { tier: 'light', source: 'edit-rule' }
   return undefined
@@ -57,7 +57,7 @@ export function classifyLocal(description: string, prompt: string, executable?: 
         if (code !== 0 || result?.available !== true || !ranks.includes(result.tier)
             || !Number.isFinite(result.score) || !Number.isFinite(result.margin)
             || !['fr', 'en'].includes(result.language) || !Number.isInteger(result.revision)) throw Error()
-        finish({ tier: result.ambiguous ? 'standard' : result.tier, source: 'apple-embedding', score: result.score, margin: result.margin, language: result.language, revision: result.revision, engine: result.engine })
+        finish({ tier: result.ambiguous ? 'standard' : result.tier, source: 'apple-embedding', score: result.score, margin: result.margin, language: result.language, revision: result.revision, engine: result.engine, timings: result.timings })
       } catch { finish({ tier: 'standard', source: 'fallback:invalid-output' }) }
     })
     child.stdin.end(JSON.stringify({ texts: [text], engine }))

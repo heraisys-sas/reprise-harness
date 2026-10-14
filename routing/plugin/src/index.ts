@@ -69,6 +69,7 @@ export type AutoTierPolicy = Partial<Record<'trivial' | 'light' | 'standard' | '
  */
 export interface ModelPickerConfig {
   appleEmbedding?: boolean
+  appleHybrid?: boolean
   appleEmbeddingEngine?: 'sentence' | 'contextual'
   appleHelperPath?: string
   /** After a failed foreground run, retry once on the next auto tier (default true). */
@@ -119,6 +120,7 @@ function unwrapTiers<T>(raw: Partial<Record<TierKey, T>> | undefined): Partial<R
 
 export function resolveConfig(config: ModelPickerConfig): ResolvedModelPickerConfig {
   return {
+    appleHybrid: live(config.appleHybrid) ?? true,
     appleEmbedding: live(config.appleEmbedding) ?? false,
     appleEmbeddingEngine: live(config.appleEmbeddingEngine) ?? 'sentence',
     appleHelperPath: live(config.appleHelperPath) ?? '',

@@ -2,6 +2,8 @@
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 NODE=${ROUTER_NODE:-/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runtime/dependencies/node/bin/node}
-swiftc -module-cache-path "${TMPDIR:-/tmp}/reprise-routing-swift-cache" "$ROOT/plugin/native/RouteEmbedding.swift" -o "$ROOT/plugin/native/RouteEmbedding"
+swiftc -O -module-cache-path "${TMPDIR:-/tmp}/reprise-routing-swift-cache" "$ROOT/plugin/native/RouteEmbedding.swift" -o "$ROOT/plugin/native/RouteEmbedding"
 "$NODE" "$ROOT/plugin/node_modules/typescript/bin/tsc" -p "$ROOT/plugin/tsconfig.build.json"
 "$NODE" "$ROOT/plugin/node_modules/typescript/bin/tsc" -p "$ROOT/plugin/tsconfig.json" --noEmit
+
+printf '%s' '{"texts":["This is a short sentence.","Ceci est une courte phrase française."],"prepare":true}' | "$ROOT/plugin/native/RouteEmbedding" "$ROOT/plugin/native/examples.json" > /dev/null

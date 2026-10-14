@@ -11,14 +11,14 @@ Le helper propose deux moteurs :
 
 Les deux moteurs comparent la demande à des exemples annotés. Ils ne mesurent pas directement la difficulté ni la probabilité de succès. Le score est la moyenne des deux meilleurs cosinus par catégorie ; score < 0,40 ou écart < 0,025 → niveau `standard`. Ces seuils sont heuristiques, non calibrés. La reconnaissance linguistique accepte FR/EN seulement ; une langue non reconnue ou une erreur du helper produit un repli `standard`.
 
-Le plugin ne lance aucun LLM de routage, ne modifie pas le modèle principal et ne route que ses délégations. Aucun serveur, service MCP ou processus persistant. Prompts transmis par stdin, aucun stockage sur disque. Cache borné en mémoire (128 décisions), clé par empreinte du texte, du chemin et du moteur ; deux helpers simultanés maximum, délai de 2 secondes. Un changement de binaire ou d’exemples nécessite de redémarrer le profil pour vider le cache. Le texte est limité à 4 000 caractères et le moteur contextuel peut tronquer à 256 sous-mots : classifier des consignes courtes, pas des dépôts ou transcriptions complets.
+Le plugin ne lance aucun LLM de routage, ne modifie pas le modèle principal et ne route que ses délégations. Aucun serveur, service MCP ou processus persistant. Prompts transmis par stdin, aucun stockage sur disque. Cache borné en mémoire (128 décisions), clé par empreinte du texte, du chemin et du moteur ; deux helpers simultanés maximum, délai de 2 secondes. Un changement de binaire ou d’exemples nécessite de redémarrer le profil pour vider le cache. Les vecteurs des exemples fixes sont préparés à la compilation dans un fichier local ne contenant aucun prompt utilisateur, validé par empreinte du catalogue, révision du modèle et dimensions ; un cache absent ou invalide est recalculé. Le texte est limité à 4 000 caractères et le moteur contextuel peut tronquer à 256 sous-mots : classifier des consignes courtes, pas des dépôts ou transcriptions complets.
 
 En mode Apple, `autoProviderOrder` est une **liste autorisée stricte**. Les quatre `autoTierPicks` doivent être explicites ; un candidat absent provoque une erreur au lieu d’une sélection heuristique. Les modèles explicites ou hérités sont également contrôlés. Escalade automatique et changement automatique de fournisseur sont forcés désactivés ; `subagent_recommend` est refusé pour éviter son appel LLM. Les permissions, limites de profondeur et concurrence des agents restent celles de Harness. Les autres outils natifs de délégation ne sont pas interceptés : il ne s’agit pas d’une barrière globale de sécurité du Harness.
 
 ## Résultats locaux — 15 octobre 2026
 
 - Compilation Swift et contrôle TypeScript réussis.
-- Suite du plugin : **149 tests réussis**, dont les régressions FR, contrôle des routes explicites/héritées, annulation, timeout, cache et utilisation du véritable modèle Apple de phrases.
+- Suite du plugin : **157 tests réussis**, dont les régressions FR, contrôle des routes explicites/héritées, annulation, timeout, cache et utilisation du véritable modèle Apple de phrases.
 - Reprise : **22 tests réussis**.
 - Test sur le Harness installé avec fournisseur HTTP simulé limité au loopback : `routing-flash → routing-expert → routing-flash`, décision `apple-embedding`, retour `SMOKE_OK`. Aucun appel de modèle externe ; la qualité d’un véritable modèle distant n’est pas évaluée.
 - Jeu diagnostique synthétique de 20 demandes : **15/20** classements attendus avec le moteur de phrases, **14/20** avec le contextuel. Latences médianes des appels au helper : **79 ms / 231 ms** sur ce Mac, mesures ponctuelles non garanties. Répétition en cache sous la milliseconde lors du test.
@@ -80,3 +80,37 @@ Les 20 demandes du même jeu ont été traduites en anglais en conservant les é
 La traduction retire un désavantage linguistique de l’amont, mais ne crée pas un jeu indépendant : il reste petit, subjectivement annoté et contient des demandes proches. Ce résultat ne suffit pas à établir une supériorité générale ou une rentabilité. Les règles locales seules ne constituent pas une traduction complète des heuristiques amont : leur comparaison ne prouve donc pas que les embeddings sont nécessaires.
 
 Données : `dataset-english.json`, `evaluation-baseline-english.json`, `comparison-english.json`. Pour reproduire, appliquer `baseline-tests.patch` à la copie amont, exécuter son test `baseline comparison` en définissant `ROUTING_DATASET` vers `dataset-english.json` et `ROUTING_BASELINE_OUTPUT` vers `evaluation-baseline-english.json`, puis lancer `node routing/compare-english.mjs`. L’accès au service Apple XPC doit être disponible pour le moteur contextuel. Aucun appel LLM externe.
+
+## Combinaison et validation sur de nouvelles demandes
+
+`appleHybrid: true` (défaut lorsque le routage Apple est activé) utilise l’heuristique amont comme référence. Les règles explicites peuvent la corriger ; sinon, une correspondance Apple n’est retenue qu’avec une marge d’au moins 0,04. Une classification amont complexe n’est pas rétrogradée par les seuls embeddings. Les traductions simples disposent d’un chemin rapide. En cas de panne/ambiguïté, la référence amont est conservée. `appleHybrid: false` permet de comparer la version locale précédente.
+
+Le jeu `dataset-holdout.json` a été rédigé par Astra sans lire les classificateurs ni les jeux existants pendant cette sous-tâche, avec cinq exemples par niveau et par langue. L’agent avait une exposition antérieure au sujet ; les étiquettes restent subjectives. Elles ont été fixées avant l’exécution, et la politique n’a pas été ajustée après observation de ces résultats.
+
+Sur ces **40 nouvelles demandes** : amont **19/40**, local seul **16/40**, hybride **20/40**. Français : amont 7/20 et hybride 7/20 ; anglais : 12/20 et 13/20. Sur l’ancien jeu de 20 demandes anglaises, l’hybride reste à 17/20. Le potentiel théorique de 19/20 obtenu en sélectionnant après coup le meilleur des deux systèmes n’est donc pas atteint. **Le bénéfice de l’hybridation est trop faible pour justifier une activation automatique générale.**
+
+### Latence et optimisation
+
+Mesures locales sans génération LLM, processus Node neuf par variante ; les assets Apple peuvent déjà être chauds dans le système. Les requêtes ont été rejouées avec leur cache de décisions vide, puis répétées en mémoire. Trois passages alternent prototypes pré-calculés et calculés à chaque appel. Les médianes des statistiques de passage sont :
+
+| Mode hybride | Médiane | p95 | Répétition en cache, médiane |
+| --- | ---: | ---: | ---: |
+| Sans prototypes pré-calculés, Swift optimisé | 69,1 ms | 88,6 ms | 0,012 ms |
+| Avec prototypes pré-calculés, Swift optimisé | 40,2 ms | 44,8 ms | 0,011 ms |
+
+L’heuristique amont seule est d’environ 0,01 ms médian dans ce test. Le surcoût observé de l’hybride pré-calculé est donc proche de 40 ms médian sur ce jeu (33 helpers sur 40 cas). Les cas résolus par règles ne lancent aucun helper. Ces durées ne sont pas des garanties ni des mesures du premier démarrage du Mac ; 40 cas et trois passages donnent une indication locale seulement.
+
+Les composants natifs mesurés avec pré-calcul sont d’environ 12,3 ms de préparation, 7,5 ms d’extraction du vecteur et 0,036 ms de comparaison. Les médianes de composants ne s’additionnent pas exactement ; lancement du processus, chargement des frameworks, sérialisation et transport expliquent le reste. Le passage de Swift non optimisé à `swiftc -O` a aussi réduit la comparaison d’environ 3,1 à 0,04 ms sur un passage initial ; ce contraste n’est pas un benchmark de Rust.
+
+Rust n’est pas installé sur le poste et aucun portage n’a été réalisé. Remplacer uniquement nos calculs de similarité ne peut supprimer qu’une fraction de milliseconde mesurée. Les API NaturalLanguage restent natives Apple ; un pont Rust ajouterait de l’interopérabilité et de la maintenance, sans gain démontré sur leur initialisation. On privilégie donc ici Swift optimisé et les prototypes pré-calculés. Un worker persistant pourrait réduire d’autres coûts, mais n’est pas implémenté afin de ne pas ajouter un service résident pour un gain de classement encore insuffisant.
+
+Reproduction après `./routing/build` :
+
+```sh
+node routing/benchmark-hybrid.mjs upstream routing/dataset-holdout.json
+node routing/benchmark-hybrid.mjs local routing/dataset-holdout.json
+node routing/benchmark-hybrid.mjs hybrid routing/dataset-holdout.json
+python3 routing/test_prototypes.py -q
+```
+
+`benchmark-*.json` et `latency-repetitions.json` conservent les décisions, durées et contre-exemples. Le test de prototypes vérifie l’équivalence, l’absence du texte utilisateur dans le cache, ainsi que les révisions, empreintes et données corrompues. Aucun nouveau fournisseur, LLM de décision, serveur ou agent résident.

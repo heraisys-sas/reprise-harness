@@ -1,0 +1,750 @@
+{
+  "mode": "local",
+  "note": "Cache-cold classification in a fresh Node process; OS assets may already be warm. Latency excludes remote LLM generation.",
+  "cases": 40,
+  "exact": 16,
+  "calls": 33,
+  "firstPassP50Ms": 67.61116700000002,
+  "firstPassP95Ms": 95.123875,
+  "embeddingP50Ms": 68.44866700000011,
+  "embeddingP95Ms": 95.123875,
+  "cachedP50Ms": 0.005025000000023283,
+  "cachedP95Ms": 0.010391699999991033,
+  "nativePreparationP50Ms": 57.17441672459245,
+  "nativeQueryP50Ms": 6.459583295509219,
+  "nativeScoringP50Ms": 0.04225003067404032,
+  "nativeHelperP50Ms": 62.54850002005696,
+  "rows": [
+    {
+      "prompt": "Dans le README, retrouve la commande documentée pour lancer les tests de sécurité et recopie-la sans l’exécuter.",
+      "expected": "trivial",
+      "language": "fr",
+      "rationale": "Extraction d’une information existante ; le thème de sécurité n’exige ici aucune analyse.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.9196749223116446,
+      "margin": 0.008704423337083989,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 98.87462493497878,
+        "preparationMs": 92.04637503717095,
+        "queryMs": 6.77316659130156,
+        "scoringMs": 0.05508330650627613
+      },
+      "ms": 106.584208,
+      "correct": false
+    },
+    {
+      "prompt": "Quel fichier déclare le délai d’expiration des jetons d’authentification ? Donne seulement son chemin et la valeur par défaut.",
+      "expected": "trivial",
+      "language": "fr",
+      "rationale": "Recherche ciblée d’une déclaration sans jugement sur sa pertinence ni modification.",
+      "tier": "complex",
+      "source": "risk-rule",
+      "ms": 0.2723749999999967,
+      "correct": false
+    },
+    {
+      "prompt": "Affiche les noms des trois derniers commits, puis indique lequel touche le dossier des migrations.",
+      "expected": "trivial",
+      "language": "fr",
+      "rationale": "Consultation composée de deux vérifications Git bornées.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.9435149778757776,
+      "margin": 0.02044002808720735,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 74.70033341087401,
+        "preparationMs": 69.12258337251842,
+        "queryMs": 5.53058332297951,
+        "scoringMs": 0.04716671537607908
+      },
+      "ms": 80.94829200000001,
+      "correct": false
+    },
+    {
+      "prompt": "La documentation mentionne-t-elle un mode consensus pour le cluster ? Cite le titre de la section correspondante, sans évaluer le protocole.",
+      "expected": "trivial",
+      "language": "fr",
+      "rationale": "Repérage documentaire ; aucune expertise sur le consensus n’est nécessaire au livrable.",
+      "tier": "complex",
+      "source": "risk-rule",
+      "ms": 0.008874999999989086,
+      "correct": false
+    },
+    {
+      "prompt": "Ouvre le manifeste du paquet et donne les versions déclarées de Python et du client PostgreSQL.",
+      "expected": "trivial",
+      "language": "fr",
+      "rationale": "Lecture de deux valeurs explicitement déclarées.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.9208901582795738,
+      "margin": 0.0059976878547783885,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 76.70033338945359,
+        "preparationMs": 69.73087508231401,
+        "queryMs": 6.924541667103767,
+        "scoringMs": 0.044916640035808086
+      },
+      "ms": 82.70024999999998,
+      "correct": false
+    },
+    {
+      "prompt": "Dans le pied de page, remplace exactement « © 2025 Atelier » par « © 2026 Atelier ».",
+      "expected": "light",
+      "language": "fr",
+      "rationale": "Substitution textuelle locale entièrement spécifiée.",
+      "tier": "complex",
+      "source": "apple-embedding",
+      "score": 0.8335930066303221,
+      "margin": 0.034867337118637876,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 76.30037504713982,
+        "preparationMs": 69.8147916700691,
+        "queryMs": 6.443333346396685,
+        "scoringMs": 0.04225003067404032
+      },
+      "ms": 82.24400000000003,
+      "correct": false
+    },
+    {
+      "prompt": "Renomme la variable locale tmp en formattedDate dans la fonction formatReceipt et actualise ses références dans cette fonction.",
+      "expected": "light",
+      "language": "fr",
+      "rationale": "Renommage mécanique dans un périmètre explicitement borné.",
+      "tier": "light",
+      "source": "edit-rule",
+      "ms": 0.1462919999999599,
+      "correct": true
+    },
+    {
+      "prompt": "Dans les traductions françaises, corrige « Connexion échouer » en « Connexion échouée », puis retire l’espace final de cette même chaîne.",
+      "expected": "light",
+      "language": "fr",
+      "rationale": "Deux opérations mécaniques sur une seule chaîne, sans changement de comportement.",
+      "tier": "complex",
+      "source": "apple-embedding",
+      "score": 0.9177298768526707,
+      "margin": 0.026966441228090554,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 77.73204159457237,
+        "preparationMs": 69.84062492847443,
+        "queryMs": 7.838958408683538,
+        "scoringMs": 0.05245825741440058
+      },
+      "ms": 83.68187499999999,
+      "correct": false
+    },
+    {
+      "prompt": "Dans l’exemple JSON du guide d’installation, remplace le port 8080 par 8081 ; ne touche pas à la configuration exécutée.",
+      "expected": "light",
+      "language": "fr",
+      "rationale": "Édition documentaire localisée avec valeur de remplacement fournie.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.8913480779468395,
+      "margin": 0.011807210158647163,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 76.4517083298415,
+        "preparationMs": 69.00704163126647,
+        "queryMs": 7.397333276458085,
+        "scoringMs": 0.04733342211693525
+      },
+      "ms": 82.44379199999997,
+      "correct": false
+    },
+    {
+      "prompt": "Trie alphabétiquement les douze noms de contributeurs de la section Remerciements, en conservant chaque ligne telle quelle.",
+      "expected": "light",
+      "language": "fr",
+      "rationale": "Réorganisation déterministe d’un petit bloc de texte.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.9411273161600423,
+      "margin": 0.011710924605931594,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 74.64341667946428,
+        "preparationMs": 68.56766669079661,
+        "queryMs": 6.029416690580547,
+        "scoringMs": 0.046333298087120056
+      },
+      "ms": 80.17154099999993,
+      "correct": false
+    },
+    {
+      "prompt": "Ajoute au tableau des commandes un filtre par statut, en réutilisant les composants existants, et teste la remise à zéro du filtre.",
+      "expected": "standard",
+      "language": "fr",
+      "rationale": "Fonctionnalité d’interface courante avec gestion d’état et test ciblé.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.9170760817906258,
+      "margin": 0.018191068110155584,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 77.0953333703801,
+        "preparationMs": 69.63775004260242,
+        "queryMs": 7.393958396278322,
+        "scoringMs": 0.06362493149936199
+      },
+      "ms": 82.82520799999998,
+      "correct": true
+    },
+    {
+      "prompt": "Repère le lecteur CSV, puis ajoute un message d’erreur compréhensible lorsque la colonne obligatoire email manque. Couvre ce cas dans les tests.",
+      "expected": "standard",
+      "language": "fr",
+      "rationale": "La consultation initiale débouche sur une validation fonctionnelle et son test.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.9065668145750585,
+      "margin": 0.003567279487035502,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 83.29466672148556,
+        "preparationMs": 70.21808333229274,
+        "queryMs": 13.022875064052641,
+        "scoringMs": 0.053708325140178204
+      },
+      "ms": 88.90937499999995,
+      "correct": true
+    },
+    {
+      "prompt": "Configure la CI existante pour exécuter le linter et les tests unitaires à chaque pull request, en reprenant les commandes déjà documentées.",
+      "expected": "standard",
+      "language": "fr",
+      "rationale": "Configuration usuelle d’un pipeline à partir de commandes connues.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.9275609299626963,
+      "margin": 0.00607260694449363,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 77.44179165456444,
+        "preparationMs": 70.0573333306238,
+        "queryMs": 7.329916697926819,
+        "scoringMs": 0.0545416260138154
+      },
+      "ms": 83.36691700000006,
+      "correct": true
+    },
+    {
+      "prompt": "Le formulaire accepte une quantité négative : corrige la validation côté serveur et ajoute des tests pour zéro, une valeur positive et une valeur négative.",
+      "expected": "standard",
+      "language": "fr",
+      "rationale": "Correction métier locale avec critères d’acceptation explicites.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.8999904499744786,
+      "margin": 0.013975181248722324,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 78.32104165572673,
+        "preparationMs": 70.39274997077882,
+        "queryMs": 7.868375047110021,
+        "scoringMs": 0.05991663783788681
+      },
+      "ms": 84.08566700000006,
+      "correct": true
+    },
+    {
+      "prompt": "Ajoute une option --output à l’outil d’export : sans option, il écrit sur stdout ; avec un chemin, il écrit dans ce fichier. Teste les deux comportements.",
+      "expected": "standard",
+      "language": "fr",
+      "rationale": "Extension CLI conventionnelle impliquant arguments, sortie et tests.",
+      "tier": "complex",
+      "source": "apple-embedding",
+      "score": 0.8965208883880058,
+      "margin": 0.03410537974765837,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 84.70266673248261,
+        "preparationMs": 74.60458332207054,
+        "queryMs": 10.042125009931624,
+        "scoringMs": 0.0559584004804492
+      },
+      "ms": 90.2232909999999,
+      "correct": false
+    },
+    {
+      "prompt": "Conçois le mécanisme qui empêche de débiter deux fois un paiement lorsque le client réessaie après une coupure, y compris si le serveur tombe entre le débit et l’enregistrement local.",
+      "expected": "complex",
+      "language": "fr",
+      "rationale": "Conception de garanties sous panne à travers plusieurs effets externes.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.8957826596762293,
+      "margin": 0.004075985607421617,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 82.6670000096783,
+        "preparationMs": 71.66083331685513,
+        "queryMs": 10.958875063806772,
+        "scoringMs": 0.047291629016399384
+      },
+      "ms": 88.53820900000005,
+      "correct": false
+    },
+    {
+      "prompt": "Étudie les accès entre organisations dans notre API multi-tenant et propose une politique qui empêche les fuites via les exports, les caches et les tâches asynchrones.",
+      "expected": "complex",
+      "language": "fr",
+      "rationale": "Analyse de sécurité transversale portant sur plusieurs frontières de confiance.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.9218949669104477,
+      "margin": 0.006722799213268571,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 89.60916672367603,
+        "preparationMs": 80.27949999086559,
+        "queryMs": 9.274750016629696,
+        "scoringMs": 0.05491671618074179
+      },
+      "ms": 95.123875,
+      "correct": false
+    },
+    {
+      "prompt": "Pars du parseur Python actuel et prépare sa migration en Rust en conservant les erreurs publiques, les positions Unicode, le format sérialisé et les appels des extensions tierces.",
+      "expected": "complex",
+      "language": "fr",
+      "rationale": "Migration impliquant plusieurs contrats de compatibilité indépendants.",
+      "tier": "complex",
+      "source": "risk-rule",
+      "ms": 0.01033400000005713,
+      "correct": true
+    },
+    {
+      "prompt": "Propose un algorithme de rapprochement de millions d’événements désordonnés avec une mémoire bornée, puis établis ses limites d’exactitude et sa complexité.",
+      "expected": "complex",
+      "language": "fr",
+      "rationale": "Choix algorithmique sous contraintes avec argumentation formelle des limites.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.8981335798758936,
+      "margin": 0.01461140877721312,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 76.89108338672668,
+        "preparationMs": 69.33654169552028,
+        "queryMs": 7.50537496060133,
+        "scoringMs": 0.04916673060506582
+      },
+      "ms": 83.41362499999991,
+      "correct": false
+    },
+    {
+      "prompt": "Lis le schéma actuel, puis conçois le passage sans interruption d’une base unique à des partitions par client, avec retour arrière et maintien des références croisées.",
+      "expected": "complex",
+      "language": "fr",
+      "rationale": "La lecture prépare une migration architecturale combinant disponibilité, intégrité et réversibilité.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.9291885080630795,
+      "margin": 0.010710588458143544,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 77.1576666738838,
+        "preparationMs": 68.40904161799699,
+        "queryMs": 8.691125083714724,
+        "scoringMs": 0.05749997217208147
+      },
+      "ms": 82.97608300000002,
+      "correct": false
+    },
+    {
+      "prompt": "Find the documented command for rotating encryption keys and quote it without running anything.",
+      "expected": "trivial",
+      "language": "en",
+      "rationale": "Retrieval of an existing command; no security judgment or execution is requested.",
+      "tier": "trivial",
+      "source": "lookup-rule",
+      "ms": 0.011999999999943611,
+      "correct": true
+    },
+    {
+      "prompt": "Which source file defines the default retry count for the replication client? Return the path and the declared number.",
+      "expected": "trivial",
+      "language": "en",
+      "rationale": "Bounded lookup of a named configuration value.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.5663599982573895,
+      "margin": 0.03793959030803751,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 61.29775010049343,
+        "preparationMs": 56.13962502684444,
+        "queryMs": 5.116458400152624,
+        "scoringMs": 0.04166667349636555
+      },
+      "ms": 67.02670899999998,
+      "correct": false
+    },
+    {
+      "prompt": "List the filenames in the architecture decisions folder, then identify the one whose title mentions leader election.",
+      "expected": "trivial",
+      "language": "en",
+      "rationale": "Two simple inspection steps without evaluating the architecture.",
+      "tier": "trivial",
+      "source": "apple-embedding",
+      "score": 0.6150501377948363,
+      "margin": 0.06909688755372545,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 59.72716666292399,
+        "preparationMs": 54.985458380542696,
+        "queryMs": 4.704083316028118,
+        "scoringMs": 0.037624966353178024
+      },
+      "ms": 65.27495799999997,
+      "correct": true
+    },
+    {
+      "prompt": "Read the existing benchmark summary and report the recorded median latency for the small dataset. Do not rerun the benchmark.",
+      "expected": "trivial",
+      "language": "en",
+      "rationale": "Extraction of an explicitly reported measurement.",
+      "tier": "trivial",
+      "source": "lookup-rule",
+      "ms": 0.01191700000003948,
+      "correct": true
+    },
+    {
+      "prompt": "Locate the test named rejects_cross_tenant_access and tell me which module contains it, without assessing whether it is sufficient.",
+      "expected": "trivial",
+      "language": "en",
+      "rationale": "Finding a test is a lookup even though its subject is access control.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.526447501682931,
+      "margin": 0.03660606071473549,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 59.888499905355275,
+        "preparationMs": 54.836083319969475,
+        "queryMs": 5.01241663005203,
+        "scoringMs": 0.03999995533376932
+      },
+      "ms": 65.45020799999998,
+      "correct": false
+    },
+    {
+      "prompt": "Change the settings page heading from “Account preferences” to “Account settings” in the English translation file.",
+      "expected": "light",
+      "language": "en",
+      "rationale": "Single exact text replacement in a specified location.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.5079755948580686,
+      "margin": 0.021084588807336213,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 61.45733327139169,
+        "preparationMs": 56.23045831453055,
+        "queryMs": 5.188041599467397,
+        "scoringMs": 0.03883335739374161
+      },
+      "ms": 67.3114579999999,
+      "correct": false
+    },
+    {
+      "prompt": "In the README installation example, rename demo-project to sample-project in the directory creation and cd commands.",
+      "expected": "light",
+      "language": "en",
+      "rationale": "Two mechanically linked documentation substitutions.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.5260174284589019,
+      "margin": 0.024560975533153284,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 62.545416643843055,
+        "preparationMs": 57.12287500500679,
+        "queryMs": 5.382083239965141,
+        "scoringMs": 0.04045839887112379
+      },
+      "ms": 68.44866700000011,
+      "correct": false
+    },
+    {
+      "prompt": "Remove the duplicate import of Decimal from invoice_format.py and leave all runtime logic unchanged.",
+      "expected": "light",
+      "language": "en",
+      "rationale": "Localized redundant-code cleanup with no design decision.",
+      "tier": "complex",
+      "source": "apple-embedding",
+      "score": 0.4333003520490264,
+      "margin": 0.04588239072145961,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 59.875500039197505,
+        "preparationMs": 55.86616671644151,
+        "queryMs": 3.9653333369642496,
+        "scoringMs": 0.0439999857917428
+      },
+      "ms": 65.8817919999999,
+      "correct": false
+    },
+    {
+      "prompt": "Set the existing card padding token from 12px to 16px, then update the adjacent comment to say sixteen pixels.",
+      "expected": "light",
+      "language": "en",
+      "rationale": "A specified style value and its comment are changed mechanically.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.4350514672340261,
+      "margin": 0.011919040036922457,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 61.286875046789646,
+        "preparationMs": 56.04158330243081,
+        "queryMs": 5.205416702665389,
+        "scoringMs": 0.03987504169344902
+      },
+      "ms": 67.11325000000011,
+      "correct": false
+    },
+    {
+      "prompt": "Replace the outdated support address help@example.org with support@example.org in the contact page only.",
+      "expected": "light",
+      "language": "en",
+      "rationale": "Exact replacement within one page; no workflow or integration change.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.5243584533990195,
+      "margin": 0.01386459722831257,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 61.83933338616043,
+        "preparationMs": 57.17441672459245,
+        "queryMs": 4.625958274118602,
+        "scoringMs": 0.038958387449383736
+      },
+      "ms": 67.61116700000002,
+      "correct": false
+    },
+    {
+      "prompt": "Add a clear button to the existing search box and test that it resets both the query and the displayed results.",
+      "expected": "standard",
+      "language": "en",
+      "rationale": "Routine UI behavior requiring state updates and a focused test.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.6246842847235182,
+      "margin": 0.0954437465913277,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 60.33104157540947,
+        "preparationMs": 54.94499998167157,
+        "queryMs": 5.3449999541044235,
+        "scoringMs": 0.041041639633476734
+      },
+      "ms": 66.08245899999997,
+      "correct": true
+    },
+    {
+      "prompt": "Find the download endpoint, then add an optional filename parameter with a default value and cover the default and custom cases in tests.",
+      "expected": "standard",
+      "language": "en",
+      "rationale": "The initial lookup leads to a conventional endpoint extension.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.5519327981443903,
+      "margin": 0.08390649640001491,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 60.85725000593811,
+        "preparationMs": 54.732250049710274,
+        "queryMs": 6.085541564971209,
+        "scoringMs": 0.03945839125663042
+      },
+      "ms": 66.39274999999998,
+      "correct": true
+    },
+    {
+      "prompt": "Extend the configuration loader to accept a LOG_LEVEL environment variable, reject unknown values, and keep the current default when it is absent.",
+      "expected": "standard",
+      "language": "en",
+      "rationale": "Common configuration parsing and validation with explicit behavior.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.42858129046468163,
+      "margin": 0.008519800212574535,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 60.80541666597128,
+        "preparationMs": 54.82070834841579,
+        "queryMs": 5.946624907664955,
+        "scoringMs": 0.038083409890532494
+      },
+      "ms": 66.34574999999995,
+      "correct": true
+    },
+    {
+      "prompt": "The empty cart currently shows a blank panel. Add an empty-state message and a link back to the catalog using the existing UI components.",
+      "expected": "standard",
+      "language": "en",
+      "rationale": "Small feature implementation with a conditional rendering path.",
+      "tier": "light",
+      "source": "apple-embedding",
+      "score": 0.45954581044350695,
+      "margin": 0.037700684363063175,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 61.50812504347414,
+        "preparationMs": 54.84791670460254,
+        "queryMs": 6.621416658163071,
+        "scoringMs": 0.038791680708527565
+      },
+      "ms": 67.08487500000001,
+      "correct": false
+    },
+    {
+      "prompt": "Add tests to the date formatter for leap day, an invalid input string, and a missing value, using the behavior already specified in its docstring.",
+      "expected": "standard",
+      "language": "en",
+      "rationale": "Ordinary test implementation against an existing contract.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.39924665249826774,
+      "margin": 0.02021654399321038,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 62.54850002005696,
+        "preparationMs": 55.641000042669475,
+        "queryMs": 6.8659583339467645,
+        "scoringMs": 0.04154164344072342
+      },
+      "ms": 68.23816699999998,
+      "correct": true
+    },
+    {
+      "prompt": "Design a synchronization protocol for offline edits from several devices, explaining which conflicting updates are preserved and how convergence is guaranteed.",
+      "expected": "complex",
+      "language": "en",
+      "rationale": "Protocol design requires explicit conflict semantics and convergence guarantees.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.523766002660476,
+      "margin": 0.023403461064596787,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 61.77879171445966,
+        "preparationMs": 56.23616662342101,
+        "queryMs": 5.502208368852735,
+        "scoringMs": 0.04041672218590975
+      },
+      "ms": 67.41683299999977,
+      "correct": false
+    },
+    {
+      "prompt": "Review how untrusted plugins receive credentials and propose isolation boundaries that still allow scoped delegation and revocation during a running task.",
+      "expected": "complex",
+      "language": "en",
+      "rationale": "Security architecture spans isolation, credential scope and lifecycle behavior.",
+      "tier": "complex",
+      "source": "apple-embedding",
+      "score": 0.5548243230533706,
+      "margin": 0.027238234359094116,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 61.10345828346908,
+        "preparationMs": 55.71400001645088,
+        "queryMs": 5.347374943085015,
+        "scoringMs": 0.04208332393318415
+      },
+      "ms": 66.87429199999997,
+      "correct": true
+    },
+    {
+      "prompt": "Plan the replacement of our JavaScript pricing engine with Rust while preserving decimal rounding, public exceptions, persisted quotes and the partner SDK interface.",
+      "expected": "complex",
+      "language": "en",
+      "rationale": "Cross-language migration must preserve numerical, API and persistence contracts.",
+      "tier": "complex",
+      "source": "risk-rule",
+      "ms": 0.009875000000192813,
+      "correct": true
+    },
+    {
+      "prompt": "Develop an incremental algorithm for maintaining dependency order as edges are added and removed, and justify its cycle detection and worst-case update cost.",
+      "expected": "complex",
+      "language": "en",
+      "rationale": "Algorithm design with correctness and complexity obligations.",
+      "tier": "complex",
+      "source": "apple-embedding",
+      "score": 0.4989456945968436,
+      "margin": 0.0945249452692058,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 61.864041606895626,
+        "preparationMs": 55.36291666794568,
+        "queryMs": 6.459583295509219,
+        "scoringMs": 0.04154164344072342
+      },
+      "ms": 67.43191700000034,
+      "correct": true
+    },
+    {
+      "prompt": "Read the current queue consumer, then design crash recovery so a message can update inventory and publish a receipt without losing work or producing duplicate business effects.",
+      "expected": "complex",
+      "language": "en",
+      "rationale": "A composed request involving recovery guarantees across multiple state changes.",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.4378858923045287,
+      "margin": 0.007116787623587029,
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 62.142291688360274,
+        "preparationMs": 55.21350004710257,
+        "queryMs": 6.891708355396986,
+        "scoringMs": 0.0370832858607173
+      },
+      "ms": 67.64058299999988,
+      "correct": false
+    }
+  ]
+}
+

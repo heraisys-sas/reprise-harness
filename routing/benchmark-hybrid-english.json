@@ -1,0 +1,308 @@
+{
+  "mode": "hybrid",
+  "note": "Cache-cold classification in a fresh Node process; OS assets may already be warm. Latency excludes remote LLM generation.",
+  "cases": 20,
+  "exact": 17,
+  "calls": 8,
+  "firstPassP50Ms": 0.6464999999999996,
+  "firstPassP95Ms": 40.875416,
+  "embeddingP50Ms": 37.69779199999999,
+  "embeddingP95Ms": 40.875416,
+  "cachedP50Ms": 0.0069500000000005,
+  "cachedP95Ms": 0.02740000000000009,
+  "nativePreparationP50Ms": 12.445125030353665,
+  "nativeQueryP50Ms": 4.038791637867689,
+  "nativeScoringP50Ms": 0.0331666087731719,
+  "nativeHelperP50Ms": 16.57800003886223,
+  "rows": [
+    {
+      "prompt": "List the Python files.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "source": "lookup-rule",
+      "baseline": "trivial",
+      "arbitration": "explicit-local-rule",
+      "ms": 0.9068749999999994,
+      "correct": true
+    },
+    {
+      "prompt": "Find the usages of this function.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "source": "lookup-rule",
+      "baseline": "trivial",
+      "arbitration": "explicit-local-rule",
+      "ms": 0.6464999999999996,
+      "correct": true
+    },
+    {
+      "prompt": "Fix the color of the label.",
+      "expected": "light",
+      "tier": "light",
+      "source": "apple-embedding",
+      "score": 0.664730414366963,
+      "margin": 0.11435119773463676,
+      "language": "en",
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 16.218916629441082,
+        "preparationMs": 13.049416709691286,
+        "queryMs": 3.1375415856018662,
+        "scoringMs": 0.031958334147930145
+      },
+      "baseline": "trivial",
+      "arbitration": "separated-semantic-match",
+      "ms": 37.875333,
+      "correct": true
+    },
+    {
+      "prompt": "Rename this variable.",
+      "expected": "light",
+      "tier": "light",
+      "source": "edit-rule",
+      "baseline": "light",
+      "arbitration": "explicit-local-rule",
+      "ms": 0.2404590000000013,
+      "correct": true
+    },
+    {
+      "prompt": "Evaluate the consistency guarantees of this distributed system.",
+      "expected": "complex",
+      "tier": "complex",
+      "source": "risk-rule",
+      "baseline": "complex",
+      "arbitration": "explicit-local-rule",
+      "ms": 0.011000000000002785,
+      "correct": true
+    },
+    {
+      "prompt": "Analyze the security boundaries of the service.",
+      "expected": "complex",
+      "tier": "complex",
+      "source": "risk-rule",
+      "baseline": "complex",
+      "arbitration": "explicit-local-rule",
+      "ms": 0.004167000000002474,
+      "correct": true
+    },
+    {
+      "prompt": "Prove that this algorithm terminates for every input.",
+      "expected": "complex",
+      "tier": "complex",
+      "source": "apple-embedding",
+      "score": 0.5420830494381268,
+      "margin": 0.011799458471975499,
+      "language": "en",
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 16.57800003886223,
+        "preparationMs": 12.445125030353665,
+        "queryMs": 4.097833298146725,
+        "scoringMs": 0.03504171036183834
+      },
+      "baseline": "complex",
+      "arbitration": "keep-upstream",
+      "ms": 37.69779199999999,
+      "correct": true
+    },
+    {
+      "prompt": "List the files, then implement the fix and its tests.",
+      "expected": "standard",
+      "tier": "complex",
+      "source": "apple-embedding",
+      "score": 0.6738814496292207,
+      "margin": 0.004506046374663675,
+      "language": "en",
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 16.73941663466394,
+        "preparationMs": 12.364958296529949,
+        "queryMs": 4.341291729360819,
+        "scoringMs": 0.0331666087731719
+      },
+      "baseline": "complex",
+      "arbitration": "keep-upstream",
+      "ms": 37.32670799999998,
+      "correct": false
+    },
+    {
+      "prompt": "Add a form validation check and an associated test.",
+      "expected": "standard",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.7572480299331841,
+      "margin": 0.07183128674436379,
+      "language": "en",
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 18.455708282999694,
+        "preparationMs": 13.240083353593946,
+        "queryMs": 5.179416621103883,
+        "scoringMs": 0.036208308301866055
+      },
+      "baseline": "standard",
+      "arbitration": "separated-semantic-match",
+      "ms": 40.875416,
+      "correct": true
+    },
+    {
+      "prompt": "Enumerate the configuration files in the project.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "source": "lookup-rule",
+      "baseline": "trivial",
+      "arbitration": "explicit-local-rule",
+      "ms": 0.04916599999998539,
+      "correct": true
+    },
+    {
+      "prompt": "Translate this short message into English.",
+      "expected": "light",
+      "tier": "light",
+      "source": "upstream-fast-path",
+      "baseline": "light",
+      "arbitration": "explicit-translation",
+      "ms": 0.11887500000000273,
+      "correct": true
+    },
+    {
+      "prompt": "Develop an overall approach to progressively modernize the software.",
+      "expected": "complex",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.4868997136046328,
+      "margin": 0.001304581460063181,
+      "language": "en",
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 16.67666668072343,
+        "preparationMs": 12.602958362549543,
+        "queryMs": 4.038791637867689,
+        "scoringMs": 0.03491668030619621
+      },
+      "baseline": "standard",
+      "arbitration": "keep-upstream",
+      "ms": 39.05770799999999,
+      "correct": false
+    },
+    {
+      "prompt": "List all configuration files.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "source": "lookup-rule",
+      "baseline": "trivial",
+      "arbitration": "explicit-local-rule",
+      "ms": 0.03608299999999076,
+      "correct": true
+    },
+    {
+      "prompt": "Rename the button label.",
+      "expected": "light",
+      "tier": "light",
+      "source": "edit-rule",
+      "baseline": "light",
+      "arbitration": "explicit-local-rule",
+      "ms": 0.1554999999999893,
+      "correct": true
+    },
+    {
+      "prompt": "Evaluate consistency guarantees of this distributed system.",
+      "expected": "complex",
+      "tier": "complex",
+      "source": "risk-rule",
+      "baseline": "complex",
+      "arbitration": "explicit-local-rule",
+      "ms": 0.006666999999993095,
+      "correct": true
+    },
+    {
+      "prompt": "Explain the tradeoffs between alternative algorithms.",
+      "expected": "complex",
+      "tier": "complex",
+      "source": "apple-embedding",
+      "score": 0.6073892199208781,
+      "margin": 0.053626815835217334,
+      "language": "en",
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 15.224916627630591,
+        "preparationMs": 12.057583313435316,
+        "queryMs": 3.1372499652206898,
+        "scoringMs": 0.030083348974585533
+      },
+      "baseline": "complex",
+      "arbitration": "separated-semantic-match",
+      "ms": 35.57133300000001,
+      "correct": true
+    },
+    {
+      "prompt": "Write regression tests for the parser.",
+      "expected": "standard",
+      "tier": "standard",
+      "source": "apple-embedding",
+      "score": 0.7845084179064465,
+      "margin": 0.1547450342586465,
+      "language": "en",
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 14.678124920465052,
+        "preparationMs": 11.541791609488428,
+        "queryMs": 3.104166709817946,
+        "scoringMs": 0.03216660115867853
+      },
+      "baseline": "standard",
+      "arbitration": "separated-semantic-match",
+      "ms": 34.69558300000003,
+      "correct": true
+    },
+    {
+      "prompt": "Locate the function declaration in the source tree.",
+      "expected": "trivial",
+      "tier": "trivial",
+      "source": "lookup-rule",
+      "baseline": "complex",
+      "arbitration": "explicit-local-rule",
+      "ms": 0.013499999999964984,
+      "correct": true
+    },
+    {
+      "prompt": "Translate the error message into French.",
+      "expected": "light",
+      "tier": "light",
+      "source": "upstream-fast-path",
+      "baseline": "light",
+      "arbitration": "explicit-translation",
+      "ms": 0.11862500000000864,
+      "correct": true
+    },
+    {
+      "prompt": "Improve the wording of this heading.",
+      "expected": "light",
+      "tier": "trivial",
+      "source": "apple-embedding",
+      "score": 0.5710648955085749,
+      "margin": 0.03499584467686634,
+      "language": "en",
+      "revision": 1,
+      "engine": "sentence",
+      "timings": {
+        "helperMs": 15.10316669009626,
+        "preparationMs": 11.940374970436096,
+        "queryMs": 3.1313750660046935,
+        "scoringMs": 0.03141665365546942
+      },
+      "baseline": "trivial",
+      "arbitration": "keep-upstream",
+      "ms": 35.12991599999998,
+      "correct": false
+    }
+  ]
+}
+
