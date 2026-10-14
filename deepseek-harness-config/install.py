@@ -15,6 +15,10 @@ files += [(p, home / p.relative_to(source)) for p in (source / 'skills').rglob('
 patch = home / 'profiles/desktop/cordis.patch.yml'
 if patch.read_text().strip() not in ('[]', '# Your patch layer for this dsh profile, applied after every bundle layer:\n# a top-level YAML array of loader patch entries (id-targeted config\n# overrides, disables, and insert lists; `!!js` expressions allowed).\n[]'):
     raise SystemExit('Profile changed since inspection; inspect and merge before installation.')
+conflicts = [str(dst.relative_to(home)) for src, dst in files
+             if dst != patch and dst.exists() and dst.read_bytes() != src.read_bytes()]
+if conflicts:
+    raise SystemExit('Existing custom files require a manual merge: ' + ', '.join(conflicts))
 backup.mkdir(parents=True)
 manifest = []
 for src, dst in files:
