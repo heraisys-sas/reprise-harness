@@ -193,7 +193,7 @@ def main():
     elif args.action == 'share':
         dest = Path.cwd() / 'agent-resume-share.zip'
         with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as archive:
-            for name in ('resume', 'scheduler.py', 'quota.py', 'run_status.py', 'runtime.py', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
+            for name in ('resume', 'VERSION', 'scheduler.py', 'quota.py', 'run_status.py', 'runtime.py', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
                 archive.write(ROOT / name, 'agent-resume/' + name)
         print(dest)
     elif args.action in ('install', 'uninstall'):

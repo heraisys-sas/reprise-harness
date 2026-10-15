@@ -16,7 +16,7 @@ Validation : reproduction du format exact de l'erreur observée et tests de rela
 
 # Agent Resume
 
-Reprise différée d'une session Codex sur macOS. Python 3.9+ standard, SQLite, launchd. Aucun appel LLM pour vérifier l'horloge. Codex utilise ensuite le quota de votre compte.
+Reprise différée d'une session Codex sur macOS. Python 3.11+ standard, SQLite, launchd. Aucun appel LLM pour vérifier l'horloge. Codex utilise ensuite le quota de votre compte.
 
 ## Installation
 
