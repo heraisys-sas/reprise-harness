@@ -121,3 +121,12 @@ Sur une autre machine, les caches peuvent être reconstruits à partir des sessi
 La vue d'ensemble privilégie les interruptions des dernières 24 heures ; les incidents plus anciens restent dans l'historique. Les applications ouvertes sont regroupées dans une liste compacte, avec « Au repos » plutôt qu'un compteur nul. Les quotas distinguent les fenêtres courte et hebdomadaire, avec date de mesure et renouvellement. La recherche distingue son état initial, l'attente et l'absence de résultats. Les menus natifs proposent Copier, Coller et Tout sélectionner.
 
 L'interface native utilise SwiftUI dans une fenêtre AppKit : NavigationSplitView, barre d'outils standard, symboles SF Symbols et couleurs système. Elle suit l'apparence claire/sombre et les réglages d'accessibilité du système. Navigation par vue d'ensemble, sessions à vérifier (filtres et détails repliables), analyse locale, recherche intégrée et confidentialité. Les actions de recherche et d'actualisation sont accessibles par Cmd+F et Cmd+R ; Cmd+Q quitte Reprise. Le nettoyage de l'index est dans Confidentialité. Les dernières données sont conservées à l'écran si une actualisation échoue. La refonte ne modifie pas les mécanismes de collecte, de chiffrement ou de reprise.
+
+### Organisation du code
+
+- `Native.swift` pilote l’application ; `Dashboard.swift` contient ses vues.
+- `scheduler.py` décide des reprises ; `run_status.py` exécute le CLI et décrit ses preuves.
+- `runtime.py` centralise l’environnement Codex, le décodage JSONL borné et le nettoyage des processus.
+- `detect.py`, `local_analysis.py`, `private_search.py` et `vault.py` gardent leurs responsabilités distinctes.
+
+Vérification : `python3 -W error::ResourceWarning -m unittest discover -s agent-resume/tests`. L’installation native compile les deux fichiers de l’interface ; l’export `resume share` inclut tous les modules nécessaires. Aucune bibliothèque supplémentaire.

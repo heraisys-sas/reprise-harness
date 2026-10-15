@@ -2,21 +2,18 @@
 import json
 import os
 import selectors
-import signal
 import subprocess
 import time
+from runtime import JsonLines, codex_environment, terminate
 
 
 def read_limits(executable, timeout=15):
-    env = dict(os.environ)
-    for key in ('OPENAI_API_KEY', 'OPENAI_BASE_URL'):
-        env.pop(key, None)
     process = subprocess.Popen([executable, 'app-server', '--stdio'], stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                               env=env, start_new_session=True)
+                               env=codex_environment(), start_new_session=True)
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
-    buffer = bytearray()
+    decoder = JsonLines()
     deadline = time.monotonic() + timeout
     total = 0
     def send(value):
@@ -32,13 +29,7 @@ def read_limits(executable, timeout=15):
                 total += len(chunk)
                 if total > 2 * 1024 * 1024:
                     return None
-                buffer.extend(chunk)
-                while b'\n' in buffer:
-                    line, _, rest = buffer.partition(b'\n'); buffer[:] = rest
-                    try:
-                        message = json.loads(line)
-                    except ValueError:
-                        continue
+                for message in decoder.feed(chunk):
                     if message.get('id') == 1:
                         if 'error' in message:
                             return None
@@ -50,14 +41,7 @@ def read_limits(executable, timeout=15):
         return None
     finally:
         selector.close()
-        process.stdin.close(); process.stdout.close()
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-            process.wait(timeout=2)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
+        terminate(process, grace=2)
 
 
 def next_retry(result, now=None):

@@ -14,6 +14,7 @@ import uuid
 import zipfile
 import scheduler
 import run_status
+from runtime import codex_environment
 
 ROOT = Path(__file__).resolve().parent
 STATE = Path(os.environ.get('AGENT_RESUME_STATE', ROOT / 'state'))
@@ -74,12 +75,9 @@ def run_due(db, executable):
                     if not consumed.rowcount:
                         continue
                 db.execute("UPDATE tasks SET status='running', attempts=attempts+1 WHERE id=?", (task['id'],))
-            env = dict(os.environ)
-            for key in ('OPENAI_API_KEY', 'OPENAI_BASE_URL'):
-                env.pop(key, None)
             log = STATE / (task['id'] + '.log')
             try:
-                status = run_status.execute(db, task, command(task, executable, automatic), env, log)
+                status = run_status.execute(db, task, command(task, executable, automatic), codex_environment(), log)
             except (OSError, subprocess.TimeoutExpired) as error:
                 status = 'needs_review'
                 run_status.save(db, task['id'], 'failed', 'Impossible de lancer le CLI : ' + type(error).__name__, ended_at=dt.datetime.now().timestamp())
@@ -195,7 +193,7 @@ def main():
     elif args.action == 'share':
         dest = Path.cwd() / 'agent-resume-share.zip'
         with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as archive:
-            for name in ('resume', 'scheduler.py', 'quota.py', 'run_status.py', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'native-install', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
+            for name in ('resume', 'scheduler.py', 'quota.py', 'run_status.py', 'runtime.py', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
                 archive.write(ROOT / name, 'agent-resume/' + name)
         print(dest)
     elif args.action in ('install', 'uninstall'):

@@ -3,7 +3,7 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 APP="$ROOT/Reprise.app"
 mkdir -p "$APP/Contents/MacOS"
-swiftc -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Native.swift" -o "$APP/Contents/MacOS/Reprise"
+swiftc -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Native.swift" "$ROOT/Dashboard.swift" -o "$APP/Contents/MacOS/Reprise"
 swiftc -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Embedding.swift" -o "$APP/Contents/MacOS/Embedding"
 swiftc -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Vault.swift" -o "$APP/Contents/MacOS/Vault"
 cat > "$APP/Contents/Info.plist" <<'PLIST'

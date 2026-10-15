@@ -1,13 +1,12 @@
 """Evidence-based execution status; no model or secret-bearing log excerpts in UI."""
-import json
 import fcntl
 import os
 from pathlib import Path
 import selectors
-import signal
 import subprocess
 import time
 import tempfile
+from runtime import JsonLines, terminate
 
 LABELS = {
     'ready': 'Reprise programmée', 'waiting_quota': 'Disponibilité du quota à vérifier',
@@ -44,18 +43,17 @@ def classify(text):
 
 def rows(db, state_dir):
     result = []
-    for task in db.execute('SELECT * FROM tasks ORDER BY due DESC').fetchall():
+    query = """SELECT t.id,t.session,t.cwd,t.due,t.status,t.attempts,
+               d.state,d.reason,d.started_at,d.ended_at,d.last_event_at,d.exit_code
+               FROM tasks t LEFT JOIN run_details d ON d.task_id=t.id ORDER BY t.due DESC"""
+    for task in db.execute(query).fetchall():
         row = dict(task)
-        detail = db.execute('SELECT * FROM run_details WHERE task_id=?', (row['id'],)).fetchone()
-        if detail:
-            detail = dict(detail)
-            # Scheduling state is authoritative after pause/enable/restore.
+        state = row.pop('state')
+        if state:
             if row['status'] not in ('ready', 'paused', 'waiting_quota', 'cancelled', 'needs_path'):
-                row['status'] = detail.pop('state')
+                row['status'] = state
             else:
-                detail.pop('state')
-                detail.pop('reason', None)
-            row.update(detail)
+                row.pop('reason', None)
         elif row['status'] == 'needs_review':
             try:
                 with (Path(state_dir) / (row['id'] + '.log')).open('rb') as log:
@@ -69,14 +67,13 @@ def rows(db, state_dir):
         row['label'] = LABELS.get(row['status'], 'État inconnu')
         if row['status'] == 'ready' and row['due'] <= time.time():
             row['label'] = 'Échéance atteinte · lancement en attente'
-        row.pop('prompt', None)
         result.append(row)
     return result
 
 def execute(db, task, argv, env, log, timeout=7200):
     ident = task['id']
     save(db, ident, 'launching', started_at=time.time())
-    buffer = bytearray()
+    decoder = JsonLines()
     diagnostic = bytearray()
     completed = False
     turn_error = False
@@ -103,14 +100,8 @@ def execute(db, task, argv, env, log, timeout=7200):
                     keep = max(0, 2 * 1024 * 1024 - captured)
                     output.write(chunk[:keep]); captured += min(len(chunk), keep)
                     diagnostic.extend(chunk[:max(0, 65536-len(diagnostic))])
-                    buffer.extend(chunk)
-                    while b'\n' in buffer:
-                        line, _, rest = buffer.partition(b'\n'); buffer[:] = rest
-                        try:
-                            event = json.loads(line)
-                        except ValueError:
-                            continue
-                        kind = event.get('type') if isinstance(event, dict) else None
+                    for event in decoder.feed(chunk):
+                        kind = event.get('type')
                         if kind == 'turn.started':
                             save(db, ident, 'running', last_event_at=time.time())
                         elif kind in ('item.started', 'item.completed'):
@@ -120,16 +111,9 @@ def execute(db, task, argv, env, log, timeout=7200):
                             completed = True
                         elif kind in ('turn.failed', 'error'):
                             turn_error = True
-                    if len(buffer) > 1024 * 1024:
-                        buffer.clear()
     finally:
         selector.close()
-        process.stdout.close()
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
+        terminate(process)
     if timed_out:
         state, reason = 'timed_out', 'Le délai maximal a été atteint ; aucune nouvelle tentative automatique.'
     elif process.returncode == 0 and completed and not turn_error:

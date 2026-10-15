@@ -1,4 +1,5 @@
 """Analyse consultative des comptes rendus terminaux, exclusivement sur l'appareil."""
+from contextlib import closing
 import hashlib
 import json
 from pathlib import Path
@@ -30,7 +31,7 @@ def candidates():
     root = Path.home() / '.codex'
     dbpath = root / 'state_5.sqlite'
     if dbpath.exists():
-        with sqlite3.connect(dbpath.as_uri() + '?mode=ro', uri=True) as db:
+        with closing(sqlite3.connect(dbpath.as_uri() + '?mode=ro', uri=True)) as db:
             rows = db.execute('SELECT id,title,rollout_path,updated_at FROM threads WHERE archived=0 AND updated_at>? ORDER BY updated_at DESC LIMIT 20', (time.time()-7*86400,)).fetchall()
         for ident, title, path, updated in rows:
             try:

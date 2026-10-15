@@ -1,3 +1,4 @@
+from contextlib import closing
 import http.server
 import json
 from pathlib import Path
@@ -32,7 +33,7 @@ def serve(database, root):
             if self.path == '/':
                 self.reply(200, (root / 'dashboard.html').read_text(), 'text/html'); return
             if self.path == '/tasks' and self.headers.get('X-Resume-Token') == token:
-                with database() as db:
+                with closing(database()) as db, db:
                     rows = scheduler.status(db, Path(db.execute('PRAGMA database_list').fetchone()[2]).parent)['tasks']
                 self.reply(200, json.dumps(rows)); return
             self.reply(404, '{}')
@@ -47,7 +48,7 @@ def serve(database, root):
                 data = json.loads(self.rfile.read(size))
                 if data['action'] not in ('pause', 'enable'):
                     raise ValueError()
-                with database() as db:
+                with closing(database()) as db, db:
                     row = db.execute('SELECT * FROM tasks WHERE id=?', (data['id'],)).fetchone()
                     if not row or row['status'] == 'running':
                         self.reply(409, json.dumps({'error': 'Cette tâche est déjà en cours ou indisponible.'})); return

@@ -1,3 +1,4 @@
+from contextlib import closing
 import sys
 import importlib.util
 from pathlib import Path
@@ -35,7 +36,7 @@ class CleanupTests(unittest.TestCase):
             state = Path(folder)
             directory = state/'search.noindex'
             directory.mkdir()
-            with sqlite3.connect(directory/'index.sqlite') as db:
+            with closing(sqlite3.connect(directory/'index.sqlite')) as db, db:
                 module.schema(db)
                 for ident,stamp in [('old',1),('recent',900000)]:
                     db.execute('INSERT INTO documents VALUES (?,?,?,?,?,?,?)',(ident,'hash','title','provider','text','{}',stamp))
@@ -58,7 +59,7 @@ class CleanupTests(unittest.TestCase):
             directory=state/'search.noindex'
             directory.mkdir()
             legacy=directory/'index.sqlite'
-            with sqlite3.connect(legacy) as db:
+            with closing(sqlite3.connect(legacy)) as db, db:
                 module.schema(db)
             with patch.object(module, 'save', side_effect=ValueError('locked')):
                 with self.assertRaises(ValueError):

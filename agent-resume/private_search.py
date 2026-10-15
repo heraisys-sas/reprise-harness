@@ -99,7 +99,7 @@ def encrypted_index(state):
             if path.exists():
                 db.deserialize(load(path, 'search-index-v1'))
             elif legacy.exists():
-                with sqlite3.connect(legacy.as_uri() + '?mode=ro', uri=True) as old:
+                with contextlib.closing(sqlite3.connect(legacy.as_uri() + '?mode=ro', uri=True)) as old:
                     old.backup(db)
             schema(db)
             yield db

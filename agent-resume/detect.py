@@ -1,3 +1,4 @@
+from contextlib import closing
 import datetime as dt
 import json
 from pathlib import Path
@@ -69,7 +70,7 @@ def scan(home=None):
     active = 0
     quota = None
     try:
-        with sqlite3.connect(state.as_uri() + '?mode=ro', uri=True, timeout=2) as db:
+        with closing(sqlite3.connect(state.as_uri() + '?mode=ro', uri=True, timeout=2)) as db:
             rows = db.execute('SELECT id,title,cwd,rollout_path,updated_at FROM threads WHERE archived=0 AND updated_at>? ORDER BY updated_at DESC LIMIT 100', (time.time() - 30 * 86400,)).fetchall()
         for ident, title, cwd, path, updated in rows:
             try:

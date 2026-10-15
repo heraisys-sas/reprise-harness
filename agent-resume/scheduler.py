@@ -1,5 +1,6 @@
 """Automatic retries of confirmed Codex quota interruptions, once per event."""
 import json
+from collections import Counter
 import math
 from pathlib import Path
 import time
@@ -142,6 +143,18 @@ def refresh_waiting(db, executable, now=None):
                        (max(now + POLL, retry or now),))
 
 
+def session_unchanged(db, event, now, read):
+    data = read()
+    if data.get('error'):
+        return False
+    row = next((r for r in data.get('sessions', []) if r['id'] == event['session']), None)
+    if not same(event, row, now) or manual_conflict(db, event['session']):
+        with db:
+            db.execute("UPDATE tasks SET status='cancelled' WHERE id=?", (event['task_id'],))
+        return False
+    return True
+
+
 def preflight(db, task, executable, now=None, read=None):
     """Return False without running a model if any prerequisite is uncertain."""
     event = db.execute('SELECT * FROM automation_events WHERE task_id=?', (task['id'],)).fetchone()
@@ -150,23 +163,12 @@ def preflight(db, task, executable, now=None, read=None):
     now = time.time() if now is None else now
     if not enabled(db) or event['consumed'] or task['attempts']:
         return False
-    data = (read or snapshot)()
-    if data.get('error'):
-        return False
-    row = next((r for r in data.get('sessions', []) if r['id'] == event['session']), None)
-    if not same(event, row, now) or manual_conflict(db, event['session']):
-        with db:
-            db.execute("UPDATE tasks SET status='cancelled' WHERE id=?", (task['id'],))
+    read = read or snapshot
+    if not session_unchanged(db, event, now, read):
         return False
     allowed, retry = quota_state(db, executable, now, force=True)
-    # A quota check can take several seconds; reread the session after it too.
-    data = (read or snapshot)()
-    if data.get('error'):
-        return False
-    row = next((r for r in data.get('sessions', []) if r['id'] == event['session']), None)
-    if not same(event, row, now) or manual_conflict(db, event['session']):
-        with db:
-            db.execute("UPDATE tasks SET status='cancelled' WHERE id=?", (task['id'],))
+    # Recheck after the potentially slow quota read.
+    if not session_unchanged(db, event, now, read):
         return False
     if not allowed:
         with db:
@@ -180,17 +182,16 @@ def status(db, state_dir=None):
     from run_status import rows, worker_active
     tasks = rows(db, state_dir or Path("."))
     active_worker = worker_active(state_dir or Path("."))
+    automatic = enabled(db)
     for task in tasks:
         if task['status'] in ('running', 'launching') and not active_worker:
             task.update(status='needs_review', label='Exécution non confirmée · worker absent', reason='Le processus de reprise n’est plus détecté ; aucun succès déduit.')
-        elif task['status'] in ('ready', 'waiting_quota') and not enabled(db):
+        elif task['status'] in ('ready', 'waiting_quota') and not automatic:
             task['label'] = 'Automatisation en pause · aucune relance prévue'
-    counts = dict(db.execute('SELECT status,COUNT(*) FROM tasks GROUP BY status').fetchall())
-    next_due = db.execute("SELECT MIN(due) FROM tasks WHERE status IN ('ready','waiting_quota')").fetchone()[0]
-    confirmed_running = sum(t['status'] == 'running' for t in tasks)
-    launching = sum(t['status'] == 'launching' for t in tasks)
-    return {'tasks': tasks, 'launching': launching, 'auto_enabled': enabled(db), 'pending': counts.get('ready', 0) + counts.get('waiting_quota', 0),
+    counts = Counter(task['status'] for task in tasks)
+    next_due = min((task['due'] for task in tasks if task['status'] in ('ready', 'waiting_quota')), default=None)
+    return {'tasks': tasks, 'launching': counts['launching'], 'auto_enabled': automatic, 'pending': counts.get('ready', 0) + counts.get('waiting_quota', 0),
             'ready': counts.get('ready', 0), 'waiting_quota': counts.get('waiting_quota', 0),
-            'running': confirmed_running, 'needs_review': sum(t['status'] in ('needs_review', 'blocked_trust', 'blocked_auth', 'quota_blocked', 'failed', 'timed_out') for t in tasks),
+            'running': counts['running'], 'needs_review': sum(t['status'] in ('needs_review', 'blocked_trust', 'blocked_auth', 'quota_blocked', 'failed', 'timed_out') for t in tasks),
             'next_due': next_due, 'last_tick': get(db, 'last_tick'), 'last_error': get(db, 'last_error'),
             'quota_checked_at': get(db, 'quota_checked_at'), 'quota_allowed': get(db, 'quota_allowed'), 'quota_retry_at': get(db, 'quota_retry_at')}
