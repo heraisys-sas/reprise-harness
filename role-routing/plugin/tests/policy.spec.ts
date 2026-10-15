@@ -50,3 +50,26 @@ it('keeps snapshots stable and disposes agent listeners', async () => {
   hooks['agent/disposed']({agent})
   expect(disposed).toBe(1)
 })
+
+it('enables routing only for agents created after activation', async () => {
+  const hooks: Record<string, (...args: any[]) => any> = {}
+  const requests: Array<(...args: any[]) => any> = []
+  const settings = { enabled: false, planner: { ...route, model: 'fixed' } }
+  const ctx = {
+    effect: () => {}, inject: () => {}, systemPrompt: { section: () => {} },
+    llm: { listProviders: () => [{id:'mock'}], listModels: async () => [{id:'fixed'}] },
+    on: (event: string, fn: (...args: any[]) => any) => { hooks[event] = fn },
+  }
+  const create = () => hooks['agent/created']({agent: { ...parent, ctx: {
+    on: (_: string, fn: (...args: any[]) => any) => { requests.push(fn); return () => {} },
+  } } })
+  apply(ctx as unknown as Context, settings)
+  create()
+  const next = async () => ({provider:'ui',model:'selected'})
+  settings.enabled = true
+  create()
+  expect(await requests[0]({}, next)).toEqual(await next())
+  expect((await requests[1]({}, next)).model).toBe('fixed')
+  settings.enabled = false
+  expect(await requests[1]({}, next)).toEqual(await next())
+})

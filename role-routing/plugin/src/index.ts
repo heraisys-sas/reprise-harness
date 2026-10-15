@@ -37,9 +37,9 @@ export function apply(ctx: Context, config: Settings) {
   ctx.effect(() => () => { for (const dispose of disposers.values()) dispose(); disposers.clear() })
   ctx.on('agent/created', ({ agent }) => {
     const target = agent as unknown as Agent
-    // Freeze the route for the agent lifetime; only the off-switch remains live.
+    // Capture eligibility and route at creation; disabling remains live.
     const role = roleFor(target)
-    const chosen = config[role] ? { ...config[role]! } : undefined
+    const chosen = enabled(config) && config[role] ? { ...config[role]! } : undefined
     const dispose = target.ctx.on('agent/request', async (_payload, next) => {
       const resolved = await next()
       if (!enabled(config) || !chosen) return resolved
