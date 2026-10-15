@@ -1,0 +1,1 @@
+Role routing concept and roleFor adapted from thedeveloper256/dsh-model-router 0.7.1 (MIT). Original license retained. New minimal Harness 0.2 implementation: no catalog, attachment-limit, plan-mode or browser override; optional root preservation; no automatic retries or forced delegation.

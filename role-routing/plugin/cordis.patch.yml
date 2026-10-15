@@ -1,0 +1,5 @@
+- insert:
+    - id: economy-role-router
+      name: '@heraisys/dsh-role-router'
+      config:
+        enabled: false

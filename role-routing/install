@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+PROFILE=${1:?Usage: role-routing/install PROFILE}
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+DSH=${DSH_CLI:-/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh}
+test -f "$ROOT/plugin/lib/index.js"
+"$DSH" plugin --profile "$PROFILE" add "file:$ROOT/plugin" --ignore-scripts
