@@ -6,6 +6,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     var window: NSWindow!
     let root = CommandLine.arguments.count > 1 ? URL(fileURLWithPath: CommandLine.arguments[1]) : Bundle.main.bundleURL.deletingLastPathComponent()
     let python = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : (["/Library/Frameworks/Python.framework/Versions/Current/bin/python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"].first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/env")
+    @Published var scheduler: [String: Any] = [:]
     @Published var snapshot: [String: Any] = [:]
     @Published var page = "overview"
     @Published var sessionFilter = "Récentes"
@@ -88,12 +89,20 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         if busy { return }; busy = true
         DispatchQueue.global(qos: .utility).async {
             let result = self.execute(["detect"])
+            let scheduler = self.execute(["scheduler-status"])
             DispatchQueue.main.async {
                 self.busy = false
+                if let scheduler { self.scheduler = scheduler }
                 if let result { self.snapshot = result; self.lastRefresh = Date() }
                 else { self.snapshot["error"] = "Actualisation indisponible. Les dernières informations restent affichées." }
                 self.item.button?.title = self.counters.map { "\($0.1) \($0.3.map(String.init) ?? "—")" }.joined(separator: " · ")
             }
+        }
+    }
+    func setAutomatic(_ enabled: Bool) {
+        DispatchQueue.global(qos: .utility).async {
+            _ = self.execute(["auto-mode", enabled ? "on" : "off"])
+            DispatchQueue.main.async { self.refresh() }
         }
     }
     func analyzeLocal() {
@@ -191,6 +200,38 @@ struct Dashboard: View {
                 Surface { HStack(spacing: 12) { ProgressView().controlSize(.small); Text("Lecture de l’activité locale…").foregroundStyle(.secondary) } }
             } else {
                 Surface {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Label("Reprise après quota", systemImage: "arrow.clockwise.circle").font(.headline)
+                            Spacer()
+                            Toggle("Automatique", isOn: Binding(get: { app.scheduler["auto_enabled"] as? Bool ?? false }, set: { app.setAutomatic($0) }))
+                                .toggleStyle(.switch).disabled(app.scheduler.isEmpty)
+                        }
+                        if app.scheduler.isEmpty {
+                            Text("État du service indisponible").foregroundStyle(.secondary)
+                        } else if app.scheduler["installed"] as? Bool != true || app.scheduler["executable_available"] as? Bool != true {
+                            Label("Service de reprise indisponible", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                        } else if (app.scheduler["running"] as? Int ?? 0) == 0 && Date().timeIntervalSince1970 - (app.scheduler["last_tick"] as? Double ?? 0) > 180 {
+                            Label("Le service ne répond plus · dernière vérification ancienne", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                        } else if let error = app.scheduler["last_error"] as? String, !error.isEmpty {
+                            Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                        } else if (app.scheduler["needs_review"] as? Int ?? 0) > 0 {
+                            Label("Une reprise a échoué · vérification nécessaire", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                        } else if app.scheduler["auto_enabled"] as? Bool != true {
+                            Text("Reprise automatique en pause").foregroundStyle(.secondary)
+                        } else {
+                            let waiting = app.scheduler["waiting_quota"] as? Int ?? 0
+                            let ready = app.scheduler["ready"] as? Int ?? 0
+                            let running = app.scheduler["running"] as? Int ?? 0
+                            Text(running > 0 ? "Reprise en cours" : waiting > 0 ? "\(waiting) session(s) en attente du quota" : ready > 0 ? "\(ready) reprise(s) programmée(s)" : "Prêt · aucune reprise en attente").foregroundStyle(.secondary)
+                            if let due = app.scheduler["next_due"] as? Double {
+                                Text("Prochaine vérification : " + Date(timeIntervalSince1970: due).formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        Text("Quota confirmé · abonnement ChatGPT · une tentative par interruption").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Surface {
                     HStack(alignment: .center, spacing: 18) {
                         Image(systemName: app.attention.isEmpty ? "clock" : "tray")
                             .font(.system(size: 30, weight: .light)).foregroundStyle(.secondary).accessibilityHidden(true)
@@ -261,7 +302,7 @@ struct Dashboard: View {
             Picker("Filtrer", selection: $app.sessionFilter) { ForEach(["Récentes", "Toutes", "Erreurs", "Arrêts", "À examiner"], id: \.self) { Text($0) } }.pickerStyle(.segmented).frame(maxWidth: 460)
             let visible = app.rows.filter { row in
                 let state = row["state"] as? String ?? ""
-                return (app.sessionFilter == "Récentes" && app.attention.contains { ($0["id"] as? String) == (row["id"] as? String) }) || app.sessionFilter == "Toutes" || (app.sessionFilter == "Erreurs" && ["failed", "quota_candidate", "rate_limited"].contains(state)) || (app.sessionFilter == "Arrêts" && state == "stopped") || (app.sessionFilter == "À examiner" && ["unfinished", "needs_user"].contains(state))
+                return (app.sessionFilter == "Récentes" && app.attention.contains { ($0["id"] as? String) == (row["id"] as? String) }) || app.sessionFilter == "Toutes" || (app.sessionFilter == "Erreurs" && ["failed", "quota_candidate", "quota_confirmed", "rate_limited"].contains(state)) || (app.sessionFilter == "Arrêts" && state == "stopped") || (app.sessionFilter == "À examiner" && ["unfinished", "needs_user"].contains(state))
             }
             if visible.isEmpty { empty("Aucun signalement dans cette vue", icon: "tray", detail: app.sessionFilter == "Récentes" ? "Aucune interruption détectée sur les dernières 24 heures. Consultez Toutes pour l’historique." : "Essayez un autre filtre pour consulter les autres sessions.") }
             ForEach(Array(visible.enumerated()), id: \.offset) { _, row in

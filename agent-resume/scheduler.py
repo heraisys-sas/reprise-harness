@@ -1,0 +1,186 @@
+"""Automatic retries of confirmed Codex quota interruptions, once per event."""
+import json
+import math
+from pathlib import Path
+import time
+import uuid
+
+RECENT = 86400
+POLL = 300
+PROMPT = ('Reprends la tâche interrompue par le quota à partir de son état actuel. '
+          'Vérifie les changements et résultats déjà présents avant toute action pour éviter '
+          'les doublons. Respecte les instructions, autorisations et limites de la session. '
+          'Ne change pas de fournisseur et ne bascule pas vers une facturation API. '
+          'Si la tâche est déjà terminée ou attend une réponse humaine, arrête-toi.')
+
+
+def setup(db):
+    db.execute('CREATE TABLE IF NOT EXISTS scheduler_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+    db.execute('CREATE TABLE IF NOT EXISTS automation_events ('
+               'event_key TEXT PRIMARY KEY, task_id TEXT UNIQUE NOT NULL, session TEXT NOT NULL, '
+               'interrupted_at REAL NOT NULL, source_updated REAL NOT NULL, source_cwd TEXT NOT NULL, '
+               'created REAL NOT NULL, consumed INTEGER NOT NULL DEFAULT 0)')
+    db.commit()
+
+
+def get(db, key, default=None):
+    row = db.execute('SELECT value FROM scheduler_meta WHERE key=?', (key,)).fetchone()
+    return json.loads(row[0]) if row else default
+
+
+def put(db, key, value):
+    db.execute('INSERT OR REPLACE INTO scheduler_meta VALUES (?,?)', (key, json.dumps(value)))
+
+
+def enabled(db):
+    return get(db, 'auto_enabled', True) is True
+
+
+def snapshot():
+    from detect import scan
+    return scan()
+
+
+def number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def confirmed(row, now, max_age=RECENT):
+    try:
+        uuid.UUID(row['id'])
+        return (row.get('state') == 'quota_confirmed' and not row.get('active', False)
+                and number(row.get('interrupted_at')) and number(row.get('updated'))
+                and 0 <= now - row['interrupted_at'] <= max_age
+                and isinstance(row.get('cwd'), str) and Path(row['cwd']).is_absolute()
+                and Path(row['cwd']).is_dir()
+                and (row.get('retry_at') is None or number(row['retry_at'])))
+    except (ValueError, KeyError, TypeError, OSError):
+        return False
+
+
+def same(event, row, now):
+    return (row is not None and confirmed(row, now, max_age=30 * 86400)
+            and row['interrupted_at'] == event['interrupted_at']
+            and row['updated'] == event['source_updated'] and row['cwd'] == event['source_cwd'])
+
+
+def manual_conflict(db, session):
+    return db.execute("SELECT 1 FROM tasks t LEFT JOIN automation_events e ON e.task_id=t.id "
+                      "WHERE t.session=? AND e.task_id IS NULL AND t.status IN ('paused','ready','running') LIMIT 1",
+                      (session,)).fetchone() is not None
+
+
+def reconcile(db, data, now=None):
+    now = time.time() if now is None else now
+    if data.get('error'):
+        raise ValueError('Lecture des sessions Codex indisponible ; reprise différée')
+    rows = {row['id']: row for row in data.get('sessions', [])}
+    with db:
+        db.execute('BEGIN IMMEDIATE')
+        for event in db.execute("SELECT e.* FROM automation_events e JOIN tasks t ON t.id=e.task_id "
+                                "WHERE t.status IN ('ready','waiting_quota')").fetchall():
+            if not same(event, rows.get(event['session']), now) or manual_conflict(db, event['session']):
+                db.execute("UPDATE tasks SET status='cancelled' WHERE id=?", (event['task_id'],))
+        if not enabled(db):
+            return
+        for row in rows.values():
+            if not confirmed(row, now) or manual_conflict(db, row['id']):
+                continue
+            key = str(uuid.uuid5(uuid.NAMESPACE_URL, f"reprise:quota:{row['id']}:{float(row['interrupted_at'])}"))
+            if db.execute('SELECT 1 FROM automation_events WHERE event_key=?', (key,)).fetchone():
+                continue
+            if db.execute("SELECT 1 FROM tasks WHERE session=? AND status='running'", (row['id'],)).fetchone():
+                continue
+            due = row.get('retry_at')
+            db.execute('INSERT INTO automation_events VALUES (?,?,?,?,?,?,?,0)',
+                       (key, key, row['id'], row['interrupted_at'], row['updated'], row['cwd'], now))
+            db.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?,0)',
+                       (key, row['id'], row['cwd'], PROMPT, due if due is not None else now,
+                        'ready' if due is not None else 'waiting_quota'))
+            put(db, 'quota_checked_at', None)
+            put(db, 'quota_allowed', False)
+
+
+def quota_state(db, executable, now=None, probe=None, deadline=None, force=False):
+    now = time.time() if now is None else now
+    checked = get(db, 'quota_checked_at')
+    if not force and checked is not None and 0 <= now - checked < POLL:
+        return get(db, 'quota_allowed', False), get(db, 'quota_retry_at')
+    if probe is None or deadline is None:
+        from quota import read_limits, next_retry
+        probe = probe or read_limits
+        deadline = deadline or next_retry
+    try:
+        result = probe(executable)
+        allowed = isinstance(result, dict) and result.get('ordinaryUsageAllowed') is True
+        retry = deadline(result, now) if isinstance(result, dict) else None
+        if not number(retry):
+            retry = None
+    except Exception:
+        allowed, retry = False, None
+    with db:
+        put(db, 'quota_checked_at', now)
+        put(db, 'quota_allowed', allowed)
+        put(db, 'quota_retry_at', retry)
+    return allowed, retry
+
+
+def refresh_waiting(db, executable, now=None):
+    now = time.time() if now is None else now
+    if not enabled(db) or not db.execute("SELECT 1 FROM automation_events e JOIN tasks t ON t.id=e.task_id "
+                                        "WHERE t.status IN ('ready','waiting_quota') LIMIT 1").fetchone():
+        return
+    allowed, retry = quota_state(db, executable, now)
+    with db:
+        if allowed:
+            db.execute("UPDATE tasks SET status='ready',due=? WHERE status='waiting_quota' "
+                       "AND id IN (SELECT task_id FROM automation_events)",
+                       (max(now, retry or now),))
+        else:
+            db.execute("UPDATE tasks SET status='waiting_quota',due=? WHERE status IN ('ready','waiting_quota') "
+                       "AND id IN (SELECT task_id FROM automation_events)",
+                       (max(now + POLL, retry or now),))
+
+
+def preflight(db, task, executable, now=None, read=None):
+    """Return False without running a model if any prerequisite is uncertain."""
+    event = db.execute('SELECT * FROM automation_events WHERE task_id=?', (task['id'],)).fetchone()
+    if event is None:
+        return True
+    now = time.time() if now is None else now
+    if not enabled(db) or event['consumed'] or task['attempts']:
+        return False
+    data = (read or snapshot)()
+    if data.get('error'):
+        return False
+    row = next((r for r in data.get('sessions', []) if r['id'] == event['session']), None)
+    if not same(event, row, now) or manual_conflict(db, event['session']):
+        with db:
+            db.execute("UPDATE tasks SET status='cancelled' WHERE id=?", (task['id'],))
+        return False
+    allowed, retry = quota_state(db, executable, now, force=True)
+    # A quota check can take several seconds; reread the session after it too.
+    data = (read or snapshot)()
+    if data.get('error'):
+        return False
+    row = next((r for r in data.get('sessions', []) if r['id'] == event['session']), None)
+    if not same(event, row, now) or manual_conflict(db, event['session']):
+        with db:
+            db.execute("UPDATE tasks SET status='cancelled' WHERE id=?", (task['id'],))
+        return False
+    if not allowed:
+        with db:
+            db.execute("UPDATE tasks SET status='waiting_quota',due=? WHERE id=?",
+                       (max(now + POLL, retry or now), task['id']))
+        return False
+    return True
+
+
+def status(db):
+    counts = dict(db.execute('SELECT status,COUNT(*) FROM tasks GROUP BY status').fetchall())
+    next_due = db.execute("SELECT MIN(due) FROM tasks WHERE status IN ('ready','waiting_quota')").fetchone()[0]
+    return {'auto_enabled': enabled(db), 'pending': counts.get('ready', 0) + counts.get('waiting_quota', 0),
+            'ready': counts.get('ready', 0), 'waiting_quota': counts.get('waiting_quota', 0),
+            'running': counts.get('running', 0), 'needs_review': counts.get('needs_review', 0),
+            'next_due': next_due, 'last_tick': get(db, 'last_tick'), 'last_error': get(db, 'last_error'),
+            'quota_checked_at': get(db, 'quota_checked_at'), 'quota_allowed': get(db, 'quota_allowed')}

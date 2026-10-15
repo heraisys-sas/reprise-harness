@@ -10,6 +10,7 @@ def inspect(path, now=None, details=None):
     last = None
     rates = None
     measured_at = None
+    last_stamp = None
     with Path(path).open() as stream:
         for line in stream:
             try:
@@ -22,11 +23,24 @@ def inspect(path, now=None, details=None):
             kind = payload.get('type')
             if kind in ('task_started', 'task_complete', 'turn_aborted'):
                 last = payload
+                last_stamp = record.get("timestamp")
             if kind == 'token_count' and payload.get('rate_limits'):
                 rates = payload['rate_limits']
                 measured_at = record.get('timestamp')
     if details is not None:
         details.update(active=bool(last and last['type'] == 'task_started' and now - Path(path).stat().st_mtime < 120), rates=rates, measured_at=measured_at)
+    if last and last['type'] == 'task_complete' and isinstance(last.get('error'), dict):
+        error = last['error']
+        stamp = last.get('completed_at')
+        if not isinstance(stamp, (int, float)) and last_stamp:
+            stamp = dt.datetime.fromisoformat(last_stamp.replace('Z', '+00:00')).timestamp()
+        if error.get('codex_error_info') == 'usage_limit_exceeded' and isinstance(stamp, (int, float)):
+            resets = [(rates or {}).get(window) or {} for window in ('primary', 'secondary')]
+            deadlines = [v['resets_at'] for v in resets if isinstance(v.get('resets_at'), (int, float)) and v.get('used_percent', 0) >= 100]
+            return {'state': 'quota_confirmed', 'label': 'Quota atteint · reprise automatique',
+                    'retry_at': max(deadlines) + 120 if deadlines else None,
+                    'interrupted_at': stamp, 'turn_id': last.get('turn_id')}
+        return {'state': 'failed', 'label': 'Exécution terminée avec une erreur', 'retry_at': None}
     if not last or last['type'] == 'task_complete':
         return None
     if last['type'] == 'turn_aborted':

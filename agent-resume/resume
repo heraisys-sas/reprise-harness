@@ -12,6 +12,7 @@ import subprocess
 import sys
 import uuid
 import zipfile
+import scheduler
 
 ROOT = Path(__file__).resolve().parent
 STATE = Path(os.environ.get('AGENT_RESUME_STATE', ROOT / 'state'))
@@ -22,11 +23,20 @@ def database():
     db = sqlite3.connect(STATE / 'tasks.sqlite')
     db.row_factory = sqlite3.Row
     db.execute('CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, session TEXT, cwd TEXT, prompt TEXT, due REAL, status TEXT, attempts INTEGER DEFAULT 0)')
+    scheduler.setup(db)
     return db
 
-def command(task, executable):
+def command(task, executable, automatic=False):
     uuid.UUID(task['session'])
-    return [executable, 'exec', '--sandbox', 'workspace-write', 'resume', task['session'], '-']
+    options = ['-c', 'model_provider="openai"', '-c', 'forced_login_method="chatgpt"'] if automatic else []
+    return [executable, 'exec', *options, '--sandbox', 'workspace-write', 'resume', task['session'], '-']
+
+def codex_executable():
+    candidates = [shutil.which('codex'), '/Applications/Codex.app/Contents/Resources/codex',
+                  '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
+                  '/Applications/ChatGPT.app/Contents/Resources/codex',
+                  '/Applications/ChatGPT.app/Contents/Resources/bin/codex']
+    return next((str(Path(p).resolve()) for p in candidates if p and Path(p).is_file() and os.access(p, os.X_OK)), None)
 
 def run_due(db, executable):
     with (STATE / 'worker.lock').open('a') as lock:
@@ -34,20 +44,39 @@ def run_due(db, executable):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
+        # The lock proves no scheduler worker still owns these interrupted runs.
+        with db:
+            db.execute("UPDATE tasks SET status='needs_review' WHERE status='running'")
         for task in db.execute("SELECT * FROM tasks WHERE status='ready' AND due<=? ORDER BY due", (dt.datetime.now().timestamp(),)).fetchall():
+            automatic = db.execute('SELECT 1 FROM automation_events WHERE task_id=?', (task['id'],)).fetchone() is not None
+            try:
+                if not scheduler.preflight(db, task, executable):
+                    continue
+            except Exception as error:
+                with db:
+                    scheduler.put(db, 'last_error', 'Préparation de reprise indisponible : ' + type(error).__name__)
+                continue
             if not Path(task['cwd']).is_dir():
                 db.execute("UPDATE tasks SET status='needs_path' WHERE id=?", (task['id'],)); db.commit(); continue
-            claimed = db.execute("UPDATE tasks SET status='running', attempts=attempts+1 WHERE id=? AND status='ready'", (task['id'],))
-            db.commit()
-            if not claimed.rowcount:
-                continue
+            with db:
+                db.execute('BEGIN IMMEDIATE')
+                current = db.execute('SELECT status,attempts FROM tasks WHERE id=?', (task['id'],)).fetchone()
+                if not current or current['status'] != 'ready':
+                    continue
+                if automatic:
+                    if not scheduler.enabled(db) or current['attempts']:
+                        continue
+                    consumed = db.execute('UPDATE automation_events SET consumed=1 WHERE task_id=? AND consumed=0', (task['id'],))
+                    if not consumed.rowcount:
+                        continue
+                db.execute("UPDATE tasks SET status='running', attempts=attempts+1 WHERE id=?", (task['id'],))
             env = dict(os.environ)
             for key in ('OPENAI_API_KEY', 'OPENAI_BASE_URL'):
                 env.pop(key, None)
             log = STATE / (task['id'] + '.log')
             try:
                 with log.open('w') as output:
-                    result = subprocess.run(command(task, executable), input=task['prompt'], text=True, cwd=task['cwd'], env=env, stdout=output, stderr=subprocess.STDOUT, timeout=7200)
+                    result = subprocess.run(command(task, executable, automatic), input=task['prompt'], text=True, cwd=task['cwd'], env=env, stdout=output, stderr=subprocess.STDOUT, timeout=7200)
                 status = 'finished' if result.returncode == 0 else 'needs_review'
             except (OSError, subprocess.TimeoutExpired):
                 status = 'needs_review'
@@ -63,15 +92,16 @@ def main():
     add.add_argument('--cwd', required=True)
     add.add_argument('--at', required=True, help='ISO 8601 avec fuseau, ex. 2026-10-14T18:00:00+02:00')
     add.add_argument('--prompt-file', required=True)
-    for name in ('status', 'tick', 'install', 'uninstall', 'share', 'dashboard', 'detect', 'analyze', 'clear-index'):
+    for name in ('status', 'scheduler-status', 'tick', 'install', 'uninstall', 'share', 'dashboard', 'detect', 'analyze', 'clear-index'):
         sub.add_parser(name)
+    sub.add_parser('auto-mode').add_argument('mode', choices=('on', 'off'))
     for name in ('pause', 'enable'):
         sub.add_parser(name).add_argument('id')
     for name in ('backup', 'restore'):
         sub.add_parser(name).add_argument('archive')
     args = parser.parse_args()
     db = database()
-    executable = shutil.which('codex')
+    executable = codex_executable()
     if args.action == 'add':
         when = dt.datetime.fromisoformat(args.at)
         if when.tzinfo is None:
@@ -82,6 +112,14 @@ def main():
         ident = str(uuid.uuid4())
         db.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?,0)', (ident, args.session, str(cwd), Path(args.prompt_file).read_text(), when.timestamp(), 'paused'))
         db.commit(); print(f'{ident} — en pause ; activer avec ./resume enable {ident}')
+    elif args.action == 'scheduler-status':
+        print(json.dumps(scheduler.status(db) | {
+            'installed': (Path.home() / 'Library/LaunchAgents' / (LABEL + '.plist')).exists(),
+            'executable_available': executable is not None}, ensure_ascii=False))
+    elif args.action == 'auto-mode':
+        with db:
+            scheduler.put(db, 'auto_enabled', args.mode == 'on')
+        print(json.dumps({'auto_enabled': scheduler.enabled(db)}))
     elif args.action == 'status':
         for row in db.execute('SELECT * FROM tasks ORDER BY due'):
             print(json.dumps({k: row[k] for k in ('id', 'session', 'cwd', 'status', 'attempts')} | {'at': dt.datetime.fromtimestamp(row['due']).astimezone().isoformat()}, ensure_ascii=False))
@@ -89,6 +127,9 @@ def main():
         row = db.execute('SELECT * FROM tasks WHERE id=?', (args.id,)).fetchone()
         if not row or row['status'] == 'running':
             parser.error('Tâche absente ou actuellement en cours')
+        event = db.execute('SELECT consumed FROM automation_events WHERE task_id=?', (args.id,)).fetchone()
+        if args.action == 'enable' and event and (event['consumed'] or row['attempts'] or row['status'] == 'cancelled'):
+            parser.error('Interruption automatique déjà traitée ou périmée ; aucune seconde tentative automatique')
         if args.action == 'enable' and not Path(row['cwd']).is_dir():
             parser.error('Dossier indisponible')
         db.execute('UPDATE tasks SET status=? WHERE id=?', ('ready' if args.action == 'enable' else 'paused', args.id)); db.commit()
@@ -109,13 +150,25 @@ def main():
         serve(database, ROOT)
     elif args.action == 'tick':
         from private_search import cleanup
+        with db:
+            scheduler.put(db, 'last_tick', dt.datetime.now().timestamp())
+            scheduler.put(db, 'last_error', None)
+        if not executable:
+            with db:
+                scheduler.put(db, 'last_error', 'Codex CLI absent')
+            db.close()
+            return
+        try:
+            scheduler.reconcile(db, scheduler.snapshot())
+            scheduler.refresh_waiting(db, executable)
+        except Exception as error:
+            with db:
+                scheduler.put(db, 'last_error', 'Détection automatique indisponible : ' + type(error).__name__)
+        run_due(db, executable)
         try:
             cleanup(STATE)
-        except ValueError:
+        except (ValueError, OSError, sqlite3.Error):
             pass
-        if not executable:
-            parser.error('Codex CLI absent')
-        run_due(db, executable)
     elif args.action == 'backup':
         with zipfile.ZipFile(args.archive, 'w', zipfile.ZIP_DEFLATED) as archive:
             archive.writestr('manifest.json', json.dumps({'version': 1, 'tasks': [dict(r) for r in db.execute('SELECT * FROM tasks')]}))
@@ -134,11 +187,12 @@ def main():
             rows.append((task['id'], task['session'], task['cwd'], task['prompt'], float(task['due']), 'paused', int(task['attempts'])))
         with db:
             db.executemany('INSERT OR IGNORE INTO tasks VALUES (?,?,?,?,?,?,?)', rows)
+            scheduler.put(db, 'auto_enabled', False)
         print('Tâches importées en pause ; les identifiants déjà présents restent inchangés.')
     elif args.action == 'share':
         dest = Path.cwd() / 'agent-resume-share.zip'
         with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as archive:
-            for name in ('resume', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'native-install', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
+            for name in ('resume', 'scheduler.py', 'quota.py', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'native-install', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
                 archive.write(ROOT / name, 'agent-resume/' + name)
         print(dest)
     elif args.action in ('install', 'uninstall'):
@@ -160,7 +214,7 @@ def main():
             result = subprocess.run(['launchctl', 'bootstrap', target, str(plist)], capture_output=True, text=True)
             if result.returncode:
                 plist.unlink(); parser.error(result.stderr)
-            print('Service installé ; aucune tâche activée automatiquement.')
+            print('Service installé ; reprise automatique des interruptions de quota confirmées selon le mode enregistré.')
     db.close()
 
 if __name__ == '__main__':

@@ -31,6 +31,28 @@ class DetectionTests(unittest.TestCase):
         events = [{'type': 'task_started', 'started_at': 1}, {'type': 'token_count', 'rate_limits': {'primary': {'used_percent': 100, 'resets_at': 3000}, 'secondary': {'used_percent': 100, 'resets_at': 4000}}}]
         self.assertEqual(self.inspect(events)['retry_at'], 4120)
 
+class QuotaCompletionTests(unittest.TestCase):
+    def inspect(self, events):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'rollout.jsonl'
+            path.write_text('\n'.join(json.dumps({'type': 'event_msg', 'payload': e}) for e in events))
+            return module.inspect(path, now=2000)
+
+    def test_actual_quota_error_is_not_success(self):
+        failure = {'type': 'task_complete', 'turn_id': 'turn', 'completed_at': 1000,
+                   'error': {'codex_error_info': 'usage_limit_exceeded', 'message': 'try again at 4:04 AM'}}
+        value = self.inspect([failure])
+        self.assertEqual(value['state'], 'quota_confirmed')
+        self.assertEqual(value['interrupted_at'], 1000)
+        self.assertIsNone(value['retry_at'])
+        self.assertIsNone(self.inspect([failure, {'type': 'task_complete'}]))
+        self.assertEqual(self.inspect([failure, {'type': 'turn_aborted'}])['state'], 'stopped')
+        self.assertIsNone(self.inspect([failure, {'type': 'task_started', 'started_at': 1950}]))
+
+    def test_other_error_never_auto_resumes(self):
+        self.assertEqual(self.inspect([{'type': 'task_complete', 'completed_at': 1000,
+            'error': {'codex_error_info': 'other'}}])['state'], 'failed')
+
 class HarnessDetectionTests(unittest.TestCase):
     def test_errors_and_abort(self):
         for code, expected in [('QUOTA', 'quota_candidate'), ('ACCOUNT_QUOTA', 'quota_candidate'), ('RATE_LIMIT', 'rate_limited'), ('AUTH', 'failed')]:

@@ -1,3 +1,15 @@
+# Reprise — état actuel (15 octobre 2026)
+
+La reprise automatique Codex traite les erreurs structurées `task_complete.error.codex_error_info = usage_limit_exceeded`. Une fin de tour avec cette erreur n'est pas une réussite. Le service détecte les interruptions récentes, conserve une entrée durable par événement et vérifie que la session n'a pas déjà repris avant de lancer une continuation.
+
+Le quota est lu via `codex app-server` et `account/rateLimits/read` : aucune requête au modèle pour cette vérification. Une reprise automatique exige `ordinaryUsageAllowed: true`. Un pourcentage, une échéance passée ou un texte comme « 4:04 AM » ne prouvent pas la récupération. Sans confirmation, la session attend et la lecture des quotas est espacée. Aucun achat ni utilisation de clé API de secours. Les tâches utilisent l'authentification ChatGPT et le sandbox workspace-write ; une action nécessitant une approbation peut toujours bloquer.
+
+Le tableau de bord affiche l'état du service et les reprises en attente. `./resume scheduler-status` expose le même état ; `./resume auto-mode off` met l'automatisation en pause, `on` la réactive. Les arrêts volontaires, erreurs non liées au quota et interruptions anciennes ne sont pas repris automatiquement. Une tentative par interruption ; un échec demande examen. Les autres applications restent en détection seule.
+
+Validation : reproduction du format exact de l'erreur observée et tests de relance avec exécutable simulé, sans dépense de quota modèle. Un renouvellement réel futur reste à observer. La suite du document conserve l'historique des fonctions : les limitations des premières versions concernant la reprise Codex automatique sont remplacées par cette section.
+
+---
+
 # Agent Resume
 
 Reprise différée d'une session Codex sur macOS. Python 3.9+ standard, SQLite, launchd. Aucun appel LLM pour vérifier l'horloge. Codex utilise ensuite le quota de votre compte.
