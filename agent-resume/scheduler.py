@@ -176,11 +176,21 @@ def preflight(db, task, executable, now=None, read=None):
     return True
 
 
-def status(db):
+def status(db, state_dir=None):
+    from run_status import rows, worker_active
+    tasks = rows(db, state_dir or Path("."))
+    active_worker = worker_active(state_dir or Path("."))
+    for task in tasks:
+        if task['status'] in ('running', 'launching') and not active_worker:
+            task.update(status='needs_review', label='Exécution non confirmée · worker absent', reason='Le processus de reprise n’est plus détecté ; aucun succès déduit.')
+        elif task['status'] in ('ready', 'waiting_quota') and not enabled(db):
+            task['label'] = 'Automatisation en pause · aucune relance prévue'
     counts = dict(db.execute('SELECT status,COUNT(*) FROM tasks GROUP BY status').fetchall())
     next_due = db.execute("SELECT MIN(due) FROM tasks WHERE status IN ('ready','waiting_quota')").fetchone()[0]
-    return {'auto_enabled': enabled(db), 'pending': counts.get('ready', 0) + counts.get('waiting_quota', 0),
+    confirmed_running = sum(t['status'] == 'running' for t in tasks)
+    launching = sum(t['status'] == 'launching' for t in tasks)
+    return {'tasks': tasks, 'launching': launching, 'auto_enabled': enabled(db), 'pending': counts.get('ready', 0) + counts.get('waiting_quota', 0),
             'ready': counts.get('ready', 0), 'waiting_quota': counts.get('waiting_quota', 0),
-            'running': counts.get('running', 0), 'needs_review': counts.get('needs_review', 0),
+            'running': confirmed_running, 'needs_review': sum(t['status'] in ('needs_review', 'blocked_trust', 'blocked_auth', 'quota_blocked', 'failed', 'timed_out') for t in tasks),
             'next_due': next_due, 'last_tick': get(db, 'last_tick'), 'last_error': get(db, 'last_error'),
-            'quota_checked_at': get(db, 'quota_checked_at'), 'quota_allowed': get(db, 'quota_allowed')}
+            'quota_checked_at': get(db, 'quota_checked_at'), 'quota_allowed': get(db, 'quota_allowed'), 'quota_retry_at': get(db, 'quota_retry_at')}

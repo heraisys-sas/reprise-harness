@@ -13,6 +13,7 @@ import sys
 import uuid
 import zipfile
 import scheduler
+import run_status
 
 ROOT = Path(__file__).resolve().parent
 STATE = Path(os.environ.get('AGENT_RESUME_STATE', ROOT / 'state'))
@@ -24,12 +25,13 @@ def database():
     db.row_factory = sqlite3.Row
     db.execute('CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, session TEXT, cwd TEXT, prompt TEXT, due REAL, status TEXT, attempts INTEGER DEFAULT 0)')
     scheduler.setup(db)
+    run_status.setup(db)
     return db
 
 def command(task, executable, automatic=False):
     uuid.UUID(task['session'])
     options = ['-c', 'model_provider="openai"', '-c', 'forced_login_method="chatgpt"'] if automatic else []
-    return [executable, 'exec', *options, '--sandbox', 'workspace-write', 'resume', task['session'], '-']
+    return [executable, 'exec', *options, '--json', '--sandbox', 'workspace-write', 'resume', task['session'], '-']
 
 def codex_executable():
     candidates = [shutil.which('codex'), '/Applications/Codex.app/Contents/Resources/codex',
@@ -46,6 +48,8 @@ def run_due(db, executable):
             return
         # The lock proves no scheduler worker still owns these interrupted runs.
         with db:
+            for stale in db.execute("SELECT id FROM tasks WHERE status='running'").fetchall():
+                run_status.save(db, stale['id'], 'needs_review', 'Le worker s’est arrêté sans enregistrer de résultat final.', ended_at=dt.datetime.now().timestamp())
             db.execute("UPDATE tasks SET status='needs_review' WHERE status='running'")
         for task in db.execute("SELECT * FROM tasks WHERE status='ready' AND due<=? ORDER BY due", (dt.datetime.now().timestamp(),)).fetchall():
             automatic = db.execute('SELECT 1 FROM automation_events WHERE task_id=?', (task['id'],)).fetchone() is not None
@@ -75,11 +79,10 @@ def run_due(db, executable):
                 env.pop(key, None)
             log = STATE / (task['id'] + '.log')
             try:
-                with log.open('w') as output:
-                    result = subprocess.run(command(task, executable, automatic), input=task['prompt'], text=True, cwd=task['cwd'], env=env, stdout=output, stderr=subprocess.STDOUT, timeout=7200)
-                status = 'finished' if result.returncode == 0 else 'needs_review'
-            except (OSError, subprocess.TimeoutExpired):
+                status = run_status.execute(db, task, command(task, executable, automatic), env, log)
+            except (OSError, subprocess.TimeoutExpired) as error:
                 status = 'needs_review'
+                run_status.save(db, task['id'], 'failed', 'Impossible de lancer le CLI : ' + type(error).__name__, ended_at=dt.datetime.now().timestamp())
             db.execute('UPDATE tasks SET status=? WHERE id=?', (status, task['id'])); db.commit()
 
 def main():
@@ -113,7 +116,7 @@ def main():
         db.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?,0)', (ident, args.session, str(cwd), Path(args.prompt_file).read_text(), when.timestamp(), 'paused'))
         db.commit(); print(f'{ident} — en pause ; activer avec ./resume enable {ident}')
     elif args.action == 'scheduler-status':
-        print(json.dumps(scheduler.status(db) | {
+        print(json.dumps(scheduler.status(db, STATE) | {
             'installed': (Path.home() / 'Library/LaunchAgents' / (LABEL + '.plist')).exists(),
             'executable_available': executable is not None}, ensure_ascii=False))
     elif args.action == 'auto-mode':
@@ -121,8 +124,8 @@ def main():
             scheduler.put(db, 'auto_enabled', args.mode == 'on')
         print(json.dumps({'auto_enabled': scheduler.enabled(db)}))
     elif args.action == 'status':
-        for row in db.execute('SELECT * FROM tasks ORDER BY due'):
-            print(json.dumps({k: row[k] for k in ('id', 'session', 'cwd', 'status', 'attempts')} | {'at': dt.datetime.fromtimestamp(row['due']).astimezone().isoformat()}, ensure_ascii=False))
+        for row in run_status.rows(db, STATE):
+            print(json.dumps({k: row[k] for k in ('id', 'session', 'cwd', 'status', 'attempts', 'label')} | {'at': dt.datetime.fromtimestamp(row['due']).astimezone().isoformat()}, ensure_ascii=False))
     elif args.action in ('pause', 'enable'):
         row = db.execute('SELECT * FROM tasks WHERE id=?', (args.id,)).fetchone()
         if not row or row['status'] == 'running':
@@ -192,7 +195,7 @@ def main():
     elif args.action == 'share':
         dest = Path.cwd() / 'agent-resume-share.zip'
         with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as archive:
-            for name in ('resume', 'scheduler.py', 'quota.py', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'native-install', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
+            for name in ('resume', 'scheduler.py', 'quota.py', 'run_status.py', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'native-install', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
                 archive.write(ROOT / name, 'agent-resume/' + name)
         print(dest)
     elif args.action in ('install', 'uninstall'):

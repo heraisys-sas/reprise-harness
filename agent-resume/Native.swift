@@ -92,7 +92,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             let scheduler = self.execute(["scheduler-status"])
             DispatchQueue.main.async {
                 self.busy = false
-                if let scheduler { self.scheduler = scheduler }
+                self.scheduler = scheduler ?? [:]
                 if let result { self.snapshot = result; self.lastRefresh = Date() }
                 else { self.snapshot["error"] = "Actualisation indisponible. Les dernières informations restent affichées." }
                 self.item.button?.title = self.counters.map { "\($0.1) \($0.3.map(String.init) ?? "—")" }.joined(separator: " · ")
@@ -211,7 +211,7 @@ struct Dashboard: View {
                             Text("État du service indisponible").foregroundStyle(.secondary)
                         } else if app.scheduler["installed"] as? Bool != true || app.scheduler["executable_available"] as? Bool != true {
                             Label("Service de reprise indisponible", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
-                        } else if (app.scheduler["running"] as? Int ?? 0) == 0 && Date().timeIntervalSince1970 - (app.scheduler["last_tick"] as? Double ?? 0) > 180 {
+                        } else if (app.scheduler["running"] as? Int ?? 0) + (app.scheduler["launching"] as? Int ?? 0) == 0 && Date().timeIntervalSince1970 - (app.scheduler["last_tick"] as? Double ?? 0) > 180 {
                             Label("Le service ne répond plus · dernière vérification ancienne", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                         } else if let error = app.scheduler["last_error"] as? String, !error.isEmpty {
                             Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
@@ -223,12 +223,25 @@ struct Dashboard: View {
                             let waiting = app.scheduler["waiting_quota"] as? Int ?? 0
                             let ready = app.scheduler["ready"] as? Int ?? 0
                             let running = app.scheduler["running"] as? Int ?? 0
-                            Text(running > 0 ? "Reprise en cours" : waiting > 0 ? "\(waiting) session(s) en attente du quota" : ready > 0 ? "\(ready) reprise(s) programmée(s)" : "Prêt · aucune reprise en attente").foregroundStyle(.secondary)
+                            let launching = app.scheduler["launching"] as? Int ?? 0
+                            Text(running > 0 ? "Tour Codex démarré" : launching > 0 ? "Lancement du CLI · tour non confirmé" : waiting > 0 ? "\(waiting) session(s) · disponibilité du quota à vérifier" : ready > 0 ? "\(ready) reprise(s) programmée(s)" : "Prêt · aucune reprise en attente").foregroundStyle(.secondary)
                             if let due = app.scheduler["next_due"] as? Double {
-                                Text("Prochaine vérification : " + Date(timeIntervalSince1970: due).formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                                Text(ready > 0 ? "Lancement prévu : " + Date(timeIntervalSince1970: due).formatted(date: .abbreviated, time: .shortened) : "Prochaine vérification : " + Date(timeIntervalSince1970: due).formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
                             }
                         }
-                        Text("Quota confirmé · abonnement ChatGPT · une tentative par interruption").font(.caption).foregroundStyle(.secondary)
+                        if let checked = app.scheduler["quota_checked_at"] as? Double {
+                            let allowed = app.scheduler["quota_allowed"] as? Bool == true
+                            Text((allowed ? "Usage inclus autorisé lors du contrôle de " : "Disponibilité non confirmée lors du contrôle de ") + Date(timeIntervalSince1970: checked).formatted(date: .omitted, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                        }
+                        ForEach(Array((app.scheduler["tasks"] as? [[String: Any]] ?? []).prefix(8).enumerated()), id: \.offset) { _, task in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text((task["cwd"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Session Codex").font(.callout.weight(.semibold))
+                                Text(task["label"] as? String ?? "État inconnu").font(.callout)
+                                if let reason = task["reason"] as? String { Text(reason).font(.caption).foregroundStyle(.secondary) }
+                                if let ended = task["ended_at"] as? Double { Text("Dernier résultat : " + Date(timeIntervalSince1970: ended).formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary) }
+                            }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
+                        }
+                        Text("Abonnement ChatGPT · une tentative par interruption · fin de tour ≠ tâche validée").font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 Surface {

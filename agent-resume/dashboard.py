@@ -4,6 +4,7 @@ from pathlib import Path
 import secrets
 import threading
 import webbrowser
+import scheduler
 
 
 def serve(database, root):
@@ -32,7 +33,7 @@ def serve(database, root):
                 self.reply(200, (root / 'dashboard.html').read_text(), 'text/html'); return
             if self.path == '/tasks' and self.headers.get('X-Resume-Token') == token:
                 with database() as db:
-                    rows = [dict(r) for r in db.execute('SELECT id,cwd,due,status,attempts FROM tasks ORDER BY due')]
+                    rows = scheduler.status(db, Path(db.execute('PRAGMA database_list').fetchone()[2]).parent)['tasks']
                 self.reply(200, json.dumps(rows)); return
             self.reply(404, '{}')
 
