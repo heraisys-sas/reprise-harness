@@ -8,6 +8,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     let python = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : (["/Library/Frameworks/Python.framework/Versions/Current/bin/python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"].first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/env")
     @Published var scheduler: [String: Any] = [:]
     @Published var snapshot: [String: Any] = [:]
+    @Published var navigationNote = ""
     @Published var page = "overview"
     @Published var sessionFilter = "Récentes"
     @Published var busy = false
@@ -99,6 +100,34 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             }
         }
     }
+    func openSession(_ row: [String: Any]) {
+        let provider = row["provider"] as? String ?? "Codex"
+        let rawID = row["id"] as? String ?? row["session"] as? String ?? ""
+        let identifier = rawID.hasPrefix(provider + ":") ? String(rawID.dropFirst(provider.count + 1)) : rawID
+        let bundles = ["Codex": "com.openai.codex", "Harness": "com.deepseek.dsh", "Cowork": "com.anthropic.claudefordesktop", "AutoClaw": "com.zhipuai.autoclaw"]
+        navigationNote = ""
+        let bundle = bundles[provider]
+        if provider == "Claude Code" {
+            navigationNote = "Les journaux de Claude Code n’identifient pas son terminal ou son éditeur. Ouvrez l’hôte concerné."
+            return
+        }
+        guard let bundle, let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) else {
+            navigationNote = "Application introuvable pour cette session."
+            return
+        }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        if provider == "Codex", let uuid = UUID(uuidString: identifier), let url = URL(string: "codex://threads/" + uuid.uuidString.lowercased()) {
+            NSWorkspace.shared.open([url], withApplicationAt: application, configuration: configuration) { _, error in
+                if error != nil { DispatchQueue.main.async { self.navigationNote = "Impossible d’ouvrir cette session dans Codex." } }
+            }
+        } else {
+            navigationNote = "Application affichée ; la sélection de cette session reste manuelle."
+            NSWorkspace.shared.openApplication(at: application, configuration: configuration) { _, error in
+                if error != nil { DispatchQueue.main.async { self.navigationNote = "Impossible d’afficher l’application." } }
+            }
+        }
+    }
     func setAutomatic(_ enabled: Bool) {
         DispatchQueue.global(qos: .utility).async {
             _ = self.execute(["auto-mode", enabled ? "on" : "off"])
@@ -164,6 +193,7 @@ struct Dashboard: View {
                 VStack(alignment: .leading, spacing: 24) {
                     VStack(alignment: .leading, spacing: 6) { Text(app.page == "overview" ? "Votre activité" : title).font(.system(size: 28, weight: .bold)); Text(subtitle).foregroundStyle(.secondary) }
                     if let error = app.snapshot["error"] as? String { Label(error, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary) }
+                    if !app.navigationNote.isEmpty { Label(app.navigationNote, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary) }
                     switch app.page {
                     case "sessions": sessions
                     case "analysis": analysis
@@ -240,6 +270,12 @@ struct Dashboard: View {
                                 if let reason = task["reason"] as? String { Text(reason).font(.caption).foregroundStyle(.secondary) }
                                 if let ended = task["ended_at"] as? Double { Text("Dernier résultat : " + Date(timeIntervalSince1970: ended).formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary) }
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
+                            .contentShape(Rectangle()).onTapGesture {
+                                app.openSession(["provider": "Codex", "id": task["session"] as? String ?? ""])
+                            }
+                            Button("Afficher dans Codex", systemImage: "arrow.up.forward.app") {
+                                app.openSession(["provider": "Codex", "id": task["session"] as? String ?? ""])
+                            }.buttonStyle(.link)
                         }
                         Text("Abonnement ChatGPT · une tentative par interruption · fin de tour ≠ tâche validée").font(.caption).foregroundStyle(.secondary)
                     }
@@ -330,11 +366,13 @@ struct Dashboard: View {
                             Text("Aucune reprise automatique sur la seule base de ce signalement.").font(.caption).foregroundStyle(.secondary)
                         }.padding(.top, 12)
                     } label: {
+                        Button { app.openSession(row) } label: {
                         HStack(spacing: 12) {
                             Image(systemName: row["state"] as? String == "stopped" ? "pause.circle" : "exclamationmark.circle").font(.title2).foregroundStyle(.secondary)
                             VStack(alignment: .leading, spacing: 4) { Text(sessionTitle(row)).font(.headline); Text((row["provider"] as? String ?? "") + " · " + ((row["updated"] as? Double).map { Date(timeIntervalSince1970: $0).formatted(date: .abbreviated, time: .shortened) } ?? "Date inconnue")).font(.caption).foregroundStyle(.secondary) }
                             Spacer(); Text(row["state"] as? String == "stopped" ? "Arrêtée" : "À vérifier").font(.caption).foregroundStyle(.secondary)
                         }
+                        }.buttonStyle(.plain).help("Afficher l’application de cette session")
                     }
                 }
             }
@@ -345,7 +383,7 @@ struct Dashboard: View {
         VStack(alignment: .leading, spacing: 18) {
             Surface { HStack { VStack(alignment: .leading, spacing: 6) { Label("Apple Intelligence", systemImage: "sparkles").font(.headline); Text(app.analysis["status"] as? String ?? "En attente").font(.callout).foregroundStyle(.secondary) }; Spacer(); Button(app.analysisBusy ? "Analyse…" : "Analyser") { app.analyzeLocal() }.disabled(app.analysisBusy) } }
             if app.verdicts.isEmpty { empty("Aucun signalement à afficher", icon: "text.badge.checkmark", detail: "L’absence de signalement ne garantit pas la réussite d’une session. Les vérifications du projet restent la référence.") }
-            ForEach(Array(app.verdicts.enumerated()), id: \.offset) { _, value in Surface { VStack(alignment: .leading, spacing: 10) { Text(value["title"] as? String ?? "Session").font(.headline); Text(value["reason"] as? String ?? ""); Text(value["evidence"] as? String ?? "").font(.callout).foregroundStyle(.secondary).textSelection(.enabled) } } }
+            ForEach(Array(app.verdicts.enumerated()), id: \.offset) { _, value in Surface { VStack(alignment: .leading, spacing: 10) { Button { app.openSession(value) } label: { Text(value["title"] as? String ?? "Session").font(.headline) }.buttonStyle(.plain).help("Afficher l’application de cette session"); Text(value["reason"] as? String ?? ""); Text(value["evidence"] as? String ?? "").font(.callout).foregroundStyle(.secondary).textSelection(.enabled) } } }
             Text("Codex et Claude Code · un nouveau compte rendu au maximum par minute · aucune relance déclenchée par le modèle.").font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -356,7 +394,7 @@ struct Dashboard: View {
             if app.searchResults.isEmpty && !app.searching {
                 empty(app.searchHasRun ? "Aucun résultat pour cette recherche" : "Retrouvez le fil d’une session", icon: "doc.text.magnifyingglass", detail: app.searchHasRun ? "Essayez un terme plus court ou un code d’erreur exact." : "Recherchez dans les états récents et comptes rendus analysés, toutes applications confondues.")
             }
-            ForEach(Array(app.searchResults.enumerated()), id: \.offset) { _, value in Surface { VStack(alignment: .leading, spacing: 8) { Text(value["title"] as? String ?? "Session").font(.headline); Text((value["provider"] as? String ?? "") + " · " + String((value["id"] as? String ?? "").suffix(8))).font(.caption).foregroundStyle(.secondary); Text(value["text"] as? String ?? "").textSelection(.enabled) } } }
+            ForEach(Array(app.searchResults.enumerated()), id: \.offset) { _, value in Surface { VStack(alignment: .leading, spacing: 8) { Button { app.openSession(value) } label: { Text(value["title"] as? String ?? "Session").font(.headline) }.buttonStyle(.plain).help("Afficher l’application de cette session"); Text((value["provider"] as? String ?? "") + " · " + String((value["id"] as? String ?? "").suffix(8))).font(.caption).foregroundStyle(.secondary); Text(value["text"] as? String ?? "").textSelection(.enabled) } } }
         }
     }
     var privacy: some View {
