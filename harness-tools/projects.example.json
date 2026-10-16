@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "projects": {
+    "reprise": {
+      "roots": ["/absolute/canonical/reprise-harness"],
+      "instructions": ["/absolute/canonical/reprise-harness/deepseek-harness-config/AGENTS.md"]
+    },
+    "separate-worktree": {
+      "roots": ["/absolute/canonical/separate-worktree"],
+      "instructions": ["/absolute/canonical/separate-worktree/deepseek-harness-config/AGENTS.md"]
+    }
+  }
+}
