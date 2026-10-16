@@ -7,7 +7,7 @@ struct Surface<Content: View>: View {
 }
 struct Dashboard: View {
     @ObservedObject var app: App
-    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("privacy", "Confidentialité", "lock.shield")]
+    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("privacy", "Confidentialité", "lock.shield")]
     var title: String { sections.first { $0.0 == app.page }?.1 ?? "Reprise" }
     var body: some View {
         NavigationSplitView {
@@ -30,6 +30,7 @@ struct Dashboard: View {
                     if !app.navigationNote.isEmpty { Label(app.navigationNote, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary) }
                     switch app.page {
                     case "sessions": sessions
+                    case "resumptions": resumptions
                     case "analysis": analysis
                     case "search": search
                     case "privacy": privacy
@@ -52,6 +53,7 @@ struct Dashboard: View {
     var subtitle: String {
         switch app.page {
         case "sessions": return "Distinguez les interruptions récentes des arrêts et de l’historique."
+        case "resumptions": return "Les tentatives sont regroupées par cause. Les détails restent accessibles à la demande."
         case "analysis": return "Un second regard sur les comptes rendus, sur votre Mac."
         case "search": return "Retrouvez un élément sans vous souvenir de l’application."
         case "privacy": return "Vos données de recherche restent sous votre contrôle."
@@ -63,71 +65,7 @@ struct Dashboard: View {
             if app.lastRefresh == nil && app.busy {
                 Surface { HStack(spacing: 12) { ProgressView().controlSize(.small); Text("Lecture de l’activité locale…").foregroundStyle(.secondary) } }
             } else {
-                Surface {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Label("Reprise après quota", systemImage: "arrow.clockwise.circle").font(.headline)
-                            Spacer()
-                            Toggle("Quota Codex", isOn: Binding(get: { app.scheduler["auto_enabled"] as? Bool ?? false }, set: { app.setAutomatic($0) }))
-                                .toggleStyle(.switch).disabled(app.scheduler.isEmpty)
-                        }
-                        if app.scheduler.isEmpty {
-                            Text("État du service indisponible").foregroundStyle(.secondary)
-                        } else if app.scheduler["installed"] as? Bool != true || app.scheduler["executable_available"] as? Bool != true {
-                            Label("Service de reprise indisponible", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
-                        } else if (app.scheduler["running"] as? Int ?? 0) + (app.scheduler["launching"] as? Int ?? 0) == 0 && Date().timeIntervalSince1970 - (app.scheduler["last_tick"] as? Double ?? 0) > 180 {
-                            Label("Le service ne répond plus · dernière vérification ancienne", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
-                        } else if let error = app.scheduler["last_error"] as? String, !error.isEmpty {
-                            Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
-                        } else if (app.scheduler["needs_review"] as? Int ?? 0) > 0 {
-                            Label("Une reprise a échoué · vérification nécessaire", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
-                        } else if app.scheduler["auto_enabled"] as? Bool != true {
-                            Text("Reprise automatique en pause").foregroundStyle(.secondary)
-                        } else {
-                            let waiting = app.scheduler["waiting_quota"] as? Int ?? 0
-                            let ready = app.scheduler["ready"] as? Int ?? 0
-                            let running = app.scheduler["running"] as? Int ?? 0
-                            let launching = app.scheduler["launching"] as? Int ?? 0
-                            Text(running > 0 ? "Tour du moteur démarré" : launching > 0 ? "Connexion au moteur · tour non confirmé" : waiting > 0 ? "\(waiting) session(s) · disponibilité du quota à vérifier" : ready > 0 ? "\(ready) reprise(s) programmée(s)" : "Prêt · aucune reprise en attente").foregroundStyle(.secondary)
-                            if let due = app.scheduler["next_due"] as? Double {
-                                Text(ready > 0 ? "Lancement prévu : " + Date(timeIntervalSince1970: due).formatted(date: .abbreviated, time: .shortened) : "Prochaine vérification : " + Date(timeIntervalSince1970: due).formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                        if let checked = app.scheduler["quota_checked_at"] as? Double {
-                            let allowed = app.scheduler["quota_allowed"] as? Bool == true
-                            Text((allowed ? "Usage inclus autorisé lors du contrôle de " : "Disponibilité non confirmée lors du contrôle de ") + Date(timeIntervalSince1970: checked).formatted(date: .omitted, time: .shortened)).font(.caption).foregroundStyle(.secondary)
-                        }
-                        ForEach(Array((app.scheduler["tasks"] as? [[String: Any]] ?? []).prefix(8).enumerated()), id: \.offset) { _, task in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text((task["cwd"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Session").font(.callout.weight(.semibold))
-                                Text(task["label"] as? String ?? "État inconnu").font(.callout)
-                                if let engine = task["engine_label"] as? String { Text(engine).font(.caption).foregroundStyle(.secondary) }
-                                if let reason = task["reason"] as? String { Text(reason).font(.caption).foregroundStyle(.secondary) }
-                                if let ended = task["ended_at"] as? Double { Text("Dernier résultat : " + Date(timeIntervalSince1970: ended).formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary) }
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
-                            .contentShape(Rectangle()).onTapGesture {
-                                app.openSession(["provider": task["provider"] as? String ?? "Codex", "id": task["session"] as? String ?? ""])
-                            }
-                            Button("Afficher l’application", systemImage: "arrow.up.forward.app") {
-                                app.openSession(["provider": task["provider"] as? String ?? "Codex", "id": task["session"] as? String ?? ""])
-                            }.buttonStyle(.link)
-                        }
-                        Text("Abonnement ChatGPT · une tentative par interruption · fin de tour ≠ tâche validée").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                Surface {
-                    HStack(alignment: .center, spacing: 18) {
-                        Image(systemName: app.attention.isEmpty ? "clock" : "tray")
-                            .font(.system(size: 30, weight: .light)).foregroundStyle(.secondary).accessibilityHidden(true)
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(app.attention.isEmpty ? "Aucune interruption récente détectée" : "\(app.attention.count) session\(app.attention.count > 1 ? "s" : "") à examiner").font(.title3.weight(.semibold))
-                            Text(app.attention.isEmpty ? "Les sessions plus anciennes restent dans l’historique." : "Signalements des dernières 24 heures, hors arrêts volontaires.").font(.callout).foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 8)
-                        Button(app.attention.isEmpty ? "Historique" : "Examiner") { app.page = "sessions"; app.sessionFilter = app.attention.isEmpty ? "Toutes" : "Récentes" }
-                            .buttonStyle(.bordered)
-                    }
-                }
+                resumptionStatus
                 Surface {
                     VStack(alignment: .leading, spacing: 16) {
                         HStack {
@@ -163,12 +101,115 @@ struct Dashboard: View {
                         } else { Text("Aucune mesure locale disponible.").foregroundStyle(.secondary) }
                     }
                 }
+                Surface {
+                    HStack(spacing: 16) {
+                        Image(systemName: "clock.arrow.circlepath").font(.title2).foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 5) {
+                            let count = app.resumeSummary["review_count"] as? Int ?? 0
+                            Text(count > 0 ? "\(count) tentatives à examiner" : "Historique des reprises").font(.headline)
+                            let causes = app.resumeSummary["cause_count"] as? Int ?? 0
+                            Text(count > 0 ? "\(causes) causes regroupées · aucune nouvelle tentative automatique pour ces incidents." : "Aucune tentative nécessitant un examen.").font(.callout).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Comprendre") { app.page = "resumptions"; app.resumeFilter = "À examiner" }
+                    }
+                }
+                HStack {
+                    Text("\(app.attention.count) signalements récents dans les sessions").foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Voir les sessions") { app.page = "sessions"; app.sessionFilter = "Récentes" }.buttonStyle(.link)
+                }.font(.callout)
                 HStack(spacing: 8) {
                     Image(systemName: "info.circle").accessibilityHidden(true)
                     Text("Un agent silencieux peut rester actif. Les estimations reflètent les deux dernières minutes.")
                 }.font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
+    var resumptionStatus: some View {
+        Surface {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Label("Reprise après quota", systemImage: "arrow.clockwise.circle").font(.headline)
+                    Spacer()
+                    Toggle("Quota Codex", isOn: Binding(get: { app.scheduler["auto_enabled"] as? Bool ?? false }, set: { app.setAutomatic($0) }))
+                        .toggleStyle(.switch).disabled(app.scheduler.isEmpty)
+                }
+                if app.scheduler.isEmpty {
+                    Text("État du service indisponible").foregroundStyle(.secondary)
+                } else if app.scheduler["installed"] as? Bool != true || app.scheduler["executable_available"] as? Bool != true {
+                    Label("Service de reprise indisponible", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                } else if (app.scheduler["running"] as? Int ?? 0) + (app.scheduler["launching"] as? Int ?? 0) == 0 && Date().timeIntervalSince1970 - (app.scheduler["last_tick"] as? Double ?? 0) > 180 {
+                    Label("Dernière vérification du service trop ancienne", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                } else if let error = app.scheduler["last_error"] as? String, !error.isEmpty {
+                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                } else {
+                    let running = app.scheduler["running"] as? Int ?? 0
+                    let launching = app.scheduler["launching"] as? Int ?? 0
+                    let pending = app.scheduler["pending"] as? Int ?? 0
+                    Text(running > 0 ? "\(running) tour(s) démarré(s)" : launching > 0 ? "Connexion au moteur · démarrage non confirmé" : pending > 0 ? "\(pending) reprise(s) en attente" : "Aucune reprise en attente").font(.title3.weight(.semibold))
+                    Text(app.scheduler["auto_enabled"] as? Bool == true ? "Surveillance automatique activée" : "Automatisation en pause").foregroundStyle(.secondary)
+                    if let due = app.scheduler["next_due"] as? Double {
+                        Text("Prochaine échéance : " + Date(timeIntervalSince1970: due).formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if pending + running + launching > 0 {
+                        Button("Voir les reprises") { app.page = "resumptions"; app.resumeFilter = "En attente" }.buttonStyle(.link)
+                    }
+                }
+            }
+        }
+    }
+    var resumptions: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            resumptionStatus
+            Picker("Afficher les reprises", selection: $app.resumeFilter) {
+                ForEach(["À examiner", "En attente", "Historique"], id: \.self) { Text($0) }
+            }.pickerStyle(.segmented).frame(maxWidth: 540)
+            if app.resumeFilter == "À examiner" {
+                let groups = app.resumeSummary["groups"] as? [[String: Any]] ?? []
+                if groups.isEmpty { empty("Aucune tentative à examiner", icon: "checkmark.circle", detail: "Les prochaines reprises et les résultats précédents restent accessibles dans les autres vues.") }
+                ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
+                    Surface {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(group["title"] as? String ?? "Résultat à vérifier").font(.headline)
+                                Spacer()
+                                Text("\(group["count"] as? Int ?? 0) " + ((group["count"] as? Int ?? 0) > 1 ? "tentatives" : "tentative")).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                            Text(group["action"] as? String ?? "").font(.callout).foregroundStyle(.secondary)
+                            if let stamp = group["last_at"] as? Double { Text("Dernière tentative : " + Date(timeIntervalSince1970: stamp).formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary) }
+                            DisclosureGroup("Voir les sessions concernées") {
+                                let ids = group["task_ids"] as? [String] ?? []
+                                ForEach(Array(app.resumeTasks.filter { ids.contains($0["id"] as? String ?? "") }.enumerated()), id: \.offset) { _, task in
+                                    Divider().padding(.vertical, 6)
+                                    attemptDetail(task)
+                                }
+                            }.font(.callout)
+                        }
+                    }
+                }
+            } else {
+                let pending = ["ready", "waiting_quota", "running", "launching"]
+                let tasks = app.resumeTasks.filter { app.resumeFilter == "En attente" ? pending.contains($0["status"] as? String ?? "") : !pending.contains($0["status"] as? String ?? "") }
+                if tasks.isEmpty { empty(app.resumeFilter == "En attente" ? "Aucune reprise en attente" : "Aucune tentative enregistrée", icon: "clock", detail: "Les tentatives précédentes ne déclenchent aucune nouvelle relance à elles seules.") }
+                ForEach(Array(tasks.enumerated()), id: \.offset) { _, task in Surface { attemptDetail(task) } }
+            }
+            Text("Historique des tentatives de Reprise. Les journaux sont conservés.").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+    func attemptDetail(_ task: [String: Any]) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text((task["cwd"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Session").font(.callout.weight(.semibold))
+            Text(task["label"] as? String ?? "État inconnu").font(.callout)
+            if let reason = task["reason"] as? String { Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+            Text((task["engine_label"] as? String ?? "") + " · " + String((task["session"] as? String ?? "").suffix(8))).font(.caption).foregroundStyle(.secondary)
+            if let stamp = task["ended_at"] as? Double ?? task["due"] as? Double { Text(Date(timeIntervalSince1970: stamp).formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary) }
+            let source = app.rows.first { ($0["id"] as? String) == (task["session"] as? String) && ($0["provider"] as? String) == (task["provider"] as? String) }
+            let parent = source?["parent_session"] as? String
+            Button(parent == nil ? "Ouvrir la session" : "Ouvrir la session parente") {
+                app.openSession(["provider": task["provider"] as? String ?? "Codex", "id": parent ?? task["session"] as? String ?? ""])
+            }.buttonStyle(.link)
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
     func quotaRow(_ name: String, value: [String: Any]?) -> some View {
         VStack(alignment: .leading, spacing: 7) {

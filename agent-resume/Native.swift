@@ -11,6 +11,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var navigationNote = ""
     @Published var page = "overview"
     @Published var sessionFilter = "Récentes"
+    @Published var resumeFilter = "À examiner"
     @Published var busy = false
     @Published var analysisBusy = false
     @Published var searching = false
@@ -21,9 +22,11 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var lastRefresh: Date?
     @Published var running = Set<String>()
     var rows: [[String: Any]] { snapshot["sessions"] as? [[String: Any]] ?? [] }
+    var resumeTasks: [[String: Any]] { scheduler["tasks"] as? [[String: Any]] ?? [] }
+    var resumeSummary: [String: Any] { scheduler["summary"] as? [String: Any] ?? [:] }
     var attention: [[String: Any]] {
         rows.filter { row in
-            row["state"] as? String != "stopped" && Date().timeIntervalSince1970 - (row["updated"] as? Double ?? 0) < 86400
+            row["state"] as? String != "stopped" && row["is_subagent"] as? Bool != true && Date().timeIntervalSince1970 - (row["updated"] as? Double ?? 0) < 86400
         }
     }
     var analysis: [String: Any] { snapshot["analysis"] as? [String: Any] ?? [:] }

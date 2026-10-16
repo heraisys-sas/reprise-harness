@@ -1,3 +1,11 @@
+# Interface et diagnostics (16 octobre 2026)
+
+L’accueil privilégie l’état du service, les applications ouvertes et les quotas. Les anciennes tentatives ne sont plus déroulées en tête de page et ne transforment pas le service en « échec ». Une synthèse mène à la vue **Reprises**, avec trois filtres : **À examiner**, **En attente**, **Historique**. Les résultats sont regroupés par cause, avec une action proposée ; les sessions concernées restent repliées. Les journaux ne sont pas supprimés.
+
+L’analyse des sept tentatives locales distingue trois refus de dossier, deux sessions détenues par un autre processus et deux sous-agents nécessitant leur parent. Le détecteur lit désormais la source des sessions Codex : les sous-agents et les sources non reconnues sont exclus de la programmation automatique indépendante. Le contrôle est refait avant exécution pour annuler une ancienne entrée de file devenue inéligible. Les erreurs historiques de sous-agent sont reclassées à l’affichage sans nouvelle tentative. Quand la session source est visible dans la détection, son détail propose d’ouvrir le parent identifié.
+
+---
+
 # Reprise — connexions par moteur (16 octobre 2026)
 
 Reprise distingue maintenant le CLI Codex, un serveur Codex partagé existant et une délégation explicite à une session parente. Le serveur partagé transporte JSON-RPC dans WebSocket sur socket Unix. Aucun serveur de remplacement n’est lancé, aucun verrou n’est supprimé et aucun message n’est envoyé par le simple affichage d’une session.

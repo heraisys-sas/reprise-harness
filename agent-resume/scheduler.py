@@ -50,6 +50,7 @@ def confirmed(row, now, max_age=RECENT):
     try:
         uuid.UUID(row['id'])
         return (row.get('state') == 'quota_confirmed' and not row.get('active', False)
+                and not row.get('is_subagent', False) and row.get('automatic_resume_supported') is True
                 and number(row.get('interrupted_at')) and number(row.get('updated'))
                 and 0 <= now - row['interrupted_at'] <= max_age
                 and isinstance(row.get('cwd'), str) and Path(row['cwd']).is_absolute()
@@ -191,8 +192,9 @@ def status(db, state_dir=None):
             task['label'] = 'Automatisation en pause · aucune relance prévue'
     counts = Counter(task['status'] for task in tasks)
     next_due = min((task['due'] for task in tasks if task['status'] in ('ready', 'waiting_quota')), default=None)
-    return {'tasks': tasks, 'launching': counts['launching'], 'auto_enabled': automatic, 'pending': counts.get('ready', 0) + counts.get('waiting_quota', 0),
+    from presentation import summarize
+    return {'tasks': tasks, 'summary': summarize(tasks), 'launching': counts['launching'], 'auto_enabled': automatic, 'pending': counts.get('ready', 0) + counts.get('waiting_quota', 0),
             'ready': counts.get('ready', 0), 'waiting_quota': counts.get('waiting_quota', 0),
-            'running': counts['running'], 'needs_review': sum(t['status'] in ('needs_review', 'blocked_trust', 'blocked_auth', 'quota_blocked', 'failed', 'timed_out', 'blocked_owner', 'blocked_session', 'blocked_permission', 'needs_input', 'engine_unavailable', 'stopped', 'queued_parent', 'delegated_parent') for t in tasks),
+            'running': counts['running'], 'needs_review': sum(t['status'] in ('needs_review', 'blocked_trust', 'blocked_auth', 'quota_blocked', 'failed', 'timed_out', 'blocked_owner', 'blocked_parent', 'blocked_session', 'blocked_permission', 'needs_input', 'engine_unavailable', 'stopped', 'queued_parent', 'delegated_parent') for t in tasks),
             'next_due': next_due, 'last_tick': get(db, 'last_tick'), 'last_error': get(db, 'last_error'),
             'quota_checked_at': get(db, 'quota_checked_at'), 'quota_allowed': get(db, 'quota_allowed'), 'quota_retry_at': get(db, 'quota_retry_at')}

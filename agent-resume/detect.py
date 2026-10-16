@@ -61,6 +61,24 @@ def inspect(path, now=None, details=None):
     return {'state': 'unfinished', 'label': 'Étape non clôturée · à vérifier', 'retry_at': None}
 
 
+def codex_source(raw):
+    if isinstance(raw, str):
+        try:
+            source = json.loads(raw)
+        except ValueError:
+            source = raw
+    else:
+        source = raw
+    child = isinstance(source, dict) and 'subagent' in source
+    parent = None
+    if child and isinstance(source['subagent'], dict):
+        spawn = source['subagent'].get('thread_spawn')
+        if isinstance(spawn, dict):
+            parent = spawn.get('parent_thread_id')
+    return {'is_subagent': child, 'parent_session': parent,
+            'automatic_resume_supported': isinstance(source, str) and source in ('cli', 'vscode', 'exec')}
+
+
 def scan(home=None):
     home = Path(home or Path.home() / '.codex')
     state = home / 'state_5.sqlite'
@@ -71,8 +89,8 @@ def scan(home=None):
     quota = None
     try:
         with closing(sqlite3.connect(state.as_uri() + '?mode=ro', uri=True, timeout=2)) as db:
-            rows = db.execute('SELECT id,title,cwd,rollout_path,updated_at FROM threads WHERE archived=0 AND updated_at>? ORDER BY updated_at DESC LIMIT 100', (time.time() - 30 * 86400,)).fetchall()
-        for ident, title, cwd, path, updated in rows:
+            rows = db.execute('SELECT id,title,cwd,rollout_path,updated_at,source FROM threads WHERE archived=0 AND updated_at>? ORDER BY updated_at DESC LIMIT 100', (time.time() - 30 * 86400,)).fetchall()
+        for ident, title, cwd, path, updated, source in rows:
             try:
                 details = {}
                 status = inspect(path, details=details)
@@ -83,7 +101,12 @@ def scan(home=None):
             except (OSError, ValueError, TypeError):
                 continue
             if status:
-                result.append(dict(id=ident, title=title, cwd=cwd, updated=updated, **status))
+                metadata = codex_source(source)
+                if metadata['is_subagent'] and status['state'] == 'quota_confirmed':
+                    status['label'] = 'Quota atteint · sous-agent géré par son parent'
+                elif not metadata['automatic_resume_supported'] and status['state'] == 'quota_confirmed':
+                    status['label'] = 'Quota atteint · mode de reprise à vérifier'
+                result.append(dict(id=ident, title=title, cwd=cwd, updated=updated, **status, **metadata))
         return {'sessions': result, 'error': None, 'active': active, 'quota': quota}
     except sqlite3.Error:
         return {'sessions': [], 'error': 'Le format des sessions Codex a changé ou est temporairement indisponible.'}

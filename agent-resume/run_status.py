@@ -17,6 +17,7 @@ LABELS = {
     'blocked_trust': 'Lancement refusé · dossier non reconnu par le CLI',
     'blocked_auth': 'Connexion du fournisseur requise', 'quota_blocked': 'Quota refusé au lancement',
     'blocked_owner': 'Session détenue par un autre moteur',
+    'blocked_parent': 'Sous-agent · reprise à confier au parent',
     'blocked_session': 'Session ou dossier non confirmé',
     'blocked_permission': 'Approbation humaine nécessaire',
     'needs_input': 'Réponse humaine nécessaire',
@@ -57,7 +58,7 @@ def rows(db, state_dir):
                 row['status'] = state
             else:
                 row.pop('reason', None)
-        if row['status'] == 'needs_review':
+        if row['status'] in ('needs_review', 'failed'):
             try:
                 with (Path(state_dir) / (row['id'] + '.log')).open('rb') as log:
                     text = log.read(65536).decode('utf-8', errors='replace')

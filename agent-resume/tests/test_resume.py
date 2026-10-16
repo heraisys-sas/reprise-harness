@@ -71,7 +71,7 @@ class AutomaticSchedulerTests(unittest.TestCase):
         self.now = time.time()
         self.row = {'id': '12345678-1234-1234-1234-123456789abc', 'cwd': self.folder.name,
                     'updated': self.now - 20, 'interrupted_at': self.now - 20,
-                    'state': 'quota_confirmed', 'retry_at': self.now - 1}
+                    'state': 'quota_confirmed', 'retry_at': self.now - 1, 'automatic_resume_supported': True}
         self.fake = Path(self.folder.name) / 'codex'
         self.fake.write_text('#!/bin/sh\ncat >/dev/null\nexit 0\n')
         self.fake.chmod(0o700)
@@ -84,6 +84,19 @@ class AutomaticSchedulerTests(unittest.TestCase):
 
     def enqueue(self, row=None):
         scheduler.reconcile(self.db, self.data(row), self.now)
+
+    def test_child_session_is_not_enqueued_independently(self):
+        self.enqueue(self.row | {'is_subagent': True, 'automatic_resume_supported': False})
+        self.assertIsNone(self.task())
+
+    def test_preexisting_child_attempt_is_cancelled_before_quota_probe(self):
+        self.enqueue()
+        child = self.row | {'is_subagent': True, 'automatic_resume_supported': False}
+        with patch.object(scheduler, 'snapshot', return_value=self.data(child)), patch('quota.read_limits') as probe:
+            module.run_due(self.db, str(self.fake))
+        self.assertEqual(self.task()['status'], 'cancelled')
+        self.assertEqual(self.task()['attempts'], 0)
+        probe.assert_not_called()
 
     def test_only_recent_explicit_quota_is_admitted_once(self):
         for changes in ({'state': 'quota_candidate'}, {'state': 'stopped'}, {'active': True},

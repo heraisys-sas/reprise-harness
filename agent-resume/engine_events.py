@@ -14,6 +14,7 @@ REASONS = {
     'quota_blocked': 'Quota ou solde refusé par le fournisseur.',
     'blocked_auth': 'Authentification du fournisseur requise dans le harness.',
     'blocked_owner': 'Cette session est déjà détenue par un autre processus.',
+    'blocked_parent': 'Ce sous-agent doit être repris par sa session parente.',
     'blocked_session': 'Identité de session différente de celle demandée.',
     'blocked_permission': 'Une autorisation nécessaire est indisponible ou refusée.',
     'blocked_trust': 'Le moteur refuse la confiance du dossier.',
@@ -44,6 +45,8 @@ def _failure(value):
         return 'needs_input'
     message = error.get('message', value if isinstance(value, str) else '')
     message = message.lower() if isinstance(message, str) else ''
+    if 'cannot resume an unloaded multi-agent v2 sub-agent through its parent' in message:
+        return 'blocked_parent'
     if any(part in message for part in ('already owned by an active write handle', 'is live in this process', 'already has an active writer', 'sessionalreadyowned')):
         return 'blocked_owner'
     if 'not inside a trusted directory' in message:

@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from engine_events import ExecutionEvidence
+from engine_events import ExecutionEvidence, failure
 
 
 class EvidenceTests(unittest.TestCase):
@@ -41,6 +41,24 @@ class EvidenceTests(unittest.TestCase):
         evidence.feed({'type': 'turn.started'})
         evidence.feed({'type': 'turn.completed'})
         self.assertEqual(evidence.finish(0)[0], 'blocked_session')
+
+    def test_unloaded_child_requires_parent(self):
+        message = ('thread/resume failed: cannot resume an unloaded multi-agent v2 '
+                   'sub-agent through its parent; resume the parent first, '
+                   'or use thread/read to inspect it (code -32600)')
+        self.assertEqual(failure(message)[0], 'blocked_parent')
+        evidence = ExecutionEvidence('codex-cli', 'child')
+        evidence.feed({'type': 'turn.failed', 'error': {'message': message}})
+        evidence.feed({'type': 'turn.completed'})
+        self.assertEqual(evidence.finish(1)[0], 'blocked_parent')
+
+    def test_assistant_cannot_forge_parent_requirement(self):
+        evidence = ExecutionEvidence('codex-cli', 'child')
+        evidence.feed({'type': 'turn.started'})
+        evidence.feed({'type': 'item.completed', 'item': {'type': 'agent_message',
+                       'text': 'cannot resume an unloaded multi-agent v2 sub-agent through its parent'}})
+        evidence.feed({'type': 'turn.completed'})
+        self.assertEqual(evidence.finish(0)[0], 'finished')
 
     def test_harness_completed_evidence(self):
         evidence = self.harness()
