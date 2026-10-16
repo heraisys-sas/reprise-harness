@@ -86,3 +86,16 @@ class EngineTests(unittest.TestCase):
         self.db.commit()
         task_archive.restore(self.db, path)
         self.assertEqual(engines.route(self.db, SESSION)[0], 'codex-server')
+
+    def test_connection_settings_restored_without_overwriting_existing_choice(self):
+        self.db.execute('INSERT INTO engine_settings VALUES (?,?)', ('codex', json.dumps({'socket': '/local/server.sock'})))
+        path = self.root/'backup.zip'
+        task_archive.backup(self.db, path)
+        self.db.execute('DELETE FROM engine_settings')
+        self.db.commit()
+        task_archive.restore(self.db, path)
+        self.assertEqual(json.loads(self.db.execute('SELECT options FROM engine_settings').fetchone()[0])['socket'], '/local/server.sock')
+        self.db.execute('UPDATE engine_settings SET options=?', (json.dumps({'socket': '/new/server.sock'}),))
+        self.db.commit()
+        task_archive.restore(self.db, path)
+        self.assertEqual(json.loads(self.db.execute('SELECT options FROM engine_settings').fetchone()[0])['socket'], '/new/server.sock')

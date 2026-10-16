@@ -184,6 +184,10 @@ class InstalledServer(unittest.TestCase):
                     result = client.call('initialize', {'clientInfo': {'name': 'reprise-test', 'version': '0.1'}, 'capabilities': None})
                     self.assertIn('userAgent', result)
                     client.send({'method': 'initialized'})
+                    client.close()
+                    client = None
+                    from connection import probe
+                    self.assertTrue(probe(program, str(endpoint))['connected'])
             finally:
                 if client:
                     client.close()

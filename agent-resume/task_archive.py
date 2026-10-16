@@ -18,7 +18,8 @@ def backup(db, path):
         task['route'] = routes.get(task['id'], {}) | {'engine': engine, 'options': values}
         tasks.append(task)
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr('manifest.json', json.dumps({'version': 2, 'tasks': tasks}))
+        settings = {r[0]: engines.options(r[0], json.loads(r[1])) for r in db.execute('SELECT * FROM engine_settings')}
+        archive.writestr('manifest.json', json.dumps({'version': 2, 'tasks': tasks, 'engines': settings}))
 
 
 def restore(db, path):
@@ -30,6 +31,7 @@ def restore(db, path):
     if data.get('version') not in (1, 2):
         raise ValueError('Version incompatible')
     validated = []
+    settings = {engine: engines.options(engine, values) for engine, values in data.get('engines', {}).items()} if data['version'] == 2 else {}
     for task in data['tasks']:
         ident = str(uuid.UUID(task['id']))
         route = task.get('route', {}) if data['version'] == 2 else {}
@@ -44,4 +46,6 @@ def restore(db, path):
         for row, engine, values in validated:
             if db.execute('INSERT OR IGNORE INTO tasks VALUES (?,?,?,?,?,?,?)', row).rowcount:
                 engines.assign(db, row[0], engine, values)
+        for engine, values in settings.items():
+            db.execute('INSERT OR IGNORE INTO engine_settings VALUES (?,?)', (engine, json.dumps(values)))
         scheduler.put(db, 'auto_enabled', False)

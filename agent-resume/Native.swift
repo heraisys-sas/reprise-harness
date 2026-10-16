@@ -12,6 +12,13 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var page = "overview"
     @Published var sessionFilter = "Récentes"
     @Published var resumeFilter = "À examiner"
+    @Published var connection: [String: Any] = [:]
+    @Published var socketPath = ""
+    @Published var connectionBusy = false
+    @Published var connectionNote = ""
+    @Published var testedSocket = ""
+    @Published var connectionVerified = false
+    var connectionLoaded = false
     @Published var busy = false
     @Published var analysisBusy = false
     @Published var searching = false
@@ -101,9 +108,15 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         DispatchQueue.global(qos: .utility).async {
             let result = self.execute(["detect"])
             let scheduler = self.execute(["scheduler-status"])
+            let connection = self.execute(["connection-status"])
             DispatchQueue.main.async {
                 self.busy = false
                 self.scheduler = scheduler ?? [:]
+                self.connection = connection ?? [:]
+                if !self.connectionLoaded, let connection {
+                    self.socketPath = connection["configured_socket"] as? String ?? (connection["candidates"] as? [[String: Any]])?.first?["path"] as? String ?? ""
+                    self.connectionLoaded = true
+                }
                 if let result { self.snapshot = result; self.lastRefresh = Date() }
                 else { self.snapshot["error"] = "Actualisation indisponible. Les dernières informations restent affichées." }
                 self.item.button?.title = self.counters.map { "\($0.1) \($0.3.map(String.init) ?? "—")" }.joined(separator: " · ")
@@ -146,6 +159,30 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     }
     func setAutomatic(_ enabled: Bool) {
         perform(["auto-mode", enabled ? "on" : "off"]) { _ in self.refresh() }
+    }
+    func testConnection(save: Bool = false) {
+        let path = socketPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, !connectionBusy else { return }
+        connectionBusy = true
+        connectionNote = save ? "Vérification et enregistrement…" : "Vérification du serveur…"
+        perform([save ? "connection-config" : "server-check", "--socket", path]) { result in
+            self.connectionBusy = false
+            self.testedSocket = path
+            self.connectionVerified = result?["connected"] as? Bool == true
+            self.connectionNote = result?["reason"] as? String ?? "Vérification indisponible. Configuration conservée."
+            if save && result?["saved"] as? Bool == true { self.refresh() }
+        }
+    }
+    func restoreConnectionDetection() {
+        guard !connectionBusy else { return }
+        connectionBusy = true
+        perform(["connection-config", "--auto"]) { result in
+            self.connectionBusy = false
+            self.connectionVerified = false
+            self.testedSocket = ""
+            self.connectionNote = result?["reason"] as? String ?? "Configuration indisponible."
+            self.refresh()
+        }
     }
     func analyzeLocal() {
         guard !analysisBusy else { return }

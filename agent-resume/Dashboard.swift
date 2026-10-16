@@ -7,7 +7,7 @@ struct Surface<Content: View>: View {
 }
 struct Dashboard: View {
     @ObservedObject var app: App
-    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("privacy", "Confidentialité", "lock.shield")]
+    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("connection", "Connexion Codex", "point.3.connected.trianglepath.dotted"), ("privacy", "Confidentialité", "lock.shield")]
     var title: String { sections.first { $0.0 == app.page }?.1 ?? "Reprise" }
     var body: some View {
         NavigationSplitView {
@@ -33,6 +33,7 @@ struct Dashboard: View {
                     case "resumptions": resumptions
                     case "analysis": analysis
                     case "search": search
+                    case "connection": connection
                     case "privacy": privacy
                     default: overview
                     }
@@ -56,6 +57,7 @@ struct Dashboard: View {
         case "resumptions": return "Les tentatives sont regroupées par cause. Les détails restent accessibles à la demande."
         case "analysis": return "Un second regard sur les comptes rendus, sur votre Mac."
         case "search": return "Retrouvez un élément sans vous souvenir de l’application."
+        case "connection": return "Connectez Reprise à un serveur existant, sans envoyer de message à un agent."
         case "privacy": return "Vos données de recherche restent sous votre contrôle."
         default: return "L’essentiel de vos sessions, sans les interrompre."
         }
@@ -271,6 +273,62 @@ struct Dashboard: View {
                 empty(app.searchHasRun ? "Aucun résultat pour cette recherche" : "Retrouvez le fil d’une session", icon: "doc.text.magnifyingglass", detail: app.searchHasRun ? "Essayez un terme plus court ou un code d’erreur exact." : "Recherchez dans les états récents et comptes rendus analysés, toutes applications confondues.")
             }
             ForEach(Array(app.searchResults.enumerated()), id: \.offset) { _, value in Surface { VStack(alignment: .leading, spacing: 8) { Button { app.openSession(value) } label: { Text(value["title"] as? String ?? "Session").font(.headline) }.buttonStyle(.plain).help("Afficher l’application de cette session"); Text((value["provider"] as? String ?? "") + " · " + String((value["id"] as? String ?? "").suffix(8))).font(.caption).foregroundStyle(.secondary); Text(value["text"] as? String ?? "").textSelection(.enabled) } } }
+        }
+    }
+    var connection: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Surface {
+                VStack(alignment: .leading, spacing: 14) {
+                    Label("Transport des reprises Codex", systemImage: "point.3.connected.trianglepath.dotted").font(.headline)
+                    Text(app.connection.isEmpty ? "Configuration indisponible" : app.connection["mode"] as? String == "server" ? "Socket personnalisé enregistré" : "Détection automatique · socket local ou CLI").font(.callout)
+                    if let path = app.connection["configured_socket"] as? String { Text(path).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled) }
+                    Text("Une connexion réussie confirme le serveur, pas sa capacité à reprendre les sessions ouvertes dans Desktop.").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            Surface {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Serveurs locaux").font(.headline)
+                    ForEach(Array((app.connection["candidates"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, candidate in
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: candidate["detected"] as? Bool == true ? "circle.fill" : "circle").font(.caption).foregroundStyle(.secondary).padding(.top, 4)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(candidate["label"] as? String ?? "Serveur").font(.callout.weight(.semibold))
+                                Text(candidate["detected"] as? Bool == true ? "Socket détecté · connexion à tester" : "Socket indisponible").font(.caption).foregroundStyle(.secondary)
+                                Text(candidate["path"] as? String ?? "").font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                            }
+                            Spacer()
+                            Button("Choisir") {
+                                app.socketPath = candidate["path"] as? String ?? ""
+                                app.connectionVerified = false
+                                app.connectionNote = "Chemin sélectionné. Testez la connexion avant de l’enregistrer."
+                            }.disabled(app.connectionBusy)
+                        }
+                    }
+                }
+            }
+            Surface {
+                VStack(alignment: .leading, spacing: 14) {
+                    TextField("Chemin absolu du socket", text: $app.socketPath).textFieldStyle(.roundedBorder).disabled(app.connectionBusy)
+                    HStack {
+                        Button("Tester la connexion") { app.testConnection() }.disabled(app.connectionBusy || app.socketPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button("Utiliser ce serveur") { app.testConnection(save: true) }
+                            .disabled(app.connectionBusy || !app.connectionVerified || app.testedSocket != app.socketPath.trimmingCharacters(in: .whitespacesAndNewlines))
+                        Spacer()
+                        if app.connectionBusy { ProgressView().controlSize(.small) }
+                    }
+                    if !app.connectionNote.isEmpty { Text(app.connectionNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
+                    Text("Le test initialise uniquement le protocole. Aucun appel au modèle, aucune reprise de session.").font(.caption).foregroundStyle(.secondary)
+                    Divider()
+                    Button("Rétablir la détection automatique") { app.restoreConnectionDetection() }.disabled(app.connectionBusy || app.connection["mode"] as? String != "server")
+                }
+            }
+            Surface {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Serveur dédié et Codex Desktop").font(.headline)
+                    Text("Reprise peut fournir --listen au démarrage d’un serveur dédié. Ce serveur gère ses propres sessions ; il ne récupère pas celles détenues par Desktop.").font(.callout).foregroundStyle(.secondary)
+                    Text("Le raccordement de Desktop à un serveur externe reste à valider sur cette installation avant une activation au démarrage.").font(.callout).foregroundStyle(.secondary)
+                }
+            }
         }
     }
     var privacy: some View {

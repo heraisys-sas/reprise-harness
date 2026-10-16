@@ -1,0 +1,60 @@
+"""Read-only Codex discovery and explicit transport configuration."""
+import json
+from pathlib import Path
+import engines
+
+
+def status(db, state):
+    row = db.execute("SELECT options FROM engine_settings WHERE engine='codex'").fetchone()
+    configured = json.loads(row[0]).get('socket') if row else None
+    paths = [(str(engines.SOCKET), 'Serveur Codex local'),
+             (str(Path(state)/'codex-expert.sock'), 'Serveur d’expertise dédié')]
+    if configured and configured not in {p for p, _ in paths}:
+        paths.insert(0, (configured, 'Chemin enregistré'))
+    candidates = []
+    for path, label in paths:
+        try:
+            engines.socket_path({'socket': path})
+            detected, reason = True, 'Socket détecté · connexion à tester'
+        except engines.Unavailable as error:
+            detected, reason = False, error.reason
+        candidates.append({'path': path, 'label': label, 'detected': detected, 'reason': reason})
+    return {'configured_socket': configured, 'mode': 'server' if configured else 'auto', 'candidates': candidates}
+
+
+def probe(program, path):
+    from codex_rpc import Client
+    client = None
+    try:
+        values = engines.options('codex-server', {'socket': path})
+        if not program:
+            raise engines.Unavailable('engine_unavailable', 'Exécutable Codex introuvable.')
+        client = Client(program, values, timeout=5)
+        client.call('initialize', {'clientInfo': {'name': 'reprise-connection', 'version': '0.1.0'}})
+        client.send({'method': 'initialized'})
+        return {'connected': True, 'model_called': False,
+                'reason': 'Connexion confirmée. La propriété des sessions Desktop reste à vérifier.'}
+    except engines.Unavailable as error:
+        return {'connected': False, 'model_called': False, 'reason': error.reason}
+    except (OSError, ValueError, TimeoutError):
+        return {'connected': False, 'model_called': False,
+                'reason': 'Le serveur ne répond pas au protocole Codex attendu.'}
+    finally:
+        if client:
+            try:
+                client.close()
+            except OSError:
+                pass
+
+
+def configure(db, program, path=None):
+    if path is None:
+        result = {'saved': True, 'reason': 'Détection automatique restaurée : socket Codex local ou CLI.'}
+    else:
+        result = probe(program, path)
+        if not result['connected']:
+            return result | {'saved': False}
+        result |= {'saved': True, 'reason': 'Socket enregistré pour les reprises Codex sans transport explicite. Propriété des sessions non vérifiée.'}
+    with db:
+        db.execute('INSERT OR REPLACE INTO engine_settings VALUES (?,?)', ('codex', json.dumps({'socket': path} if path else {})))
+    return result

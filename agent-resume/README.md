@@ -1,3 +1,13 @@
+# Connexion Codex dans l’interface (16 octobre 2026)
+
+La page **Connexion Codex** présente le transport enregistré, le socket local et le serveur d’expertise dédié. Un chemin personnalisé peut être testé sans appel au modèle, puis enregistré explicitement. L’enregistrement refait le test et ne modifie pas le choix existant en cas d’échec. Revenir à la détection automatique est possible depuis la même page. Un test réussi ne prouve ni la propriété des sessions Desktop ni les autorisations d’un projet. Aucun serveur ne démarre pendant la détection.
+
+Les commandes `connection-status`, `server-check --socket CHEMIN` et `connection-config --socket CHEMIN` exposent ces fonctions. `connection-config --auto` rétablit le comportement automatique. Les réglages de moteur sont inclus dans les sauvegardes version 2 ; à l’import, ceux déjà présents restent inchangés et l’automatisation reste désactivée.
+
+Le code du Desktop installé contient `CODEX_APP_SERVER_USE_LOCAL_DAEMON` et `CODEX_APP_SERVER_WS_URL`. Le mode daemon comporte plusieurs conditions, notamment l’absence de certaines surcharges de configuration. Ce sont des mécanismes internes observés dans le bundle, pas une validation opérationnelle de Desktop sur notre serveur. Aucun paramètre du Desktop, variable globale, service de démarrage ou session existante n’a été modifié.
+
+---
+
 # Interface et diagnostics (16 octobre 2026)
 
 L’accueil privilégie l’état du service, les applications ouvertes et les quotas. Les anciennes tentatives ne sont plus déroulées en tête de page et ne transforment pas le service en « échec ». Une synthèse mène à la vue **Reprises**, avec trois filtres : **À examiner**, **En attente**, **Historique**. Les résultats sont regroupés par cause, avec une action proposée ; les sessions concernées restent repliées. Les journaux ne sont pas supprimés.

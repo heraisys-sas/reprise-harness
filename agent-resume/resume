@@ -112,7 +112,7 @@ def main():
     add.add_argument('--cwd', required=True)
     add.add_argument('--at', required=True, help='ISO 8601 avec fuseau, ex. 2026-10-14T18:00:00+02:00')
     add.add_argument('--prompt-file', required=True)
-    for name in ('status', 'scheduler-status', 'tick', 'install', 'uninstall', 'share', 'dashboard', 'detect', 'analyze', 'clear-index', 'engines'):
+    for name in ('status', 'scheduler-status', 'connection-status', 'tick', 'install', 'uninstall', 'share', 'dashboard', 'detect', 'analyze', 'clear-index', 'engines'):
         sub.add_parser(name)
     config = sub.add_parser('engine-config')
     config.add_argument('engine', choices=engines.ENGINES)
@@ -121,6 +121,10 @@ def main():
     config.add_argument('--parent')
     check = sub.add_parser('server-check')
     check.add_argument('--socket')
+    connection_config = sub.add_parser('connection-config')
+    transport = connection_config.add_mutually_exclusive_group(required=True)
+    transport.add_argument('--socket')
+    transport.add_argument('--auto', action='store_true')
     server = sub.add_parser('expert-server')
     server.add_argument('--socket', required=True)
     sub.add_parser('auto-mode').add_argument('mode', choices=('on', 'off'))
@@ -147,17 +151,14 @@ def main():
     elif args.action == 'engines':
         print(json.dumps(engines.capabilities(db), ensure_ascii=False))
     elif args.action == 'server-check':
-        from codex_rpc import Client
-        values = engines.options('codex-server', {'socket': args.socket} if args.socket else {})
-        if not executable:
-            parser.error('Exécutable Codex absent')
-        client = Client(executable, values)
-        try:
-            result = client.call('initialize', {'clientInfo': {'name': 'reprise', 'version': '0.1.0'}})
-            client.send({'method': 'initialized'})
-            print(json.dumps({'connected': True, 'model_called': False, 'server': result}, ensure_ascii=False))
-        finally:
-            client.close()
+        from connection import probe
+        print(json.dumps(probe(executable, args.socket or str(engines.SOCKET)), ensure_ascii=False))
+    elif args.action == 'connection-status':
+        from connection import status
+        print(json.dumps(status(db, STATE), ensure_ascii=False))
+    elif args.action == 'connection-config':
+        from connection import configure
+        print(json.dumps(configure(db, executable, args.socket), ensure_ascii=False))
     elif args.action == 'expert-server':
         import stat
         path = Path(args.socket)
@@ -246,7 +247,7 @@ def main():
     elif args.action == 'share':
         dest = Path.cwd() / 'agent-resume-share.zip'
         with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as archive:
-            for name in ('resume', 'VERSION', 'scheduler.py', 'presentation.py', 'quota.py', 'run_status.py', 'runtime.py', 'engines.py', 'engine_events.py', 'codex_rpc.py', 'owner_route.py', 'task_archive.py', 'codex_expert.py', 'codex_expert_mcp.py', 'CODEX-INTEGRATION.md', 'CACHE-POLICY.md', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
+            for name in ('resume', 'VERSION', 'scheduler.py', 'presentation.py', 'connection.py', 'quota.py', 'run_status.py', 'runtime.py', 'engines.py', 'engine_events.py', 'codex_rpc.py', 'owner_route.py', 'task_archive.py', 'codex_expert.py', 'codex_expert_mcp.py', 'CODEX-INTEGRATION.md', 'CACHE-POLICY.md', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
                 archive.write(ROOT / name, 'agent-resume/' + name)
         print(dest)
     elif args.action in ('install', 'uninstall'):
