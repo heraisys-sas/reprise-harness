@@ -1,3 +1,5 @@
 state/
 *.zip
 __pycache__/
+
+*.local.patch.yml

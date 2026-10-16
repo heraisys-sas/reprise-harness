@@ -68,7 +68,7 @@ struct Dashboard: View {
                         HStack {
                             Label("Reprise après quota", systemImage: "arrow.clockwise.circle").font(.headline)
                             Spacer()
-                            Toggle("Automatique", isOn: Binding(get: { app.scheduler["auto_enabled"] as? Bool ?? false }, set: { app.setAutomatic($0) }))
+                            Toggle("Quota Codex", isOn: Binding(get: { app.scheduler["auto_enabled"] as? Bool ?? false }, set: { app.setAutomatic($0) }))
                                 .toggleStyle(.switch).disabled(app.scheduler.isEmpty)
                         }
                         if app.scheduler.isEmpty {
@@ -88,7 +88,7 @@ struct Dashboard: View {
                             let ready = app.scheduler["ready"] as? Int ?? 0
                             let running = app.scheduler["running"] as? Int ?? 0
                             let launching = app.scheduler["launching"] as? Int ?? 0
-                            Text(running > 0 ? "Tour Codex démarré" : launching > 0 ? "Lancement du CLI · tour non confirmé" : waiting > 0 ? "\(waiting) session(s) · disponibilité du quota à vérifier" : ready > 0 ? "\(ready) reprise(s) programmée(s)" : "Prêt · aucune reprise en attente").foregroundStyle(.secondary)
+                            Text(running > 0 ? "Tour du moteur démarré" : launching > 0 ? "Connexion au moteur · tour non confirmé" : waiting > 0 ? "\(waiting) session(s) · disponibilité du quota à vérifier" : ready > 0 ? "\(ready) reprise(s) programmée(s)" : "Prêt · aucune reprise en attente").foregroundStyle(.secondary)
                             if let due = app.scheduler["next_due"] as? Double {
                                 Text(ready > 0 ? "Lancement prévu : " + Date(timeIntervalSince1970: due).formatted(date: .abbreviated, time: .shortened) : "Prochaine vérification : " + Date(timeIntervalSince1970: due).formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
                             }
@@ -99,16 +99,17 @@ struct Dashboard: View {
                         }
                         ForEach(Array((app.scheduler["tasks"] as? [[String: Any]] ?? []).prefix(8).enumerated()), id: \.offset) { _, task in
                             VStack(alignment: .leading, spacing: 4) {
-                                Text((task["cwd"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Session Codex").font(.callout.weight(.semibold))
+                                Text((task["cwd"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Session").font(.callout.weight(.semibold))
                                 Text(task["label"] as? String ?? "État inconnu").font(.callout)
+                                if let engine = task["engine_label"] as? String { Text(engine).font(.caption).foregroundStyle(.secondary) }
                                 if let reason = task["reason"] as? String { Text(reason).font(.caption).foregroundStyle(.secondary) }
                                 if let ended = task["ended_at"] as? Double { Text("Dernier résultat : " + Date(timeIntervalSince1970: ended).formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary) }
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
                             .contentShape(Rectangle()).onTapGesture {
-                                app.openSession(["provider": "Codex", "id": task["session"] as? String ?? ""])
+                                app.openSession(["provider": task["provider"] as? String ?? "Codex", "id": task["session"] as? String ?? ""])
                             }
-                            Button("Afficher dans Codex", systemImage: "arrow.up.forward.app") {
-                                app.openSession(["provider": "Codex", "id": task["session"] as? String ?? ""])
+                            Button("Afficher l’application", systemImage: "arrow.up.forward.app") {
+                                app.openSession(["provider": task["provider"] as? String ?? "Codex", "id": task["session"] as? String ?? ""])
                             }.buttonStyle(.link)
                         }
                         Text("Abonnement ChatGPT · une tentative par interruption · fin de tour ≠ tâche validée").font(.caption).foregroundStyle(.secondary)

@@ -7,14 +7,23 @@ import subprocess
 import time
 import tempfile
 from runtime import JsonLines, terminate
+from engine_events import ExecutionEvidence, failure
 
 LABELS = {
     'ready': 'Reprise programmée', 'waiting_quota': 'Disponibilité du quota à vérifier',
-    'paused': 'En pause', 'launching': 'Lancement du CLI', 'running': 'Tour Codex démarré',
+    'paused': 'En pause', 'launching': 'Lancement du moteur', 'running': 'Tour du moteur démarré',
     'finished': 'Tour terminé · résultat métier non vérifié', 'needs_review': 'Résultat de reprise à vérifier',
     'needs_path': 'Dossier indisponible', 'cancelled': 'Reprise annulée · session modifiée',
     'blocked_trust': 'Lancement refusé · dossier non reconnu par le CLI',
-    'blocked_auth': 'Connexion Codex requise', 'quota_blocked': 'Quota refusé au lancement',
+    'blocked_auth': 'Connexion du fournisseur requise', 'quota_blocked': 'Quota refusé au lancement',
+    'blocked_owner': 'Session détenue par un autre moteur',
+    'blocked_session': 'Session ou dossier non confirmé',
+    'blocked_permission': 'Approbation humaine nécessaire',
+    'needs_input': 'Réponse humaine nécessaire',
+    'stopped': 'Tour interrompu',
+    'engine_unavailable': 'Moteur indisponible ou non configuré',
+    'queued_parent': 'Demande transmise au parent · reprise enfant non confirmée',
+    'delegated_parent': 'Parent sollicité · reprise enfant non confirmée',
     'failed': 'Échec de la reprise', 'timed_out': 'Délai de reprise dépassé',
 }
 
@@ -32,14 +41,8 @@ def save(db, ident, state, reason=None, **fields):
             db.execute(f'UPDATE run_details SET {name}=? WHERE task_id=?', (value, ident))
 
 def classify(text):
-    text = text.lower()
-    if 'not inside a trusted directory' in text:
-        return 'blocked_trust', 'Le CLI refuse ce dossier. Reprendre depuis Codex ou configurer explicitement sa confiance ; aucune protection contournée.'
-    if 'usage_limit_exceeded' in text or 'hit your usage limit' in text:
-        return 'quota_blocked', 'Le fournisseur a refusé le quota malgré la vérification préalable.'
-    if 'not logged in' in text or 'authentication required' in text or 'unauthorized' in text:
-        return 'blocked_auth', 'La connexion au compte doit être rétablie dans Codex.'
-    return 'needs_review', 'Le CLI a échoué ; consulter le journal local pour le diagnostic.'
+    state, reason = failure(text)
+    return (state, reason) if state != 'failed' else ('needs_review', 'Le moteur a échoué ; consulter le journal local pour le diagnostic.')
 
 def rows(db, state_dir):
     result = []
@@ -54,14 +57,16 @@ def rows(db, state_dir):
                 row['status'] = state
             else:
                 row.pop('reason', None)
-        elif row['status'] == 'needs_review':
+        if row['status'] == 'needs_review':
             try:
                 with (Path(state_dir) / (row['id'] + '.log')).open('rb') as log:
                     text = log.read(65536).decode('utf-8', errors='replace')
-                row['status'], row['reason'] = classify(text)
+                state, reason = classify(text)
+                if state != 'needs_review' or not row.get('reason'):
+                    row['status'], row['reason'] = state, reason
             except OSError:
                 row['reason'] = 'Aucun diagnostic local disponible.'
-        elif row['status'] == 'running':
+        elif row['status'] == 'running' and not state:
             row['status'] = 'launching'
             row['reason'] = 'Ancienne exécution sans confirmation de démarrage du tour.'
         row['label'] = LABELS.get(row['status'], 'État inconnu')
@@ -70,13 +75,12 @@ def rows(db, state_dir):
         result.append(row)
     return result
 
-def execute(db, task, argv, env, log, timeout=7200):
+def execute(db, task, argv, env, log, timeout=7200, engine='codex-cli'):
     ident = task['id']
     save(db, ident, 'launching', started_at=time.time())
     decoder = JsonLines()
     diagnostic = bytearray()
-    completed = False
-    turn_error = False
+    evidence = ExecutionEvidence(engine, task['session'])
     timed_out = False
     with tempfile.TemporaryFile() as prompt:
         prompt.write(task['prompt'].encode()); prompt.seek(0)
@@ -101,26 +105,18 @@ def execute(db, task, argv, env, log, timeout=7200):
                     output.write(chunk[:keep]); captured += min(len(chunk), keep)
                     diagnostic.extend(chunk[:max(0, 65536-len(diagnostic))])
                     for event in decoder.feed(chunk):
-                        kind = event.get('type')
-                        if kind == 'turn.started':
-                            save(db, ident, 'running', last_event_at=time.time())
-                        elif kind in ('item.started', 'item.completed'):
-                            with db:
-                                db.execute('UPDATE run_details SET last_event_at=? WHERE task_id=?', (time.time(), ident))
-                        elif kind == 'turn.completed':
-                            completed = True
-                        elif kind in ('turn.failed', 'error'):
-                            turn_error = True
+                        state = evidence.feed(event)
+                        if state:
+                            save(db, ident, state, last_event_at=time.time())
     finally:
         selector.close()
         terminate(process)
-    if timed_out:
-        state, reason = 'timed_out', 'Le délai maximal a été atteint ; aucune nouvelle tentative automatique.'
-    elif process.returncode == 0 and completed and not turn_error:
-        state, reason = 'finished', 'Le CLI confirme la fin du tour ; cela ne prouve pas que la tâche demandée est achevée.'
-    else:
-        state, reason = classify(diagnostic.decode('utf-8', errors='replace'))
-        if process.returncode == 0 and not turn_error:
+    state, reason = evidence.finish(process.returncode, timed_out)
+    if state in ('failed', 'needs_review') and not timed_out:
+        classified, diagnostic_reason = classify(diagnostic.decode('utf-8', errors='replace'))
+        if classified != 'needs_review':
+            state, reason = classified, diagnostic_reason
+        elif process.returncode == 0:
             reason = 'Le processus est sorti sans événement de fin de tour confirmé.'
     save(db, ident, state, reason, ended_at=time.time(), exit_code=process.returncode)
     return 'finished' if state == 'finished' else 'needs_review'

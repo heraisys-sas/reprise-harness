@@ -1,3 +1,27 @@
+# Reprise — connexions par moteur (16 octobre 2026)
+
+Reprise distingue maintenant le CLI Codex, un serveur Codex partagé existant et une délégation explicite à une session parente. Le serveur partagé transporte JSON-RPC dans WebSocket sur socket Unix. Aucun serveur de remplacement n’est lancé, aucun verrou n’est supprimé et aucun message n’est envoyé par le simple affichage d’une session.
+
+```sh
+./resume engines
+./resume server-check --socket /chemin/prive/codex.sock
+./resume add --engine codex-server --socket /chemin/prive/codex.sock --session UUID --cwd /projet --at '2026-10-17T10:00:00+02:00' --prompt-file prompt.example.txt
+./resume add --engine codex-parent --socket /chemin/prive/codex.sock --parent UUID_PARENT --session UUID_ENFANT --cwd /projet --at '2026-10-17T10:00:00+02:00' --prompt-file prompt.example.txt
+./resume enable IDENTIFIANT_RETOURNE
+```
+
+Les ajouts restent en pause jusqu’à activation. `server-check` effectue uniquement la connexion et l’initialisation, sans appeler le modèle. La route `codex` choisit un socket existant ou le CLI ; un socket explicitement configuré ne déclenche jamais un repli vers un second processus. `engine-config codex --socket /chemin/prive/codex.sock` permet de fixer le transport des futures tentatives automatiques. Ne configurer que le serveur qui détient effectivement les sessions concernées.
+
+La délégation exige une relation parent–enfant confirmée par le serveur, le même dossier et un parent au repos. Elle dépose une demande identifiée dans sa file native puis demande son démarrage. « Parent sollicité » ne signifie pas « enfant repris » ; ce résultat reste à examiner et n’est jamais déclaré terminé automatiquement. Cette route utilise des méthodes expérimentales de Codex 0.160.0 et doit être choisie explicitement. Les contrôles d’inactivité ne constituent pas un verrou atomique contre un démarrage simultané dans une autre interface.
+
+Harness dispose d’une reprise CLI manuelle via `--engine harness-cli --profile PROFIL_HEADLESS`, uniquement pour un profil existant déclarant `@deepseek-ai/dsh-headless`. Le modèle et la facturation suivent ce profil, sans héritage garanti de la session historique. Aucun profil n’est créé et le profil Desktop reste inchangé. Claude Code reste en détection seule tant que son adaptateur n’est pas validé. La reprise automatique sur quota reste limitée à Codex.
+
+Les sauvegardes version 2 conservent le moteur et ses options par tâche ; les sauvegardes version 1 restent importables. Les imports restent en pause, l’automatisation désactivée et les tâches déjà présentes inchangées. Aucun identifiant d’authentification n’est exporté.
+
+Sur ce Mac, aucun socket du propriétaire Desktop n’a été détecté. Le transport a été éprouvé avec un serveur local isolé et sans appel au modèle ; il ne démontre pas encore la reprise réelle d’une session Desktop. Créer un serveur via `codex app-server --listen unix:///chemin/prive/codex.sock` permet de partager les sessions qu’il détient ; cela ne récupère pas celles d’un autre propriétaire. Les possibilités d’inférence Harness et d’authentification officielle sont détaillées dans [CODEX-INTEGRATION.md](CODEX-INTEGRATION.md).
+
+---
+
 # Reprise — état actuel (15 octobre 2026)
 
 Cliquer sur le titre d’un signalement, d’une analyse ou d’un résultat de recherche affiche l’application associée. Pour Codex, un identifiant UUID valide ouvre directement `codex://threads/UUID`. Les autres applications sont affichées sans prétendre sélectionner la session. La flèche des signalements conserve l’accès aux détails. Pour Claude Code, les journaux ne permettent pas d’identifier l’hôte terminal/éditeur : cette limite est affichée, sans choisir une application au hasard. Aucun message ni reprise n’est envoyé par ce clic.

@@ -17,7 +17,7 @@ class StatusTests(unittest.TestCase):
         self.db.row_factory = sqlite3.Row
         self.db.execute('CREATE TABLE tasks(id TEXT,session TEXT,cwd TEXT,prompt TEXT,due REAL,status TEXT,attempts INTEGER)')
         run_status.setup(self.db)
-        self.task = dict(id='test', cwd=str(self.root), prompt='continue')
+        self.task = dict(id='test', session='session', cwd=str(self.root), prompt='continue')
         self.db.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?,?)', ('test','session',str(self.root),'private prompt',0,'needs_review',1))
         self.db.commit()
 

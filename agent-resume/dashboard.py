@@ -54,6 +54,9 @@ def serve(database, root):
                         self.reply(409, json.dumps({'error': 'Cette tâche est déjà en cours ou indisponible.'})); return
                     if data['action'] == 'enable' and not Path(row['cwd']).is_dir():
                         self.reply(409, json.dumps({'error': 'Le dossier du projet doit être reconnecté.'})); return
+                    event = db.execute('SELECT consumed FROM automation_events WHERE task_id=?', (data['id'],)).fetchone()
+                    if data['action'] == 'enable' and event and (event['consumed'] or row['attempts'] or row['status'] == 'cancelled'):
+                        self.reply(409, json.dumps({'error': 'Interruption déjà traitée ou périmée ; examen nécessaire.'})); return
                     db.execute('UPDATE tasks SET status=? WHERE id=?', ('ready' if data['action'] == 'enable' else 'paused', data['id']))
                 self.reply(200, '{}')
             except (ValueError, KeyError, TypeError):

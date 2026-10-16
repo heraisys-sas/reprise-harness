@@ -14,6 +14,7 @@ import uuid
 import zipfile
 import scheduler
 import run_status
+import engines
 from runtime import codex_environment
 
 ROOT = Path(__file__).resolve().parent
@@ -27,19 +28,14 @@ def database():
     db.execute('CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, session TEXT, cwd TEXT, prompt TEXT, due REAL, status TEXT, attempts INTEGER DEFAULT 0)')
     scheduler.setup(db)
     run_status.setup(db)
+    engines.setup(db)
     return db
 
 def command(task, executable, automatic=False):
-    uuid.UUID(task['session'])
-    options = ['-c', 'model_provider="openai"', '-c', 'forced_login_method="chatgpt"'] if automatic else []
-    return [executable, 'exec', *options, '--json', '--sandbox', 'workspace-write', 'resume', task['session'], '-']
+    return engines.command('codex-cli', task, executable, automatic=automatic)
 
 def codex_executable():
-    candidates = [shutil.which('codex'), '/Applications/Codex.app/Contents/Resources/codex',
-                  '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
-                  '/Applications/ChatGPT.app/Contents/Resources/codex',
-                  '/Applications/ChatGPT.app/Contents/Resources/bin/codex']
-    return next((str(Path(p).resolve()) for p in candidates if p and Path(p).is_file() and os.access(p, os.X_OK)), None)
+    return engines.executable('codex-cli')
 
 def run_due(db, executable):
     with (STATE / 'worker.lock').open('a') as lock:
@@ -55,8 +51,19 @@ def run_due(db, executable):
         for task in db.execute("SELECT * FROM tasks WHERE status='ready' AND due<=? ORDER BY due", (dt.datetime.now().timestamp(),)).fetchall():
             automatic = db.execute('SELECT 1 FROM automation_events WHERE task_id=?', (task['id'],)).fetchone() is not None
             try:
-                if not scheduler.preflight(db, task, executable):
+                engine, settings = engines.route(db, task['id'])
+                selected = engines.select(engine, settings)
+                program = (executable if selected.startswith('codex') else None) or engines.executable(selected)
+                if not program:
+                    raise engines.Unavailable('engine_unavailable', 'Exécutable du moteur absent ; aucune substitution.')
+                argv = None if selected in ('codex-server', 'codex-parent') else engines.command(selected, task, program, settings, automatic)
+                if not scheduler.preflight(db, task, program):
                     continue
+            except engines.Unavailable as error:
+                run_status.save(db, task['id'], error.state, error.reason)
+                with db:
+                    db.execute("UPDATE tasks SET status='needs_review' WHERE id=?", (task['id'],))
+                continue
             except Exception as error:
                 with db:
                     scheduler.put(db, 'last_error', 'Préparation de reprise indisponible : ' + type(error).__name__)
@@ -77,7 +84,15 @@ def run_due(db, executable):
                 db.execute("UPDATE tasks SET status='running', attempts=attempts+1 WHERE id=?", (task['id'],))
             log = STATE / (task['id'] + '.log')
             try:
-                status = run_status.execute(db, task, command(task, executable, automatic), codex_environment(), log)
+                if selected in ('codex-server', 'codex-parent'):
+                    if selected == 'codex-parent':
+                        from owner_route import execute
+                    else:
+                        from codex_rpc import execute
+                    status = execute(db, task, program, settings, log, automatic)
+                else:
+                    environment = codex_environment() if selected == 'codex-cli' else dict(os.environ)
+                    status = run_status.execute(db, task, argv, environment, log, engine=selected)
             except (OSError, subprocess.TimeoutExpired) as error:
                 status = 'needs_review'
                 run_status.save(db, task['id'], 'failed', 'Impossible de lancer le CLI : ' + type(error).__name__, ended_at=dt.datetime.now().timestamp())
@@ -85,16 +100,29 @@ def run_due(db, executable):
 
 def main():
     os.umask(0o077)
-    parser = argparse.ArgumentParser(description='Reprise différée de sessions Codex, sans LLM pour le scheduler.')
+    parser = argparse.ArgumentParser(description='Reprise explicite par moteur, sans LLM pour le scheduler.')
     sub = parser.add_subparsers(dest='action', required=True)
     sub.add_parser('search').add_argument('query')
     add = sub.add_parser('add')
-    add.add_argument('--session', required=True, type=lambda s: str(uuid.UUID(s)))
+    add.add_argument('--session', required=True)
+    add.add_argument('--engine', choices=engines.ENGINES, default='codex')
+    add.add_argument('--profile')
+    add.add_argument('--socket')
+    add.add_argument('--parent')
     add.add_argument('--cwd', required=True)
     add.add_argument('--at', required=True, help='ISO 8601 avec fuseau, ex. 2026-10-14T18:00:00+02:00')
     add.add_argument('--prompt-file', required=True)
-    for name in ('status', 'scheduler-status', 'tick', 'install', 'uninstall', 'share', 'dashboard', 'detect', 'analyze', 'clear-index'):
+    for name in ('status', 'scheduler-status', 'tick', 'install', 'uninstall', 'share', 'dashboard', 'detect', 'analyze', 'clear-index', 'engines'):
         sub.add_parser(name)
+    config = sub.add_parser('engine-config')
+    config.add_argument('engine', choices=engines.ENGINES)
+    config.add_argument('--profile')
+    config.add_argument('--socket')
+    config.add_argument('--parent')
+    check = sub.add_parser('server-check')
+    check.add_argument('--socket')
+    server = sub.add_parser('expert-server')
+    server.add_argument('--socket', required=True)
     sub.add_parser('auto-mode').add_argument('mode', choices=('on', 'off'))
     for name in ('pause', 'enable'):
         sub.add_parser(name).add_argument('id')
@@ -104,6 +132,8 @@ def main():
     db = database()
     executable = codex_executable()
     if args.action == 'add':
+        args.session = engines.validate_session(args.engine, args.session)
+        settings = engines.options(args.engine, {k: getattr(args, k) for k in ('profile', 'socket', 'parent') if getattr(args, k) is not None})
         when = dt.datetime.fromisoformat(args.at)
         if when.tzinfo is None:
             parser.error('--at exige un fuseau horaire')
@@ -112,18 +142,57 @@ def main():
             parser.error('--cwd doit être un dossier')
         ident = str(uuid.uuid4())
         db.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?,0)', (ident, args.session, str(cwd), Path(args.prompt_file).read_text(), when.timestamp(), 'paused'))
+        engines.assign(db, ident, args.engine, settings)
         db.commit(); print(f'{ident} — en pause ; activer avec ./resume enable {ident}')
+    elif args.action == 'engines':
+        print(json.dumps(engines.capabilities(db), ensure_ascii=False))
+    elif args.action == 'server-check':
+        from codex_rpc import Client
+        values = engines.options('codex-server', {'socket': args.socket} if args.socket else {})
+        if not executable:
+            parser.error('Exécutable Codex absent')
+        client = Client(executable, values)
+        try:
+            result = client.call('initialize', {'clientInfo': {'name': 'reprise', 'version': '0.1.0'}})
+            client.send({'method': 'initialized'})
+            print(json.dumps({'connected': True, 'model_called': False, 'server': result}, ensure_ascii=False))
+        finally:
+            client.close()
+    elif args.action == 'expert-server':
+        import stat
+        path = Path(args.socket)
+        if not path.is_absolute() or not executable:
+            parser.error('Chemin absolu et exécutable Codex requis')
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        info = path.parent.stat()
+        if info.st_uid != os.getuid() or not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o077:
+            parser.error('Le dossier de socket doit appartenir à cet utilisateur et être privé (0700)')
+        if path.exists() or path.is_symlink():
+            parser.error('Socket déjà présent ; aucun propriétaire remplacé ni lien supprimé')
+        argv = [executable, 'app-server', '-c', 'forced_login_method="chatgpt"', '-c', 'model_provider="openai"',
+                '--listen', 'unix://' + str(path)]
+        for feature in ('apps', 'plugins', 'hooks', 'browser_use', 'browser_use_external', 'computer_use', 'multi_agent', 'multi_agent_v2'):
+            argv.extend(['--disable', feature])
+        print('Serveur d’expertise au premier plan ; aucun rattachement aux sessions Desktop.', flush=True)
+        subprocess.run(argv, env=codex_environment(), check=True)
+    elif args.action == 'engine-config':
+        settings = engines.options(args.engine, {k: getattr(args, k) for k in ('profile', 'socket', 'parent') if getattr(args, k) is not None})
+        if not settings:
+            parser.error('Fournir --socket ou --profile pour ce moteur')
+        with db:
+            db.execute('INSERT OR REPLACE INTO engine_settings VALUES (?,?)', (args.engine, json.dumps(settings)))
+        print(json.dumps({'engine': args.engine, 'options': settings}))
     elif args.action == 'scheduler-status':
         print(json.dumps(scheduler.status(db, STATE) | {
             'installed': (Path.home() / 'Library/LaunchAgents' / (LABEL + '.plist')).exists(),
-            'executable_available': executable is not None}, ensure_ascii=False))
+            'executable_available': any(item['available'] for item in engines.capabilities(db)), 'engines': engines.capabilities(db)}, ensure_ascii=False))
     elif args.action == 'auto-mode':
         with db:
             scheduler.put(db, 'auto_enabled', args.mode == 'on')
         print(json.dumps({'auto_enabled': scheduler.enabled(db)}))
     elif args.action == 'status':
-        for row in run_status.rows(db, STATE):
-            print(json.dumps({k: row[k] for k in ('id', 'session', 'cwd', 'status', 'attempts', 'label')} | {'at': dt.datetime.fromtimestamp(row['due']).astimezone().isoformat()}, ensure_ascii=False))
+        for row in engines.decorate(db, run_status.rows(db, STATE)):
+            print(json.dumps({k: row[k] for k in ('id', 'session', 'cwd', 'status', 'attempts', 'label', 'engine', 'provider')} | {'at': dt.datetime.fromtimestamp(row['due']).astimezone().isoformat()}, ensure_ascii=False))
     elif args.action in ('pause', 'enable'):
         row = db.execute('SELECT * FROM tasks WHERE id=?', (args.id,)).fetchone()
         if not row or row['status'] == 'running':
@@ -154,46 +223,30 @@ def main():
         with db:
             scheduler.put(db, 'last_tick', dt.datetime.now().timestamp())
             scheduler.put(db, 'last_error', None)
-        if not executable:
-            with db:
-                scheduler.put(db, 'last_error', 'Codex CLI absent')
-            db.close()
-            return
-        try:
-            scheduler.reconcile(db, scheduler.snapshot())
-            scheduler.refresh_waiting(db, executable)
-        except Exception as error:
-            with db:
-                scheduler.put(db, 'last_error', 'Détection automatique indisponible : ' + type(error).__name__)
+        if executable:
+            try:
+                scheduler.reconcile(db, scheduler.snapshot())
+                scheduler.refresh_waiting(db, executable)
+            except Exception as error:
+                with db:
+                    scheduler.put(db, 'last_error', 'Détection automatique indisponible : ' + type(error).__name__)
         run_due(db, executable)
         try:
             cleanup(STATE)
         except (ValueError, OSError, sqlite3.Error):
             pass
     elif args.action == 'backup':
-        with zipfile.ZipFile(args.archive, 'w', zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr('manifest.json', json.dumps({'version': 1, 'tasks': [dict(r) for r in db.execute('SELECT * FROM tasks')]}))
+        from task_archive import backup
+        backup(db, args.archive)
         print(args.archive)
     elif args.action == 'restore':
-        with zipfile.ZipFile(args.archive) as archive:
-            info = archive.getinfo('manifest.json')
-            if info.file_size > 10_000_000:
-                parser.error('Sauvegarde trop volumineuse')
-            data = json.loads(archive.read(info))
-        if data['version'] != 1:
-            parser.error('Version incompatible')
-        rows = []
-        for task in data['tasks']:
-            uuid.UUID(task['id']); uuid.UUID(task['session'])
-            rows.append((task['id'], task['session'], task['cwd'], task['prompt'], float(task['due']), 'paused', int(task['attempts'])))
-        with db:
-            db.executemany('INSERT OR IGNORE INTO tasks VALUES (?,?,?,?,?,?,?)', rows)
-            scheduler.put(db, 'auto_enabled', False)
+        from task_archive import restore
+        restore(db, args.archive)
         print('Tâches importées en pause ; les identifiants déjà présents restent inchangés.')
     elif args.action == 'share':
         dest = Path.cwd() / 'agent-resume-share.zip'
         with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as archive:
-            for name in ('resume', 'VERSION', 'scheduler.py', 'quota.py', 'run_status.py', 'runtime.py', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
+            for name in ('resume', 'VERSION', 'scheduler.py', 'quota.py', 'run_status.py', 'runtime.py', 'engines.py', 'engine_events.py', 'codex_rpc.py', 'owner_route.py', 'task_archive.py', 'codex_expert.py', 'codex_expert_mcp.py', 'CODEX-INTEGRATION.md', 'CACHE-POLICY.md', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
                 archive.write(ROOT / name, 'agent-resume/' + name)
         print(dest)
     elif args.action in ('install', 'uninstall'):
@@ -205,12 +258,12 @@ def main():
             subprocess.run(['launchctl', 'bootout', target + '/' + LABEL], capture_output=True)
             plist.unlink(missing_ok=True)
         else:
-            if not executable:
-                parser.error('Installer Codex CLI et effectuer codex login au préalable')
+            if not any(item['available'] for item in engines.capabilities(db)):
+                parser.error('Installer et configurer au moins un moteur pris en charge')
             if plist.exists():
                 parser.error('Service déjà installé ; désinstaller avant de réinstaller')
             plist.parent.mkdir(parents=True, exist_ok=True)
-            settings = {'Label': LABEL, 'ProgramArguments': [sys.executable, str(ROOT / 'resume'), 'tick'], 'StartInterval': 60, 'EnvironmentVariables': {'AGENT_RESUME_STATE': str(STATE), 'PATH': str(Path(executable).parent) + ':/usr/bin:/bin'}, 'StandardOutPath': str(STATE / 'service.log'), 'StandardErrorPath': str(STATE / 'service-error.log')}
+            settings = {'Label': LABEL, 'ProgramArguments': [sys.executable, str(ROOT / 'resume'), 'tick'], 'StartInterval': 60, 'EnvironmentVariables': {'AGENT_RESUME_STATE': str(STATE), 'PATH': ':'.join(sorted({str(Path(p).parent) for key in engines.ENGINES if (p := engines.executable(key))})) + ':/usr/bin:/bin'}, 'StandardOutPath': str(STATE / 'service.log'), 'StandardErrorPath': str(STATE / 'service-error.log')}
             plist.write_bytes(plistlib.dumps(settings))
             result = subprocess.run(['launchctl', 'bootstrap', target, str(plist)], capture_output=True, text=True)
             if result.returncode:
