@@ -1,0 +1,1 @@
+{"title":"RouteAdvice","type":"object","properties":{"tier":{"type":"string","enum":["trivial","light","standard","complex"]},"evidence":{"type":"string"}},"required":["tier","evidence"],"additionalProperties":false,"x-order":["tier","evidence"]}

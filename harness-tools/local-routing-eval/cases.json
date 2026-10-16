@@ -1,0 +1,170 @@
+[
+  {
+    "id": "trivial-fr-01",
+    "prompt": "Que vaut len(\"harnais\") en Python ?",
+    "expected": "trivial",
+    "reason": "Lecture directe d’une expression sans modification de code.",
+    "critical": false
+  },
+  {
+    "id": "trivial-fr-02",
+    "prompt": "Dans JSON, null et la chaîne \"null\" sont-ils la même valeur ? Réponds en une phrase.",
+    "expected": "trivial",
+    "reason": "Distinction élémentaire à réponse courte et stable.",
+    "critical": false
+  },
+  {
+    "id": "trivial-fr-03",
+    "prompt": "Le code HTTP 204 indique-t-il une réponse réussie ?",
+    "expected": "trivial",
+    "reason": "Identification factuelle d’un statut connu.",
+    "critical": false
+  },
+  {
+    "id": "trivial-en-01",
+    "prompt": "What file extension normally identifies a Rust source file? Answer with the extension only.",
+    "expected": "trivial",
+    "reason": "Single factual lookup; no implementation or investigation.",
+    "critical": false
+  },
+  {
+    "id": "trivial-en-02",
+    "prompt": "Is an empty Python list truthy or falsy?",
+    "expected": "trivial",
+    "reason": "Elementary language fact with one short answer.",
+    "critical": false
+  },
+  {
+    "id": "trivial-en-03",
+    "prompt": "Which JSON value represents an explicitly unknown counter: 0 or null?",
+    "expected": "trivial",
+    "reason": "Direct choice under an explicit unknown-value convention.",
+    "critical": false
+  },
+  {
+    "id": "light-fr-01",
+    "prompt": "Dans ce fragment seulement, renomme retries en attempts sans changer le comportement : retries = 2; print(retries).",
+    "expected": "light",
+    "reason": "Substitution locale bornée sans dépendance externe.",
+    "critical": false
+  },
+  {
+    "id": "light-fr-02",
+    "prompt": "Traduis en anglais ce libellé : « Réessayer après la fin du délai ». Ne propose aucun code.",
+    "expected": "light",
+    "reason": "Traduction courte sans analyse technique.",
+    "critical": false
+  },
+  {
+    "id": "light-fr-03",
+    "prompt": "Extrais les identifiants, dans leur ordre : [{\"id\":\"a7\",\"ok\":true},{\"id\":\"b4\",\"ok\":false}].",
+    "expected": "light",
+    "reason": "Extraction mécanique d’un petit document fourni.",
+    "critical": false
+  },
+  {
+    "id": "light-en-01",
+    "prompt": "Convert this mapping to JSON without changing values: enabled=true, limit=3, label=\"worker\".",
+    "expected": "light",
+    "reason": "Small explicit representation conversion.",
+    "critical": false
+  },
+  {
+    "id": "light-en-02",
+    "prompt": "Add one sentence to this README line explaining that the check runs offline: \"Run python3 check.py.\"",
+    "expected": "light",
+    "reason": "Narrow documentation edit with supplied wording context.",
+    "critical": false
+  },
+  {
+    "id": "light-en-03",
+    "prompt": "Alphabetize these three dependency names and return a plain list: serde, clap, anyhow.",
+    "expected": "light",
+    "reason": "Deterministic sorting of three supplied strings.",
+    "critical": false
+  },
+  {
+    "id": "standard-fr-01",
+    "prompt": "Écris en Python standard une fonction de somme glissante sur un itérable à passage unique, avec mémoire O(largeur), refus des largeurs invalides et tests des cas limites.",
+    "expected": "standard",
+    "reason": "Implémentation bornée avec contraintes algorithmiques et vérification.",
+    "critical": false
+  },
+  {
+    "id": "standard-fr-02",
+    "prompt": "Corrige un agrégateur de consommation : un compteur absent ou invalide doit rester inconnu, zéro est valide, et les tokens de raisonnement ne doivent pas être ajoutés deux fois. Ajoute des tests ciblés.",
+    "expected": "standard",
+    "reason": "Correction fonctionnelle de plusieurs invariants explicites.",
+    "critical": true
+  },
+  {
+    "id": "standard-fr-03",
+    "prompt": "Crée un script Python qui exécute trois commandes argv autorisées, sans shell, avec délai par commande et résultat JSON ; distingue échec et exécutable absent.",
+    "expected": "standard",
+    "reason": "Petit outil de processus avec traitement des erreurs défini.",
+    "critical": true
+  },
+  {
+    "id": "standard-en-01",
+    "prompt": "Implement a dependency-free JavaScript retry predicate: only HTTP 429 or 500–599, at most three attempts, strict integer inputs. Include boundary tests.",
+    "expected": "standard",
+    "reason": "Bounded code implementation and edge-case testing.",
+    "critical": false
+  },
+  {
+    "id": "standard-en-02",
+    "prompt": "Replace a Python decimal-counter parser with a Rust std-only CLI; preserve unknown values and overflow handling. Compare outputs on a provided finite corpus.",
+    "expected": "standard",
+    "reason": "Small specified language migration with deterministic parity checks.",
+    "critical": false
+  },
+  {
+    "id": "standard-en-03",
+    "prompt": "Add a project identifier to the existing in-memory cache key together with source content hashes; write tests that content changes invalidate the key and separate projects never collide.",
+    "expected": "standard",
+    "reason": "Constrained local implementation; no shared-service authorization redesign.",
+    "critical": true
+  },
+  {
+    "id": "complex-fr-01",
+    "prompt": "Une API asynchrone perd des validations après annulation pendant une reprise. Identifie la course entre workers, écriture durable et accusé de réception ; propose puis vérifie une correction sans doublons après crash.",
+    "expected": "complex",
+    "reason": "Diagnostic concurrent, durabilité et annulation nécessitent raisonnement transversal.",
+    "critical": true
+  },
+  {
+    "id": "complex-fr-02",
+    "prompt": "Prépare la migration Python vers Rust d’un parseur en production utilisé par plusieurs services : compatibilité des erreurs, Unicode, concurrence, déploiement progressif et retour arrière vérifiable.",
+    "expected": "complex",
+    "reason": "Migration multi-services à contrats et risques interdépendants.",
+    "critical": true
+  },
+  {
+    "id": "complex-fr-03",
+    "prompt": "Deux clients MCP doivent partager un cache chiffré tout en gardant leurs droits séparés après compactage et révocation. Conçois les frontières de confiance et un protocole de tests adversariaux, sans élargir leurs permissions.",
+    "expected": "complex",
+    "reason": "Authentification, révocation et confidentialité multi-clients.",
+    "critical": true
+  },
+  {
+    "id": "complex-en-01",
+    "prompt": "Investigate a production-only memory leak across a Python API, Rust extension and cancellation path. Build competing hypotheses, a reproducible experiment and a fix that preserves ownership guarantees.",
+    "expected": "complex",
+    "reason": "Cross-language lifetime diagnosis requiring evidence and competing hypotheses.",
+    "critical": true
+  },
+  {
+    "id": "complex-en-02",
+    "prompt": "Design a failure-safe rollout for a database schema change consumed by old and new workers simultaneously, including idempotent backfill, crash recovery, rollback and invariant checks.",
+    "expected": "complex",
+    "reason": "Multi-stage distributed rollout with compatibility and recovery constraints.",
+    "critical": true
+  },
+  {
+    "id": "complex-en-03",
+    "prompt": "Assess whether a local router really reduces total billed cost without degrading validated task quality: account for retries, incomplete usage, exact-prefix cache behavior and paired uncertainty estimates.",
+    "expected": "complex",
+    "reason": "Experimental design joins billing uncertainty, task outcomes and statistical comparisons.",
+    "critical": false
+  }
+]

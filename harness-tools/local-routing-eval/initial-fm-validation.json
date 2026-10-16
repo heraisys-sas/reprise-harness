@@ -1,0 +1,258 @@
+{
+  "dataset_sha256": "4021b1246922889582efac39eb78f8030dba7308313629fd062be3c03b802006",
+  "fm": {
+    "rows": [
+      {
+        "id": "trivial-fr-01",
+        "expected": "trivial",
+        "critical": false,
+        "seconds": 1.8355010829400271,
+        "client_peak_rss_bytes": 13844480,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "trivial-fr-02",
+        "expected": "trivial",
+        "critical": false,
+        "seconds": 1.1042535830056295,
+        "client_peak_rss_bytes": 14483456,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "trivial-fr-03",
+        "expected": "trivial",
+        "critical": false,
+        "seconds": 1.251667374977842,
+        "client_peak_rss_bytes": 14467072,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "trivial-en-01",
+        "expected": "trivial",
+        "critical": false,
+        "seconds": 0.7165993329836056,
+        "client_peak_rss_bytes": 14336000,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "trivial-en-02",
+        "expected": "trivial",
+        "critical": false,
+        "seconds": 1.1767880000406876,
+        "client_peak_rss_bytes": 14499840,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "trivial-en-03",
+        "expected": "trivial",
+        "critical": false,
+        "seconds": 0.9846966660115868,
+        "client_peak_rss_bytes": 14450688,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "light-fr-01",
+        "expected": "light",
+        "critical": false,
+        "seconds": 1.047627207939513,
+        "client_peak_rss_bytes": 14401536,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "light-fr-02",
+        "expected": "light",
+        "critical": false,
+        "seconds": 0.7271988750435412,
+        "client_peak_rss_bytes": 14385152,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "light-fr-03",
+        "expected": "light",
+        "critical": false,
+        "seconds": 0.7674797910731286,
+        "client_peak_rss_bytes": 14368768,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "light-en-01",
+        "expected": "light",
+        "critical": false,
+        "seconds": 0.9959705000510439,
+        "client_peak_rss_bytes": 14434304,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "light-en-02",
+        "expected": "light",
+        "critical": false,
+        "seconds": 1.06231008307077,
+        "client_peak_rss_bytes": 14499840,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "light-en-03",
+        "expected": "light",
+        "critical": false,
+        "seconds": 0.8040827499935403,
+        "client_peak_rss_bytes": 14401536,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "standard-fr-01",
+        "expected": "standard",
+        "critical": false,
+        "seconds": 1.1519494160311297,
+        "client_peak_rss_bytes": 14516224,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "standard-fr-02",
+        "expected": "standard",
+        "critical": true,
+        "seconds": 1.8912597919115797,
+        "client_peak_rss_bytes": 14516224,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "standard-fr-03",
+        "expected": "standard",
+        "critical": true,
+        "seconds": 1.148655833909288,
+        "client_peak_rss_bytes": 14483456,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "standard-en-01",
+        "expected": "standard",
+        "critical": false,
+        "seconds": 1.4927635410567746,
+        "client_peak_rss_bytes": 14614528,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "standard-en-02",
+        "expected": "standard",
+        "critical": false,
+        "seconds": 1.1598184999311343,
+        "client_peak_rss_bytes": 14368768,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "standard-en-03",
+        "expected": "standard",
+        "critical": true,
+        "seconds": 1.5404580410104245,
+        "client_peak_rss_bytes": 14663680,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "complex-fr-01",
+        "expected": "complex",
+        "critical": true,
+        "seconds": 1.3188751250272617,
+        "client_peak_rss_bytes": 14548992,
+        "status": "ok",
+        "evidence": "Une API asynchrone perd des validations après annulation pendant une reprise. Identifie la course entre workers, écriture durable et accusé de réception ; propose puis vérifie une correction sans doublons après crash.",
+        "tier": "complex",
+        "correct": true
+      },
+      {
+        "id": "complex-fr-02",
+        "expected": "complex",
+        "critical": true,
+        "seconds": 1.139110750053078,
+        "client_peak_rss_bytes": 14548992,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "complex-fr-03",
+        "expected": "complex",
+        "critical": true,
+        "seconds": 1.0757602920057252,
+        "client_peak_rss_bytes": 14565376,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "complex-en-01",
+        "expected": "complex",
+        "critical": true,
+        "seconds": 1.165163500001654,
+        "client_peak_rss_bytes": 14548992,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "complex-en-02",
+        "expected": "complex",
+        "critical": true,
+        "seconds": 1.4868829590268433,
+        "client_peak_rss_bytes": 14696448,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      },
+      {
+        "id": "complex-en-03",
+        "expected": "complex",
+        "critical": false,
+        "seconds": 1.3255807500099763,
+        "client_peak_rss_bytes": 14680064,
+        "status": "invalid",
+        "error": "Evidence not present in original task",
+        "correct": null
+      }
+    ],
+    "summary": {
+      "total": 24,
+      "valid": 1,
+      "exact": 1,
+      "critical_total": 8,
+      "critical_underclassified": 0,
+      "unavailable_or_invalid": 23
+    },
+    "not_attempted": 0
+  },
+  "note": "Initial same-prompt pass before preserving raw tier proposals; failed JS import runs excluded, no score claimed for them."
+}
