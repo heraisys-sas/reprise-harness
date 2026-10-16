@@ -1,0 +1,170 @@
+[
+  {
+    "id": "py-window",
+    "language": "python",
+    "locale": "FR",
+    "prompt_file": "py-window/task.md",
+    "fixture_dir": "py-window",
+    "checks": [
+      {
+        "name": "py-window",
+        "argv": [
+          "python3",
+          "{cases}/check.py",
+          "--case",
+          "py-window",
+          "--work",
+          "{work}"
+        ],
+        "timeout": 30
+      }
+    ]
+  },
+  {
+    "id": "py-usage",
+    "language": "python",
+    "locale": "EN",
+    "prompt_file": "py-usage/task.md",
+    "fixture_dir": "py-usage",
+    "checks": [
+      {
+        "name": "py-usage",
+        "argv": [
+          "python3",
+          "{cases}/check.py",
+          "--case",
+          "py-usage",
+          "--work",
+          "{work}"
+        ],
+        "timeout": 30
+      }
+    ]
+  },
+  {
+    "id": "js-retry",
+    "language": "javascript",
+    "locale": "FR",
+    "prompt_file": "js-retry/task.md",
+    "fixture_dir": "js-retry",
+    "checks": [
+      {
+        "name": "js-retry",
+        "argv": [
+          "python3",
+          "{cases}/check.py",
+          "--case",
+          "js-retry",
+          "--work",
+          "{work}"
+        ],
+        "timeout": 30
+      }
+    ]
+  },
+  {
+    "id": "js-prefix",
+    "language": "javascript",
+    "locale": "EN",
+    "prompt_file": "js-prefix/task.md",
+    "fixture_dir": "js-prefix",
+    "checks": [
+      {
+        "name": "js-prefix",
+        "argv": [
+          "python3",
+          "{cases}/check.py",
+          "--case",
+          "js-prefix",
+          "--work",
+          "{work}"
+        ],
+        "timeout": 30
+      }
+    ]
+  },
+  {
+    "id": "rust-usage",
+    "language": "rust",
+    "locale": "EN",
+    "prompt_file": "rust-usage/task.md",
+    "fixture_dir": "rust-usage",
+    "checks": [
+      {
+        "name": "rust-usage",
+        "argv": [
+          "python3",
+          "{cases}/check.py",
+          "--case",
+          "rust-usage",
+          "--work",
+          "{work}"
+        ],
+        "timeout": 30
+      }
+    ]
+  },
+  {
+    "id": "devops-command",
+    "language": "python",
+    "locale": "FR",
+    "prompt_file": "devops-command/task.md",
+    "fixture_dir": "devops-command",
+    "checks": [
+      {
+        "name": "devops-command",
+        "argv": [
+          "python3",
+          "{cases}/check.py",
+          "--case",
+          "devops-command",
+          "--work",
+          "{work}"
+        ],
+        "timeout": 30
+      }
+    ]
+  },
+  {
+    "id": "compact-resume",
+    "language": "python",
+    "locale": "FR",
+    "prompt_file": "compact-resume/task.md",
+    "fixture_dir": "compact-resume",
+    "checks": [
+      {
+        "name": "compact-resume",
+        "argv": [
+          "python3",
+          "{cases}/check.py",
+          "--case",
+          "compact-resume",
+          "--work",
+          "{work}"
+        ],
+        "timeout": 30
+      }
+    ]
+  },
+  {
+    "id": "project-isolation",
+    "language": "python",
+    "locale": "EN",
+    "prompt_file": "project-isolation/task.md",
+    "fixture_dir": "project-isolation",
+    "checks": [
+      {
+        "name": "project-isolation",
+        "argv": [
+          "python3",
+          "{cases}/check.py",
+          "--case",
+          "project-isolation",
+          "--work",
+          "{work}"
+        ],
+        "timeout": 30
+      }
+    ]
+  }
+]

@@ -1,0 +1,1 @@
+Corrige solution.cjs qui exporte shouldRetry(status, attempt). Une nouvelle tentative est permise seulement pour HTTP 429 ou 500..599, et si attempt est un entier entre 0 et 2 inclus. Les autres statuts/valeurs doivent renvoyer false (pas de conversion implicite). status doit être un entier. Aucun accès réseau, aucun sommeil. Modifie uniquement solution.cjs.

@@ -1,0 +1,1 @@
+Corrige solution.py : rolling_sum(values, width) renvoie les sommes de chaque fenêtre complète, dans l’ordre. Accepte un itérable à passage unique, mémoire auxiliaire O(width), width entier strictement positif (bool interdit). Lève ValueError pour une largeur invalide. Entrée vide ou plus courte : []. N’ajoute aucune dépendance. Ne modifie que solution.py.
