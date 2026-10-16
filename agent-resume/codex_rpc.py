@@ -27,7 +27,7 @@ class Client:
         self.ident, self.timeout = 0, timeout
         try:
             key = base64.b64encode(os.urandom(16)).decode()
-            self._write(('GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n'
+            self._write(('GET /rpc HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n'
                          'Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n'
                          f'Sec-WebSocket-Key: {key}\r\n\r\n').encode())
             deadline = time.monotonic() + timeout

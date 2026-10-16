@@ -121,10 +121,15 @@ def main():
     config.add_argument('--parent')
     check = sub.add_parser('server-check')
     check.add_argument('--socket')
+    check.add_argument('--session')
     connection_config = sub.add_parser('connection-config')
     transport = connection_config.add_mutually_exclusive_group(required=True)
     transport.add_argument('--socket')
     transport.add_argument('--auto', action='store_true')
+    shared = sub.add_parser('shared-mode')
+    shared.add_argument('operation', choices=('prepare', 'launch', 'check'))
+    shared.add_argument('--session')
+    shared.add_argument('--startup', action='store_true')
     server = sub.add_parser('expert-server')
     server.add_argument('--socket', required=True)
     sub.add_parser('auto-mode').add_argument('mode', choices=('on', 'off'))
@@ -152,13 +157,22 @@ def main():
         print(json.dumps(engines.capabilities(db), ensure_ascii=False))
     elif args.action == 'server-check':
         from connection import probe
-        print(json.dumps(probe(executable, args.socket or str(engines.SOCKET)), ensure_ascii=False))
+        print(json.dumps(probe(executable, args.socket or str(engines.SOCKET), args.session), ensure_ascii=False))
     elif args.action == 'connection-status':
         from connection import status
         print(json.dumps(status(db, STATE), ensure_ascii=False))
     elif args.action == 'connection-config':
         from connection import configure
         print(json.dumps(configure(db, executable, args.socket), ensure_ascii=False))
+    elif args.action == 'shared-mode':
+        import shared_mode
+        if args.operation == 'check':
+            if not args.session:
+                parser.error('--session requis')
+            result = shared_mode.check(db, executable, engines.validate_session('codex-cli', args.session))
+        else:
+            result = getattr(shared_mode, args.operation)(db, executable, STATE, args.startup)
+        print(json.dumps(result, ensure_ascii=False))
     elif args.action == 'expert-server':
         import stat
         path = Path(args.socket)
@@ -190,6 +204,9 @@ def main():
     elif args.action == 'auto-mode':
         with db:
             scheduler.put(db, 'auto_enabled', args.mode == 'on')
+            shared = scheduler.get(db, 'shared_mode', {})
+            if shared.get('restore_auto_after_check'):
+                scheduler.put(db, 'shared_mode', shared | {'restore_auto_after_check': False})
         print(json.dumps({'auto_enabled': scheduler.enabled(db)}))
     elif args.action == 'status':
         for row in engines.decorate(db, run_status.rows(db, STATE)):
@@ -247,7 +264,7 @@ def main():
     elif args.action == 'share':
         dest = Path.cwd() / 'agent-resume-share.zip'
         with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as archive:
-            for name in ('resume', 'VERSION', 'scheduler.py', 'presentation.py', 'connection.py', 'quota.py', 'run_status.py', 'runtime.py', 'engines.py', 'engine_events.py', 'codex_rpc.py', 'owner_route.py', 'task_archive.py', 'codex_expert.py', 'codex_expert_mcp.py', 'CODEX-INTEGRATION.md', 'CACHE-POLICY.md', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
+            for name in ('resume', 'VERSION', 'scheduler.py', 'presentation.py', 'connection.py', 'shared_mode.py', 'ROADMAP.md', 'quota.py', 'run_status.py', 'runtime.py', 'engines.py', 'engine_events.py', 'codex_rpc.py', 'owner_route.py', 'task_archive.py', 'codex_expert.py', 'codex_expert_mcp.py', 'CODEX-INTEGRATION.md', 'CACHE-POLICY.md', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
                 archive.write(ROOT / name, 'agent-resume/' + name)
         print(dest)
     elif args.action in ('install', 'uninstall'):

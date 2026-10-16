@@ -279,6 +279,31 @@ struct Dashboard: View {
         VStack(alignment: .leading, spacing: 18) {
             Surface {
                 VStack(alignment: .leading, spacing: 14) {
+                    Label("Mode partagé avec Desktop", systemImage: "desktopcomputer").font(.headline)
+                    Text("Préparez le serveur, lancez Desktop puis vérifiez un chat. La préparation manuelle met les reprises automatiques en pause pendant le test.").font(.callout).foregroundStyle(.secondary)
+                    HStack {
+                        Button("1. Préparer le serveur") { app.sharedAction("prepare") }.disabled(app.sharedBusy)
+                        Button("2. Lancer Desktop") { app.sharedAction("launch") }
+                            .disabled(app.sharedBusy || app.running.contains("com.openai.codex"))
+                        if app.sharedBusy { ProgressView().controlSize(.small) }
+                    }
+                    if app.running.contains("com.openai.codex") { Text("Desktop est ouvert. Fermez-le normalement avant l’étape 2 ; Reprise reste ouvert.").font(.caption).foregroundStyle(.secondary) }
+                    HStack {
+                        TextField("Identifiant ou lien du chat à vérifier", text: $app.sharedSession).textFieldStyle(.roundedBorder)
+                        Button("3. Vérifier le chat") { app.sharedAction("check") }.disabled(app.sharedBusy || app.sharedSession.isEmpty)
+                    }
+                    if !app.sharedNote.isEmpty { Text(app.sharedNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
+                    Text("Après validation, choisissez le serveur Codex local ci-dessous et réactivez les reprises depuis leur vue.").font(.caption).foregroundStyle(.secondary)
+                    Text("Le contrôle confirme le chat chargé. Vérifiez aussi les outils de Desktop avant d’activer le lancement automatique.").font(.caption).foregroundStyle(.secondary)
+                    Divider()
+                    let shared = app.connection["shared"] as? [String: Any] ?? [:]
+                    Toggle("Lancer ce mode à l’ouverture de Reprise", isOn: Binding(get: { app.sharedStartup }, set: { app.setSharedStartup($0) }))
+                        .disabled(app.sharedBusy || (shared["startup_eligible"] as? Bool != true && !app.sharedStartup))
+                    Text("Disponible après un test réussi avec cette version de Desktop. Une mise à jour nécessite une nouvelle validation. Ce réglage concerne le lancement de Reprise, pas les éléments d’ouverture macOS.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Surface {
+                VStack(alignment: .leading, spacing: 14) {
                     Label("Transport des reprises Codex", systemImage: "point.3.connected.trianglepath.dotted").font(.headline)
                     Text(app.connection.isEmpty ? "Configuration indisponible" : app.connection["mode"] as? String == "server" ? "Socket personnalisé enregistré" : "Détection automatique · socket local ou CLI").font(.callout)
                     if let path = app.connection["configured_socket"] as? String { Text(path).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled) }

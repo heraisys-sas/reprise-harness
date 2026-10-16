@@ -1,3 +1,17 @@
+# Mode partagé intégré (16 octobre 2026)
+
+La page **Connexion Codex** propose trois étapes : **Préparer le serveur**, **Lancer Desktop**, puis **Vérifier le chat** avec son UUID ou son lien `codex://threads/…`. La préparation met les reprises automatiques en pause. Elle réutilise un serveur joignable ou lance le daemon Codex natif ; un socket présent mais invalide n’est jamais remplacé. Une reprise en cours empêche la préparation.
+
+Le lancement refuse de fermer ou de relancer une application Desktop déjà ouverte. Une fois celle-ci quittée normalement, Reprise l’ouvre avec les paramètres de connexion passés à ce seul processus via `open --env`. Le raccordement utilise le support WebSocket sur Unix présent dans le code du Desktop installé (`CODEX_APP_SERVER_WS_URL=ws+unix://…:/rpc`), et reste expérimental tant qu’il n’a pas été éprouvé dans l’application. Aucun bundle, variable globale ou élément d’ouverture macOS n’est modifié.
+
+La vérification du chat n’effectue que `initialize` et `thread/read`. Un serveur joignable sans ce chat chargé ne valide pas le mode. Après le test, choisir le serveur Codex local dans le panneau, puis réactiver explicitement les reprises dans leur vue. Le fonctionnement des outils du Desktop doit aussi être vérifié lors de ce premier essai.
+
+L’option **Lancer ce mode à l’ouverture de Reprise** est disponible après un test réussi sur cette version de Desktop. Elle ne quitte jamais un Desktop déjà lancé. Au démarrage automatique, les reprises restent en pause jusqu’à confirmation que le chat précédemment validé est chargé dans le serveur ; un contrôle en lecture seule est tenté après le lancement. Si ce contrôle échoue, utilisez **Vérifier le chat** après avoir ouvert le chat dans Desktop. Une automatisation auparavant active est alors rétablie, sauf si vous avez changé explicitement ce choix entre-temps. Un changement de version bloque ce lancement automatique jusqu’à une nouvelle validation. Désactiver l’option puis quitter et ouvrir Desktop normalement permet de revenir à son lancement habituel ; le daemon partagé reste disponible aux clients qui l’utilisent. Les reprises peuvent être laissées en pause pendant ce changement.
+
+Les commandes correspondantes sont `shared-mode prepare`, `shared-mode launch` et `shared-mode check --session UUID`. Aucun de ces boutons n’a été exécuté sur le Desktop utilisateur pendant l’implémentation ; tests déterministes et transport réel isolé, sans inférence. La suite pour les autres harness est consignée dans [ROADMAP.md](ROADMAP.md).
+
+---
+
 # Connexion Codex dans l’interface (16 octobre 2026)
 
 La page **Connexion Codex** présente le transport enregistré, le socket local et le serveur d’expertise dédié. Un chemin personnalisé peut être testé sans appel au modèle, puis enregistré explicitement. L’enregistrement refait le test et ne modifie pas le choix existant en cas d’échec. Revenir à la détection automatique est possible depuis la même page. Un test réussi ne prouve ni la propriété des sessions Desktop ni les autorisations d’un projet. Aucun serveur ne démarre pendant la détection.

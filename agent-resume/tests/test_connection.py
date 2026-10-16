@@ -8,6 +8,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import connection
 import engines
+import scheduler
 
 class FakeClient:
     def __init__(self, *args, **kw): self.calls=[]; self.closed=False; FakeClient.last=self
@@ -20,6 +21,7 @@ class ConnectionTests(unittest.TestCase):
         self.db=sqlite3.connect(':memory:')
         self.addCleanup(self.db.close)
         engines.setup(self.db)
+        scheduler.setup(self.db)
     def test_probe_initializes_without_model_or_session_calls(self):
         with patch('codex_rpc.Client', FakeClient):
             result=connection.probe('codex','/private/tmp/private/server.sock')
@@ -54,3 +56,11 @@ class ConnectionTests(unittest.TestCase):
             info=connection.status(self.db,'/private/tmp')
         self.assertTrue(all(c['detected'] for c in info['candidates']))
         client.assert_not_called()
+
+    def test_thread_check_does_not_resume_or_start_it(self):
+        session = '12345678-1234-1234-1234-123456789abc'
+        for state, loaded in [('idle', True), ('active', True), ('notLoaded', False)]:
+            with patch('codex_rpc.Client', FakeClient), patch.object(FakeClient, 'call', side_effect=[{}, {'thread': {'id': session, 'status': {'type': state}}}]) as call:
+                result = connection.probe('codex', '/chosen.sock', session)
+            self.assertEqual(result['thread_loaded'], loaded)
+            self.assertEqual([c.args[0] for c in call.call_args_list], ['initialize', 'thread/read'])

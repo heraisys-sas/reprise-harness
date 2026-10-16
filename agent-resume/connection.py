@@ -19,10 +19,12 @@ def status(db, state):
         except engines.Unavailable as error:
             detected, reason = False, error.reason
         candidates.append({'path': path, 'label': label, 'detected': detected, 'reason': reason})
-    return {'configured_socket': configured, 'mode': 'server' if configured else 'auto', 'candidates': candidates}
+    from shared_mode import state as shared_state
+    return {'configured_socket': configured, 'mode': 'server' if configured else 'auto', 'candidates': candidates,
+            'shared': shared_state(db)}
 
 
-def probe(program, path):
+def probe(program, path, session=None):
     from codex_rpc import Client
     client = None
     try:
@@ -32,8 +34,17 @@ def probe(program, path):
         client = Client(program, values, timeout=5)
         client.call('initialize', {'clientInfo': {'name': 'reprise-connection', 'version': '0.1.0'}})
         client.send({'method': 'initialized'})
-        return {'connected': True, 'model_called': False,
-                'reason': 'Connexion confirmée. La propriété des sessions Desktop reste à vérifier.'}
+        result = {'connected': True, 'model_called': False,
+                  'reason': 'Connexion confirmée. La propriété des sessions Desktop reste à vérifier.'}
+        if session:
+            session = engines.validate_session('codex-cli', session)
+            thread = client.call('thread/read', {'threadId': session, 'includeTurns': False}).get('thread') or {}
+            state = (thread.get('status') or {}).get('type')
+            result.update(thread_id=session, thread_status=state,
+                          thread_loaded=thread.get('id') == session and state in ('idle', 'active'))
+            result['reason'] = ('Session chargée dans ce serveur ; aucun tour déclenché.' if result['thread_loaded'] else
+                                'Le serveur ne confirme pas que cette session est chargée chez lui.')
+        return result
     except engines.Unavailable as error:
         return {'connected': False, 'model_called': False, 'reason': error.reason}
     except (OSError, ValueError, TimeoutError):

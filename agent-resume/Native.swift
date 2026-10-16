@@ -19,6 +19,12 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var testedSocket = ""
     @Published var connectionVerified = false
     var connectionLoaded = false
+    @Published var sharedBusy = false
+    @Published var sharedNote = ""
+    @Published var sharedSession = ""
+    @Published var sharedStartup = UserDefaults.standard.bool(forKey: "SharedCodexStartup")
+    var startupAttempted = false
+    var refreshPending = false
     @Published var busy = false
     @Published var analysisBusy = false
     @Published var searching = false
@@ -96,7 +102,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         process.standardOutput = pipe; process.standardError = FileHandle.nullDevice
         do {
             try process.run()
-            DispatchQueue.global().asyncAfter(deadline: .now() + (["analyze", "search"].contains(args.first ?? "") ? 45 : 15)) { if process.isRunning { process.terminate() } }
+            DispatchQueue.global().asyncAfter(deadline: .now() + (["analyze", "search", "shared-mode"].contains(args.first ?? "") ? 45 : 15)) { if process.isRunning { process.terminate() } }
             let data = pipe.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
             guard process.terminationStatus == 0 else { return nil }
             return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
@@ -104,7 +110,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     }
     func refresh() {
         running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
-        if busy { return }; busy = true
+        if busy { refreshPending = true; return }; busy = true
         DispatchQueue.global(qos: .utility).async {
             let result = self.execute(["detect"])
             let scheduler = self.execute(["scheduler-status"])
@@ -117,9 +123,14 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                     self.socketPath = connection["configured_socket"] as? String ?? (connection["candidates"] as? [[String: Any]])?.first?["path"] as? String ?? ""
                     self.connectionLoaded = true
                 }
+                if !self.startupAttempted {
+                    self.startupAttempted = true
+                    if self.sharedStartup && !self.running.contains("com.openai.codex") { self.sharedAction("launch", startup: true) }
+                }
                 if let result { self.snapshot = result; self.lastRefresh = Date() }
                 else { self.snapshot["error"] = "Actualisation indisponible. Les dernières informations restent affichées." }
                 self.item.button?.title = self.counters.map { "\($0.1) \($0.3.map(String.init) ?? "—")" }.joined(separator: " · ")
+                if self.refreshPending { self.refreshPending = false; self.refresh() }
             }
         }
     }
@@ -183,6 +194,35 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             self.connectionNote = result?["reason"] as? String ?? "Configuration indisponible."
             self.refresh()
         }
+    }
+    func sharedAction(_ operation: String, startup: Bool = false) {
+        guard !sharedBusy else { return }
+        var args = ["shared-mode", operation]
+        if startup { args.append("--startup") }
+        if operation == "check" {
+            let value = sharedSession.trimmingCharacters(in: .whitespacesAndNewlines)
+            let raw = value.hasPrefix("codex://threads/") ? URL(string: value)?.lastPathComponent ?? "" : value
+            guard let uuid = UUID(uuidString: raw) else { sharedNote = "Collez l’identifiant UUID ou le lien codex://threads/ du chat."; return }
+            args += ["--session", uuid.uuidString.lowercased()]
+        }
+        sharedBusy = true
+        sharedNote = operation == "prepare" ? "Préparation du serveur…" : operation == "launch" ? "Lancement de Desktop…" : "Vérification du chat…"
+        perform(args) { result in
+            self.sharedBusy = false
+            self.sharedNote = result?["reason"] as? String ?? "Opération non confirmée. Aucun nouvel essai automatique."
+            self.refresh()
+            if startup && operation == "launch" && result?["ok"] as? Bool == true {
+                let shared = self.connection["shared"] as? [String: Any] ?? [:]
+                if let session = shared["verified_session"] as? String {
+                    self.sharedSession = session
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self.sharedAction("check") }
+                }
+            }
+        }
+    }
+    func setSharedStartup(_ enabled: Bool) {
+        sharedStartup = enabled
+        UserDefaults.standard.set(enabled, forKey: "SharedCodexStartup")
     }
     func analyzeLocal() {
         guard !analysisBusy else { return }
