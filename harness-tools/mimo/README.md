@@ -1,6 +1,6 @@
 # MiMo compatibility with the installed Harness
 
-Verified 17 October 2026, without authentication or paid inference. Optional overlays are prepared, not installed.
+Verified 17 October 2026, without authentication or paid inference. Both routes have now been merged into the local Desktop profile and Flash/Pro added to the subagent model allowlist. ASI:Cloud and the default model are preserved. As requested, no general configuration backup was created. Credentials and live account validation remain necessary.
 
 The installed DSH `llm-pi-ai` adapter already includes pi-ai's `xiaomi`, `xiaomi-token-plan-cn`, `xiaomi-token-plan-sgp`, and `xiaomi-token-plan-ams` providers. Its Xiaomi catalog includes `mimo-v2.6-flash`, `mimo-v2.6-pro` and UltraSpeed. Prefer the first two for this budget. Native catalog entries already carry DeepSeek-style thinking controls and `requiresReasoningContentOnAssistantMessages: true`; reuse those entries rather than inventing another generic route.
 
