@@ -1,0 +1,13 @@
+# Optional subscription route. Use only with an active Amsterdam Token Plan.
+- id: llm-pi-ai
+  config:
+    providers:
+      xiaomi-token-plan-ams:
+        displayName: Xiaomi MiMo — Token Plan AMS
+        apiKeyEnv: MIMO_TOKEN_PLAN_AMS_API_KEY
+        models:
+          - id: mimo-v2.6-flash
+          - id: mimo-v2.6-pro
+        retryPolicy:
+          mode: normal
+          maxRetries: 0

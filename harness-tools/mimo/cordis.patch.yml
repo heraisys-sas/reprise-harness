@@ -1,0 +1,13 @@
+# Optional API pay-as-you-go route. Keep separate from Token Plan credentials.
+- id: llm-pi-ai
+  config:
+    providers:
+      xiaomi:
+        displayName: Xiaomi MiMo — API
+        apiKeyEnv: MIMO_API_KEY
+        models:
+          - id: mimo-v2.6-flash
+          - id: mimo-v2.6-pro
+        retryPolicy:
+          mode: normal
+          maxRetries: 0
