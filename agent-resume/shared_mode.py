@@ -74,7 +74,7 @@ def launch(db, program, folder, startup=False):
         socket = engines.socket_path({})
         if any(c in str(socket) for c in (':', '\n', '\r', ' ')):
             return {'ok': False, 'reason': 'Chemin de socket incompatible avec le lancement Desktop.'}
-        url = 'ws+unix://' + str(socket) + ':/rpc'
+        url = 'ws+unix://localhost' + str(socket) + ':/rpc'
         process = subprocess.run(['/usr/bin/open', '-a', str(DESKTOP), '--env', 'CODEX_APP_SERVER_WS_URL='+url,
                                   '--env', 'CODEX_APP_SERVER_USE_LOCAL_DAEMON=1', '--env', 'CODEX_APP_SERVER_FORCE_CLI=0'],
                                  capture_output=True, timeout=5)

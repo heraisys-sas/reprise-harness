@@ -40,7 +40,7 @@ class SharedModeTests(unittest.TestCase):
             self.assertTrue(shared.launch(self.db,'codex',self.root)['ok'])
         args=run.call_args.args[0]
         self.assertEqual(args[:2],['/usr/bin/open','-a'])
-        self.assertTrue(any(x.startswith('CODEX_APP_SERVER_WS_URL=ws+unix:///') for x in args))
+        self.assertIn('CODEX_APP_SERVER_WS_URL=ws+unix://localhost'+str(self.root/'actual.sock')+':/rpc',args)
         self.assertNotIn('-n',args)
     def test_chat_must_be_loaded_before_startup_eligible(self):
         with self.db:scheduler.put(self.db,'shared_mode',{'launched':True,'launch_version':'v1'})
