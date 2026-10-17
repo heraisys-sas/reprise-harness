@@ -1,0 +1,34 @@
+# Optional overlay; merge into the desktop patch, do not replace its other entries.
+# Store MORPH_API_KEY through Harness credentials before selecting these models.
+- id: llm-pi-ai
+  config:
+    providers:
+      morph:
+        displayName: Morph
+        api: openai-completions
+        baseURL: https://api.morphllm.com/v1
+        apiKeyEnv: MORPH_API_KEY
+        models:
+          - id: morph-dsv41flash-1017
+            contextWindow: 1048576
+            maxTokens: 32768
+            input: [text, image]
+            reasoningEfforts:
+              off: none
+              low: low
+              high: high
+              xhigh: xhigh
+              max: max
+          - id: morph-glm53flash
+            contextWindow: 1048576
+            maxTokens: 32768
+          - id: morph-glm53-744b
+            contextWindow: 1048576
+            maxTokens: 32768
+        compat:
+          supportsUsageInStreaming: true
+          supportsStore: false
+          supportsReasoningEffort: true
+        retryPolicy:
+          mode: normal
+          maxRetries: 0
