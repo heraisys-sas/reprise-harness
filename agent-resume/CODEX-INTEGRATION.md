@@ -1,3 +1,23 @@
+# Delegation installed in DSH (17 October 2026)
+
+The Desktop profile now contains a backed-up, marked `reprise-codex-expert` MCP entry connected to the shared Codex daemon, not the separate expert socket. It is bound to the project passed to the installer. Load a new Harness session or reload its profile to discover `mcp__reprise_codex__reprise_delegate`, `reprise_backends`, `codex_review` and `codex_followup` (the latter names have the same server prefix).
+
+```sh
+python3 install-expertise.py --project-root /absolute/project
+```
+
+The installer preserves the rest of the profile, backs up modified files under `~/.dsh/backups`, installs the `reprise-delegation` skill, and is idempotent. Installing for another root replaces this profile’s project binding; do not assume that the active DSH project changes the MCP bridge root automatically.
+
+`reprise_delegate` takes `kind` (`expertise`, `review`, `batch`), `level` (`standard`, `deep`), `question`, and optional project-relative `paths`. Standard expertise/review uses **gpt-6.1-sol / medium**; standard batch uses **gpt-6-luna / medium**; deep uses **gpt-6-astra / high**. Models and efforts are checked against the server catalog before admission to a model turn. Batch generation returns code or patches: Harness applies them and runs deterministic checks. It is not an autonomous write worker. Output is bounded to 48,000 characters; truncation is marked incomplete. Split large jobs into coherent lots.
+
+A follow-up remains bound to an allowlisted expert thread, model and effort. It can reload that thread if unloaded, but does not steer an active session. Quota failures never change accounts or billing automatically. `reprise_backends` reports Codex configured and AutoClaw unvalidated, without inference; this is capability information, not a live quota check.
+
+Live validation through the bundled DSH MCP SDK succeeded: Luna returned `323`, then an allowlisted follow-up returned `324` on the same thread/model. This used the included ChatGPT allowance. Astra/high also started a real targeted code review, read the requested files and stopped at an approval request; the bridge reported `blocked_permission` and interrupted its own turn. This is a verified permission boundary, not a completed review. The test exposed and corrected two earlier simulated-test blind spots: quoted MCP override keys created malformed server entries; resuming a just-created thread before its first turn failed because no rollout existed. Thread-specific configuration disables each inherited server with nested override objects; a real thread-scoped MCP inventory must report every entry disabled before a model turn is admitted. An empty table does not disable inherited entries because configuration tables merge recursively. Only follow-ups call `thread/resume`.
+
+Claude Code is the next planned backend. The installed 2.1.299 binary is detected in the VS Code extension, but its CLI reports no authenticated account in the tested environment. A subscription adapter should preserve OAuth authentication with `--safe-mode` rather than `--bare`, use explicit model/session selection and structured terminal results, and never silently use API credentials. AutoClaw’s documented CLI can fall back to embedded execution, so neither a cheap price nor a safe automatic billing route is currently established.
+
+---
+
 # Codex integration options
 
 Verified 2026-10-16 against official documentation and the installed DSH 0.2.0-rc.2 bundle. No credentials or model requests were used.

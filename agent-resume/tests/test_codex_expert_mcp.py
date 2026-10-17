@@ -17,7 +17,7 @@ class BridgeTests(unittest.TestCase):
         self.addCleanup(self.bridge.db.close)
     def test_protocol_lists_only_bounded_tools(self):
         self.assertIn('tools', self.bridge.dispatch({'method': 'initialize'})['capabilities'])
-        self.assertEqual(len(self.bridge.dispatch({'method': 'tools/list'})['tools']), 2)
+        self.assertEqual({item['name'] for item in self.bridge.dispatch({'method': 'tools/list'})['tools']}, {'codex_review','codex_followup','reprise_delegate','reprise_backends'})
     def test_followup_requires_own_thread(self):
         with self.assertRaises(ValueError):
             self.bridge.call('codex_followup', {'thread_id': ID, 'question': 'continue'})
@@ -39,3 +39,22 @@ class BridgeTests(unittest.TestCase):
     def test_arbitrary_parameters_refused(self):
         with self.assertRaises(ValueError):
             self.bridge.call('codex_review', {'question': 'review', 'cwd': '/'})
+    def test_levels_route_and_followup_preserves_model(self):
+        for kind,level,model in [('expertise','standard','gpt-6.1-sol'),('review','deep','gpt-6-astra'),('batch','standard','gpt-6-luna')]:
+            with patch('codex_expert_mcp.review', return_value={'status':'finished','thread_id':ID}) as review:
+                self.bridge.limit=20
+                self.bridge.call('reprise_delegate',{'kind':kind,'level':level,'question':'Check this contract'})
+                self.assertEqual(review.call_args.kwargs['model'],model)
+                self.bridge.call('codex_followup',{'thread_id':ID,'question':'Explain'})
+                self.assertEqual(review.call_args.kwargs['model'],model)
+    def test_backends_no_inference_or_budget_consumption(self):
+        with patch('codex_expert_mcp.review') as review:
+            result=self.bridge.call('reprise_backends',{})
+            review.assert_not_called()
+        self.assertFalse(result['automatic_fallback'])
+        self.assertFalse(result['backends'][1]['configured'])
+        self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM expert_calls').fetchone()[0],0)
+    def test_invalid_delegation_rejected_before_budget(self):
+        for args in [{'kind':'write','question':'x'},{'kind':'review','level':'ultra','question':'x'}]:
+            with self.assertRaises(ValueError):self.bridge.call('reprise_delegate',args)
+        self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM expert_calls').fetchone()[0],0)

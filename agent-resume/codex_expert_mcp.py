@@ -15,11 +15,25 @@ from engines import executable, options
 SCHEMA = {'type': 'object', 'properties': {'question': {'type': 'string', 'maxLength': 12000}},
           'required': ['question'], 'additionalProperties': False}
 TOOLS = [
+    {'name': 'reprise_delegate', 'description': 'Delegate expertise, code review or a bounded batch to Codex through Reprise. Standard uses Sol; deep uses Astra; standard batches use Luna. Read-only: returns advice, code or patches for the caller to apply and verify. Uses ChatGPT quota, never silently switches billing. Reuse returned thread via codex_followup.',
+     'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {
+         'kind': {'type': 'string', 'enum': ['expertise', 'review', 'batch']},
+         'level': {'type': 'string', 'enum': ['standard', 'deep']},
+         'paths': {'type': 'array', 'maxItems': 30, 'items': {'type': 'string'}}},
+         'required': ['question', 'kind']}},
+    {'name': 'reprise_backends', 'description': 'List configured delegation capabilities without inference. Availability is not a price or quota guarantee.',
+     'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
     {'name': 'codex_review', 'description': 'Ask Codex for a read-only project review. Uses ChatGPT quota. No automatic retries or approval. Returns its answer and session ID.',
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {'paths': {'type': 'array', 'maxItems': 30, 'items': {'type': 'string'}}}}},
     {'name': 'codex_followup', 'description': 'Continue a review created by this project bridge; preserves its Codex conversation.',
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {'thread_id': {'type': 'string'}}, 'required': ['question', 'thread_id']}},
 ]
+
+MODES = {
+    'expertise': 'Analyze the conceptual problem. Return the algorithm, invariants, tradeoffs and a compact implementation contract. Distinguish evidence from assumptions.',
+    'review': 'Review for correctness, security and maintainability. Return only actionable findings with severity, file references, evidence and verification steps; say when no finding is established.',
+    'batch': 'Produce the requested bounded batch of code, tests or transformations as text or unified patches. Do not apply changes. Preserve existing contracts; include deterministic validation commands and report any unfinished items.',
+}
 
 
 class Bridge:
@@ -37,6 +51,7 @@ class Bridge:
         self.db = sqlite3.connect(state/'expert.sqlite', timeout=2)
         self.db.execute('CREATE TABLE IF NOT EXISTS expert_threads(scope TEXT,id TEXT,PRIMARY KEY(scope,id))')
         self.db.execute('CREATE TABLE IF NOT EXISTS expert_calls(scope TEXT,day INTEGER,count INTEGER,PRIMARY KEY(scope,day))')
+        self.db.execute('CREATE TABLE IF NOT EXISTS expert_routes(scope TEXT,id TEXT,model TEXT,effort TEXT,PRIMARY KEY(scope,id))')
         self.db.commit()
 
     def call(self, name, args):
@@ -48,15 +63,40 @@ class Bridge:
             return self._call(name, args)
 
     def _call(self, name, args):
-        if name not in ('codex_review', 'codex_followup') or not isinstance(args, dict):
+        if name not in ('reprise_backends', 'reprise_delegate', 'codex_review', 'codex_followup') or not isinstance(args, dict):
             raise ValueError('Unknown tool or invalid arguments')
-        allowed = {'question', 'paths'} if name == 'codex_review' else {'question', 'thread_id'}
+        if name == 'reprise_backends':
+            if args:
+                raise ValueError('No arguments expected')
+            return {'status': 'finished', 'project_root': str(self.root), 'backends': [
+                {'id': 'codex', 'configured': bool(self.program), 'billing': 'ChatGPT quota',
+                 'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': False},
+                {'id': 'autoclaw', 'configured': False, 'reason': 'Adapter, billing and fallback behavior not validated.'}],
+                'automatic_fallback': False}
+        allowed = {'question', 'thread_id'} if name == 'codex_followup' else {'question', 'paths'}
+        if name == 'reprise_delegate':
+            allowed |= {'kind', 'level'}
         if args.keys()-allowed or not isinstance(args.get('question'), str) or not 0 < len(args['question'].strip()) <= 12000:
             raise ValueError('Invalid question or arguments')
+        routing = {}
+        question = args['question']
+        if name == 'reprise_delegate':
+            kind, level = args.get('kind'), args.get('level', 'standard')
+            if kind not in MODES or level not in ('standard', 'deep'):
+                raise ValueError('Invalid delegation kind or level')
+            routing = {'model': 'gpt-6-astra' if level == 'deep' else 'gpt-6-luna' if kind == 'batch' else 'gpt-6.1-sol',
+                       'effort': 'high' if level == 'deep' else 'medium'}
+            question = MODES[kind] + '\n\n' + question
+            if len(question) > 12000:
+                raise ValueError('Task including delegation contract exceeds limit')
         ident = args.get('thread_id')
         if name == 'codex_followup' and (not isinstance(ident, str) or not self.db.execute(
                 'SELECT 1 FROM expert_threads WHERE scope=? AND id=?', (self.scope, ident)).fetchone()):
             raise ValueError('This bridge does not own that review thread')
+        if ident:
+            route = self.db.execute('SELECT model,effort FROM expert_routes WHERE scope=? AND id=?', (self.scope, ident)).fetchone()
+            if route:
+                routing = dict(zip(('model', 'effort'), route))
         if not self.program:
             return {'status': 'engine_unavailable', 'reason': 'Codex executable unavailable'}
         day = int(time.time()//86400)
@@ -67,10 +107,16 @@ class Bridge:
                 return {'status': 'budget_blocked', 'reason': 'Daily expertise call cap reached; no automatic retry.'}
             # Reserve before any transmission; failures are charged to this local cap too.
             self.db.execute('INSERT INTO expert_calls VALUES (?,?,1) ON CONFLICT(scope,day) DO UPDATE SET count=count+1', (self.scope, day))
-        result = review(self.program, self.values, self.root, args['question'], paths=args.get('paths'), thread_id=ident)
-        if result.get('thread_id') and result.get('status') in ('finished', 'blocked_permission', 'timed_out'):
+        result = review(self.program, self.values, self.root, question, paths=args.get('paths'), thread_id=ident, **routing)
+        result.update(backend='codex', automatic_fallback=False)
+        resumable = result.get('status') in ('finished', 'blocked_permission', 'timed_out') or (
+            result.get('status') == 'needs_review' and result.get('turn_id'))
+        if result.get('thread_id') and resumable:
             with self.db:
                 self.db.execute('INSERT OR IGNORE INTO expert_threads VALUES (?,?)', (self.scope, result['thread_id']))
+                if routing:
+                    self.db.execute('INSERT OR REPLACE INTO expert_routes VALUES (?,?,?,?)',
+                                    (self.scope, result['thread_id'], routing['model'], routing['effort']))
         return result
 
     def dispatch(self, message):
