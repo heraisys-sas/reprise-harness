@@ -105,3 +105,49 @@ def check(db, program, session):
             scheduler.put(db, 'shared_mode', previous | {'verified_version': version, 'verified_session': session,
                                                         'restore_auto_after_check': False})
     return result | {'ok': ok, 'reason': ('Chat chargé dans le serveur partagé. Vous pouvez choisir ce serveur dans Reprise.' if ok else result['reason'])}
+
+
+def stop(db, program, folder, startup=False):
+    if not program:
+        return {'ok': False, 'reason': 'Exécutable Codex absent.'}
+    if desktop_running():
+        return {'ok': False, 'reason': 'Fermez Desktop normalement avant d’arrêter le serveur partagé.'}
+    from codex_rpc import Client
+    client = None
+    with (Path(folder)/'worker.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {'ok': False, 'reason': 'Une reprise est en cours. Attendez sa fin.'}
+        with db:
+            scheduler.put(db, 'auto_enabled', False)
+            previous = scheduler.get(db, 'shared_mode', {})
+            scheduler.put(db, 'shared_mode', previous | {'restore_auto_after_check': False})
+        try:
+            client = Client(program, engines.options('codex-server', {'socket': str(engines.SOCKET)}), timeout=5)
+            client.call('initialize', {'clientInfo': {'name': 'reprise-stop', 'version': '0.1.0'}})
+            client.send({'method': 'initialized'})
+            page = client.call('thread/loaded/list', {'limit': 100})
+            ids = page.get('data')
+            if not isinstance(ids, list) or page.get('nextCursor') or len(ids) > 100:
+                return {'ok': False, 'reason': 'État des sessions incomplet. Serveur conservé, reprises en pause.'}
+            for ident in ids:
+                thread = client.call('thread/read', {'threadId': ident, 'includeTurns': False}).get('thread') or {}
+                if thread.get('id') != ident or (thread.get('status') or {}).get('type') not in ('idle', 'notLoaded'):
+                    return {'ok': False, 'reason': 'Session active ou état incertain. Serveur conservé, reprises en pause.'}
+            client.close()
+            client = None
+            result = subprocess.run([program, 'app-server', 'daemon', 'stop'], env=codex_environment(),
+                                    capture_output=True, timeout=20)
+            if result.returncode or probe(program, str(engines.SOCKET))['connected']:
+                return {'ok': False, 'reason': 'Arrêt non confirmé. Reprises en pause ; aucun arrêt forcé.'}
+            with db:
+                previous = scheduler.get(db, 'shared_mode', {})
+                scheduler.put(db, 'shared_mode', previous | {'prepared': False, 'launched': False,
+                                                            'verified_version': None, 'verified_session': None})
+            return {'ok': True, 'reason': 'Serveur arrêté. Après la mise à jour, préparez le serveur puis relancez Desktop. Reprises en pause.'}
+        except (OSError, ValueError, TimeoutError, engines.Unavailable):
+            return {'ok': False, 'reason': 'État ou arrêt du serveur non confirmé. Aucun arrêt forcé ; reprises en pause.'}
+        finally:
+            if client:
+                client.close()

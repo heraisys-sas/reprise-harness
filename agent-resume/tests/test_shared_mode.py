@@ -79,3 +79,28 @@ class SharedModeTests(unittest.TestCase):
         with patch('shared_mode.desktop_running',return_value=True),patch('shared_mode.probe',side_effect=probe):
             self.assertTrue(shared.check(self.db,'codex','session')['ok'])
         self.assertFalse(scheduler.enabled(self.db))
+    def test_stop_refuses_open_desktop(self):
+        with patch('shared_mode.desktop_running',return_value=True),patch('codex_rpc.Client') as client:
+            self.assertFalse(shared.stop(self.db,'codex',self.root)['ok'])
+            client.assert_not_called()
+    def test_stop_refuses_active_or_unknown_threads(self):
+        for status in ('active','unknown'):
+            with patch('codex_rpc.Client') as client,patch('engines.options',return_value={}),patch('shared_mode.subprocess.run') as run:
+                client.return_value.call.side_effect=[{}, {'data':['thread']}, {'thread':{'id':'thread','status':{'type':status}}}]
+                self.assertFalse(shared.stop(self.db,'codex',self.root)['ok'])
+                run.assert_not_called()
+                self.assertFalse(scheduler.enabled(self.db))
+    def test_stop_confirms_shutdown_and_invalidates_validation(self):
+        with self.db:scheduler.put(self.db,'shared_mode',{'verified_version':'v1','verified_session':'session'})
+        with patch('codex_rpc.Client') as client,patch('engines.options',return_value={}),patch('shared_mode.probe',return_value={'connected':False}),patch('shared_mode.subprocess.run',return_value=SimpleNamespace(returncode=0)) as run:
+            client.return_value.call.side_effect=[{}, {'data':['thread']}, {'thread':{'id':'thread','status':{'type':'idle'}}}]
+            self.assertTrue(shared.stop(self.db,'codex',self.root)['ok'])
+            self.assertEqual(run.call_args.args[0],['codex','app-server','daemon','stop'])
+        self.assertFalse(shared.state(self.db)['startup_eligible'])
+        self.assertFalse(scheduler.enabled(self.db))
+    def test_stop_failure_preserves_validation_and_reports_uncertainty(self):
+        with self.db:scheduler.put(self.db,'shared_mode',{'verified_version':'v1','verified_session':'session'})
+        with patch('codex_rpc.Client') as client,patch('engines.options',return_value={}),patch('shared_mode.subprocess.run',return_value=SimpleNamespace(returncode=1)):
+            client.return_value.call.side_effect=[{}, {'data':[]}]
+            self.assertFalse(shared.stop(self.db,'codex',self.root)['ok'])
+        self.assertTrue(shared.state(self.db)['startup_eligible'])

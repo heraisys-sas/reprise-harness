@@ -206,7 +206,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             args += ["--session", uuid.uuidString.lowercased()]
         }
         sharedBusy = true
-        sharedNote = operation == "prepare" ? "Préparation du serveur…" : operation == "launch" ? "Lancement de Desktop…" : "Vérification du chat…"
+        sharedNote = operation == "prepare" ? "Préparation du serveur…" : operation == "launch" ? "Lancement de Desktop…" : operation == "stop" ? "Arrêt du serveur…" : "Vérification du chat…"
         perform(args) { result in
             self.sharedBusy = false
             self.sharedNote = result?["reason"] as? String ?? "Opération non confirmée. Aucun nouvel essai automatique."

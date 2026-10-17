@@ -1,3 +1,5 @@
+Le bouton **Arrêter le serveur** dans **Connexion Codex** utilise `codex app-server daemon stop` pour permettre une mise à jour. Desktop doit être fermé ; le verrou du worker et les états des sessions chargées sont contrôlés avant l’arrêt. Un état actif ou inconnu bloque l’opération. Les reprises restent en pause et la validation du mode partagé est effacée après arrêt confirmé. Aucun signal forcé ni suppression de socket. Un autre client pourrait démarrer un travail entre le contrôle et l’arrêt : fermez également vos clients CLI connectés. Commande : `shared-mode stop`.
+
 # Mode partagé intégré (16 octobre 2026)
 
 La page **Connexion Codex** propose trois étapes : **Préparer le serveur**, **Lancer Desktop**, puis **Vérifier le chat** avec son UUID ou son lien `codex://threads/…`. La préparation met les reprises automatiques en pause. Elle réutilise un serveur joignable ou lance le daemon Codex natif ; un socket présent mais invalide n’est jamais remplacé. Une reprise en cours empêche la préparation.

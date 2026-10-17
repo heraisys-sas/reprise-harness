@@ -127,7 +127,7 @@ def main():
     transport.add_argument('--socket')
     transport.add_argument('--auto', action='store_true')
     shared = sub.add_parser('shared-mode')
-    shared.add_argument('operation', choices=('prepare', 'launch', 'check'))
+    shared.add_argument('operation', choices=('prepare', 'launch', 'check', 'stop'))
     shared.add_argument('--session')
     shared.add_argument('--startup', action='store_true')
     server = sub.add_parser('expert-server')

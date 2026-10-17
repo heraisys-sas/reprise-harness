@@ -296,6 +296,11 @@ struct Dashboard: View {
                     Text("Après validation, choisissez le serveur Codex local ci-dessous et réactivez les reprises depuis leur vue.").font(.caption).foregroundStyle(.secondary)
                     Text("Le contrôle confirme le chat chargé. Vérifiez aussi les outils de Desktop avant d’activer le lancement automatique.").font(.caption).foregroundStyle(.secondary)
                     Divider()
+                    HStack {
+                        Button("Arrêter le serveur") { app.sharedAction("stop") }
+                            .disabled(app.sharedBusy || app.running.contains("com.openai.codex"))
+                        Text("Fermez Desktop d’abord. Les reprises seront mises en pause ; une session active empêche l’arrêt.").font(.caption).foregroundStyle(.secondary)
+                    }
                     let shared = app.connection["shared"] as? [String: Any] ?? [:]
                     Toggle("Lancer ce mode à l’ouverture de Reprise", isOn: Binding(get: { app.sharedStartup }, set: { app.setSharedStartup($0) }))
                         .disabled(app.sharedBusy || (shared["startup_eligible"] as? Bool != true && !app.sharedStartup))
