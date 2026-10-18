@@ -1,13 +1,28 @@
-# Next backend: Claude Code
+# Claude Code expertise backend
 
-Local read-only investigation, 17 October 2026. No inference or authentication change.
+Implemented 18 October 2026; opt-in, disabled by default. This adds explicit expertise delegation, not automatic resumption of existing Claude/Cowork sessions.
 
-Detected Claude Code 2.1.299 in the VS Code extension. `claude auth status --json` reports `loggedIn: false`, `authMethod: none`, `apiProvider: firstParty` in the tested environment. This does not establish the Desktop subscription state. Delegation is not enabled.
+## Contract
 
-Candidate first adapter: `--print --output-format json --safe-mode --restricted --strict-mcp-config --mcp-config '{"mcpServers":{}}' --tools "" --permission-mode dontAsk --permission-prompts none --disable-slash-commands --no-chrome`, with explicit model/effort, trusted cwd, prompt via stdin and bounded process output/deadline. Validate the exact installed CLI contract before enabling it. With no tools, supply bounded context explicitly. File-backed review needs a separately validated Read/Glob/Grep allowlist and effective policy checks.
+`reprise_delegate` accepts `backend: "claude-code"` with the same `kind`, `level`, `question` and optional `paths`. Standard requests use the CLI's `sonnet` alias with medium effort; deep requests use `opus` with high effort. A successful result must identify exactly one concrete model in `modelUsage`, matching the requested family. Reprise pins that concrete model for every follow-up. Aliases may change for new sessions; access and quota are not guaranteed.
 
-Do not use `--bare`: its installed help requires API key/helper authentication and skips OAuth/keychain, so it conflicts with subscription-only routing. `--safe-mode` preserves normal authentication while disabling user customizations; managed policies and built-in plugins still apply. Strip API-key/helper/provider overrides and check auth in the exact child environment. Do not start login or copy another app's credentials.
+`reprise_followup` requires the returned `thread_id` and explicit `backend`. Only successful sessions created through this project bridge may resume, with the same configured executable, model and effort. Codex compatibility tools remain unchanged. No arbitrary historical UUID, `--continue`, automatic retry or cross-provider fallback is used.
 
-Record adapter-created session IDs and resume only those explicit UUIDs; no ambiguous `--continue` or arbitrary external sessions. Preserve model and effort per session. Structured terminal results, not exit zero, decide success. A timeout may already have consumed quota, so never retry automatically. No remaining-subscription quota command was established; token/cost metadata is not a remaining quota gauge. The documented dollar cap applies to API spending and must not be represented as a subscription cap.
+Claude receives only the question and explicitly requested UTF-8 file snapshots, at most 30 files and 96,000 bytes combined. Traversal, symlinks, nonregular files and oversized context are refused. No global Reprise index or chat history is injected. CLI tools, inherited MCP servers, skills, customizations and Chrome integration are disabled through `--safe-mode --restricted --strict-mcp-config --mcp-config '{"mcpServers":{}}' --tools "" --permission-mode dontAsk --permission-prompts none --disable-slash-commands --no-chrome`. Managed policy still applies; this is not an OS sandbox or an override of administrator policies.
 
-Keep the common Reprise contract: expertise/review/batch, configured project, engine/model/session evidence, serialized admission and persistent call cap, no silent fallback across accounts or billing. Prices and subscription capacities still require current offer verification before any purchase recommendation.
+The exact child environment uses an allowlist, dropping API keys, provider/helper/runtime/IDE overrides. Cloud connectors, automatic updates/installations, fast mode, transport retries, model refusal fallback and nonessential traffic are disabled. One turn and 8,192 output tokens are requested. Each subprocess has bounded output (1 MiB stdout and stderr combined); inference has a 300-second deadline, with interrupted process groups terminated. An interruption may have consumed quota. A missing/malformed terminal result, denied permission, unsuccessful subtype, session mismatch or unexpected model cannot become a successful resumable route. Error details and credentials are not forwarded.
+
+The persistent eight-call cap and one-request lock are shared with Codex for the project/endpoint. Admitted failures count. This is a call cap, not a euro or remaining-subscription quota meter. Claude quota remaining stays unknown.
+
+## Activation after account checks
+
+Installed binary verified without inference: `/Users/olivierhz/.vscode/extensions/anthropic.claude-code-2.1.299-darwin-arm64/resources/native-binary/claude`, version 2.1.299. Its native authentication check currently reports no logged-in account. No login, credential change or inference was performed.
+
+1. Sign in to Claude Code using its native subscription login (`claude auth login`, without `--console`) if desired. Do not copy credentials into Reprise.
+2. In Claude Settings → Usage, disable paid usage credits/extra usage. Subscription authentication alone does **not** prove that paid overage is off. Reprise cannot verify this setting through the documented CLI.
+3. Only after confirming both, add these arguments to the existing project-bound MCP command: `--claude-program /absolute/path/to/claude --claude-included-quota-confirmed`. The latter records an operator assertion, not a technical guarantee. Leave them absent until confirmed. No Desktop session needs to be interrupted for these preparations; tool discovery updates when its MCP process is reloaded.
+4. Inspect `reprise_backends`, then make one small explicit request and follow-up. The backend inventory reports configuration only; authentication is checked again in the exact isolated child environment before each inference. Reprise accepts only `loggedIn: true`, `authMethod: "claude.ai"`, `apiProvider: "firstParty"`. API keys/helpers, ambiguous token auth and third-party routes are refused. No `--bare`, console login or silent billing fallback.
+
+Unit tests cover terminal/session/model validation, billing/auth gates, context boundaries, environment filtering, deadlines/output caps, process descendants, backend ownership and shared admission limits. Real subscription inference and model availability remain unvalidated until activation above.
+
+Official references checked 18 October 2026: [CLI reference](https://code.claude.com/docs/en/cli-reference), [authentication](https://code.claude.com/docs/en/authentication), [environment variables](https://code.claude.com/docs/en/env-vars), [paid usage credits](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans).
