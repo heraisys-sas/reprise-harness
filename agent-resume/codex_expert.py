@@ -46,7 +46,7 @@ def durable(thread):
 def review(program, values, project_root, question, paths=None, timeout=300, thread_id=None,
            model=None, effort=None):
     root = Path(project_root).resolve(strict=True)
-    if not root.is_dir() or not isinstance(question, str) or not 0 < len(question.strip()) <= 12000:
+    if not root.is_dir() or not isinstance(question, str) or not question.strip() or len(question) > 12000:
         raise ValueError('Project directory and bounded question required')
     scope = []
     if paths is not None and (not isinstance(paths, list) or len(paths) > 30):

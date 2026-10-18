@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import signal
 import sqlite3
 import sys
 import time
@@ -95,7 +96,8 @@ class Bridge:
             allowed.add('backend')
         if name == 'reprise_delegate':
             allowed |= {'kind', 'level', 'backend'}
-        if args.keys()-allowed or not isinstance(args.get('question'), str) or not 0 < len(args['question'].strip()) <= 12000:
+        if (args.keys()-allowed or not isinstance(args.get('question'), str)
+                or not args['question'].strip() or len(args['question']) > 12000):
             raise ValueError('Invalid question or arguments')
         routing = {}
         backend = args.get('backend', 'codex')
@@ -192,6 +194,10 @@ def main():
     args = parser.parse_args()
     bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.state, args.daily_limit,
                     claude_program=args.claude_program, claude_subscription_only=args.claude_included_quota_confirmed)
+    def terminate(signum, frame):
+        # Unwind active CLI cleanup before closing the DB and releasing the lock.
+        raise SystemExit(128 + signum)
+    previous_sigterm = signal.signal(signal.SIGTERM, terminate)
     try:
         while True:
             raw = sys.stdin.buffer.readline(1024*1024+1)
@@ -214,6 +220,7 @@ def main():
             print(json.dumps(reply, ensure_ascii=False), flush=True)
     finally:
         bridge.db.close()
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == '__main__':

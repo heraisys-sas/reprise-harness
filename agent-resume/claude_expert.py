@@ -112,7 +112,7 @@ def context(root, paths):
 def review(program, root, question, *, model, effort='medium', paths=None,
            thread_id=None, subscription_only=False, timeout=300):
     root = Path(root).resolve(strict=True)
-    if not root.is_dir() or not isinstance(question, str) or not 0 < len(question.strip()) <= 12000:
+    if not root.is_dir() or not isinstance(question, str) or not question.strip() or len(question) > 12000:
         raise ValueError('Project directory and bounded question required')
     if not isinstance(model, str) or not model or model.startswith('-') or len(model) > 160 or effort not in ('medium', 'high'):
         raise ValueError('Explicit model and supported effort required')

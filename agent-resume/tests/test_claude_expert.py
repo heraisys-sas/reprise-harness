@@ -47,6 +47,14 @@ class ClaudeTests(unittest.TestCase):
         run.assert_not_called()
         self.assertEqual(result['status'], 'billing_unverified')
 
+    def test_padded_oversized_question_rejected_without_process(self):
+        with patch.object(claude, 'run') as run:
+            for question in (' '*12000+'x', 'x'+' '*12000, ' '*12000):
+                with self.assertRaises(ValueError):
+                    claude.review('/claude', self.root, question, model='sonnet',
+                                  thread_id=ID, subscription_only=True)
+            run.assert_not_called()
+
     def test_auth_failures_never_infer(self):
         for method in ('none', 'api_key', 'api_key_helper', 'third_party', 'oauth_token'):
             auth = (0, json.dumps({'loggedIn': True, 'authMethod': method, 'apiProvider': 'firstParty'}), '')

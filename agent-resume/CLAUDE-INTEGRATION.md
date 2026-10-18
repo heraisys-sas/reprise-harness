@@ -25,4 +25,6 @@ Installed binary verified without inference: `/Users/olivierhz/.vscode/extension
 
 Unit tests cover terminal/session/model validation, billing/auth gates, context boundaries, environment filtering, deadlines/output caps, process descendants, backend ownership and shared admission limits. Real subscription inference and model availability remain unvalidated until activation above.
 
+Independent Astra/high review on 18 October used a focused context plus the adapter, bridge, tests and relevant dependencies. Two reproduced issues were corrected: padded questions now count their original length at both bridge and adapter boundaries, and MCP SIGTERM unwinds active subprocess cleanup before releasing the request lock. Regression tests reject oversized follow-ups before admission and terminate a real local fixture CLI on bridge shutdown. The review did not exercise authenticated Claude inference or establish the shutdown signal used by each MCP client.
+
 Official references checked 18 October 2026: [CLI reference](https://code.claude.com/docs/en/cli-reference), [authentication](https://code.claude.com/docs/en/authentication), [environment variables](https://code.claude.com/docs/en/env-vars), [paid usage credits](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans).

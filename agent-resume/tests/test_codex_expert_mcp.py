@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
@@ -39,6 +41,52 @@ class BridgeTests(unittest.TestCase):
     def test_arbitrary_parameters_refused(self):
         with self.assertRaises(ValueError):
             self.bridge.call('codex_review', {'question': 'review', 'cwd': '/'})
+
+    def test_padded_oversized_followup_rejected_before_budget(self):
+        self.bridge.db.execute('INSERT INTO expert_threads VALUES (?,?)', (self.bridge.scope, ID))
+        self.bridge.db.commit()
+        with patch('codex_expert_mcp.review') as codex, patch('codex_expert_mcp.claude_review') as claude:
+            for name, extra in [('codex_followup', {}), ('reprise_followup', {'backend':'codex'}),
+                                ('reprise_followup', {'backend':'claude-code'})]:
+                for question in (' '*12000+'x', 'x'+' '*12000):
+                    with self.assertRaises(ValueError):
+                        self.bridge.call(name, {'thread_id':ID, 'question':question, **extra})
+            codex.assert_not_called()
+            claude.assert_not_called()
+        self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM expert_calls').fetchone()[0],0)
+
+    def test_sigterm_unwinds_active_cli_before_bridge_exit(self):
+        root = Path(self.temp.name)
+        ready, completed = root/'ready', root/'completed'
+        program = root/'fake-claude'
+        # Mimic CLI preflight, then a long inference with an observable side effect.
+        program.write_text('#!' + sys.executable + '\n' +
+            'import sys,json,time\nfrom pathlib import Path\n' +
+            'if "--help" in sys.argv: print("--safe-mode --restricted --strict-mcp-config --permission-prompts --tools --disable-slash-commands --no-chrome --session-id --effort")\n' +
+            'elif "auth" in sys.argv: print(json.dumps({"loggedIn":True,"authMethod":"claude.ai","apiProvider":"firstParty"}))\n' +
+            'else:\n Path(' + repr(str(ready)) + ').touch()\n time.sleep(.8)\n Path(' + repr(str(completed)) + ').touch()\n')
+        program.chmod(0o700)
+        script = str(Path(__file__).parents[1]/'codex_expert_mcp.py')
+        command = [sys.executable, script, '--project-root', str(root), '--state', str(root/'signal-state'),
+                   '--claude-program', str(program), '--claude-included-quota-confirmed']
+        with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True) as bridge:
+            try:
+                bridge.stdin.write(json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{
+                    'name':'reprise_delegate','arguments':{'backend':'claude-code','kind':'expertise','question':'Review'}}})+'\n')
+                bridge.stdin.flush()
+                deadline = time.monotonic()+5
+                while not ready.exists() and bridge.poll() is None and time.monotonic()<deadline:
+                    time.sleep(.01)
+                self.assertTrue(ready.exists(), 'Fixture inference did not start')
+                bridge.terminate()
+                self.assertEqual(bridge.wait(timeout=5), 143)
+                time.sleep(.9)
+                self.assertFalse(completed.exists(), 'Inference survived bridge SIGTERM')
+            finally:
+                if bridge.poll() is None:
+                    bridge.terminate()
+                    bridge.wait(timeout=5)
     def test_levels_route_and_followup_preserves_model(self):
         for kind,level,model in [('expertise','standard','gpt-6.1-sol'),('review','deep','gpt-6-astra'),('batch','standard','gpt-6-luna')]:
             with patch('codex_expert_mcp.review', return_value={'status':'finished','resumable':True,'thread_id':ID}) as review:
