@@ -1,0 +1,12 @@
+{
+  "status": "experimental role catalog; no measured model-quality ranking",
+  "coordinator": {"model":"gpt-6-luna","effort":"medium","via":"existing Reprise batch bridge"},
+  "roles": {
+    "self": {"model":"gpt-6-luna","contract":"Answer directly when the supplied information suffices."},
+    "routine": {"model":"gpt-6-luna","contract":"One bounded coherent code/test generation batch. Returns text or patches for deterministic validation."},
+    "expert": {"standard":"gpt-6.1-sol","deep":"gpt-6-astra","contract":"Read-only conceptual expertise or review. Deep requires concrete sensitive difficulty or documented failure."},
+    "blocked": {"model":null,"contract":"No execution when authorization, essential context or required access is missing."}
+  },
+  "billing":"Existing ChatGPT allowance for coordinator. Numeric per-call cost unknown. No API billing fallback.",
+  "execution_access":"This experiment records plans only. Each future delegation must recheck catalog, quota, project binding and permissions."
+}

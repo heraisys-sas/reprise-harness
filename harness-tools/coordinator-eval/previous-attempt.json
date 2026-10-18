@@ -1,0 +1,10 @@
+{
+  "note": "Previous user-authorized attempt stopped before coordinator inference; not included as a comparison result.",
+  "result": {
+    "without": {
+      "status": "quota_blocked",
+      "reason": "Quota unavailable, unknown, or within the 5% reserve.",
+      "seconds": 1.1727201660396531
+    }
+  }
+}

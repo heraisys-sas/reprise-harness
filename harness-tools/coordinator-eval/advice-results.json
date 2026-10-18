@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "dataset_sha256": "09e99ed5bf173196297f173496389b27187ab59fcff5c8edfc2a24ef35e118d6",
+  "catalog_sha256": "0cd53fd676af14022c606d179d2fd2c42be4aa76b4051ea77a4008d0dec3650e",
+  "prompt_sha256": "81db8af42fe7852aaf9e5880b805088d3134025f5aac58b3fd54bb7abdc76264",
+  "schema_sha256": "154a27274b16c32726304cf8294d7f9c06305befb9e5687b0aef740aea403957",
+  "rows": [
+    {
+      "id": "synthetic-fr-readonly-status",
+      "source_sha256": "6f6f347d350c498c376dc35f6f5a418f0a94aac2e9d61c57915ca3c288b72a19",
+      "status": "ok",
+      "seconds": 2.7705610420089215,
+      "level": "standard",
+      "action": "self"
+    },
+    {
+      "id": "synthetic-en-small-usage-fix",
+      "source_sha256": "272569772b761e14a2b91afb69b906f528df1d49d40123f6732d264da7bf8712",
+      "status": "ok",
+      "seconds": 0.7533249160042033,
+      "level": "standard",
+      "action": "routine"
+    },
+    {
+      "id": "synthetic-fr-streaming-events",
+      "source_sha256": "e66aa5dea6c2a52cfd5b9605c43906097c2ffdcaa2e9efb2cdc4c9fc35271b98",
+      "status": "ok",
+      "seconds": 0.8156214999035001,
+      "action": "routine",
+      "level": "standard"
+    },
+    {
+      "id": "synthetic-en-project-link-boundary",
+      "source_sha256": "3991167b63b67c1571617df91c6f677efe00cd19bf2761b8d1d3735db544a92e",
+      "status": "ok",
+      "seconds": 0.7719654169632122,
+      "action": "self",
+      "level": "standard"
+    },
+    {
+      "id": "synthetic-fr-python-rust-counter",
+      "source_sha256": "c65cfcb515506b94cf818ba5ab61e2fe1df6d83e6da609545fb91b27933341f4",
+      "status": "ok",
+      "seconds": 0.7678773329826072,
+      "action": "routine",
+      "level": "standard"
+    },
+    {
+      "id": "synthetic-en-compaction-security-review",
+      "source_sha256": "5915ba076502a8a4e66f0b2b111a3459e3396011adb4b4f581cb61aa12e50607",
+      "status": "ok",
+      "seconds": 0.9385564170079306,
+      "level": "standard",
+      "action": "expert"
+    },
+    {
+      "id": "synthetic-fr-cli-partial-usage",
+      "source_sha256": "5de861662169bc92850ed36582196d6c59169c2abea6150586d379be7b425a5a",
+      "status": "ok",
+      "seconds": 0.8215261249570176,
+      "action": "blocked",
+      "level": "standard"
+    },
+    {
+      "id": "synthetic-en-unknown-provider-catalogue",
+      "source_sha256": "851a799de9c8a1e7ef34b61446b9073447121833b4fca2dde6ab82f7841ff236",
+      "status": "ok",
+      "seconds": 0.7618414160097018,
+      "level": "standard",
+      "action": "self"
+    },
+    {
+      "id": "synthetic-fr-production-not-authorized",
+      "source_sha256": "c93d653f98c3ac31d5824b0ae3b9711b54d44eea603f6a0c700938ff9626288e",
+      "status": "ok",
+      "seconds": 0.7699873339151964,
+      "level": "standard",
+      "action": "self"
+    },
+    {
+      "id": "synthetic-en-resume-authoritative-source",
+      "source_sha256": "3520d07ebc0a98445dd5c947970ed15a08aabca318d0b1052be1e34f073293ff",
+      "status": "ok",
+      "seconds": 0.7626833750400692,
+      "action": "self",
+      "level": "standard"
+    },
+    {
+      "id": "synthetic-fr-local-fm-unavailable",
+      "source_sha256": "084f5374c90bde032d806ab126026d9a0eb3ad33e51eb0ae3a4fab596c73b503",
+      "status": "ok",
+      "seconds": 0.7617170419543982,
+      "action": "self",
+      "level": "standard"
+    },
+    {
+      "id": "synthetic-en-stable-agent-route",
+      "source_sha256": "869ac1a10b721b46b92656d549f4e6d43d0c147ab3f226911e5800010d4ff8bd",
+      "status": "ok",
+      "seconds": 0.7736956250155345,
+      "level": "standard",
+      "action": "routine"
+    }
+  ],
+  "remote_calls": 0
+}
