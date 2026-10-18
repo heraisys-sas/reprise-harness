@@ -181,9 +181,16 @@ class InstalledServer(unittest.TestCase):
                     time.sleep(.05)
                 with patch.dict(os.environ, {'CODEX_HOME': home}):
                     client = codex_rpc.Client(program, {'socket': str(endpoint)})
-                    result = client.call('initialize', {'clientInfo': {'name': 'reprise-test', 'version': '0.1'}, 'capabilities': None})
+                    result = client.call('initialize', {'clientInfo': {'name': 'reprise-test', 'version': '0.1'}, 'capabilities': {'experimentalApi': True}})
                     self.assertIn('userAgent', result)
                     client.send({'method': 'initialized'})
+                    thread = client.call('thread/start', {'cwd': home, 'ephemeral': False,
+                        'threadSource': 'chatgpt_hidden', 'sandbox': 'read-only', 'approvalPolicy': 'never'})['thread']
+                    self.assertFalse(Path(thread['path']).exists())
+                    current = client.call('thread/read', {'threadId': thread['id'], 'includeTurns': False})['thread']
+                    self.assertEqual(current['turns'], [])
+                    self.assertEqual(current['status']['type'], 'idle')
+                    self.assertEqual(client.call('thread/delete', {'threadId': thread['id']}), {})
                     client.close()
                     client = None
                     from connection import probe

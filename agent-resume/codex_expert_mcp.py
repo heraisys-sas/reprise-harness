@@ -111,7 +111,7 @@ class Bridge:
         result.update(backend='codex', automatic_fallback=False)
         resumable = result.get('status') in ('finished', 'blocked_permission', 'timed_out') or (
             result.get('status') == 'needs_review' and result.get('turn_id'))
-        if result.get('thread_id') and resumable:
+        if result.get('thread_id') and result.get('resumable') is True and resumable:
             with self.db:
                 self.db.execute('INSERT OR IGNORE INTO expert_threads VALUES (?,?)', (self.scope, result['thread_id']))
                 if routing:

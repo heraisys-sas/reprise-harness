@@ -31,7 +31,7 @@ class BridgeTests(unittest.TestCase):
             finally: other.db.close()
             self.assertEqual(review.call_count, 2)
     def test_followup_preserves_thread(self):
-        with patch('codex_expert_mcp.review', return_value={'status': 'finished', 'thread_id': ID, 'response': 'review'}) as review:
+        with patch('codex_expert_mcp.review', return_value={'status': 'finished', 'resumable': True, 'thread_id': ID, 'response': 'review'}) as review:
             self.bridge.call('codex_review', {'question': 'review'})
             result = self.bridge.dispatch({'method': 'tools/call', 'params': {'name': 'codex_followup', 'arguments': {'thread_id': ID, 'question': 'explain'}}})
             self.assertFalse(result['isError'])
@@ -41,7 +41,7 @@ class BridgeTests(unittest.TestCase):
             self.bridge.call('codex_review', {'question': 'review', 'cwd': '/'})
     def test_levels_route_and_followup_preserves_model(self):
         for kind,level,model in [('expertise','standard','gpt-6.1-sol'),('review','deep','gpt-6-astra'),('batch','standard','gpt-6-luna')]:
-            with patch('codex_expert_mcp.review', return_value={'status':'finished','thread_id':ID}) as review:
+            with patch('codex_expert_mcp.review', return_value={'status':'finished','resumable':True,'thread_id':ID}) as review:
                 self.bridge.limit=20
                 self.bridge.call('reprise_delegate',{'kind':kind,'level':level,'question':'Check this contract'})
                 self.assertEqual(review.call_args.kwargs['model'],model)
@@ -58,3 +58,8 @@ class BridgeTests(unittest.TestCase):
         for args in [{'kind':'write','question':'x'},{'kind':'review','level':'ultra','question':'x'}]:
             with self.assertRaises(ValueError):self.bridge.call('reprise_delegate',args)
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM expert_calls').fetchone()[0],0)
+
+    def test_nonpersistent_thread_is_not_registered(self):
+        with patch('codex_expert_mcp.review', return_value={'status':'blocked_permission','thread_id':ID,'resumable':False}):
+            self.bridge.call('codex_review', {'question':'review'})
+        self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM expert_threads').fetchone()[0], 0)

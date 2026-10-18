@@ -65,6 +65,10 @@ Recommended order: finish verified owner-aware resumption first; add one bounded
 
 ## Expertise tool usage
 
+Expertise threads request `chatgpt_hidden` classification and persistent history. This classification is an observed Desktop filter, not a substitute for lifecycle checks. Codex may return a rollout path before creating its file. Reprise registers follow-ups only after reading the matching thread and verifying that its history file exists. A missing history blocks resumption without creating a replacement.
+
+If preflight fails before any turn submission, Reprise re-reads its newly created thread and deletes it through the native API only when it is still idle, has no turns and no history file. An ambiguous `turn/start` response never triggers deletion or automatic retry. Existing durable histories and caller-supplied follow-up threads are never deleted by this cleanup. The installed-server lifecycle test uses an isolated temporary `CODEX_HOME`, without authentication or inference.
+
 Start the explicitly separate local server in a terminal (private socket directory required):
 
 ```sh

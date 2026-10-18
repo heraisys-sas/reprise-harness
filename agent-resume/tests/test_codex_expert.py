@@ -30,7 +30,7 @@ class Fake:
         if method == 'account/rateLimits/read': return {'ordinaryUsageAllowed': True, 'rateLimits': {'primary': {'usedPercent': self.used}}}
         if method == 'model/list':return {'data':[{'model':'gpt-6-astra','supportedReasoningEfforts':[{'reasoningEffort':'high'}]}]}
         if method.startswith('thread/'):
-            return {'model':params.get('model'), 'thread': {'id': ID, 'cwd': Fake.root, 'modelProvider': 'openai', 'status': {'type': 'active' if self.active else 'idle'}}}
+            return {'model':params.get('model'), 'thread': {'id': ID, 'cwd': Fake.root, 'modelProvider': 'openai', 'path': str(Path(Fake.root)/'rollout.jsonl'), 'turns': [], 'status': {'type': 'active' if self.active else 'idle'}}}
         if method == 'turn/start':
             if self.approval:
                 self.notifications.append({'id': 12, 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': ID, 'turnId': 'own'}})
@@ -47,6 +47,7 @@ class ExpertTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         Fake.root, Fake.used, Fake.auth, Fake.active, Fake.approval = self.temp.name, 30, 'chatgpt', False, False
         Fake.phase, Fake.mcp_status = 'final_answer', 'disabled'
+        (Path(self.temp.name)/'rollout.jsonl').touch()
         self.patch = patch('codex_expert.Client', Fake)
         self.patch.start(); self.addCleanup(self.patch.stop)
     def run_review(self, **kwargs):
@@ -105,6 +106,61 @@ class ExpertTests(unittest.TestCase):
             self.assertEqual(result['status'],'blocked_permission')
             self.assertEqual(result['thread_id'],ID)
             close.assert_called_once()
+    def test_empty_failed_start_is_deleted(self):
+        (Path(self.temp.name)/'rollout.jsonl').unlink()
+        Fake.mcp_status = 'ready'
+        result = self.run_review()
+        self.assertTrue(result['empty_thread_removed'])
+        self.assertIsNone(result['thread_id'])
+        self.assertFalse(result['resumable'])
+        self.assertIn(('thread/delete', {'threadId': ID}), Fake.last.calls)
+    def test_ambiguous_start_is_never_deleted(self):
+        (Path(self.temp.name)/'rollout.jsonl').unlink()
+        original = Fake.call
+        def call(client, method, params=None):
+            if method == 'turn/start':
+                raise TimeoutError()
+            return original(client, method, params)
+        with patch.object(Fake, 'call', call):
+            result = self.run_review()
+        self.assertEqual(result['status'], 'timed_out')
+        self.assertFalse(result['resumable'])
+        self.assertNotIn('thread/delete', [m for m,p in Fake.last.calls])
+    def test_cleanup_failure_preserves_original_error(self):
+        (Path(self.temp.name)/'rollout.jsonl').unlink()
+        Fake.mcp_status = 'ready'
+        original = Fake.call
+        def call(client, method, params=None):
+            if method == 'thread/delete':
+                raise expert.Unavailable('failed', 'Cleanup rejected')
+            return original(client, method, params)
+        with patch.object(Fake, 'call', call), patch.object(Fake, 'close') as close:
+            result = self.run_review()
+        self.assertEqual(result['status'], 'blocked_permission')
+        self.assertFalse(result['resumable'])
+        close.assert_called_once()
+    def test_model_mismatch_cleans_up_new_empty_thread(self):
+        (Path(self.temp.name)/'rollout.jsonl').unlink()
+        original = Fake.call
+        def call(client, method, params=None):
+            result = original(client, method, params)
+            if method == 'thread/start':
+                result['model'] = 'unexpected'
+            return result
+        with patch.object(Fake, 'call', call):
+            result = self.run_review(model='gpt-6-astra', effort='high')
+        self.assertEqual(result['status'], 'blocked_session')
+        self.assertTrue(result['empty_thread_removed'])
+    def test_missing_history_followup_is_not_resumed(self):
+        (Path(self.temp.name)/'rollout.jsonl').unlink()
+        self.assertEqual(self.run_review(thread_id=ID)['status'], 'blocked_session')
+        self.assertNotIn('thread/resume', [m for m,p in Fake.last.calls])
+        self.assertNotIn('thread/delete', [m for m,p in Fake.last.calls])
+    def test_existing_history_is_preserved_on_preflight_failure(self):
+        Fake.mcp_status = 'ready'
+        result = self.run_review()
+        self.assertTrue(result['resumable'])
+        self.assertNotIn('thread/delete', [m for m,p in Fake.last.calls])
     def test_scope_cannot_escape(self):
         for paths in [['../'], ['/etc/passwd']]:
             with self.assertRaises(ValueError): self.run_review(paths=paths)

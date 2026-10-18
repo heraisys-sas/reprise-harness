@@ -38,6 +38,11 @@ def quota_allowed(limits, reserve=5):
                                   and math.isfinite(v) and 0 <= v < 100-reserve for v in measured)
 
 
+def durable(thread):
+    path = thread.get('path')
+    return bool(not thread.get('ephemeral') and isinstance(path, str) and Path(path).is_file())
+
+
 def review(program, values, project_root, question, paths=None, timeout=300, thread_id=None,
            model=None, effort=None):
     root = Path(project_root).resolve(strict=True)
@@ -57,7 +62,8 @@ def review(program, values, project_root, question, paths=None, timeout=300, thr
         thread_id = str(uuid.UUID(thread_id))
     following = bool(thread_id)
     result = {'status': 'needs_review', 'thread_id': thread_id, 'turn_id': None, 'response': '', 'events': []}
-    client, terminal = None, False
+    result['resumable'] = False
+    client, terminal, created, submitted = None, False, False, False
     try:
         client = Client(program, values)
         client.call('initialize', {'clientInfo': {'name': 'reprise-expert', 'version': '0.1.0'},
@@ -79,16 +85,18 @@ def review(program, values, project_root, question, paths=None, timeout=300, thr
             thread = client.call('thread/read', {'threadId': thread_id, 'includeTurns': False}).get('thread') or {}
         else:
             started = client.call('thread/start', {'cwd': str(root), 'modelProvider': 'openai',
+                'ephemeral': False, 'threadSource': 'chatgpt_hidden',
                 'sandbox': 'read-only', 'approvalPolicy': 'on-request', 'config': restricted,
                 'developerInstructions': INSTRUCTIONS,
                 **({'model': model} if model else {})})
             thread = started.get('thread') or {}
-            if model and started.get('model') != model:
-                raise Unavailable('blocked_session', 'Expert model not confirmed; no turn submitted.')
             thread_id = thread.get('id')
             if thread_id:
                 thread_id = str(uuid.UUID(thread_id))
                 result['thread_id'] = thread_id
+                created = True
+            if model and started.get('model') != model:
+                raise Unavailable('blocked_session', 'Expert model not confirmed; no turn submitted.')
         if (not thread_id or thread.get('id') != thread_id or thread.get('modelProvider') != 'openai'
                 or not thread.get('cwd') or Path(thread['cwd']).resolve() != root):
             raise Unavailable('blocked_session', 'Project, provider or thread identity not confirmed.')
@@ -96,6 +104,8 @@ def review(program, values, project_root, question, paths=None, timeout=300, thr
             raise Unavailable('blocked_owner', 'Expert session is not idle.')
         # A follow-up must use a thread created by this bridge; the caller enforces its allowlist.
         if following:
+            if not durable(thread):
+                raise Unavailable('blocked_session', 'Expert history unavailable; no turn submitted.')
             resumed = client.call('thread/resume', {'threadId': thread_id, 'excludeTurns': True,
                 'config': restricted, 'sandbox': 'read-only', 'approvalPolicy': 'on-request',
                 **({'model': model} if model else {})})
@@ -112,6 +122,8 @@ def review(program, values, project_root, question, paths=None, timeout=300, thr
                 any(server.get('runtimeStatus') != 'disabled' for server in servers)):
             raise Unavailable('blocked_permission', 'Expert MCP isolation not confirmed; no turn submitted.')
         text = question + ('\nScope: ' + ', '.join(scope) if scope else '\nScope: current project.')
+        # A lost start response is ambiguous: never delete or automatically retry it.
+        submitted = True
         turn = client.call('turn/start', {'threadId': thread_id, 'clientUserMessageId': str(uuid.uuid4()),
             'sandboxPolicy': {'type': 'readOnly', 'networkAccess': False}, 'approvalPolicy': 'on-request',
             **({'model': model, 'effort': effort} if model else {}),
@@ -160,6 +172,18 @@ def review(program, values, project_root, question, paths=None, timeout=300, thr
             if result['turn_id'] and not terminal:
                 try:
                     client.call('turn/interrupt', {'threadId': thread_id, 'turnId': result['turn_id']})
+                except (OSError, ValueError, TimeoutError, Unavailable):
+                    pass
+            if thread_id:
+                try:
+                    current = client.call('thread/read', {'threadId': thread_id, 'includeTurns': False}).get('thread') or {}
+                    owned = (current.get('id') == thread_id and current.get('modelProvider') == 'openai'
+                             and current.get('cwd') and Path(current['cwd']).resolve() == root)
+                    result['resumable'] = bool(owned and durable(current))
+                    if (created and not submitted and owned and not result['resumable']
+                            and (current.get('status') or {}).get('type') == 'idle'):
+                        client.call('thread/delete', {'threadId': thread_id})
+                        result.update(thread_id=None, empty_thread_removed=True)
                 except (OSError, ValueError, TimeoutError, Unavailable):
                     pass
             try:
