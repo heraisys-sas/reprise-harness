@@ -30,3 +30,5 @@ Independent Astra/high review on 18 October used a focused context plus the adap
 Official references checked 18 October 2026: [CLI reference](https://code.claude.com/docs/en/cli-reference), [authentication](https://code.claude.com/docs/en/authentication), [environment variables](https://code.claude.com/docs/en/env-vars), [paid usage credits](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans).
 
 Desktop alternative investigated: a [real MCP initialization probe](CLAUDE-MCP-PROBE.md) on Desktop 2.42304.0 did not advertise `sampling`; bundled protocol strings alone do not establish a working inference transport. A subsequent explicitly requested direct `sampling/createMessage` test received `-32601 Method not found`, confirming that method is unavailable on the tested connection.
+
+A subsequent [one-job Desktop test](CLAUDE-MCP-PROBE.md#single-job-round-trip-successful) succeeded through ordinary `get_task` / `submit_result` tools, with a visible chat trigger and tool approvals. This separate experimental return channel works without sampling; autonomous wake-up and a production queue remain unvalidated.

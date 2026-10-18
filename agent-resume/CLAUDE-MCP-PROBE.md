@@ -44,3 +44,30 @@ The real Desktop client replied:
 ```
 
 This is an explicit method rejection, beyond merely omitting `sampling` from its capabilities. No model content was returned. It establishes that this method is unavailable on the tested Desktop MCP connection; it does not establish the behavior of other transports or future builds. The second temporary server was also removed, with exact restoration of the initial configuration and Desktop relaunched to unload it.
+
+## Single-job round trip: successful
+
+On 18 October 2026, a third temporary local stdio server exposed only `get_task` and `submit_result`. Its fixed harmless task was to sort `[7, 2, 5]` and return comma-separated digits. It read no project files, used no model API or sampling, and provided no command execution, network or general file tools.
+
+The existing test conversation was prompted once to claim, solve and submit exactly one job. Other connectors and web search were disabled for the test and restored afterwards. Desktop displayed one-time tool approval prompts; there was no unattended wake-up test and no permanent approval was requested by the test driver.
+
+Independent receiver-side evidence (read from the local SQLite job state, not scraped from the chat answer):
+
+```json
+{
+  "desktop_version": "2.42304.0",
+  "account_ui": "Free",
+  "model_ui": "Sonnet 5.5 Moyen",
+  "job_id": "66647178-146f-4251-8767-45e4b27e4e04",
+  "status": "completed",
+  "answer": "2,5,7",
+  "get_task_calls": 1,
+  "accepted_results": 1,
+  "trigger": "One visible chat prompt; tool approval prompts shown",
+  "result_transport": "submit_result MCP -> local SQLite, read independently of the UI"
+}
+```
+
+The result matched the fixed task. The receiver accepts only a claimed job with the matching ID and a bounded nonempty result, persists completion across restarts, and refuses duplicate submissions. Two fixture tests verify that contract, wrong IDs, early submissions and oversized results. This is an experimental one-job diagnostic (`desktop_job_probe.py`), not a general job queue, authenticated multi-client service or production integration. The task is trivial: no claim is made about review quality or routing performance.
+
+This demonstrates a working **conversation-triggered MCP return channel on the signed-in Free Desktop**. It does not establish background operation, automatic generation triggering, controlled model selection or remaining quota. No MCP App widget was used or tested. The temporary server configuration was removed after the test, the saved configuration restored byte-for-byte, and Desktop reopened to unload the server.
