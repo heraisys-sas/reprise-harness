@@ -19,9 +19,15 @@ from pathlib import Path
 import json
 import os
 
+import hashlib
+
 import reprise_logs
 
 DEFAULT_LOG_DIR = reprise_logs.DEFAULT_LOG_DIR
+# R4: cached explanations are keyed to the source digest; stale ones are
+# marked historical rather than shown as current.
+_EXPLANATION_CACHE = {}
+
 STATE_DIR = Path.home() / '.claude-desktop'
 
 # Log signatures Reprise relies on. If one disappears after an update, the
@@ -155,6 +161,38 @@ def explain(facts, question=None, binary=None):
         return {'available': False, 'answer': None, 'reason': f'Foundation Models unavailable: {error}'}
 
 
+def _digest(facts):
+    """R4: lossless digest (strict UTF-8) so distinct facts never collide."""
+    try:
+        data = facts.encode('utf-8')  # strict: raises on lone surrogates
+    except UnicodeEncodeError as error:
+        raise ValueError('Invalid Unicode in explanation source') from error
+    return hashlib.sha256(data).hexdigest()  # full digest, no truncation
+
+
+def cached_explanation(facts, question=None, binary=None):
+    """R4: explanation keyed to source digest AND question; stale entries marked historical.
+
+    The historical flag is refreshed on both hits and misses so the cached
+    entry always reflects the latest source state.
+    """
+    key = (_digest(facts), question or '')
+    cached = _EXPLANATION_CACHE.get(key)
+    if cached and cached.get('answer'):
+        _mark_historical(key)  # Medium#7: refresh flags even on a hit
+        return {**cached, 'cached': True, 'historical': False}
+    result = explain(facts, question, binary=binary)
+    if result.get('available'):
+        _EXPLANATION_CACHE[key] = dict(result)
+    _mark_historical(key)
+    return {**result, 'cached': False, 'historical': False}
+
+
+def _mark_historical(active_key):
+    for key, entry in _EXPLANATION_CACHE.items():
+        entry['historical'] = key != active_key
+
+
 def summarize(bundle_root, log_dir=DEFAULT_LOG_DIR, binary=None):
     """Health + optional generative explanation, for the Reprise UI and MCP."""
     health = check(bundle_root, log_dir)
@@ -249,4 +287,4 @@ def local_synthesis(log_dir=DEFAULT_LOG_DIR, binary=None):
     question = ("Fais une synthèse simplifiée : (1) ce que les mises à jour ont changé, "
                 "(2) les relations entre les Harness et leurs interactions, "
                 "(3) les dernières activités distinguées, et (4) les actions qui requièrent un humain.")
-    return explain(facts, question, binary=binary)
+    return cached_explanation(facts, question, binary=binary)

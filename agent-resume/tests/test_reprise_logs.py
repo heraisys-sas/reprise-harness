@@ -73,3 +73,54 @@ class FunctionalTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ReviewFixesTests(unittest.TestCase):
+    """Regression tests for the four code-review findings."""
+
+    def test_r1_truncated_record_is_incomplete_not_submitted(self):
+        events = rl.parse_quick_entry("2026-10-19 11:00:00 [info] Quick entry submitted { promptLength: 5, hasImage: fa")
+        self.assertEqual(events[0]['kind'], 'incomplete')
+        self.assertEqual(events[0]['detail'], 'truncated submission record')
+
+    def test_r1_missing_fields_mark_record_incomplete(self):
+        events = rl.parse_quick_entry("2026-10-19 11:00:00 [info] Quick entry submitted { promptLength: 5, hasImage: false }")
+        self.assertEqual(events[0]['kind'], 'submitted')
+        self.assertFalse(events[0]['complete'])
+
+    def test_r2_unidentified_submission_is_uncertain_not_resumable(self):
+        groups = rl._group_submissions(rl.parse_quick_entry(
+            "2026-10-19 11:00:00 [info] Quick entry submitted { promptLength: 5, hasImage: false }"))
+        self.assertFalse(groups[0]['identified'])
+
+    def test_r3_malformed_field_block_normalised_to_value_error(self):
+        with self.assertRaises(ValueError):
+            rl._fields(123)
+
+    def test_r3_malformed_record_isolated_as_incomplete(self):
+        # A record whose fields cannot be parsed is isolated, not raised.
+        events = rl.parse_quick_entry("2026-10-19 11:00:00 [info] Quick entry submitted { ,:x }")
+        self.assertTrue(events and events[0]['kind'] in ('incomplete', 'submitted'))
+
+
+class CodexReviewRound2Tests(unittest.TestCase):
+    """Reproduce the exact cases from the second Codex review (thread 01a154dc)."""
+
+    def test_negative_length_is_incomplete(self):
+        e = rl.parse_quick_entry("2026-10-19 11:00:00 [info] Quick entry submitted { promptLength: -5, hasImage: false, chatId: 'aaa' }")
+        self.assertFalse(e[0]['complete'])
+
+    def test_whitespace_chatid_not_identified(self):
+        g = rl._group_submissions(rl.parse_quick_entry("2026-10-19 11:00:00 [info] Quick entry submitted { promptLength: 5, hasImage: false, chatId: '   ' }"))
+        self.assertFalse(g[0]['identified'])
+
+    def test_duplicate_key_rejected(self):
+        with self.assertRaises(ValueError):
+            rl._fields("chatId: A, broken, chatId: B")
+
+    def test_unrelated_error_does_not_flip_dispatched(self):
+        seq = ("2026-10-19 11:00:00 [info] Quick entry submitted { promptLength: 5, hasImage: false, chatId: 'aaa' }\n"
+               "2026-10-19 11:00:00 [info] [QuickEntry] Sending to specific chat: aaa\n"
+               "2026-10-19 11:00:01 [error] [QuickEntry] erreur pour bbb\n")
+        g = rl._group_submissions(rl.parse_quick_entry(seq))
+        self.assertEqual(g[0]['terminal'], 'dispatched')

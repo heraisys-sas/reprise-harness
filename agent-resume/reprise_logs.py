@@ -28,6 +28,8 @@ RE_SUBMITTING = re.compile(
     r'^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*\[QuickEntry\] Submitting payload to (?P<target>.+)')
 RE_DROPPED = re.compile(
     r'^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*\[QuickEntry\].*(?:dropping payload|inactive_account|Creating new chat)')
+RE_SUBMITTED_TRUNCATED = re.compile(
+    r'^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*Quick entry submitted \{(?P<fields>[^}]*)$')
 RE_ERROR = re.compile(
     r'^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*\[(?:error|warn)\] \[QuickEntry\](?P<msg>.*)')
 
@@ -39,13 +41,29 @@ RE_REQUEST_ID = re.compile(r'\bid=(?P<id>\d+)')
 
 
 def _fields(blob):
-    """Parse `key: value` pairs from a log brace block into a dict."""
+    """Parse `key: value` pairs from a log brace block into a dict.
+
+    R3 (review): a malformed block must not raise mid-parse nor be treated as
+    valid; it is normalised to ValueError so callers fail safely per record.
+    """
+    if not isinstance(blob, str):
+        raise ValueError('Log field block must be a string')
     out = {}
     for part in blob.split(','):
-        if ':' not in part:
+        if not part.strip():
             continue
+        if ':' not in part:
+            raise ValueError('Malformed log field token without separator')
         key, _, value = part.partition(':')
-        out[key.strip()] = value.strip().strip("'\"")
+        key = key.strip()
+        if not key:
+            raise ValueError('Empty key in log field block')
+        if key in out:
+            raise ValueError('Duplicate key in log field block')
+        value = value.strip()
+        if (value.startswith("'") and not value.endswith("'")) or (value.startswith('"') and not value.endswith('"')):
+            raise ValueError('Unbalanced quoting in log field block')
+        out[key] = value.strip("'\"")
     return out
 
 
@@ -55,13 +73,37 @@ def parse_quick_entry(text):
     for line in text.splitlines():
         m = RE_SUBMITTED.match(line)
         if m:
-            fields = _fields(m.group('fields'))
+            try:
+                fields = _fields(m.group('fields'))
+            except ValueError:
+                events.append({'kind': 'incomplete', 'ts': m.group('ts'),
+                               'detail': 'malformed submission record'})
+                continue
+            # R1: a submission record is conclusive only when its identity and
+            # size fields are all present; otherwise mark it incomplete so no
+            # downstream logic treats a truncated record as authoritative.
+            # R1 strict: complete requires all fields present AND consistent
+            # (non-empty numeric length, boolean-ish image flag, non-empty chat id).
+            try:
+                plen = int(fields.get('promptLength', ''))
+            except (TypeError, ValueError):
+                plen = -1
+            complete = (plen >= 0
+                        and fields.get('hasImage') in ('true', 'false')
+                        and bool((fields.get('chatId') or '').strip()))
             events.append({
                 'kind': 'submitted', 'ts': m.group('ts'),
                 'promptLength': fields.get('promptLength'),
                 'hasImage': fields.get('hasImage'),
                 'chatId': fields.get('chatId'),
+                'complete': complete,
             })
+            continue
+        m = RE_SUBMITTED_TRUNCATED.match(line)
+        if m:
+            # R1: truncated tail record — decoded gap, never a valid submission.
+            events.append({'kind': 'incomplete', 'ts': m.group('ts'),
+                           'detail': 'truncated submission record'})
             continue
         m = RE_SENDING.match(line)
         if m:
@@ -118,21 +160,39 @@ def read_interactions(log_dir=DEFAULT_LOG_DIR):
 
 # --- Reprise: reconstruct resumable work ------------------------------------
 def _group_submissions(events):
-    """Group Quick Entry events into submissions keyed by chatId + timestamp."""
+    """Group Quick Entry events into submissions, correlated by chat identity.
+
+    R2 (review): each step is attached only to the submission it belongs to.
+    A routing step confirms dispatch only when it targets that submission's
+    chat; an unrelated guard/error must not flip an already-dispatched
+    submission back to a retryable state.
+    """
     submissions, current = [], None
     for e in events:
         if e['kind'] == 'submitted':
+            chat = (e.get('chatId') or '').strip()
             current = {'ts': e['ts'], 'chatId': e.get('chatId'), 'promptLength': e.get('promptLength'),
-                       'hasImage': e.get('hasImage'), 'steps': [e], 'terminal': 'submitted'}
+                       'hasImage': e.get('hasImage'), 'steps': [e], 'terminal': 'submitted',
+                       'complete': bool(e.get('complete')),
+                       'identified': bool(chat), 'chat': chat}
             submissions.append(current)
-        elif current is not None:
-            current['steps'].append(e)
-            if e['kind'] == 'routing':
+            continue
+        if current is None:
+            continue
+        chat = current.get('chat')
+        ev_chat = (e.get('chatId') or '').strip()
+        # A step explicitly bound to a different chat is unrelated: ignore it.
+        if ev_chat and chat and ev_chat != chat:
+            continue
+        current['steps'].append(e)
+        if e['kind'] == 'routing':
+            target = (e.get('target') or '')
+            if target == 'specific_chat' and (not ev_chat or ev_chat == chat):
                 current['terminal'] = 'dispatched'
-            elif e['kind'] == 'guard':
-                current['terminal'] = 'guarded'
-            elif e['kind'] == 'error':
-                current['terminal'] = 'error'
+        elif e['kind'] == 'guard' and current['terminal'] != 'dispatched':
+            current['terminal'] = 'guarded'
+        elif e['kind'] == 'error' and current['terminal'] != 'dispatched':
+            current['terminal'] = 'error'
     return submissions
 
 
@@ -145,6 +205,12 @@ def resumable(log_dir=DEFAULT_LOG_DIR):
     """
     out = []
     for s in _group_submissions(read_main(log_dir)):
+        # R2: only a complete, identified submission may be called resumable;
+        # a truncated or unidentified record yields 'uncertain', never a retry.
+        if not s.get('complete') or not s.get('identified'):
+            out.append({'ts': s['ts'], 'chatId': s['chatId'], 'state': 'uncertain',
+                        'reason': 'Incomplete or unidentified submission record; not safe to resume'})
+            continue
         if s['terminal'] in ('guarded', 'error') or (s['terminal'] == 'submitted' and
                                                      not any(st['kind'] == 'routing' and st.get('target', '').startswith('specific') for st in s['steps'])):
             out.append({'ts': s['ts'], 'chatId': s['chatId'], 'promptLength': s['promptLength'],

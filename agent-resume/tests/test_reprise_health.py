@@ -102,3 +102,45 @@ class WatchTests(unittest.TestCase):
         report = rh.watch(self.db, '.')
         self.assertIn('actions_for_human', report)
         self.assertIn('needs_relaunch', report)
+
+
+class ReviewFixesTests(unittest.TestCase):
+    def test_r4_cache_tied_to_digest_and_marks_historical(self):
+        rh._EXPLANATION_CACHE.clear()
+        with patch.object(rh, 'explain', return_value={'available': True, 'answer': 'A'}):
+            first = rh.cached_explanation('faits A')
+        self.assertFalse(first['historical'])
+        with patch.object(rh, 'explain', return_value={'available': True, 'answer': 'B'}):
+            second = rh.cached_explanation('faits B')
+        self.assertFalse(second['historical'])
+        # The earlier digest is now historical.
+        self.assertTrue(rh._EXPLANATION_CACHE[(rh._digest('faits A'), '')].get('historical'))
+
+    def test_r4_same_digest_served_from_cache(self):
+        rh._EXPLANATION_CACHE.clear()
+        with patch.object(rh, 'explain', return_value={'available': True, 'answer': 'A'}) as ex:
+            rh.cached_explanation('faits X')
+            again = rh.cached_explanation('faits X')
+        self.assertTrue(again['cached'])
+        self.assertEqual(ex.call_count, 1)
+
+
+class CodexReviewRound2Tests(unittest.TestCase):
+    def test_lone_surrogate_rejected(self):
+        with self.assertRaises(ValueError):
+            rh._digest('\ud800')
+
+    def test_question_part_of_cache_key(self):
+        rh._EXPLANATION_CACHE.clear()
+        with patch.object(rh, 'explain', side_effect=[{'available': True, 'answer': 'Q1'}, {'available': True, 'answer': 'Q2'}]):
+            a = rh.cached_explanation('faits', 'Q1')
+            b = rh.cached_explanation('faits', 'Q2')
+        self.assertNotEqual(a['answer'], b['answer'])
+        self.assertFalse(b['cached'])
+
+    def test_historical_flag_refreshed_on_hit(self):
+        rh._EXPLANATION_CACHE.clear()
+        with patch.object(rh, 'explain', side_effect=[{'available': True, 'answer': 'A'}, {'available': True, 'answer': 'B'}, {'available': True, 'answer': 'A2'}]):
+            rh.cached_explanation('fa', 'Q'); rh.cached_explanation('fb', 'Q'); rh.cached_explanation('fa', 'Q')
+        self.assertFalse(rh._EXPLANATION_CACHE[(rh._digest('fa'), 'Q')]['historical'])
+        self.assertTrue(rh._EXPLANATION_CACHE[(rh._digest('fb'), 'Q')]['historical'])
