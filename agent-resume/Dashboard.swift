@@ -7,7 +7,7 @@ struct Surface<Content: View>: View {
 }
 struct Dashboard: View {
     @ObservedObject var app: App
-    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("connection", "Connexion Codex", "point.3.connected.trianglepath.dotted"), ("desktop", "Quick Apply — Claude Desktop", "desktopcomputer"), ("health", "Santé post-update", "heart.text.square"), ("privacy", "Confidentialité", "lock.shield")]
+    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("connection", "Connexion à codex-desktop", "point.3.connected.trianglepath.dotted"), ("desktop", "Connexion à claude-desktop", "desktopcomputer"), ("health", "Santé post-update", "heart.text.square"), ("privacy", "Confidentialité", "lock.shield")]
     var title: String { sections.first { $0.0 == app.page }?.1 ?? "Reprise" }
     var body: some View {
         NavigationSplitView {
@@ -70,8 +70,8 @@ struct Dashboard: View {
         case "resumptions": return "Les tentatives sont regroupées par cause. Les détails restent accessibles à la demande."
         case "analysis": return "Un second regard sur les comptes rendus, sur votre Mac."
         case "search": return "Retrouvez un élément sans vous souvenir de l’application."
-        case "connection": return "Connectez Reprise à un serveur existant, sans envoyer de message à un agent."
-        case "desktop": return "Connectez Reprise au daemon Quick Apply de Claude Desktop, sans envoyer de prompt."
+        case "connection": return "Connectez Reprise au service codexd (codex-desktop), sans envoyer de message à un agent."
+        case "desktop": return "Connectez Reprise au service claude-desktopd (Quick Apply), sans envoyer de prompt."
         case "health": return "Après une mise à jour : ce qu’il faut relancer, ce qui reste à parser, et les actions humaines."
         case "privacy": return "Vos données de recherche restent sous votre contrôle."
         default: return "L’essentiel de vos sessions, sans les interrompre."
@@ -321,9 +321,9 @@ struct Dashboard: View {
             Surface {
                 VStack(alignment: .leading, spacing: 14) {
                     Label("Mode partagé avec Desktop", systemImage: "desktopcomputer").font(.headline)
-                    Text("Préparez le serveur, lancez Desktop puis vérifiez un chat. La préparation manuelle met les reprises automatiques en pause pendant le test.").font(.callout).foregroundStyle(.secondary)
+                    Text("Préparez le service codexd, lancez Desktop puis vérifiez un chat. La préparation manuelle met les reprises automatiques en pause pendant le test.").font(.callout).foregroundStyle(.secondary)
                     HStack {
-                        Button("1. Préparer le serveur") { app.sharedAction("prepare") }.disabled(app.sharedBusy)
+                        Button("1. Préparer le service codexd") { app.sharedAction("prepare") }.disabled(app.sharedBusy)
                         Button("2. Démarrer l’appli liée") { app.sharedAction("launch") }
                             .disabled(app.sharedBusy || app.running.contains("com.openai.codex"))
                         if app.sharedBusy { ProgressView().controlSize(.small) }
@@ -334,11 +334,11 @@ struct Dashboard: View {
                         Button("3. Vérifier le chat") { app.sharedAction("check") }.disabled(app.sharedBusy || app.sharedSession.isEmpty)
                     }
                     if !app.sharedNote.isEmpty { Text(app.sharedNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Text("Après validation, choisissez le serveur Codex local ci-dessous et réactivez les reprises depuis leur vue.").font(.caption).foregroundStyle(.secondary)
+                    Text("Après validation, choisissez le socket codexd ci-dessous et réactivez les reprises depuis leur vue.").font(.caption).foregroundStyle(.secondary)
                     Text("Le contrôle confirme le chat chargé. Vérifiez aussi les outils de Desktop avant d’activer le lancement automatique.").font(.caption).foregroundStyle(.secondary)
                     Divider()
                     HStack {
-                        Button("Arrêter le serveur") { app.sharedAction("stop") }
+                        Button("Arrêter le service codexd") { app.sharedAction("stop") }
                             .disabled(app.sharedBusy || app.running.contains("com.openai.codex"))
                         Text("Fermez Desktop d’abord. Les reprises seront mises en pause ; une session active empêche l’arrêt.").font(.caption).foregroundStyle(.secondary)
                     }
@@ -353,17 +353,17 @@ struct Dashboard: View {
                     Label("Transport des reprises Codex", systemImage: "point.3.connected.trianglepath.dotted").font(.headline)
                     Text(app.connection.isEmpty ? "Configuration indisponible" : app.connection["mode"] as? String == "server" ? "Socket personnalisé enregistré" : "Détection automatique · socket local ou CLI").font(.callout)
                     if let path = app.connection["configured_socket"] as? String { Text(path).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Text("Une connexion réussie confirme le serveur, pas sa capacité à reprendre les sessions ouvertes dans Desktop.").font(.callout).foregroundStyle(.secondary)
+                    Text("Une connexion réussie confirme le service codexd, pas sa capacité à reprendre les sessions ouvertes dans Desktop.").font(.callout).foregroundStyle(.secondary)
                 }
             }
             Surface {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("Serveurs locaux").font(.headline)
+                    Text("Sockets disponibles").font(.headline)
                     ForEach(Array((app.connection["candidates"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, candidate in
                         HStack(alignment: .top, spacing: 12) {
                             Image(systemName: candidate["detected"] as? Bool == true ? "circle.fill" : "circle").font(.caption).foregroundStyle(.secondary).padding(.top, 4)
                             VStack(alignment: .leading, spacing: 5) {
-                                Text(candidate["label"] as? String ?? "Serveur").font(.callout.weight(.semibold))
+                                Text(candidate["label"] as? String ?? "Socket").font(.callout.weight(.semibold))
                                 Text(candidate["detected"] as? Bool == true ? "Socket détecté · connexion à tester" : "Socket indisponible").font(.caption).foregroundStyle(.secondary)
                                 Text(candidate["path"] as? String ?? "").font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
                             }
@@ -382,7 +382,7 @@ struct Dashboard: View {
                     TextField("Chemin absolu du socket", text: $app.socketPath).textFieldStyle(.roundedBorder).disabled(app.connectionBusy)
                     HStack {
                         Button("Tester la connexion") { app.testConnection() }.disabled(app.connectionBusy || app.socketPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        Button("Utiliser ce serveur") { app.testConnection(save: true) }
+                        Button("Enregistrer ce socket") { app.testConnection(save: true) }
                             .disabled(app.connectionBusy || !app.connectionVerified || app.testedSocket != app.socketPath.trimmingCharacters(in: .whitespacesAndNewlines))
                         Spacer()
                         if app.connectionBusy { ProgressView().controlSize(.small) }
@@ -399,16 +399,16 @@ struct Dashboard: View {
         VStack(alignment: .leading, spacing: 18) {
             Surface {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("Daemon Quick Apply et application liée").font(.headline)
-                    Text("Le serveur valide et route la charge utile ; la soumission réelle nécessite Claude Desktop en cours d’exécution.").font(.callout).foregroundStyle(.secondary)
+                    Text("Service claude-desktopd et application liée").font(.headline)
+                    Text("Le service claude-desktopd valide et route la charge utile ; la soumission réelle nécessite Claude Desktop en cours d’exécution.").font(.callout).foregroundStyle(.secondary)
                     HStack {
                         Button("1. Démarrer l’appli liée") { app.desktopAction("launch") }.disabled(app.desktopBusy)
-                        Button("2. Démarrer le serveur") { app.desktopAction("start") }.disabled(app.desktopBusy)
-                        Button("Arrêter le serveur") { app.desktopAction("stop") }.disabled(app.desktopBusy)
+                        Button("2. Démarrer le service claude-desktopd") { app.desktopAction("start") }.disabled(app.desktopBusy)
+                        Button("Arrêter le service claude-desktopd") { app.desktopAction("stop") }.disabled(app.desktopBusy)
                         if app.desktopBusy { ProgressView().controlSize(.small) }
                     }
                     if !app.desktopNote.isEmpty { Text(app.desktopNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Toggle("Démarrer l’appli liée et le serveur à l’ouverture de Reprise", isOn: Binding(get: { app.desktopStartup }, set: { app.setDesktopStartup($0) }))
+                    Toggle("Démarrer l’appli liée et le service claude-desktopd à l’ouverture de Reprise", isOn: Binding(get: { app.desktopStartup }, set: { app.setDesktopStartup($0) }))
                         .disabled(app.desktopBusy)
                     Text("Ces actions ouvrent ou arrêtent explicitement ; rien n’est lancé implicitement.").font(.caption).foregroundStyle(.secondary)
                 }
@@ -418,7 +418,7 @@ struct Dashboard: View {
                     TextField("Chemin absolu du socket", text: $app.desktopSocketPath).textFieldStyle(.roundedBorder).disabled(app.desktopConnectionBusy)
                     HStack {
                         Button("Tester la connexion") { app.testDesktopConnection() }.disabled(app.desktopConnectionBusy || app.desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        Button("Utiliser ce serveur") { app.testDesktopConnection(save: true) }
+                        Button("Enregistrer ce socket") { app.testDesktopConnection(save: true) }
                             .disabled(app.desktopConnectionBusy || !app.desktopConnectionVerified || app.desktopTestedSocket != app.desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines))
                         Spacer()
                         if app.desktopConnectionBusy { ProgressView().controlSize(.small) }
@@ -431,12 +431,12 @@ struct Dashboard: View {
             }
             Surface {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("Daemons Quick Apply locaux").font(.headline)
+                    Text("Sockets claude-desktopd").font(.headline)
                     ForEach(Array((app.desktopConnection["candidates"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, candidate in
                         HStack(alignment: .top, spacing: 12) {
                             Image(systemName: candidate["detected"] as? Bool == true ? "circle.fill" : "circle").font(.caption).foregroundStyle(.secondary).padding(.top, 4)
                             VStack(alignment: .leading, spacing: 5) {
-                                Text(candidate["label"] as? String ?? "Serveur").font(.callout.weight(.semibold))
+                                Text(candidate["label"] as? String ?? "Socket").font(.callout.weight(.semibold))
                                 Text(candidate["detected"] as? Bool == true ? "Socket détecté · connexion à tester" : "Socket indisponible").font(.caption).foregroundStyle(.secondary)
                                 Text(candidate["path"] as? String ?? "").font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
                             }
@@ -455,7 +455,7 @@ struct Dashboard: View {
                     Label("Transport Quick Apply — Claude Desktop", systemImage: "desktopcomputer").font(.headline)
                     Text(app.desktopConnection.isEmpty ? "Configuration indisponible" : app.desktopConnection["mode"] as? String == "server" ? "Socket personnalisé enregistré" : "Détection automatique · socket local").font(.callout)
                     if let path = app.desktopConnection["configured_socket"] as? String { Text(path).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Text("Une connexion réussie confirme le daemon Quick Apply, pas la soumission dans l’overlay Desktop.").font(.callout).foregroundStyle(.secondary)
+                    Text("Une connexion réussie confirme le service claude-desktopd, pas la soumission dans l’overlay Desktop.").font(.callout).foregroundStyle(.secondary)
                 }
             }
             Surface {
@@ -497,7 +497,7 @@ struct Dashboard: View {
                         Button("Tout redémarrer") { app.restartChain() }.disabled(app.chainBusy)
                         if app.chainBusy { ProgressView().controlSize(.small) }
                     }
-                    Text("Relance Reprise, le daemon Quick Apply et le daemon Codex, puis vérifie l’état. N’arrête jamais de force les applications liées.").font(.callout).foregroundStyle(.secondary)
+                    Text("Relance Reprise, le service claude-desktopd et le service codexd, puis vérifie l’état. N’arrête jamais de force les applications liées.").font(.callout).foregroundStyle(.secondary)
                     if !app.chainNote.isEmpty { Text(app.chainNote).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
                 }
             }
@@ -526,8 +526,8 @@ struct Dashboard: View {
             }
             Surface {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Fonctionnalités Claude Desktop (Quick Entry)").font(.headline)
-                    Text("Présence des composants dont dépend la soumission Quick Entry ; vérification déterministe.").font(.callout).foregroundStyle(.secondary)
+                    Text("Fonctionnalités Claude Desktop (Quick Apply)").font(.headline)
+                    Text("Présence des composants dont dépend la soumission Quick Apply ; vérification déterministe.").font(.callout).foregroundStyle(.secondary)
                     ForEach(Array(featureChecks.keys.sorted()), id: \.self) { key in
                         let item = featureChecks[key] as? [String: Any] ?? [:]
                         HStack {

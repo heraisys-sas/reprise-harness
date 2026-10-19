@@ -202,7 +202,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         let path = socketPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty, !connectionBusy else { return }
         connectionBusy = true
-        connectionNote = save ? "Vérification et enregistrement…" : "Vérification du serveur…"
+        connectionNote = save ? "Vérification et enregistrement…" : "Vérification du service…"
         perform([save ? "connection-config" : "server-check", "--socket", path]) { result in
             self.connectionBusy = false
             self.testedSocket = path
@@ -226,7 +226,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         let path = desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty, !desktopConnectionBusy else { return }
         desktopConnectionBusy = true
-        desktopConnectionNote = save ? "Vérification et enregistrement…" : "Vérification du serveur Quick Entry…"
+        desktopConnectionNote = save ? "Vérification et enregistrement…" : "Vérification du service claude-desktopd…"
         perform([save ? "desktop-connection-config" : "desktop-server-check", "--socket", path]) { result in
             self.desktopConnectionBusy = false
             self.desktopTestedSocket = path
@@ -256,7 +256,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         default: command = "desktop-status"
         }
         desktopBusy = true
-        desktopNote = operation == "launch" ? "Ouverture de l’application liée…" : operation == "start" ? "Démarrage du serveur Quick Entry…" : operation == "stop" ? "Arrêt du serveur…" : "Actualisation…"
+        desktopNote = operation == "launch" ? "Ouverture de l’application liée…" : operation == "start" ? "Démarrage du service claude-desktopd…" : operation == "stop" ? "Arrêt du service…" : "Actualisation…"
         perform([command]) { result in
             self.desktopBusy = false
             self.desktopNote = result?["reason"] as? String ?? "Opération non confirmée. Aucun nouvel essai automatique."
@@ -288,7 +288,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             args += ["--session", uuid.uuidString.lowercased()]
         }
         sharedBusy = true
-        sharedNote = operation == "prepare" ? "Préparation du serveur…" : operation == "launch" ? "Lancement de Desktop…" : operation == "stop" ? "Arrêt du serveur…" : "Vérification du chat…"
+        sharedNote = operation == "prepare" ? "Préparation du service codexd…" : operation == "launch" ? "Lancement de Desktop…" : operation == "stop" ? "Arrêt du service…" : "Vérification du chat…"
         perform(args) { result in
             self.sharedBusy = false
             self.sharedNote = result?["reason"] as? String ?? "Opération non confirmée. Aucun nouvel essai automatique."
