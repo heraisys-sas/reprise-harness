@@ -23,28 +23,37 @@ for arg in "$@"; do
     esac
 done
 
-echo "1/4 · Nettoyage du socket Quick Entry orphelin"
+echo "1/6 · Nettoyage du socket Quick Entry orphelin"
 rm -f "$SOCKET" 2>/dev/null || echo "   (socket non supprimable ici — ignoré)"
 
-echo "2/4 · Arrêt d'une éventuelle instance du serveur Quick Entry"
+echo "2/6 · Arrêt d'une éventuelle instance du serveur Quick Entry"
 pkill -f "claude_desktop_quick.py" 2>/dev/null || true
 
 if [ "$build" = "1" ]; then
-    echo "3/4 · Recompilation de Reprise"
+    echo "3/6 · Recompilation de Reprise"
     sh "$ROOT/native-install"
 else
-    echo "3/4 · Recompilation ignorée (--no-build)"
+    echo "3/6 · Recompilation ignorée (--no-build)"
 fi
 
-echo "4/4 · Démarrage du serveur Quick Entry"
+echo "4/6 · Démarrage du serveur Quick Entry"
 ("$PYTHON" "$ROOT/claude_desktop_quick.py" --state "$STATE" >/dev/null 2>&1 &) || true
 sleep 1
 
+echo "5/6 · Redémarrage du daemon Codex (si l'exécutable Codex est présent)"
+CODEX=$( "$PYTHON" -c "import sys; sys.path.insert(0,'$ROOT'); import engines; print(engines.executable('codex-cli') or '')" 2>/dev/null || true )
+if [ -n "$CODEX" ]; then
+    "$CODEX" app-server daemon stop >/dev/null 2>&1 || true
+    "$CODEX" app-server daemon start -c 'forced_login_method="chatgpt"' >/dev/null 2>&1 || echo "   (daemon Codex non démarré ici — ignoré)"
+else
+    echo "   (exécutable Codex absent — ignoré)"
+fi
+
 if [ "$gui" = "1" ]; then
-    echo "5/5 · Relance de l'application Reprise"
+    echo "6/6 · Relance de l'application Reprise"
     open -n -a "$APP" --args "$ROOT" "$PYTHON"
 else
-    echo "5/5 · Application non relancée (--server)"
+    echo "6/6 · Application non relancée (--server)"
 fi
 
 echo "État :"

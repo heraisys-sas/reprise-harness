@@ -468,6 +468,18 @@ struct Dashboard: View {
         return VStack(alignment: .leading, spacing: 18) {
             Surface {
                 VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Label("Redémarrer la chaîne de dépendances", systemImage: "arrow.clockwise.circle").font(.headline)
+                        Spacer()
+                        Button("Tout redémarrer") { app.restartChain() }.disabled(app.chainBusy)
+                        if app.chainBusy { ProgressView().controlSize(.small) }
+                    }
+                    Text("Relance Reprise, le serveur Quick Entry et le daemon Codex, puis vérifie l’état. N’arrête jamais de force les applications liées.").font(.callout).foregroundStyle(.secondary)
+                    if !app.chainNote.isEmpty { Text(app.chainNote).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+                }
+            }
+            Surface {
+                VStack(alignment: .leading, spacing: 12) {
                     Text("Actions requérant un humain").font(.headline)
                     if actions.isEmpty {
                         Text("Aucune action nécessaire pour l’instant.").font(.callout).foregroundStyle(.secondary)

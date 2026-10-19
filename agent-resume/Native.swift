@@ -31,6 +31,8 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     var lastSynthesisAt: Date = .distantPast
     @Published var desktopBusy = false
     @Published var desktopStartup = UserDefaults.standard.bool(forKey: "DesktopLinkedStartup")
+    @Published var chainBusy = false
+    @Published var chainNote = ""
     @Published var desktopNote = ""
     @Published var sharedBusy = false
     @Published var sharedNote = ""
@@ -258,6 +260,16 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         perform([command]) { result in
             self.desktopBusy = false
             self.desktopNote = result?["reason"] as? String ?? "Opération non confirmée. Aucun nouvel essai automatique."
+            self.refresh()
+        }
+    }
+    func restartChain() {
+        guard !chainBusy else { return }
+        chainBusy = true
+        chainNote = "Redémarrage de la chaîne en cours…"
+        perform(["restart-chain"]) { result in
+            self.chainBusy = false
+            self.chainNote = result?["output"] as? String ?? (result?["error"] as? String ?? "Chaîne redémarrée.")
             self.refresh()
         }
     }

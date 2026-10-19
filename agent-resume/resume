@@ -131,6 +131,7 @@ def main():
     desktop_check.add_argument('--session')
     sub.add_parser('desktop-connection-status')
     sub.add_parser('reprise-health')
+    sub.add_parser('restart-chain')
     sub.add_parser('local-synthesis')
     sub.add_parser('health-watch')
     sub.add_parser('desktop-status')
@@ -204,6 +205,12 @@ def main():
     elif args.action == 'local-synthesis':
         import reprise_health
         print(json.dumps(reprise_health.local_synthesis(), ensure_ascii=False))
+    elif args.action == 'restart-chain':
+        import subprocess
+        script = ROOT / 'restart-chain'
+        result = subprocess.run(['/bin/sh', str(script)], capture_output=True, text=True, timeout=120)
+        print(json.dumps({'status': 'finished' if result.returncode == 0 else 'failed',
+                          'output': result.stdout[-2000:], 'error': result.stderr[-500:]}, ensure_ascii=False))
     elif args.action == 'reprise-health':
         import reprise_health
         print(json.dumps(reprise_health.summarize('.'), ensure_ascii=False))
