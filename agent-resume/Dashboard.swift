@@ -228,9 +228,11 @@ struct Dashboard: View {
                 if expired {
                     // An expired window is spent: state it plainly and show when it renews.
                     Text("Épuisé").font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(.secondary)
+                        .accessibilityLabel(name + " : épuisé, " + renewal)
                     Label(renewal, systemImage: "arrow.clockwise").font(.callout).foregroundStyle(.orange)
                 } else {
                     Text("\(Int(remaining)) %").font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit()
+                        .accessibilityLabel(name + " : " + String(Int(remaining)) + " % disponibles, " + renewal)
                     Text("disponibles").font(.caption).foregroundStyle(.secondary)
                     ProgressView(value: remaining, total: 100).tint(remaining < 15 ? .orange : .accentColor)
                     Label(renewal, systemImage: "clock").font(.caption).foregroundStyle(.secondary)
@@ -501,8 +503,10 @@ struct Dashboard: View {
                     ForEach(Array(featureChecks.keys.sorted()), id: \.self) { key in
                         let item = featureChecks[key] as? [String: Any] ?? [:]
                         HStack {
-                            Image(systemName: (item["present"] as? Bool == true) ? "checkmark.circle" : "xmark.circle")
-                                .foregroundStyle((item["present"] as? Bool == true) ? .green : .red)
+                            let present = (item["present"] as? Bool == true)
+                            Image(systemName: present ? "checkmark.circle" : "xmark.circle")
+                                .foregroundStyle(present ? .green : .red)
+                                .accessibilityLabel(present ? "Présent" : "Absent")
                             Text(item["label"] as? String ?? key).font(.callout)
                             Spacer()
                         }
@@ -529,8 +533,10 @@ struct Dashboard: View {
                     ForEach(Array(codexChecks.keys.sorted()), id: \.self) { key in
                         let item = codexChecks[key] as? [String: Any] ?? [:]
                         HStack {
-                            Image(systemName: (item["present"] as? Bool == true) ? "checkmark.circle" : "xmark.circle")
-                                .foregroundStyle((item["present"] as? Bool == true) ? .green : .red)
+                            let present = (item["present"] as? Bool == true)
+                            Image(systemName: present ? "checkmark.circle" : "xmark.circle")
+                                .foregroundStyle(present ? .green : .red)
+                                .accessibilityLabel(present ? "Présent" : "Absent")
                             Text(item["label"] as? String ?? key).font(.callout)
                             Spacer()
                         }
