@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="fr"><meta charset="utf-8"><title>Test Reprise</title>
+<style>body{font:15px system-ui;padding:16px;color:light-dark(#222,#eee);background:light-dark(#fff,#222);color-scheme:light dark}button{padding:10px 16px}p{max-width:55ch}</style>
+<h3>Test Reprise : une seule tâche</h3>
+<p>Un clic envoie une demande visible à Claude. Aucun fichier, recherche ou envoi différé.</p>
+<button id="send" disabled>Lancer l’unique tâche</button>
+<p id="status" role="status">Connexion au Desktop…</p>
+<script>
+const button=document.querySelector('#send'), status=document.querySelector('#status');
+const pending=new Map(); let sequence=0, initialized=false, clicked=false;
+const prefix='reprise-'+Math.random().toString(36).slice(2)+'-';
+function notify(method,params={}){parent.postMessage({jsonrpc:'2.0',method,params},'*');}
+function request(method,params){
+  const id=prefix+(++sequence);
+  return new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{pending.delete(id);reject(Error('Délai dépassé ; ne pas renvoyer.'));},15000);
+    pending.set(id,{resolve,reject,timer});
+    parent.postMessage({jsonrpc:'2.0',id,method,params},'*');
+  });
+}
+window.addEventListener('message',event=>{
+  if(event.source!==parent||!event.data||event.data.jsonrpc!=='2.0')return;
+  const message=event.data, entry=pending.get(message.id);
+  if(entry){clearTimeout(entry.timer);pending.delete(message.id);message.error?entry.reject(Error(message.error.message||'Refus du Desktop')):entry.resolve(message.result);}
+  if(message.method==='ui/resource-teardown'){
+    button.disabled=true;
+    parent.postMessage({jsonrpc:'2.0',id:message.id,result:{}},'*');
+  }
+});
+async function tool(name,args={}){
+  const result=await request('tools/call',{name,arguments:args});
+  if(result.isError)throw Error('Outil refusé ; ne pas renvoyer.');
+  return result;
+}
+button.addEventListener('click',async()=>{
+  if(!initialized||clicked)return;
+  clicked=true;button.disabled=true;status.textContent='Réservation de l’unique envoi…';
+  try{
+    await tool('reserve_dispatch');
+    status.textContent='Envoi à Claude…';
+    await request('ui/message',{role:'user',content:[{type:'text',text:'Test Reprise depuis le bouton MCP App : utilise uniquement reprise_app_probe. Appelle get_task une fois. Si une tâche est fournie, résous-la puis appelle submit_result avec job_id, attempt_id et ta réponse. Sinon arrête-toi. Aucun autre outil, recherche ou fichier. Arrête-toi après le reçu.'}]});
+    status.textContent='Message accepté par le Desktop. Le résultat doit encore être reçu par Reprise.';
+    await tool('record_ui_event',{event:'message_ack'});
+  }catch(error){
+    status.textContent='Envoi refusé ou incertain : '+error.message+' Aucun nouvel essai automatique.';
+    try{await tool('record_ui_event',{event:'message_error'});}catch{}
+  }
+});
+(async()=>{
+  try{
+    const hello=await request('ui/initialize',{appInfo:{name:'reprise-single-job-test',version:'0.1.0'},appCapabilities:{availableDisplayModes:['inline']},protocolVersion:'2026-01-26'});
+    if(!hello||hello.protocolVersion!=='2026-01-26'||!hello.hostCapabilities?.serverTools)throw Error('Négociation UI ou outils non confirmée');
+    notify('ui/notifications/initialized');
+    initialized=true;
+    await tool('record_ui_event',{event:'ready'});
+    button.disabled=false;status.textContent='Prêt. Aucun message envoyé avant le clic.';
+    notify('ui/notifications/size-changed',{height:240});
+  }catch(error){status.textContent='Widget indisponible : '+error.message;}
+})();
+</script></html>

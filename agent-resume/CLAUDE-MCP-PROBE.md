@@ -71,3 +71,51 @@ Independent receiver-side evidence (read from the local SQLite job state, not sc
 The result matched the fixed task. The receiver accepts only a claimed job with the matching ID and a bounded nonempty result, persists completion across restarts, and refuses duplicate submissions. Two fixture tests verify that contract, wrong IDs, early submissions and oversized results. This is an experimental one-job diagnostic (`desktop_job_probe.py`), not a general job queue, authenticated multi-client service or production integration. The task is trivial: no claim is made about review quality or routing performance.
 
 This demonstrates a working **conversation-triggered MCP return channel on the signed-in Free Desktop**. It does not establish background operation, automatic generation triggering, controlled model selection or remaining quota. No MCP App widget was used or tested. The temporary server configuration was removed after the test, the saved configuration restored byte-for-byte, and Desktop reopened to unload the server.
+
+## MCP Apps button experiment — 19 October 2026
+
+Version provenance: the bundle version was not freshly captured during the button trial. A subsequent passive read found 2.42304.2. The previously recorded 2.42304.0 belongs to the 18 October tests. The behavior below is an observation of the actual running session, without asserting that all builds behave identically.
+
+The next initialization was inspected at the extension value level, without inference or tools exposed in capability-only mode. Desktop advertised:
+
+```json
+{"io.modelcontextprotocol/ui":{"mimeTypes":["text/html;profile=mcp-app"]}}
+```
+
+An experimental `desktop_app_probe.py` server then exposed a small self-contained HTML widget, without network domains, external scripts, project file tools, timer-triggered messages or credentials. A visible chat prompt requested only `open_test_panel` and stopped. The panel completed the `ui/initialize` handshake and recorded `ready` through an app-only tool.
+
+One button activation reserved the only dispatch persistently, sent one `ui/message`, and recorded its ACK. **On this Desktop, the ACK meant that the composer was prefilled with a caution notice, not that a model turn had started.** The driver then clicked Send once to complete the bounded return-channel test; tool permissions were granted for one use. This is a supervised flow and does not prove autonomous wake-up. No delayed/background inference was attempted, since even foreground delivery required explicit sending.
+
+Receiver-side evidence:
+
+```json
+{
+  "client_date": "2026-10-19",
+  "ui_capability": {
+    "mimeTypes": [
+      "text/html;profile=mcp-app"
+    ]
+  },
+  "ui_events": [
+    "ready",
+    "message_ack"
+  ],
+  "dispatch_reservations": 1,
+  "job_id": "27c16bdf-7295-4746-ba93-cc3bac25487d",
+  "attempt_id": "b21c480c-a754-40f8-9a80-69b5b0d0d309",
+  "status": "completed",
+  "answer": "2,5,7",
+  "claims": 1,
+  "host_message_behavior": "ui/message acknowledged and prefilled composer with warning; explicit Send was required",
+  "automation_proven": false,
+  "result_verified": "Local SQLite read, not chat text"
+}
+```
+
+Before this live trial, the job prototype was strengthened: a pending job receives one atomic `attempt_id`; subsequent claim calls return no task; an uncertain claim remains `indeterminate` after reconnect, without automatic redistribution. A matching late result may still complete it. Repeating an identical result returns the same receipt; a conflicting result or wrong attempt is refused. This does not guarantee exactly one model inference, which is outside the SQLite transaction.
+
+Six local tests cover capability-only operation, missing UI support, bounded resource access, a dispatch surviving widget reload, interrupted ownership and lost-ACK result idempotency. A JavaScript fixture also exercised the actual inline script with a simulated host: no message before a click, one message after two immediate clicks, and a permanently disabled button. The real Desktop trial confirmed the task result independently through SQLite.
+
+The temporary connector was removed, its original config restored byte-for-byte, and the previously enabled conversation connectors/search restored. Desktop was reopened to unload the experimental tools. No persistent installation, startup setting or isolated profile was activated.
+
+Sources: [MCP Apps protocol](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx), [current protocol types](https://github.com/modelcontextprotocol/ext-apps/blob/main/src/spec.types.ts). Host behavior above is direct local evidence, not an inference from generic SDK documentation.

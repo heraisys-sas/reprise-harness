@@ -32,3 +32,5 @@ Official references checked 18 October 2026: [CLI reference](https://code.claude
 Desktop alternative investigated: a [real MCP initialization probe](CLAUDE-MCP-PROBE.md) on Desktop 2.42304.0 did not advertise `sampling`; bundled protocol strings alone do not establish a working inference transport. A subsequent explicitly requested direct `sampling/createMessage` test received `-32601 Method not found`, confirming that method is unavailable on the tested connection.
 
 A subsequent [one-job Desktop test](CLAUDE-MCP-PROBE.md#single-job-round-trip-successful) succeeded through ordinary `get_task` / `submit_result` tools, with a visible chat trigger and tool approvals. This separate experimental return channel works without sampling; autonomous wake-up and a production queue remain unvalidated.
+
+On 19 October, MCP Apps support was confirmed and a visible button round trip completed. However, `ui/message` only prefilled the Desktop composer with a warning; explicit Send was still required. See the [MCP Apps experiment](CLAUDE-MCP-PROBE.md#mcp-apps-button-experiment--19-october-2026). This is a supervised Desktop path, not autonomous inference control.
