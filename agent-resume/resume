@@ -132,6 +132,11 @@ def main():
     sub.add_parser('desktop-connection-status')
     sub.add_parser('reprise-health')
     sub.add_parser('health-watch')
+    sub.add_parser('desktop-status')
+    sub.add_parser('desktop-launch')
+    server = sub.add_parser('desktop-server-start')
+    server.add_argument('--socket')
+    sub.add_parser('desktop-server-stop')
     sub.add_parser('reprise-resume')
     history = sub.add_parser('reprise-history')
     history.add_argument('--limit', type=int, default=20)
@@ -180,6 +185,18 @@ def main():
     elif args.action == 'desktop-server-check':
         from claude_desktop import probe
         print(json.dumps(probe(executable, args.socket or str(Path.home()/'.claude-desktop/quick-entry.sock'), args.session), ensure_ascii=False))
+    elif args.action == 'desktop-status':
+        import desktop_mode
+        print(json.dumps(desktop_mode.status(), ensure_ascii=False))
+    elif args.action == 'desktop-launch':
+        import desktop_mode
+        print(json.dumps(desktop_mode.launch(), ensure_ascii=False))
+    elif args.action == 'desktop-server-start':
+        import desktop_mode
+        print(json.dumps(desktop_mode.start(socket=args.socket), ensure_ascii=False))
+    elif args.action == 'desktop-server-stop':
+        import desktop_mode
+        print(json.dumps(desktop_mode.stop(), ensure_ascii=False))
     elif args.action == 'health-watch':
         import reprise_health
         print(json.dumps(reprise_health.watch(db, '.'), ensure_ascii=False))

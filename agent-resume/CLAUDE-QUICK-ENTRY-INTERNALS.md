@@ -63,3 +63,15 @@ Le payload IPC porte `prompt`, `images`, `filePaths`, `chatId`, `activeChatId`, 
 - L'essai réel (19 octobre, job `619a69f2-03a9-44cd-9b81-f53028d763b5`, conversation `178dcceb-fcd3-4f2d-ac4f-116a8a153bc3`) a prouvé le round-trip **avec ouverture manuelle de Quick Entry par l'utilisateur** et un seul `Return`.
 - Le mode non surveillé (ouverture + soumission entièrement automatisées) **n'a pas été prouvé** : l'outil d'automatisation a refusé le double-appui sur Option (`keyPressIncludedNoNonModifierKeys`) et n'a pas pu capturer d'écran.
 - La nécessité d'un clic sur le menu de destination reste indéterminée ; dans l'essai la conversation active était déjà correcte.
+
+## Revue de code (MCP Reprise, 19 octobre 2026)
+
+Une revue via `reprise_delegate` (Codex, Sol/medium, thread `01a154ca`) a porté sur l'analyse de journaux. Correctif intégré : le probe de liveness distingue désormais `running` / `stopped` / `indeterminate` (un socket présent mais rejeté n'est plus déclaré arrêté).
+
+Retours restants à intégrer, transposables à `reprise_logs.py` / `reprise_health.py` :
+- **[High]** Un parsing incomplet peut préserver un état périmé : signaler les trous de décodage / enregistrements tronqués, retourner un état incertain plutôt que de conclure.
+- **[Medium]** Exiger une identité confirmée avant de déclarer une tâche « reprise possible » (`resumable()`).
+- **[Medium]** Valider la forme des entrées avant accès ; normaliser les échecs de validation en `ValueError` (une entrée malformée ne doit pas interrompre l'analyse).
+- **[Medium]** Lier les explications mises en cache à un digest source ; les marquer historiques quand la session avance.
+
+Les constats d'origine visaient `detect.py`, `engine_events.py`, `local_analysis.py`, `shared_mode.py`, `connection.py` — non couverts par les tests actuels de ces fichiers.

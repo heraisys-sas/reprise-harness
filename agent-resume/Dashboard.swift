@@ -287,7 +287,7 @@ struct Dashboard: View {
                     Text("Préparez le serveur, lancez Desktop puis vérifiez un chat. La préparation manuelle met les reprises automatiques en pause pendant le test.").font(.callout).foregroundStyle(.secondary)
                     HStack {
                         Button("1. Préparer le serveur") { app.sharedAction("prepare") }.disabled(app.sharedBusy)
-                        Button("2. Lancer Desktop") { app.sharedAction("launch") }
+                        Button("2. Démarrer l’appli liée") { app.sharedAction("launch") }
                             .disabled(app.sharedBusy || app.running.contains("com.openai.codex"))
                         if app.sharedBusy { ProgressView().controlSize(.small) }
                     }
@@ -416,6 +416,22 @@ struct Dashboard: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Soumission Quick Entry").font(.headline)
                     Text("La soumission réelle dans l’overlay Quick Entry exige les autorisations macOS (Accessibilité, Capture d’écran) accordées par l’opérateur. Reprise valide et route la charge utile ; elle ne pilote pas l’interface Desktop.").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            Surface {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Serveur Quick Entry et application liée").font(.headline)
+                    Text("Le serveur valide et route la charge utile ; la soumission réelle nécessite Claude Desktop en cours d’exécution.").font(.callout).foregroundStyle(.secondary)
+                    HStack {
+                        Button("1. Démarrer l’appli liée") { app.desktopAction("launch") }.disabled(app.desktopBusy)
+                        Button("2. Démarrer le serveur") { app.desktopAction("start") }.disabled(app.desktopBusy)
+                        Button("Arrêter le serveur") { app.desktopAction("stop") }.disabled(app.desktopBusy)
+                        if app.desktopBusy { ProgressView().controlSize(.small) }
+                    }
+                    if !app.desktopNote.isEmpty { Text(app.desktopNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
+                    Toggle("Démarrer l’appli liée et le serveur à l’ouverture de Reprise", isOn: Binding(get: { app.desktopStartup }, set: { app.setDesktopStartup($0) }))
+                        .disabled(app.desktopBusy)
+                    Text("Ces actions ouvrent ou arrêtent explicitement ; rien n’est lancé implicitement.").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }

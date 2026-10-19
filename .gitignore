@@ -8,6 +8,7 @@
 !**/.env.example
 **/.credentials*
 **/state/
+**/quick-state/
 **/backups/
 **/*.app/
 *.zip

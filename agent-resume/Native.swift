@@ -27,6 +27,9 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var desktopConnectionVerified = false
     var desktopConnectionLoaded = false
     @Published var health: [String: Any] = [:]
+    @Published var desktopBusy = false
+    @Published var desktopStartup = UserDefaults.standard.bool(forKey: "DesktopLinkedStartup")
+    @Published var desktopNote = ""
     @Published var sharedBusy = false
     @Published var sharedNote = ""
     @Published var sharedSession = ""
@@ -142,6 +145,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                 if !self.startupAttempted {
                     self.startupAttempted = true
                     if self.sharedStartup && !self.running.contains("com.openai.codex") { self.sharedAction("launch", startup: true) }
+                    if self.desktopStartup { self.desktopAction("launch"); self.desktopAction("start") }
                 }
                 if let result { self.snapshot = result; self.lastRefresh = Date() }
                 else { self.snapshot["error"] = "Actualisation indisponible. Les dernières informations restent affichées." }
@@ -234,6 +238,27 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             self.desktopConnectionNote = result?["reason"] as? String ?? "Configuration indisponible."
             self.refresh()
         }
+    }
+    func desktopAction(_ operation: String) {
+        guard !desktopBusy else { return }
+        let command: String
+        switch operation {
+        case "launch": command = "desktop-launch"
+        case "start": command = "desktop-server-start"
+        case "stop": command = "desktop-server-stop"
+        default: command = "desktop-status"
+        }
+        desktopBusy = true
+        desktopNote = operation == "launch" ? "Ouverture de l’application liée…" : operation == "start" ? "Démarrage du serveur Quick Entry…" : operation == "stop" ? "Arrêt du serveur…" : "Actualisation…"
+        perform([command]) { result in
+            self.desktopBusy = false
+            self.desktopNote = result?["reason"] as? String ?? "Opération non confirmée. Aucun nouvel essai automatique."
+            self.refresh()
+        }
+    }
+    func setDesktopStartup(_ enabled: Bool) {
+        desktopStartup = enabled
+        UserDefaults.standard.set(enabled, forKey: "DesktopLinkedStartup")
     }
     func sharedAction(_ operation: String, startup: Bool = false) {
         guard !sharedBusy else { return }

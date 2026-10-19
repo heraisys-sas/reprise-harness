@@ -29,7 +29,7 @@ class LivenessTests(unittest.TestCase):
         self.assertIn('quick-entry-server', states)
         self.assertIn('codex-server', states)
         for state in states.values():
-            self.assertIn(state, ('running', 'stopped', 'unknown'))
+            self.assertIn(state, ('running', 'stopped', 'indeterminate'))
 
     def test_stopped_server_yields_human_relaunch_action(self):
         with patch.object(rh, 'process_liveness', return_value={'quick-entry-server': 'stopped', 'codex-server': 'running'}):

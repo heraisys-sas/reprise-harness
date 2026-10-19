@@ -75,13 +75,18 @@ def process_liveness():
     }
     result = {}
     for name, path in probes.items():
+        if not Path(path).exists():
+            result[name] = 'stopped'  # socket absent: the server is not listening
+            continue
         try:
             engines.socket_path({'socket': str(path)})
             result[name] = 'running'
         except engines.Unavailable:
-            result[name] = 'stopped'
+            # Socket exists but is rejected (not private, wrong owner, broken
+            # symlink): the listener state is unknown, not proven stopped.
+            result[name] = 'indeterminate'
         except Exception:
-            result[name] = 'unknown'
+            result[name] = 'indeterminate'
     return result
 
 
