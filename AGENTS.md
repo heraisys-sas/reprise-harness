@@ -1,0 +1,55 @@
+# Contexte de travail — projet Reprise & Harness
+
+Instructions de projet pour les agents qui travaillent sur ce dépôt. Complète (sans écraser) les préférences globales de Harness (`~/.dsh/AGENTS.md`). Répondre en français, identifiants techniques en anglais.
+
+## Ce projet est
+Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui suit les sessions d'agents, détecte les anomalies post-update, lit les journaux locaux de Claude Desktop et sert de canal de délégation vers des experts externes (Codex, Claude). `agent-resume/` = l'app native + les modules Python ; `deepseek-harness-config/` = config Harness ; `routing/`, `harness-tools/` = routage et outils.
+
+## Workflow Git
+- **Branche de travail : `dev`** — pas de commit direct sur `main`.
+- **MR `dev` → `main`** (une MR ouverte : #1). Chaque lot de travail = commit sur `dev`, puis fusion via MR.
+- Tests : `python3 -m unittest discover -s agent-resume/tests -q` (~257 OK).
+- Compile Swift (sans relancer l'app) : `sh native-install` ; `--open` pour lancer l'app.
+- Check syntaxe Swift : `swiftc -parse -module-cache-path /private/tmp/agent-resume-swift-cache Native.swift Dashboard.swift` (dans `agent-resume/`).
+- Redémarrer toute la chaîne (codexd + claude-desktopd + Reprise) : `./restart-chain` (ou `--no-build`, `--server`).
+
+## Architecture — canaux de délégation et leurs limites
+| Canal | Sens | Limite |
+|---|---|---|
+| **Codex** (`reprise_delegate`) | aller-retour, vérifiable | **seul opérationnel** ; plafond **8 appels/jour/projet** → `budget_blocked` |
+| **Quick Entry / Quick Apply** | Reprise → Claude Desktop | **unidirectionnel** : soumet un tour, ne relit PAS la réponse (`response: None`) |
+| **MCP `get_task`/`submit_result`** | aller-retour via SQLite | 1 fichier joint, 1 réponse/tâche ; Claude doit invoquer l'outil (pas push) |
+
+`sampling/createMessage` est refusé par le client MCP Desktop (`-32601`). Pas d'API d'inférence publique. Voir `agent-resume/CLAUDE-MCP-PROBE.md`, `ARCHITECTURE-QUESTION-PENDING.md`, `reprise-delegation.md`.
+
+## Contraintes d'environnement (à connaître avant de coder)
+- **Sandbox** : écriture limitée au workspace. Bloqué : `~/.claude-desktop` (socket orphinel impossible à `rm`), `~/.dsh`, `Documents/ChatGPT/productivité`. Un agent qui l'ignore boucle — c'est arrivé.
+- **`ps` / `osascript` bloqués** — pas d'inspection de processus fine. Vérifier l'état par **connexion au socket** (`connect()`), pas par existence du fichier socket.
+- **Clone du pont MCP** (`Documents/ChatGPT/productivité`) = `project_root` du pont `reprise_delegate`. Actuellement **en retard sur `origin`** (à `ad70784`) et **non synchronisé** → `reprise_delegate` avec `paths` échoue. Le faire `git pull` (hors sandbox) pour débloquer les revues de code.
+
+## Nomenclature (Unix) — respecter
+- **Services/daemons** : `codexd` (daemon Codex / `app-server daemon`), `claude-desktopd` (daemon Quick Apply).
+- **Onglet** : « Connexions » (onglet unique, Picker interne codex-desktop / claude-desktop).
+- **Chemins** : « socket » (jamais « serveur » — le mot « serveur » avait 3 sens, risque d'arrêter le mauvais service).
+- **Marque** : « Quick Apply » (pas « Quick Entry ») dans l'UI et les messages.
+
+## Faits techniques établis (ne pas re-découvrir)
+- Le serveur Quick Apply **démarre SANS Claude Desktop** (il bind son socket seul) → pas de blocage d'ordre ; les soumissions sont livrées quand Desktop est prêt.
+- Un **socket orphelin** (fichier présent, connexion refusée) = `stopped`, pas `running`. Vérifier par `connect()`.
+- `native-install` ne relance l'app **qu'avec `--open`** (compiler ne perturbe pas la session).
+- Les timestamps de l'UI sont en **heure locale 24h** (helpers `localTime`/`localDateTime` dans `Dashboard.swift`).
+- `runtime.terminate()` doit être résilient (un `killpg` refusé ne doit pas écraser le retour de l'appelant) — corrigé, source du bug des quotas manquants.
+
+## Modèle & configuration (hors dépôt, dans `~/.dsh`)
+- Workspace DSH `reprise-harness` (path = ce dépôt). Modèle par défaut : **`morph-dsv41flash-1017`** (« Morph DeepSeek V4.1 Flash », provider `deepseek`, `DEEPSEEK_API_KEY`).
+- **Évaluation de `morph-dsv41flash-1017`** : bon pour des tâches **cadrées/localisées** (ajout de composants, labels, correctifs ciblés) ; **bloque sur de la refonte structurante** (un sous-agent a bouclé à 4M tokens sur la fusion d'onglets, sans résultat). → lui confier du cadré, pas de la refonte.
+
+## État et suivi
+- Issues GitHub #2–#5 : symptômes UI, architecture de retour (avis Astra bloqué `budget_blocked`), canal MCP UX review (prêt, non branché), analyse UX/UI.
+- Revue UX/UI : les 4 priorités sont traitées (badges + résumé Santé, nomenclature, accessibilité + feedback, fusion onglets). Détails dans `agent-resume/UX-UI-ANALYSIS.md`.
+- Demande de conseil architectural **Astra** en attente : voir `agent-resume/ARCHITECTURE-QUESTION-PENDING.md` (relancer quand le plafond MCP se réinitialise).
+
+## Points de vigilance
+- Ne pas supposer un résultat de test non exécuté ; annoncer précisément les contrôles.
+- Distinguer ce qui est **corrigé** de ce qui est **à confirmer en conditions réelles** (hors sandbox).
+- Ne pas inventer d'identifiant de modèle, de chemin ou de fonctionnalité — vérifier dans le code/config.
