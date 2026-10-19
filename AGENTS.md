@@ -40,9 +40,13 @@ Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui s
 - Les timestamps de l'UI sont en **heure locale 24h** (helpers `localTime`/`localDateTime` dans `Dashboard.swift`).
 - `runtime.terminate()` doit être résilient (un `killpg` refusé ne doit pas écraser le retour de l'appelant) — corrigé, source du bug des quotas manquants.
 
-## Modèle & configuration (hors dépôt, dans `~/.dsh`)
-- Workspace DSH `reprise-harness` (path = ce dépôt). Modèle par défaut : **`morph-dsv41flash-1017`** (« Morph DeepSeek V4.1 Flash », provider `deepseek`, `DEEPSEEK_API_KEY`).
-- **Évaluation de `morph-dsv41flash-1017`** : bon pour des tâches **cadrées/localisées** (ajout de composants, labels, correctifs ciblés) ; **bloque sur de la refonte structurante** (un sous-agent a bouclé à 4M tokens sur la fusion d'onglets, sans résultat). → lui confier du cadré, pas de la refonte.
+## Modèles & escalade
+- Le modèle par défaut du workspace est configuré dans `~/.dsh` (hors dépôt) — **il évolue, ne pas le figer ici**. L'identifier par `reprise_backends` / la config du profil au moment du travail.
+- Un modèle **léger** (type Flash) est adapté aux tâches **cadrées/localisées** : ajout de composants/labels, correctifs ciblés, tests. Il peut **bloquer sur de la refonte structurante** (échec observé : boucle sans résultat sur une fusion d'onglets).
+- **Pour les tâches complexes, ESCALADER vers un modèle plus compétent** plutôt que de forcer le modèle léger :
+  - via **sous-agent** (`subagent`) avec un modèle plus capable (DeepSeek Pro / raisonnement élevé, ou un modèle Codex type Sol/Astra selon `reprise_backends`) ;
+  - ou via **l'outil de délégation Reprise** (`reprise_delegate`) pour un expert externe (revue, expertise, batch).
+- Ne jamais laisser un sous-agent boucler indéfiniment sur une tâche hors de sa portée : le constater, l'interrompre, et **escalader ou faire soi-même**. Deux échecs sur un même volet = changer d'approche (modèle ou auteur).
 
 ## État et suivi
 - Issues GitHub #2–#5 : symptômes UI, architecture de retour (avis Astra bloqué `budget_blocked`), canal MCP UX review (prêt, non branché), analyse UX/UI.
