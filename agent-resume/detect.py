@@ -149,7 +149,11 @@ def scan_harness(home=None):
     for path in (home / 'sessions').glob('*/*/session*.jsonl*'):
         if path.name.endswith(('.jsonl', '.jsonl.zstd')):
             previous = logs.get(path.parent.name)
-            if not previous or path.stat().st_mtime > previous.stat().st_mtime:
+            try:
+                newer = (not previous) or path.stat().st_mtime > previous.stat().st_mtime
+            except OSError:
+                continue  # unreadable: skip, never re-probe
+            if newer:
                 logs[path.parent.name] = path
     archived = set()
     try:
@@ -160,8 +164,17 @@ def scan_harness(home=None):
     result = []
     unreadable = 0
     active = 0
-    for path in sorted(cache.glob('session-*.json'), key=lambda p: p.stat().st_mtime, reverse=True)[:100]:
-        if path.stem in archived or time.time() - path.stat().st_mtime > 30 * 86400:
+    def _mtime(p):
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+    for path in sorted(cache.glob('session-*.json'), key=_mtime, reverse=True)[:100]:
+        try:
+            if path.stem in archived or time.time() - path.stat().st_mtime > 30 * 86400:
+                continue
+        except OSError:
+            unreadable += 1
             continue
         try:
             obj = json.loads(path.read_text())
@@ -246,8 +259,17 @@ def scan_claude(home=None):
     rows = []
     active = 0
     failed = 0
-    for path in sorted(projects.glob('*/*.jsonl'), key=lambda p: p.stat().st_mtime, reverse=True)[:100]:
-        if time.time() - path.stat().st_mtime > 30 * 86400:
+    def _mtime(p):
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0  # a protected/unreadable file sorts last and is skipped below
+    for path in sorted(projects.glob('*/*.jsonl'), key=_mtime, reverse=True)[:100]:
+        try:
+            if time.time() - path.stat().st_mtime > 30 * 86400:
+                continue
+        except OSError:
+            failed += 1  # unreadable (e.g. TCC-protected): skip, never re-probe
             continue
         try:
             if path.stat().st_size > 64 * 1024 * 1024:
