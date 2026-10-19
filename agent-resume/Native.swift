@@ -19,6 +19,13 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var testedSocket = ""
     @Published var connectionVerified = false
     var connectionLoaded = false
+    @Published var desktopConnection: [String: Any] = [:]
+    @Published var desktopSocketPath = ""
+    @Published var desktopConnectionBusy = false
+    @Published var desktopConnectionNote = ""
+    @Published var desktopTestedSocket = ""
+    @Published var desktopConnectionVerified = false
+    var desktopConnectionLoaded = false
     @Published var sharedBusy = false
     @Published var sharedNote = ""
     @Published var sharedSession = ""
@@ -115,13 +122,19 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             let result = self.execute(["detect"])
             let scheduler = self.execute(["scheduler-status"])
             let connection = self.execute(["connection-status"])
+            let desktopConnection = self.execute(["desktop-connection-status"])
             DispatchQueue.main.async {
                 self.busy = false
                 self.scheduler = scheduler ?? [:]
                 self.connection = connection ?? [:]
+                self.desktopConnection = desktopConnection ?? [:]
                 if !self.connectionLoaded, let connection {
                     self.socketPath = connection["configured_socket"] as? String ?? (connection["candidates"] as? [[String: Any]])?.first?["path"] as? String ?? ""
                     self.connectionLoaded = true
+                }
+                if !self.desktopConnectionLoaded, let desktopConnection {
+                    self.desktopSocketPath = desktopConnection["configured_socket"] as? String ?? (desktopConnection["candidates"] as? [[String: Any]])?.first?["path"] as? String ?? ""
+                    self.desktopConnectionLoaded = true
                 }
                 if !self.startupAttempted {
                     self.startupAttempted = true
@@ -192,6 +205,30 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             self.connectionVerified = false
             self.testedSocket = ""
             self.connectionNote = result?["reason"] as? String ?? "Configuration indisponible."
+            self.refresh()
+        }
+    }
+    func testDesktopConnection(save: Bool = false) {
+        let path = desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty, !desktopConnectionBusy else { return }
+        desktopConnectionBusy = true
+        desktopConnectionNote = save ? "Vérification et enregistrement…" : "Vérification du serveur Quick Entry…"
+        perform([save ? "desktop-connection-config" : "desktop-server-check", "--socket", path]) { result in
+            self.desktopConnectionBusy = false
+            self.desktopTestedSocket = path
+            self.desktopConnectionVerified = result?["connected"] as? Bool == true
+            self.desktopConnectionNote = result?["reason"] as? String ?? "Vérification indisponible. Configuration conservée."
+            if save && result?["saved"] as? Bool == true { self.refresh() }
+        }
+    }
+    func restoreDesktopConnectionDetection() {
+        guard !desktopConnectionBusy else { return }
+        desktopConnectionBusy = true
+        perform(["desktop-connection-config", "--auto"]) { result in
+            self.desktopConnectionBusy = false
+            self.desktopConnectionVerified = false
+            self.desktopTestedSocket = ""
+            self.desktopConnectionNote = result?["reason"] as? String ?? "Configuration indisponible."
             self.refresh()
         }
     }

@@ -12,6 +12,7 @@ import sys
 import time
 from codex_expert import review
 from claude_expert import review as claude_review
+import claude_desktop
 from engines import executable, options
 
 SCHEMA = {'type': 'object', 'properties': {'question': {'type': 'string', 'maxLength': 12000}},
@@ -21,8 +22,10 @@ TOOLS = [
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {
          'kind': {'type': 'string', 'enum': ['expertise', 'review', 'batch']},
          'level': {'type': 'string', 'enum': ['standard', 'deep']},
-         'backend': {'type': 'string', 'enum': ['codex', 'claude-code']},
-         'paths': {'type': 'array', 'maxItems': 30, 'items': {'type': 'string'}}},
+         'backend': {'type': 'string', 'enum': ['codex', 'claude-code', 'claude-desktop']},
+         'paths': {'type': 'array', 'maxItems': 30, 'items': {'type': 'string'}},
+         'chatId': {'type': 'string'},
+         'filePaths': {'type': 'array', 'maxItems': 10, 'items': {'type': 'string'}}},
          'required': ['question', 'kind']}},
     {'name': 'reprise_backends', 'description': 'List configured delegation capabilities without inference. Availability is not a price or quota guarantee.',
      'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
@@ -32,7 +35,7 @@ TOOLS = [
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {'thread_id': {'type': 'string'}}, 'required': ['question', 'thread_id']}},
     {'name': 'reprise_followup', 'description': 'Continue an owned project expertise session, preserving backend, model and effort. No fallback.',
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {
-         'thread_id': {'type': 'string'}, 'backend': {'type': 'string', 'enum': ['codex', 'claude-code']}},
+         'thread_id': {'type': 'string'}, 'backend': {'type': 'string', 'enum': ['codex', 'claude-code', 'claude-desktop']}},
          'required': ['question', 'thread_id', 'backend']}},
 ]
 
@@ -44,7 +47,7 @@ MODES = {
 
 
 class Bridge:
-    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False):
+    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None):
         self.root = Path(root).resolve(strict=True)
         if not self.root.is_dir() or not 1 <= daily_limit <= 100:
             raise ValueError('Project directory and daily limit 1..100 required')
@@ -55,6 +58,8 @@ class Bridge:
             raise ValueError('Absolute executable Claude CLI path required')
         self.claude_program = str(Path(claude_program).resolve()) if claude_program else None
         self.claude_subscription_only = claude_subscription_only
+        self.desktop_values = {'socket': desktop_socket} if desktop_socket else {}
+        self.desktop_program = executable('claude-desktop')
         self.limit = daily_limit
         self.scope = hashlib.sha256((str(self.root)+'\0'+str(self.values.get('socket', 'default'))).encode()).hexdigest()
         state = Path(state)
@@ -89,19 +94,24 @@ class Bridge:
                  'executable_configured': bool(self.claude_program), 'auth_verified': False,
                  'billing': 'Claude subscription; paid credits must be disabled by operator',
                  'quota_remaining': None, 'kinds': list(MODES), 'levels': ['standard', 'deep'],
-                 'writes': False, 'context': 'Explicit question and file snapshots only; no tools'}],
+                 'writes': False, 'context': 'Explicit question and file snapshots only; no tools'},
+                {'id': 'claude-desktop', 'configured': bool(self.desktop_program and self.desktop_values),
+                 'billing': 'Claude Desktop session; quota not reported',
+                 'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': False,
+                 'dispatch': 'dispatchOnQuickEntrySubmit (full turn, not a prefill)',
+                 'context': 'Structured Quick Apply payload; images/files bounded; target chat routing'}],
                 'automatic_fallback': False}
         allowed = {'question', 'thread_id'} if name in ('codex_followup', 'reprise_followup') else {'question', 'paths'}
         if name == 'reprise_followup':
             allowed.add('backend')
         if name == 'reprise_delegate':
-            allowed |= {'kind', 'level', 'backend'}
+            allowed |= {'kind', 'level', 'backend', 'chatId', 'filePaths'}
         if (args.keys()-allowed or not isinstance(args.get('question'), str)
                 or not args['question'].strip() or len(args['question']) > 12000):
             raise ValueError('Invalid question or arguments')
         routing = {}
         backend = args.get('backend', 'codex')
-        if backend not in ('codex', 'claude-code'):
+        if backend not in ('codex', 'claude-code', 'claude-desktop'):
             raise ValueError('Unknown expertise backend')
         question = args['question']
         if name == 'reprise_delegate':
@@ -134,7 +144,7 @@ class Bridge:
             route = self.db.execute('SELECT model,effort FROM expert_routes WHERE scope=? AND id=?', (self.scope, ident)).fetchone()
             if route:
                 routing = dict(zip(('model', 'effort'), route))
-        if not (self.program if backend == 'codex' else self.claude_program):
+        if backend != 'claude-desktop' and not (self.program if backend == 'codex' else self.claude_program):
             return {'status': 'engine_unavailable', 'backend': backend, 'reason': 'Requested executable not configured', 'automatic_fallback': False}
         if backend == 'claude-code' and not self.claude_subscription_only:
             return {'status': 'billing_unverified', 'backend': backend, 'reason': 'Operator must confirm paid usage credits disabled before enabling Claude.', 'automatic_fallback': False}
@@ -146,6 +156,12 @@ class Bridge:
                 return {'status': 'budget_blocked', 'reason': 'Daily expertise call cap reached; no automatic retry.'}
             # Reserve before any transmission; failures are charged to this local cap too.
             self.db.execute('INSERT INTO expert_calls VALUES (?,?,1) ON CONFLICT(scope,day) DO UPDATE SET count=count+1', (self.scope, day))
+        if backend == 'claude-desktop':
+            result = claude_desktop.review(self.root, question, kind=args.get('kind', 'expertise'),
+                                          level=args.get('level', 'standard'), paths=args.get('paths'),
+                                          chat_id=args.get('chatId'), file_paths=args.get('filePaths'),
+                                          program=self.desktop_program, values=self.desktop_values)
+            return result | {'backend': backend, 'automatic_fallback': False}
         if backend == 'claude-code':
             result = claude_review(self.claude_program, self.root, question, paths=args.get('paths'),
                                    thread_id=ident, subscription_only=self.claude_subscription_only, **routing)
@@ -191,9 +207,11 @@ def main():
     parser.add_argument('--daily-limit', type=int, default=8)
     parser.add_argument('--claude-program', help='Explicit absolute Claude CLI path; disabled by default')
     parser.add_argument('--claude-included-quota-confirmed', action='store_true', help='Operator confirms paid usage credits disabled; CLI cannot verify this')
+    parser.add_argument('--desktop-socket', help='Explicit absolute Quick Entry socket path; disabled by default')
     args = parser.parse_args()
     bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.state, args.daily_limit,
-                    claude_program=args.claude_program, claude_subscription_only=args.claude_included_quota_confirmed)
+                    claude_program=args.claude_program, claude_subscription_only=args.claude_included_quota_confirmed,
+                    desktop_socket=args.desktop_socket)
     def terminate(signum, frame):
         # Unwind active CLI cleanup before closing the DB and releasing the lock.
         raise SystemExit(128 + signum)

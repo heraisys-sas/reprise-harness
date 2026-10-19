@@ -148,3 +148,35 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(self.bridge.call('reprise_delegate', {'backend':'claude-code','kind':'review','question':'Review'})['status'],'budget_blocked')
             self.assertEqual(review.call_count,1)
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM claude_expert_routes').fetchone()[0],0)
+
+
+class ClaudeDesktopBridgeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=8,
+                             desktop_socket='/private/tmp/quick.sock')
+        self.addCleanup(self.bridge.db.close)
+
+    def test_backends_include_claude_desktop(self):
+        ids = {b['id'] for b in self.bridge.call('reprise_backends', {})['backends']}
+        self.assertIn('claude-desktop', ids)
+
+    def test_delegate_routes_to_quick_entry_endpoint(self):
+        with patch('claude_desktop.review', return_value={'status': 'finished', 'resumable': False,
+                   'thread_id': ID, 'dispatch': 'dispatchOnQuickEntrySubmit', 'model': 'claude-desktop'}) as review:
+            result = self.bridge.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
+                                       'backend': 'claude-desktop', 'chatId': ID})
+        self.assertEqual(result['status'], 'finished')
+        self.assertEqual(result['backend'], 'claude-desktop')
+        self.assertEqual(result['dispatch'], 'dispatchOnQuickEntrySubmit')
+        self.assertEqual(review.call_args.kwargs['chat_id'], ID)
+
+    def test_delegate_rejects_unknown_backend(self):
+        with self.assertRaises(ValueError):
+            self.bridge.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise', 'backend': 'nope'})
+
+    def test_delegate_rejects_arbitrary_fields(self):
+        with self.assertRaises(ValueError):
+            self.bridge.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
+                                       'backend': 'claude-desktop', 'hack': 'x'})

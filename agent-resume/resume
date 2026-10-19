@@ -126,6 +126,14 @@ def main():
     transport = connection_config.add_mutually_exclusive_group(required=True)
     transport.add_argument('--socket')
     transport.add_argument('--auto', action='store_true')
+    desktop_check = sub.add_parser('desktop-server-check')
+    desktop_check.add_argument('--socket')
+    desktop_check.add_argument('--session')
+    sub.add_parser('desktop-connection-status')
+    desktop_config = sub.add_parser('desktop-connection-config')
+    desktop_transport = desktop_config.add_mutually_exclusive_group(required=True)
+    desktop_transport.add_argument('--socket')
+    desktop_transport.add_argument('--auto', action='store_true')
     shared = sub.add_parser('shared-mode')
     shared.add_argument('operation', choices=('prepare', 'launch', 'check', 'stop'))
     shared.add_argument('--session')
@@ -163,6 +171,15 @@ def main():
         print(json.dumps(status(db, STATE), ensure_ascii=False))
     elif args.action == 'connection-config':
         from connection import configure
+        print(json.dumps(configure(db, executable, args.socket), ensure_ascii=False))
+    elif args.action == 'desktop-server-check':
+        from claude_desktop import probe
+        print(json.dumps(probe(executable, args.socket or str(Path.home()/'.claude-desktop/quick-entry.sock'), args.session), ensure_ascii=False))
+    elif args.action == 'desktop-connection-status':
+        from claude_desktop import status
+        print(json.dumps(status(db, STATE), ensure_ascii=False))
+    elif args.action == 'desktop-connection-config':
+        from claude_desktop import configure
         print(json.dumps(configure(db, executable, args.socket), ensure_ascii=False))
     elif args.action == 'shared-mode':
         import shared_mode

@@ -7,7 +7,7 @@ struct Surface<Content: View>: View {
 }
 struct Dashboard: View {
     @ObservedObject var app: App
-    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("connection", "Connexion Codex", "point.3.connected.trianglepath.dotted"), ("privacy", "Confidentialité", "lock.shield")]
+    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("connection", "Connexion Codex", "point.3.connected.trianglepath.dotted"), ("desktop", "Connexion Claude Desktop", "desktopcomputer"), ("privacy", "Confidentialité", "lock.shield")]
     var title: String { sections.first { $0.0 == app.page }?.1 ?? "Reprise" }
     var body: some View {
         NavigationSplitView {
@@ -34,6 +34,7 @@ struct Dashboard: View {
                     case "analysis": analysis
                     case "search": search
                     case "connection": connection
+                    case "desktop": desktopConnection
                     case "privacy": privacy
                     default: overview
                     }
@@ -58,6 +59,7 @@ struct Dashboard: View {
         case "analysis": return "Un second regard sur les comptes rendus, sur votre Mac."
         case "search": return "Retrouvez un élément sans vous souvenir de l’application."
         case "connection": return "Connectez Reprise à un serveur existant, sans envoyer de message à un agent."
+        case "desktop": return "Connectez Reprise au serveur Quick Entry de Claude Desktop, sans envoyer de prompt."
         case "privacy": return "Vos données de recherche restent sous votre contrôle."
         default: return "L’essentiel de vos sessions, sans les interrompre."
         }
@@ -357,6 +359,61 @@ struct Dashboard: View {
                     Text("Serveur dédié et Codex Desktop").font(.headline)
                     Text("Reprise peut fournir --listen au démarrage d’un serveur dédié. Ce serveur gère ses propres sessions ; il ne récupère pas celles détenues par Desktop.").font(.callout).foregroundStyle(.secondary)
                     Text("Le raccordement de Desktop à un serveur externe reste à valider sur cette installation avant une activation au démarrage.").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+    var desktopConnection: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Surface {
+                VStack(alignment: .leading, spacing: 14) {
+                    Label("Transport Quick Entry Claude Desktop", systemImage: "desktopcomputer").font(.headline)
+                    Text(app.desktopConnection.isEmpty ? "Configuration indisponible" : app.desktopConnection["mode"] as? String == "server" ? "Socket personnalisé enregistré" : "Détection automatique · socket local").font(.callout)
+                    if let path = app.desktopConnection["configured_socket"] as? String { Text(path).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled) }
+                    Text("Une connexion réussie confirme le serveur Quick Entry, pas la soumission dans l’overlay Desktop.").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            Surface {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Serveurs Quick Entry locaux").font(.headline)
+                    ForEach(Array((app.desktopConnection["candidates"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, candidate in
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: candidate["detected"] as? Bool == true ? "circle.fill" : "circle").font(.caption).foregroundStyle(.secondary).padding(.top, 4)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(candidate["label"] as? String ?? "Serveur").font(.callout.weight(.semibold))
+                                Text(candidate["detected"] as? Bool == true ? "Socket détecté · connexion à tester" : "Socket indisponible").font(.caption).foregroundStyle(.secondary)
+                                Text(candidate["path"] as? String ?? "").font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                            }
+                            Spacer()
+                            Button("Choisir") {
+                                app.desktopSocketPath = candidate["path"] as? String ?? ""
+                                app.desktopConnectionVerified = false
+                                app.desktopConnectionNote = "Chemin sélectionné. Testez la connexion avant de l’enregistrer."
+                            }.disabled(app.desktopConnectionBusy)
+                        }
+                    }
+                }
+            }
+            Surface {
+                VStack(alignment: .leading, spacing: 14) {
+                    TextField("Chemin absolu du socket", text: $app.desktopSocketPath).textFieldStyle(.roundedBorder).disabled(app.desktopConnectionBusy)
+                    HStack {
+                        Button("Tester la connexion") { app.testDesktopConnection() }.disabled(app.desktopConnectionBusy || app.desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button("Utiliser ce serveur") { app.testDesktopConnection(save: true) }
+                            .disabled(app.desktopConnectionBusy || !app.desktopConnectionVerified || app.desktopTestedSocket != app.desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines))
+                        Spacer()
+                        if app.desktopConnectionBusy { ProgressView().controlSize(.small) }
+                    }
+                    if !app.desktopConnectionNote.isEmpty { Text(app.desktopConnectionNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
+                    Text("Le test initialise uniquement le protocole Quick Entry. Aucun envoi de prompt, aucun appel au modèle.").font(.caption).foregroundStyle(.secondary)
+                    Divider()
+                    Button("Rétablir la détection automatique") { app.restoreDesktopConnectionDetection() }.disabled(app.desktopConnectionBusy || app.desktopConnection["mode"] as? String != "server")
+                }
+            }
+            Surface {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Soumission Quick Entry").font(.headline)
+                    Text("La soumission réelle dans l’overlay Quick Entry exige les autorisations macOS (Accessibilité, Capture d’écran) accordées par l’opérateur. Reprise valide et route la charge utile ; elle ne pilote pas l’interface Desktop.").font(.callout).foregroundStyle(.secondary)
                 }
             }
         }

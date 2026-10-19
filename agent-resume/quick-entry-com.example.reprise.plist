@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.example.reprise.quick-entry</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>python3</string>
+		<string>__DEPOT__/agent-resume/claude_desktop_quick.py</string>
+		<string>--socket</string>
+		<string>__HOME__/.claude-desktop/quick-entry.sock</string>
+		<string>--state</string>
+		<string>__DEPOT__/agent-resume/quick-state</string>
+		<string>--daily-limit</string>
+		<string>8</string>
+	</array>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>StandardOutPath</key>
+	<string>__DEPOT__/agent-resume/quick-state/launchd-out.log</string>
+	<key>StandardErrorPath</key>
+	<string>__DEPOT__/agent-resume/quick-state/launchd-error.log</string>
+</dict>
+</plist>

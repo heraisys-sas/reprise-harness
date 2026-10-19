@@ -26,6 +26,36 @@ Ce script compile l’application et les helpers, puis ouvre Reprise. Consulter 
 python3 -m unittest discover -s agent-resume/tests -q
 ```
 
+## Serveur Quick Entry
+
+Le serveur `agent-resume/claude_desktop_quick.py` accepte, sur un socket UNIX privé, des charges utiles Quick Entry validées (prompt, images, fichiers, chat cible) et applique un plafond quotidien de soumissions. Il ne pilote pas l’interface de Claude Desktop : la soumission réelle dans l’overlay Quick Entry exige des autorisations macOS (Accessibilité, Capture d’écran) accordées par l’opérateur, et reste du ressort d’un pilote supervisé.
+
+Le LaunchAgent `com.example.reprise.quick-entry` démarre ce serveur au login. Il ne contient que des chemins de ce dépôt et du dossier de l’utilisateur courant, et ne porte ni `RunAtLoad` ni `KeepAlive` : le serveur ne démarre jamais automatiquement sans action explicite de l’opérateur.
+
+Installation (écriture du plist uniquement, sans démarrage) :
+
+```sh
+python3 agent-resume/install-quick-entry.py
+launchctl load ~/Library/LaunchAgents/com.example.reprise.quick-entry.plist
+```
+
+Le script refuse d’écraser un plist existant sans `--force`, et se contente de proposer la commande `launchctl load` ; il ne l’exécute jamais. Désinstallation :
+
+```sh
+launchctl unload ~/Library/LaunchAgents/com.example.reprise.quick-entry.plist
+rm ~/Library/LaunchAgents/com.example.reprise.quick-entry.plist
+```
+
+Test manuel du serveur, dans un terminal :
+
+```sh
+python3 agent-resume/claude_desktop_quick.py \
+  --socket ~/.claude-desktop/quick-entry.sock \
+  --state agent-resume/quick-state --daily-limit 8
+```
+
+Un autre terminal peut alors joindre le socket avec `agent-resume/claude_desktop_rpc.py` (méthode `ping` ou `quick_entry/submit`) ; aucune requête au modèle n’est envoyée par ce test. Le serveur n’ouvre ni ne pilote l’UI Claude Desktop, et aucune relance automatique n’est prévue : toute reprise est explicitement programmée.
+
 ## Configuration Harness
 
 Lire [les instructions](deepseek-harness-config/CONFIGURATION.md). Les fichiers sont des modèles sans identifiants. L’installateur refuse d’écraser un profil déjà personnalisé ; fusionner ses paramètres après inspection. La présence d’un modèle dans la configuration ne prouve ni sa disponibilité ni l’authentification du compte. Aucun coût ou quota n’est garanti par les instructions.

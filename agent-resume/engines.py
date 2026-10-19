@@ -16,6 +16,7 @@ ENGINES = {
     'codex-parent': ('Codex · délégation au parent', 'Codex'),
     'harness-cli': ('DeepSeek Harness CLI', 'Harness'),
     'claude-code': ('Claude Code CLI', 'Claude Code'),
+    'claude-desktop': ('Claude Desktop · Quick Entry', 'Claude Desktop'),
 }
 
 class Unavailable(ValueError):
@@ -42,7 +43,7 @@ def validate_session(engine, session):
 def options(engine, values):
     if engine not in ENGINES or not isinstance(values, dict):
         raise ValueError('Configuration de moteur invalide')
-    permitted = {'socket', 'parent'} if engine == 'codex-parent' else {'socket'} if engine in ('codex', 'codex-server') else {'profile'} if engine == 'harness-cli' else set()
+    permitted = {'socket', 'parent'} if engine == 'codex-parent' else {'socket'} if engine in ('codex', 'codex-server', 'claude-desktop') else {'profile'} if engine == 'harness-cli' else set()
     if values.keys() - permitted:
         raise ValueError('Option de moteur non prise en charge')
     if 'profile' in values and (not isinstance(values['profile'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', values['profile'])):
@@ -105,7 +106,7 @@ def select(engine, values):
             socket_path(values)
             return 'codex-server'
         return 'codex-cli'
-    if engine in ('codex-server', 'codex-parent'):
+    if engine in ('codex-server', 'codex-parent', 'claude-desktop'):
         socket_path(values)
         if engine == 'codex-parent' and not values.get('parent'):
             raise Unavailable('engine_unavailable', 'Identifiant de la session parente requis.')
@@ -133,6 +134,8 @@ def command(engine, task, program, values=None, automatic=False):
         return [program, '--profile', values['profile'], '--json', '--session-id', task['session'], '-']
     if engine == 'claude-code':
         raise Unavailable('engine_unavailable', 'Adaptateur Claude Code non validé ; détection seule pour le moment.')
+    if engine == 'claude-desktop':
+        raise Unavailable('engine_unavailable', 'Le endpoint Quick Entry utilise JSON-RPC, pas exec resume.')
     raise ValueError('Le serveur partagé utilise JSON-RPC, pas exec resume')
 
 
@@ -143,7 +146,7 @@ def capabilities(db):
         values = json.loads(configured[0]) if configured else {}
         program = executable(engine)
         reason = None if program else 'Exécutable absent'
-        if program and engine in ('codex', 'codex-server', 'codex-parent'):
+        if program and engine in ('codex', 'codex-server', 'codex-parent', 'claude-desktop'):
             try:
                 select(engine, values)
             except Unavailable as error:
