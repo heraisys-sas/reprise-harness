@@ -13,6 +13,7 @@ import time
 from codex_expert import review
 from claude_expert import review as claude_review
 import claude_desktop
+import reprise_logs
 from engines import executable, options
 
 SCHEMA = {'type': 'object', 'properties': {'question': {'type': 'string', 'maxLength': 12000}},
@@ -37,6 +38,10 @@ TOOLS = [
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {
          'thread_id': {'type': 'string'}, 'backend': {'type': 'string', 'enum': ['codex', 'claude-code', 'claude-desktop']}},
          'required': ['question', 'thread_id', 'backend']}},
+    {'name': 'reprise_resume', 'description': 'List interrupted tasks reconstructed from local logs that can be retried (quota, guard or missing dispatch). Read-only; no automatic retry.',
+     'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
+    {'name': 'reprise_history', 'description': 'Explain recent harness work and its Reprise interactions from local logs (Quick Entry submissions + MCP calls). Read-only.',
+     'inputSchema': {'type': 'object', 'properties': {'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100}}, 'additionalProperties': False}},
 ]
 
 MODES = {
@@ -81,8 +86,19 @@ class Bridge:
             return self._call(name, args)
 
     def _call(self, name, args):
-        if name not in ('reprise_backends', 'reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup') or not isinstance(args, dict):
+        if name not in ('reprise_backends', 'reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup', 'reprise_resume', 'reprise_history') or not isinstance(args, dict):
             raise ValueError('Unknown tool or invalid arguments')
+        if name == 'reprise_resume':
+            if args:
+                raise ValueError('No arguments expected')
+            return {'status': 'finished', 'resumable': reprise_logs.resumable(),
+                    'automatic_fallback': False}
+        if name == 'reprise_history':
+            allowed = {'limit'}
+            if args.keys() - allowed:
+                raise ValueError('Invalid arguments')
+            return {'status': 'finished', 'automatic_fallback': False,
+                    **reprise_logs.history(limit=args.get('limit', 20))}
         if name == 'reprise_backends':
             if args:
                 raise ValueError('No arguments expected')

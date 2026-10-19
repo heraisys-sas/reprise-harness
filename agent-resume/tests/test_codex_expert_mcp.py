@@ -19,7 +19,7 @@ class BridgeTests(unittest.TestCase):
         self.addCleanup(self.bridge.db.close)
     def test_protocol_lists_only_bounded_tools(self):
         self.assertIn('tools', self.bridge.dispatch({'method': 'initialize'})['capabilities'])
-        self.assertEqual({item['name'] for item in self.bridge.dispatch({'method': 'tools/list'})['tools']}, {'codex_review','codex_followup','reprise_delegate','reprise_backends','reprise_followup'})
+        self.assertEqual({item['name'] for item in self.bridge.dispatch({'method': 'tools/list'})['tools']}, {'codex_review','codex_followup','reprise_delegate','reprise_backends','reprise_followup','reprise_resume','reprise_history'})
     def test_followup_requires_own_thread(self):
         with self.assertRaises(ValueError):
             self.bridge.call('codex_followup', {'thread_id': ID, 'question': 'continue'})
