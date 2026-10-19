@@ -35,20 +35,29 @@ def app_running():
 
 
 def server_running():
-    """True only when the Quick Entry socket is present and accepted.
+    """True only when the Quick Entry server is actually listening.
 
-    A missing socket means stopped; a present-but-rejected socket is
-    indeterminate and reported as False with an explicit status rather than
-    being assumed stopped.
+    An existing socket file is not enough: a stale/orphan socket with no
+    listener must not be reported as running. Probe a real connection; a
+    missing socket or refused connection means stopped.
     """
     import engines
+    import socket as socket_mod
     if not DEFAULT_SOCKET.exists():
         return False
     try:
         engines.socket_path({'socket': str(DEFAULT_SOCKET)})
-        return True
     except engines.Unavailable:
         return False
+    sock = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+    sock.settimeout(1)
+    try:
+        sock.connect(str(DEFAULT_SOCKET))
+        return True
+    except OSError:
+        return False  # socket file exists but nothing is listening (orphan)
+    finally:
+        sock.close()
 
 
 def status():

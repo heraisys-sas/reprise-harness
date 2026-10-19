@@ -79,6 +79,7 @@ def process_liveness():
         'quick-entry-server': Path.home() / '.claude-desktop/quick-entry.sock',
         'codex-server': engines.SOCKET,
     }
+    import socket as socket_mod
     result = {}
     for name, path in probes.items():
         if not Path(path).exists():
@@ -86,13 +87,25 @@ def process_liveness():
             continue
         try:
             engines.socket_path({'socket': str(path)})
-            result[name] = 'running'
         except engines.Unavailable:
             # Socket exists but is rejected (not private, wrong owner, broken
             # symlink): the listener state is unknown, not proven stopped.
             result[name] = 'indeterminate'
+            continue
         except Exception:
             result[name] = 'indeterminate'
+            continue
+        # A valid socket file is not enough: an orphan with no listener must not
+        # be 'running'. Probe a real connection.
+        sock = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+        sock.settimeout(1)
+        try:
+            sock.connect(str(path))
+            result[name] = 'running'
+        except OSError:
+            result[name] = 'stopped'  # orphan socket, nothing listening
+        finally:
+            sock.close()
     return result
 
 
