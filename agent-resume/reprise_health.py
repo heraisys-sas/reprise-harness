@@ -213,9 +213,14 @@ def watch(db, bundle_root, log_dir=DEFAULT_LOG_DIR):
     import scheduler
     current = read_versions(bundle_root)
     previous = scheduler.get(db, 'health_versions', None)
+    previous_components = scheduler.get(db, 'health_components', None)
+    anomaly_report = quick_entry_anomalies(log_dir, previous_components)
+    with db:
+        scheduler.put(db, 'health_components', anomaly_report['components'])
     report = check(bundle_root, log_dir)
     update_detected = previous is None or current != previous
     report['update_detected'] = update_detected
+    report['quick_entry_anomalies'] = anomaly_report['anomalies']
     report['previous_versions'] = previous
     with db:
         scheduler.put(db, 'health_versions', current)
@@ -232,6 +237,56 @@ FEATURES = {
     'native_binding': ('Resources/app.asar.unpacked/node_modules/@ant/claude-native/claude-native-binding.node', 'Additif natif claude-native'),
     'swift_addon': ('Resources/app.asar.unpacked/node_modules/@ant/claude-swift', 'Additif Swift (overlay Quick Entry)'),
 }
+
+
+def _component_meta(path):
+    """Deterministic file metadata used to detect an update (size + mtime)."""
+    try:
+        if path.is_file():
+            st = path.stat()
+            return {'size': st.st_size, 'mtime': int(st.st_mtime)}
+        if path.is_dir():
+            files = [f for f in path.rglob('*') if f.is_file()]
+            return {'size': sum(f.stat().st_size for f in files),
+                    'mtime': int(max((f.stat().st_mtime for f in files), default=0))}
+    except OSError:
+        return None
+    return None
+
+
+def quick_entry_anomalies(log_dir=DEFAULT_LOG_DIR, previous=None):
+    """Detect update-induced breakage in Quick Entry's Claude Desktop support.
+
+    Cross-checks two deterministic signals: (a) a component whose metadata
+    changed since the last recorded state (i.e. an update ran) and (b) the
+    disappearance of the log signature that component backs. A component that
+    moved but whose log signature is gone is a breakage anomaly. Never
+    launches or automates anything; comparison only.
+    """
+    import reprise_logs
+    current = {}
+    for name, (rel, _label) in FEATURES.items():
+        current[name] = _component_meta(CLAUDE_APP / 'Contents' / rel)
+    signatures = log_signatures(log_dir)
+    anomalies = []
+    for name, meta in current.items():
+        if meta is None:
+            anomalies.append({'component': name, 'kind': 'missing', 'detail': 'Composant absent'})
+            continue
+        prev = (previous or {}).get(name)
+        updated = prev is not None and prev != meta
+        # The log signature this component backs: app_asar -> routing, swift_addon -> submitted.
+        sig_key = {'app_asar': 'quick_entry_routing', 'swift_addon': 'quick_entry_submitted',
+                   'native_binding': 'quick_entry_guard'}.get(name)
+        sig_broken = sig_key is not None and not signatures.get(sig_key, {}).get('present')
+        if updated and sig_broken:
+            anomalies.append({'component': name, 'kind': 'update_breakage',
+                              'detail': 'Composant modifié par une mise à jour mais signature de log disparue'})
+        elif sig_broken:
+            anomalies.append({'component': name, 'kind': 'signature_missing',
+                              'detail': 'Signature de log absente alors que le composant est présent'})
+    return {'components': current, 'signatures': signatures, 'anomalies': anomalies,
+            'clean': not anomalies}
 
 
 def quick_entry_features():
@@ -260,8 +315,10 @@ def quick_entry_features():
     checks['preferences'] = {'label': 'Raccourcis Quick Entry', 'shortcuts': shortcuts,
                              'present': all(v is not None for v in shortcuts.values())}
     missing = [n for n, c in checks.items() if not c.get('present')]
-    return {'checks': checks, 'missing': missing, 'ready': not missing,
-            'note': 'Deterministic presence check; does not open or automate Claude Desktop.'}
+    result = {'checks': checks, 'missing': missing, 'ready': not missing,
+              'note': 'Deterministic presence check; does not open or automate Claude Desktop.'}
+    result['anomalies'] = quick_entry_anomalies()
+    return result
 
 
 

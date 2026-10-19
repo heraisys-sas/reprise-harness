@@ -144,3 +144,37 @@ class CodexReviewRound2Tests(unittest.TestCase):
             rh.cached_explanation('fa', 'Q'); rh.cached_explanation('fb', 'Q'); rh.cached_explanation('fa', 'Q')
         self.assertFalse(rh._EXPLANATION_CACHE[(rh._digest('fa'), 'Q')]['historical'])
         self.assertTrue(rh._EXPLANATION_CACHE[(rh._digest('fb'), 'Q')]['historical'])
+
+
+class QuickEntryAnomalyTests(unittest.TestCase):
+    def test_clean_when_no_update_and_signatures_present(self):
+        with patch.object(rh, 'log_signatures', return_value={
+                'quick_entry_submitted': {'present': True}, 'quick_entry_routing': {'present': True},
+                'quick_entry_guard': {'present': True}}):
+            rep = rh.quick_entry_anomalies(previous=None)
+        self.assertTrue(rep['clean'])
+        self.assertEqual(rep['anomalies'], [])
+
+    def test_update_breakage_when_component_moved_and_signature_gone(self):
+        prev = {'swift_addon': {'size': 1, 'mtime': 1}}
+        with patch.object(rh, '_component_meta', return_value={'size': 2, 'mtime': 2}), \
+             patch.object(rh, 'log_signatures', return_value={
+                 'quick_entry_submitted': {'present': False}, 'quick_entry_routing': {'present': True},
+                 'quick_entry_guard': {'present': True}}):
+            rep = rh.quick_entry_anomalies(previous=prev)
+        self.assertFalse(rep['clean'])
+        self.assertEqual(rep['anomalies'][0]['kind'], 'update_breakage')
+
+    def test_signature_missing_without_update_is_reported(self):
+        with patch.object(rh, 'log_signatures', return_value={
+                'quick_entry_submitted': {'present': False}, 'quick_entry_routing': {'present': True},
+                'quick_entry_guard': {'present': True}}):
+            rep = rh.quick_entry_anomalies(previous=None)
+        kinds = {a['kind'] for a in rep['anomalies']}
+        self.assertIn('signature_missing', kinds)
+
+    def test_missing_component_reported(self):
+        with patch.object(rh, '_component_meta', return_value=None), \
+             patch.object(rh, 'log_signatures', return_value={}):
+            rep = rh.quick_entry_anomalies(previous=None)
+        self.assertTrue(any(a['kind'] == 'missing' for a in rep['anomalies']))

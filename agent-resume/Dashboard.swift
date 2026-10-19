@@ -495,6 +495,15 @@ struct Dashboard: View {
                     if let shortcuts = featureChecks["preferences"] as? [String: Any], let sc = shortcuts["shortcuts"] as? [String: Any] {
                         Text("Raccourcis : " + ((sc["quickEntryShortcut"] as? String) ?? "—") + " · dictée " + ((sc["quickEntryDictationShortcut"] as? String) ?? "—")).font(.caption).foregroundStyle(.secondary)
                     }
+                    let anomalies = (features["anomalies"] as? [String: Any])?["anomalies"] as? [[String: Any]] ?? []
+                    if !anomalies.isEmpty {
+                        Divider()
+                        Text("Anomalies post-update").font(.headline)
+                        ForEach(Array(anomalies.enumerated()), id: \.offset) { _, a in
+                            Label((a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
+                                .font(.callout).foregroundStyle(.orange)
+                        }
+                    }
                     Text("La synthèse Apple Intelligence est dans l’onglet Analyse locale.").font(.caption).foregroundStyle(.secondary)
                 }
             }
