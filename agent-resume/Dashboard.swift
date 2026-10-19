@@ -19,7 +19,7 @@ struct Dashboard: View {
                             HStack { Label(entry.1, systemImage: entry.2); Spacer(); if entry.0 == "sessions" && !app.attention.isEmpty { Text("\(app.attention.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary) } }.tag(entry.0)
                         }
                     }
-                }.listStyle(.sidebar)
+                }.listStyle(.sidebar).frame(maxHeight: .infinity)
                 Label("Privé, sur ce Mac", systemImage: "lock").font(.caption).foregroundStyle(.secondary).padding(20)
             }.navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
         } detail: {
