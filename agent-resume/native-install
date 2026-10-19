@@ -11,4 +11,8 @@ swiftc -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Vault.swi
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleExecutable</key><string>Reprise</string><key>CFBundleIdentifier</key><string>local.agent-resume.native</string><key>CFBundleName</key><string>Reprise</string><key>CFBundleShortVersionString</key><string>$VERSION</string><key>CFBundleVersion</key><string>$VERSION</string><key>LSUIElement</key><true/></dict></plist>
 PLIST
-open -n -a "$APP" --args "$ROOT" "$(command -v python3)"
+# Launch only when explicitly requested: a plain run just rebuilds.
+# Compiling should not disturb an already-running instance.
+if [ "${1:-}" = "--open" ]; then
+    open -n -a "$APP" --args "$ROOT" "$(command -v python3)"
+fi
