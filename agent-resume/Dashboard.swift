@@ -395,10 +395,34 @@ struct Dashboard: View {
         VStack(alignment: .leading, spacing: 18) {
             Surface {
                 VStack(alignment: .leading, spacing: 14) {
-                    Label("Transport Quick Entry Claude Desktop", systemImage: "desktopcomputer").font(.headline)
-                    Text(app.desktopConnection.isEmpty ? "Configuration indisponible" : app.desktopConnection["mode"] as? String == "server" ? "Socket personnalisé enregistré" : "Détection automatique · socket local").font(.callout)
-                    if let path = app.desktopConnection["configured_socket"] as? String { Text(path).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Text("Une connexion réussie confirme le serveur Quick Entry, pas la soumission dans l’overlay Desktop.").font(.callout).foregroundStyle(.secondary)
+                    Text("Serveur Quick Entry et application liée").font(.headline)
+                    Text("Le serveur valide et route la charge utile ; la soumission réelle nécessite Claude Desktop en cours d’exécution.").font(.callout).foregroundStyle(.secondary)
+                    HStack {
+                        Button("1. Démarrer l’appli liée") { app.desktopAction("launch") }.disabled(app.desktopBusy)
+                        Button("2. Démarrer le serveur") { app.desktopAction("start") }.disabled(app.desktopBusy)
+                        Button("Arrêter le serveur") { app.desktopAction("stop") }.disabled(app.desktopBusy)
+                        if app.desktopBusy { ProgressView().controlSize(.small) }
+                    }
+                    if !app.desktopNote.isEmpty { Text(app.desktopNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
+                    Toggle("Démarrer l’appli liée et le serveur à l’ouverture de Reprise", isOn: Binding(get: { app.desktopStartup }, set: { app.setDesktopStartup($0) }))
+                        .disabled(app.desktopBusy)
+                    Text("Ces actions ouvrent ou arrêtent explicitement ; rien n’est lancé implicitement.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Surface {
+                VStack(alignment: .leading, spacing: 14) {
+                    TextField("Chemin absolu du socket", text: $app.desktopSocketPath).textFieldStyle(.roundedBorder).disabled(app.desktopConnectionBusy)
+                    HStack {
+                        Button("Tester la connexion") { app.testDesktopConnection() }.disabled(app.desktopConnectionBusy || app.desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button("Utiliser ce serveur") { app.testDesktopConnection(save: true) }
+                            .disabled(app.desktopConnectionBusy || !app.desktopConnectionVerified || app.desktopTestedSocket != app.desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines))
+                        Spacer()
+                        if app.desktopConnectionBusy { ProgressView().controlSize(.small) }
+                    }
+                    if !app.desktopConnectionNote.isEmpty { Text(app.desktopConnectionNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
+                    Text("Le test initialise uniquement le protocole Quick Entry. Aucun envoi de prompt, aucun appel au modèle.").font(.caption).foregroundStyle(.secondary)
+                    Divider()
+                    Button("Rétablir la détection automatique") { app.restoreDesktopConnectionDetection() }.disabled(app.desktopConnectionBusy || app.desktopConnection["mode"] as? String != "server")
                 }
             }
             Surface {
@@ -424,40 +448,16 @@ struct Dashboard: View {
             }
             Surface {
                 VStack(alignment: .leading, spacing: 14) {
-                    TextField("Chemin absolu du socket", text: $app.desktopSocketPath).textFieldStyle(.roundedBorder).disabled(app.desktopConnectionBusy)
-                    HStack {
-                        Button("Tester la connexion") { app.testDesktopConnection() }.disabled(app.desktopConnectionBusy || app.desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        Button("Utiliser ce serveur") { app.testDesktopConnection(save: true) }
-                            .disabled(app.desktopConnectionBusy || !app.desktopConnectionVerified || app.desktopTestedSocket != app.desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines))
-                        Spacer()
-                        if app.desktopConnectionBusy { ProgressView().controlSize(.small) }
-                    }
-                    if !app.desktopConnectionNote.isEmpty { Text(app.desktopConnectionNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Text("Le test initialise uniquement le protocole Quick Entry. Aucun envoi de prompt, aucun appel au modèle.").font(.caption).foregroundStyle(.secondary)
-                    Divider()
-                    Button("Rétablir la détection automatique") { app.restoreDesktopConnectionDetection() }.disabled(app.desktopConnectionBusy || app.desktopConnection["mode"] as? String != "server")
+                    Label("Transport Quick Entry Claude Desktop", systemImage: "desktopcomputer").font(.headline)
+                    Text(app.desktopConnection.isEmpty ? "Configuration indisponible" : app.desktopConnection["mode"] as? String == "server" ? "Socket personnalisé enregistré" : "Détection automatique · socket local").font(.callout)
+                    if let path = app.desktopConnection["configured_socket"] as? String { Text(path).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled) }
+                    Text("Une connexion réussie confirme le serveur Quick Entry, pas la soumission dans l’overlay Desktop.").font(.callout).foregroundStyle(.secondary)
                 }
             }
             Surface {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Soumission Quick Entry").font(.headline)
                     Text("La soumission réelle dans l’overlay Quick Entry exige les autorisations macOS (Accessibilité, Capture d’écran) accordées par l’opérateur. Reprise valide et route la charge utile ; elle ne pilote pas l’interface Desktop.").font(.callout).foregroundStyle(.secondary)
-                }
-            }
-            Surface {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("Serveur Quick Entry et application liée").font(.headline)
-                    Text("Le serveur valide et route la charge utile ; la soumission réelle nécessite Claude Desktop en cours d’exécution.").font(.callout).foregroundStyle(.secondary)
-                    HStack {
-                        Button("1. Démarrer l’appli liée") { app.desktopAction("launch") }.disabled(app.desktopBusy)
-                        Button("2. Démarrer le serveur") { app.desktopAction("start") }.disabled(app.desktopBusy)
-                        Button("Arrêter le serveur") { app.desktopAction("stop") }.disabled(app.desktopBusy)
-                        if app.desktopBusy { ProgressView().controlSize(.small) }
-                    }
-                    if !app.desktopNote.isEmpty { Text(app.desktopNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Toggle("Démarrer l’appli liée et le serveur à l’ouverture de Reprise", isOn: Binding(get: { app.desktopStartup }, set: { app.setDesktopStartup($0) }))
-                        .disabled(app.desktopBusy)
-                    Text("Ces actions ouvrent ou arrêtent explicitement ; rien n’est lancé implicitement.").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
@@ -475,15 +475,6 @@ struct Dashboard: View {
         return VStack(alignment: .leading, spacing: 18) {
             Surface {
                 VStack(alignment: .leading, spacing: 12) {
-                    Label("Santé après mise à jour", systemImage: "heart.text.square").font(.headline)
-                    Text("Détecte les mises à jour de Claude Desktop, Claude Code, Codex et autres Harness, ce qu’il faut relancer, et si les signatures de logs surveillées sont toujours présentes.").font(.callout).foregroundStyle(.secondary)
-                    ForEach(Array(versions.keys.sorted()), id: \.self) { key in
-                        HStack { Text(key).font(.callout.weight(.semibold)); Spacer(); Text(versions[key] as? String ?? "absent").font(.callout.monospaced()).foregroundStyle(.secondary) }
-                    }
-                }
-            }
-            Surface {
-                VStack(alignment: .leading, spacing: 12) {
                     Text("Actions requérant un humain").font(.headline)
                     if actions.isEmpty {
                         Text("Aucune action nécessaire pour l’instant.").font(.callout).foregroundStyle(.secondary)
@@ -494,6 +485,15 @@ struct Dashboard: View {
                     }
                     if !relaunch.isEmpty { Text("Processus à relancer : " + relaunch.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary) }
                     if !stale.isEmpty { Text("Signatures de logs obsolètes : " + stale.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+            Surface {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("Santé après mise à jour", systemImage: "heart.text.square").font(.headline)
+                    Text("Détecte les mises à jour de Claude Desktop, Claude Code, Codex et autres Harness, ce qu’il faut relancer, et si les signatures de logs surveillées sont toujours présentes.").font(.callout).foregroundStyle(.secondary)
+                    ForEach(Array(versions.keys.sorted()), id: \.self) { key in
+                        HStack { Text(key).font(.callout.weight(.semibold)); Spacer(); Text(versions[key] as? String ?? "absent").font(.callout.monospaced()).foregroundStyle(.secondary) }
+                    }
                 }
             }
             Surface {
