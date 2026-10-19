@@ -382,13 +382,6 @@ struct Dashboard: View {
                     Button("Rétablir la détection automatique") { app.restoreConnectionDetection() }.disabled(app.connectionBusy || app.connection["mode"] as? String != "server")
                 }
             }
-            Surface {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Serveur dédié et Codex Desktop").font(.headline)
-                    Text("Reprise peut fournir --listen au démarrage d’un serveur dédié. Ce serveur gère ses propres sessions ; il ne récupère pas celles détenues par Desktop.").font(.callout).foregroundStyle(.secondary)
-                    Text("Le raccordement de Desktop à un serveur externe reste à valider sur cette installation avant une activation au démarrage.").font(.callout).foregroundStyle(.secondary)
-                }
-            }
         }
     }
     var desktopConnection: some View {
