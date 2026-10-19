@@ -49,7 +49,7 @@ struct Dashboard: View {
                 }
             }
             .safeAreaInset(edge: .bottom) {
-                HStack { Label("Lecture locale", systemImage: "internaldrive"); Spacer(); if let date = app.lastRefresh { Text("Actualisé à " + date.formatted(date: .omitted, time: .shortened)) } }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 24).padding(.vertical, 10).background(.bar)
+                HStack { Label("Lecture locale", systemImage: "internaldrive"); Spacer(); if let date = app.lastRefresh { Text("Actualisé à " + localTime(date)) } }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 24).padding(.vertical, 10).background(.bar)
             }
         }
     }
@@ -156,7 +156,7 @@ struct Dashboard: View {
                     Text(running > 0 ? "\(running) tour(s) démarré(s)" : launching > 0 ? "Connexion au moteur · démarrage non confirmé" : pending > 0 ? "\(pending) reprise(s) en attente" : "Aucune reprise en attente").font(.title3.weight(.semibold))
                     Text(app.scheduler["auto_enabled"] as? Bool == true ? "Surveillance automatique activée" : "Automatisation en pause").foregroundStyle(.secondary)
                     if let due = app.scheduler["next_due"] as? Double {
-                        Text("Prochaine échéance : " + Date(timeIntervalSince1970: due).formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                        Text("Prochaine échéance : " + localDateTime(Date(timeIntervalSince1970: due))).font(.caption).foregroundStyle(.secondary)
                     }
                     if pending + running + launching > 0 {
                         Button("Voir les reprises") { app.page = "resumptions"; app.resumeFilter = "En attente" }.buttonStyle(.link)
@@ -183,7 +183,7 @@ struct Dashboard: View {
                                 Text("\(group["count"] as? Int ?? 0) " + ((group["count"] as? Int ?? 0) > 1 ? "tentatives" : "tentative")).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                             }
                             Text(group["action"] as? String ?? "").font(.callout).foregroundStyle(.secondary)
-                            if let stamp = group["last_at"] as? Double { Text("Dernière tentative : " + Date(timeIntervalSince1970: stamp).formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary) }
+                            if let stamp = group["last_at"] as? Double { Text("Dernière tentative : " + localDateTime(Date(timeIntervalSince1970: stamp))).font(.caption).foregroundStyle(.secondary) }
                             DisclosureGroup("Voir les sessions concernées") {
                                 let ids = group["task_ids"] as? [String] ?? []
                                 ForEach(Array(app.resumeTasks.filter { ids.contains($0["id"] as? String ?? "") }.enumerated()), id: \.offset) { _, task in
@@ -209,7 +209,7 @@ struct Dashboard: View {
             Text(task["label"] as? String ?? "État inconnu").font(.callout)
             if let reason = task["reason"] as? String { Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
             Text((task["engine_label"] as? String ?? "") + " · " + String((task["session"] as? String ?? "").suffix(8))).font(.caption).foregroundStyle(.secondary)
-            if let stamp = task["ended_at"] as? Double ?? task["due"] as? Double { Text(Date(timeIntervalSince1970: stamp).formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary) }
+            if let stamp = task["ended_at"] as? Double ?? task["due"] as? Double { Text(localDateTime(Date(timeIntervalSince1970: stamp))).font(.caption).foregroundStyle(.secondary) }
             let source = app.rows.first { ($0["id"] as? String) == (task["session"] as? String) && ($0["provider"] as? String) == (task["provider"] as? String) }
             let parent = source?["parent_session"] as? String
             Button(parent == nil ? "Ouvrir la session" : "Ouvrir la session parente") {
@@ -223,7 +223,7 @@ struct Dashboard: View {
                 let remaining = max(0, min(100, 100-used))
                 let date = Date(timeIntervalSince1970: reset)
                 let expired = date < Date()
-                let renewal = "Renouvelle " + date.formatted(date: .omitted, time: .shortened)
+                let renewal = "Renouvelle à " + localTime(date)
                 Text(name).font(.callout).foregroundStyle(.secondary)
                 if expired {
                     // An expired window is spent: state it plainly and show when it renews.
@@ -253,7 +253,7 @@ struct Dashboard: View {
                     DisclosureGroup {
                         VStack(alignment: .leading, spacing: 10) {
                             Text(row["label"] as? String ?? "À vérifier")
-                            if let stamp = row["updated"] as? Double { Text(Date(timeIntervalSince1970: stamp).formatted(date: .abbreviated, time: .shortened)).foregroundStyle(.secondary) }
+                            if let stamp = row["updated"] as? Double { Text(localDateTime(Date(timeIntervalSince1970: stamp))).foregroundStyle(.secondary) }
                             if let tokens = row["tokens"] as? Double { Text("Tokens enregistrés : \(Int(min(tokens, 1e15)))") }
                             if let cost = row["cost_usd"] as? Double, cost > 0 { Text(String(format: "Estimation enregistrée : %.4f $", cost)) }
                             Text(row["id"] as? String ?? "").font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
@@ -263,7 +263,7 @@ struct Dashboard: View {
                         Button { app.openSession(row) } label: {
                         HStack(spacing: 12) {
                             Image(systemName: row["state"] as? String == "stopped" ? "pause.circle" : "exclamationmark.circle").font(.title2).foregroundStyle(.secondary)
-                            VStack(alignment: .leading, spacing: 4) { Text(sessionTitle(row)).font(.headline); Text((row["provider"] as? String ?? "") + " · " + ((row["updated"] as? Double).map { Date(timeIntervalSince1970: $0).formatted(date: .abbreviated, time: .shortened) } ?? "Date inconnue")).font(.caption).foregroundStyle(.secondary) }
+                            VStack(alignment: .leading, spacing: 4) { Text(sessionTitle(row)).font(.headline); Text((row["provider"] as? String ?? "") + " · " + ((row["updated"] as? Double).map { localDateTime(Date(timeIntervalSince1970: $0)) } ?? "Date inconnue")).font(.caption).foregroundStyle(.secondary) }
                             Spacer(); Text(row["state"] as? String == "stopped" ? "Arrêtée" : "À vérifier").font(.caption).foregroundStyle(.secondary)
                         }
                         }.buttonStyle(.plain).help("Afficher l’application de cette session")
@@ -561,8 +561,26 @@ struct Dashboard: View {
         let title = row["title"] as? String ?? "Session"
         return title.hasPrefix("Session ") ? title + " · " + String((row["id"] as? String ?? "").suffix(6)) : title
     }
+    // Local time, 24-hour clock, for every timestamp shown in the UI.
+    static let localTime: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "fr_FR")   // 24-hour clock
+        f.timeZone = .current                     // user's local time zone
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+    static let localDateTime: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "fr_FR")
+        f.timeZone = .current
+        f.dateFormat = "dd/MM HH:mm"
+        return f
+    }()
+    func localTime(_ date: Date) -> String { Self.localTime.string(from: date) }
+    func localDateTime(_ date: Date) -> String { Self.localDateTime.string(from: date) }
+
     func friendlyDate(_ raw: String) -> String {
         let format = ISO8601DateFormatter(); format.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return format.date(from: raw)?.formatted(date: .abbreviated, time: .shortened) ?? raw
+        return format.date(from: raw).map { localDateTime($0) } ?? raw
     }
 }
