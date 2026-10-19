@@ -178,3 +178,41 @@ class QuickEntryAnomalyTests(unittest.TestCase):
              patch.object(rh, 'log_signatures', return_value={}):
             rep = rh.quick_entry_anomalies(previous=None)
         self.assertTrue(any(a['kind'] == 'missing' for a in rep['anomalies']))
+
+
+class CodexHealthTests(unittest.TestCase):
+    """Verifies the Codex-side health check (patch from Codex, reviewed)."""
+
+    def _features(self, socket_present=True):
+        return {'checks': {
+            'bundles': {'apps': {'ChatGPT.app': {'meta': {'size': 1, 'mtime': 1}}, 'Codex.app': {'meta': None}}},
+            'codex_cli': {'present': True, 'meta': {'size': 1, 'mtime': 1}},
+            'control_socket': {'present': socket_present, 'meta': None},
+            'shared_mode': {'present': True, 'desktop_version': 'v1'},
+        }}
+
+    def test_present_socket_without_file_metadata_is_not_missing(self):
+        # A socket has no regular-file metadata; it must not be 'missing' when present.
+        report = rh.codex_anomalies(features=self._features(socket_present=True))
+        self.assertEqual(report['anomalies'], [])
+        self.assertTrue(report['clean'])
+
+    def test_absent_socket_is_missing(self):
+        report = rh.codex_anomalies(features=self._features(socket_present=False))
+        kinds = {a['kind'] for a in report['anomalies']}
+        self.assertIn('missing', kinds)
+        self.assertTrue(any(a['component'] == 'control_socket' for a in report['anomalies']))
+
+    def test_update_breakage_when_version_changed_and_socket_gone(self):
+        features = self._features(socket_present=False)
+        features['checks']['shared_mode']['desktop_version'] = 'v2'
+        prev = {'chatgpt_app': {'size': 0, 'mtime': 0}, 'desktop_version': 'v1'}
+        report = rh.codex_anomalies(previous=prev, features=features)
+        kinds = {a['kind'] for a in report['anomalies']}
+        self.assertIn('update_breakage', kinds)
+
+    def test_codex_anomalies_accepts_injected_features(self):
+        # No re-reading: injected features are used as-is.
+        report = rh.codex_anomalies(features=self._features())
+        self.assertIn('components', report)
+        self.assertIn('clean', report)

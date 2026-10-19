@@ -214,13 +214,22 @@ def watch(db, bundle_root, log_dir=DEFAULT_LOG_DIR):
     current = read_versions(bundle_root)
     previous = scheduler.get(db, 'health_versions', None)
     previous_components = scheduler.get(db, 'health_components', None)
-    anomaly_report = quick_entry_anomalies(log_dir, previous_components)
+    # Back-compat: an old flat component map has no 'codex' key yet.
+    previous_claude = previous_components.get('claude') if isinstance(previous_components, dict) else previous_components
+    previous_codex = previous_components.get('codex') if isinstance(previous_components, dict) else None
+    anomaly_report = quick_entry_anomalies(log_dir, previous_claude)
+    codex_anomaly_report = codex_anomalies(previous_codex)
     with db:
-        scheduler.put(db, 'health_components', anomaly_report['components'])
+        scheduler.put(db, 'health_components', {
+            'claude': anomaly_report['components'],
+            'codex': codex_anomaly_report['components'],
+        })
     report = check(bundle_root, log_dir)
     update_detected = previous is None or current != previous
     report['update_detected'] = update_detected
     report['quick_entry_anomalies'] = anomaly_report['anomalies']
+    report['codex_features'] = codex_features()
+    report['codex_anomalies'] = codex_anomaly_report['anomalies']
     report['previous_versions'] = previous
     with db:
         scheduler.put(db, 'health_versions', current)
@@ -320,6 +329,110 @@ def quick_entry_features():
     result['anomalies'] = quick_entry_anomalies()
     return result
 
+
+
+CODEX_APPS = (Path('/Applications/ChatGPT.app'), Path('/Applications/Codex.app'))
+
+
+def codex_features():
+    """Report deterministic presence and metadata for Codex interaction dependencies."""
+    import engines
+    import plistlib
+
+    bundles = {}
+    for app in CODEX_APPS:
+        bundles[app.name] = {
+            'label': app.name.removesuffix('.app'),
+            'present': app.is_dir(),
+            'path': str(app),
+            'meta': _component_meta(app),
+        }
+    program = engines.executable('codex-cli')
+    executable_meta = _component_meta(Path(program)) if program else None
+    try:
+        engines.socket_path({})
+        socket_usable = True
+    except (engines.Unavailable, OSError, ValueError):
+        socket_usable = False
+    socket_meta = _component_meta(engines.SOCKET)
+
+    desktop_version = None
+    for app in CODEX_APPS:
+        plist = app / 'Contents' / 'Info.plist'
+        try:
+            data = plistlib.loads(plist.read_bytes())
+            desktop_version = data.get('CFBundleVersion') or data.get('CFBundleShortVersionString')
+            if desktop_version:
+                break
+        except (OSError, ValueError):
+            continue
+
+    checks = {
+        'bundles': {'label': 'Applications Codex Desktop', 'present': any(v['present'] for v in bundles.values()),
+                    'apps': bundles},
+        'codex_cli': {'label': 'Exécutable Codex CLI', 'present': program is not None,
+                      'path': program, 'meta': executable_meta},
+        'control_socket': {'label': 'Socket de contrôle local', 'present': socket_usable,
+                           'path': str(engines.SOCKET), 'meta': socket_meta},
+        'shared_mode': {'label': 'Prérequis du mode partagé', 'present': bool(desktop_version and program),
+                        'desktop_version': desktop_version, 'codex_cli': program is not None},
+    }
+    missing = [name for name, item in checks.items() if not item['present']]
+    return {'checks': checks, 'missing': missing, 'ready': not missing,
+            'note': 'Présence déterministe seulement ; aucun processus ni connexion n’est lancé.'}
+
+
+def codex_anomalies(previous=None, features=None):
+    """Compare Codex dependencies and report update-linked interaction failures.
+
+    Presence and metadata are distinct: a control socket has no regular-file
+    metadata, so it must not be called 'missing' when merely metadata-less.
+    """
+    features = features if features is not None else codex_features()
+    checks = features['checks']
+    current = {
+        'chatgpt_app': checks['bundles']['apps']['ChatGPT.app']['meta'],
+        'codex_app': checks['bundles']['apps']['Codex.app']['meta'],
+        'codex_cli': checks['codex_cli']['meta'],
+        'control_socket': checks['control_socket']['meta'],
+    }
+    # Presence (not file metadata) is the existence signal for the socket.
+    socket_present = checks['control_socket']['present']
+    previous = previous or {}
+    updated = any(previous.get(name) is not None and previous.get(name) != meta
+                  for name, meta in current.items())
+    anomalies = []
+
+    for name, meta in current.items():
+        if name in ('chatgpt_app', 'codex_app') and meta is None:
+            continue
+        if name == 'control_socket':
+            continue  # handled by presence logic below, not file metadata
+        if meta is None:
+            anomalies.append({'component': name, 'kind': 'missing', 'detail': 'Composant absent'})
+
+    if updated and not socket_present:
+        anomalies.append({'component': 'control_socket', 'kind': 'update_breakage',
+                          'detail': 'Composant Codex modifié après mise à jour ; socket de contrôle absent ou inutilisable'})
+    elif not socket_present:
+        anomalies.append({'component': 'control_socket', 'kind': 'missing',
+                          'detail': 'Socket de contrôle absent ou inutilisable'})
+
+    old_version = previous.get('desktop_version')
+    version = checks['shared_mode']['desktop_version']
+    if old_version and version and old_version != version:
+        anomalies.append({'component': 'shared_mode', 'kind': 'update_breakage',
+                          'detail': 'Version Codex Desktop modifiée ; mode partagé à revérifier'})
+    if not checks['shared_mode']['present']:
+        anomalies.append({'component': 'shared_mode', 'kind': 'missing',
+                          'detail': 'Prérequis du mode partagé absents'})
+
+    if not checks['codex_cli']['present'] and updated:
+        anomalies.append({'component': 'codex_cli', 'kind': 'update_breakage',
+                          'detail': 'Composants modifiés après mise à jour ; exécutable Codex absent'})
+
+    return {'components': current | {'desktop_version': version, 'control_socket_present': socket_present},
+            'anomalies': anomalies, 'clean': not anomalies}
 
 
 def local_synthesis(log_dir=DEFAULT_LOG_DIR, binary=None):
