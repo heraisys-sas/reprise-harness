@@ -159,3 +159,27 @@ def summarize(bundle_root, log_dir=DEFAULT_LOG_DIR, binary=None):
              f"Actions pour humain: {health['actions_for_human'] or 'aucune'}.")
     health['explanation'] = explain(facts, binary=binary)
     return health
+
+
+# --- Update watch: detect a harness update and produce a health report -----
+def watch(db, bundle_root, log_dir=DEFAULT_LOG_DIR):
+    """Detect a post-update change and persist the resulting health report.
+
+    Compares current versions against the last recorded state; when any
+    version changes (or a first run), records an 'update_detected' health
+    report. Returns the report with an 'update_detected' flag. Read-only with
+    respect to processes: it never relaunches anything, it only reports.
+    """
+    import scheduler
+    current = read_versions(bundle_root)
+    previous = scheduler.get(db, 'health_versions', None)
+    report = check(bundle_root, log_dir)
+    update_detected = previous is None or current != previous
+    report['update_detected'] = update_detected
+    report['previous_versions'] = previous
+    with db:
+        scheduler.put(db, 'health_versions', current)
+        if update_detected:
+            scheduler.put(db, 'health_report', report)
+            scheduler.put(db, 'health_update_at', __import__('time').time())
+    return report

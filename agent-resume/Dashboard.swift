@@ -7,7 +7,7 @@ struct Surface<Content: View>: View {
 }
 struct Dashboard: View {
     @ObservedObject var app: App
-    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("connection", "Connexion Codex", "point.3.connected.trianglepath.dotted"), ("desktop", "Connexion Claude Desktop", "desktopcomputer"), ("privacy", "Confidentialité", "lock.shield")]
+    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("connection", "Connexion Codex", "point.3.connected.trianglepath.dotted"), ("desktop", "Connexion Claude Desktop", "desktopcomputer"), ("health", "Santé post-update", "heart.text.square"), ("privacy", "Confidentialité", "lock.shield")]
     var title: String { sections.first { $0.0 == app.page }?.1 ?? "Reprise" }
     var body: some View {
         NavigationSplitView {
@@ -35,6 +35,7 @@ struct Dashboard: View {
                     case "search": search
                     case "connection": connection
                     case "desktop": desktopConnection
+                    case "health": health
                     case "privacy": privacy
                     default: overview
                     }
@@ -60,6 +61,7 @@ struct Dashboard: View {
         case "search": return "Retrouvez un élément sans vous souvenir de l’application."
         case "connection": return "Connectez Reprise à un serveur existant, sans envoyer de message à un agent."
         case "desktop": return "Connectez Reprise au serveur Quick Entry de Claude Desktop, sans envoyer de prompt."
+        case "health": return "Après une mise à jour : ce qu’il faut relancer, ce qui reste à parser, et les actions humaines."
         case "privacy": return "Vos données de recherche restent sous votre contrôle."
         default: return "L’essentiel de vos sessions, sans les interrompre."
         }
@@ -414,6 +416,49 @@ struct Dashboard: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Soumission Quick Entry").font(.headline)
                     Text("La soumission réelle dans l’overlay Quick Entry exige les autorisations macOS (Accessibilité, Capture d’écran) accordées par l’opérateur. Reprise valide et route la charge utile ; elle ne pilote pas l’interface Desktop.").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+    var health: some View {
+        let versions = app.health["versions"] as? [String: Any] ?? [:]
+        let actions = app.health["actions_for_human"] as? [String] ?? []
+        let stale = app.health["stale_log_signatures"] as? [String] ?? []
+        let relaunch = app.health["needs_relaunch"] as? [String] ?? []
+        let explanation = app.health["explanation"] as? [String: Any] ?? [:]
+        return VStack(alignment: .leading, spacing: 18) {
+            Surface {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("Santé après mise à jour", systemImage: "heart.text.square").font(.headline)
+                    Text("Détecte les mises à jour de Claude Desktop, Claude Code, Codex et autres Harness, ce qu’il faut relancer, et si les signatures de logs surveillées sont toujours présentes.").font(.callout).foregroundStyle(.secondary)
+                    ForEach(Array(versions.keys.sorted()), id: \.self) { key in
+                        HStack { Text(key).font(.callout.weight(.semibold)); Spacer(); Text(versions[key] as? String ?? "absent").font(.callout.monospaced()).foregroundStyle(.secondary) }
+                    }
+                }
+            }
+            Surface {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Actions requérant un humain").font(.headline)
+                    if actions.isEmpty {
+                        Text("Aucune action nécessaire pour l’instant.").font(.callout).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(actions, id: \.self) { action in
+                            Label(action, systemImage: "hand.point.right").font(.callout)
+                        }
+                    }
+                    if !relaunch.isEmpty { Text("Processus à relancer : " + relaunch.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary) }
+                    if !stale.isEmpty { Text("Signatures de logs obsolètes : " + stale.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+            Surface {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Explication (Apple Intelligence, sur l’appareil)").font(.headline)
+                    if explanation["available"] as? Bool == true {
+                        Text(explanation["answer"] as? String ?? "").font(.callout)
+                    } else {
+                        Text("Modèle génératif indisponible. La couche déterministe ci-dessus reste valable.").font(.callout).foregroundStyle(.secondary)
+                    }
+                    Text("Enrichissement facultatif ; n’autorise aucune action et ne pilote pas l’interface.").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }

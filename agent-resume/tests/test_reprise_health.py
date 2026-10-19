@@ -62,3 +62,32 @@ class ExplainTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class WatchTests(unittest.TestCase):
+    def setUp(self):
+        import sqlite3, scheduler, tempfile
+        self.db = sqlite3.connect(':memory:')
+        self.addCleanup(self.db.close)
+        scheduler.setup(self.db)
+
+    def test_first_run_detects_update_then_stable(self):
+        with patch.object(rh, 'read_versions', return_value={'claude-desktop': '1.0'}):
+            first = rh.watch(self.db, '.')
+        self.assertTrue(first['update_detected'])
+        with patch.object(rh, 'read_versions', return_value={'claude-desktop': '1.0'}):
+            second = rh.watch(self.db, '.')
+        self.assertFalse(second['update_detected'])
+
+    def test_version_change_triggers_update(self):
+        with patch.object(rh, 'read_versions', return_value={'claude-desktop': '1.0'}):
+            rh.watch(self.db, '.')
+        with patch.object(rh, 'read_versions', return_value={'claude-desktop': '2.0'}):
+            changed = rh.watch(self.db, '.')
+        self.assertTrue(changed['update_detected'])
+        self.assertEqual(changed['previous_versions'], {'claude-desktop': '1.0'})
+
+    def test_report_includes_actions_and_explanation_keys(self):
+        report = rh.watch(self.db, '.')
+        self.assertIn('actions_for_human', report)
+        self.assertIn('needs_relaunch', report)

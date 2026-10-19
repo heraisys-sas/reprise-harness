@@ -26,6 +26,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var desktopTestedSocket = ""
     @Published var desktopConnectionVerified = false
     var desktopConnectionLoaded = false
+    @Published var health: [String: Any] = [:]
     @Published var sharedBusy = false
     @Published var sharedNote = ""
     @Published var sharedSession = ""
@@ -123,11 +124,13 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             let scheduler = self.execute(["scheduler-status"])
             let connection = self.execute(["connection-status"])
             let desktopConnection = self.execute(["desktop-connection-status"])
+            let health = self.execute(["reprise-health"])
             DispatchQueue.main.async {
                 self.busy = false
                 self.scheduler = scheduler ?? [:]
                 self.connection = connection ?? [:]
                 self.desktopConnection = desktopConnection ?? [:]
+                self.health = health ?? [:]
                 if !self.connectionLoaded, let connection {
                     self.socketPath = connection["configured_socket"] as? String ?? (connection["candidates"] as? [[String: Any]])?.first?["path"] as? String ?? ""
                     self.connectionLoaded = true
