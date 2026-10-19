@@ -28,6 +28,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     var desktopConnectionLoaded = false
     @Published var health: [String: Any] = [:]
     @Published var localSynthesis: [String: Any] = [:]
+    var lastSynthesisAt: Date = .distantPast
     @Published var desktopBusy = false
     @Published var desktopStartup = UserDefaults.standard.bool(forKey: "DesktopLinkedStartup")
     @Published var desktopNote = ""
@@ -102,7 +103,10 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(reload), name: NSWorkspace.didLaunchApplicationNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(reload), name: NSWorkspace.didTerminateApplicationNotification, object: nil)
         refresh(); show(); analyzeLocal()
-        Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in self.refresh(); self.analyzeLocal() }
+        Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in self.refresh() }
+        // The generative synthesis is a slow-changing recap: run it far less
+        // often than the lightweight refresh (and it is digest-cached anyway).
+        Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { _ in self.analyzeLocal() }
     }
     @objc func show() { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
     @objc func quit() { NSApp.terminate(nil) }
@@ -292,6 +296,9 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     }
     func analyzeLocal() {
         guard !analysisBusy else { return }
+        // Throttle: never re-run the generative synthesis more than once / 10 min.
+        if Date().timeIntervalSince(lastSynthesisAt) < 600 { return }
+        lastSynthesisAt = Date()
         analysisBusy = true
         perform(["analyze"]) { _ in
             self.analysisBusy = false

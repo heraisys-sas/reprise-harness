@@ -124,3 +124,24 @@ class CodexReviewRound2Tests(unittest.TestCase):
                "2026-10-19 11:00:01 [error] [QuickEntry] erreur pour bbb\n")
         g = rl._group_submissions(rl.parse_quick_entry(seq))
         self.assertEqual(g[0]['terminal'], 'dispatched')
+
+
+class ActiveConversationTests(unittest.TestCase):
+    def test_aggregates_distinct_conversations(self):
+        import tempfile
+        from pathlib import Path
+        d = Path(tempfile.mkdtemp())
+        (d/'main.log').write_text(
+            "2026-10-18 09:00:00 [info] Quick entry submitted { promptLength: 5, hasImage: false, chatId: 'aaa' }\n"
+            "2026-10-19 10:00:00 [info] Quick entry submitted { promptLength: 5, hasImage: false, chatId: 'bbb' }\n")
+        conv = rl.active_conversations(log_dir=d)
+        self.assertEqual(len(conv), 2)
+        # Most recent conversation first.
+        self.assertEqual(conv[0]['chatId'], 'bbb')
+        self.assertEqual(conv[0]['last'], '2026-10-19 10:00:00')
+
+    def test_empty_when_no_conversations(self):
+        import tempfile
+        from pathlib import Path
+        d = Path(tempfile.mkdtemp())
+        self.assertEqual(rl.active_conversations(log_dir=d), [])

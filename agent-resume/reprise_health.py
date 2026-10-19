@@ -449,15 +449,22 @@ def local_synthesis(log_dir=DEFAULT_LOG_DIR, binary=None):
     features = quick_entry_features()
     import reprise_logs
     history = reprise_logs.history(log_dir, limit=10)
+    conversations = reprise_logs.active_conversations(log_dir, limit=10)
+    conv_summary = [
+        {"chat": c['chatId'][:8], "du": c['first'][:16], "au": c['last'][:16], "messages": c['submissions']}
+        for c in conversations
+    ]
     facts = (
         f"Santé post-update — versions: {health['versions']}; "
         f"à relancer: {health['needs_relaunch'] or 'aucun'}; "
         f"signatures de logs obsolètes: {health['stale_log_signatures'] or 'aucune'}. "
         f"Fonctionnalités Quick Entry: {'prêtes' if features['ready'] else 'manquantes ' + str(features['missing'])}. "
+        f"Conversations actives (pense-bête) : {conv_summary}. "
         f"Activité récente — soumissions: {[s['state'] for s in history['submissions']]}; "
         f"interactions MCP récentes: {[i['method'] for i in history['interactions'][-5:]]}. "
     )
-    question = ("Fais une synthèse simplifiée : (1) ce que les mises à jour ont changé, "
-                "(2) les relations entre les Harness et leurs interactions, "
-                "(3) les dernières activités distinguées, et (4) les actions qui requièrent un humain.")
+    question = ("Fais un pense-bête synthétique des dernières conversations actives (plusieurs sujets possibles "
+                "travaillés récemment) : pour chaque sujet, rappelle en une ligne de quoi il retournait et où on "
+                "en était. Puis résume : (1) ce que les mises à jour ont changé, (2) les relations entre les Harness, "
+                "(3) les actions qui requièrent un humain. Si une seule conversation est active, dis-le simplement.")
     return cached_explanation(facts, question, binary=binary)
