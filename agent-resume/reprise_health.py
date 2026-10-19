@@ -158,11 +158,8 @@ def explain(facts, question=None, binary=None):
 def summarize(bundle_root, log_dir=DEFAULT_LOG_DIR, binary=None):
     """Health + optional generative explanation, for the Reprise UI and MCP."""
     health = check(bundle_root, log_dir)
-    facts = (f"Versions: {health['versions']}. "
-             f"Processus à relancer: {health['needs_relaunch'] or 'aucun'}. "
-             f"Signatures de logs obsolètes: {health['stale_log_signatures'] or 'aucune'}. "
-             f"Actions pour humain: {health['actions_for_human'] or 'aucune'}.")
-    health['explanation'] = explain(facts, binary=binary)
+    health['quick_entry_features'] = quick_entry_features()
+    # The generative explanation lives in local analysis; health stays deterministic.
     return health
 
 
@@ -188,3 +185,68 @@ def watch(db, bundle_root, log_dir=DEFAULT_LOG_DIR):
             scheduler.put(db, 'health_report', report)
             scheduler.put(db, 'health_update_at', __import__('time').time())
     return report
+
+
+# --- Deterministic Quick Entry feature check --------------------------------
+CLAUDE_APP = Path('/Applications/Claude.app')
+FEATURES = {
+    'app_asar': ('Resources/app.asar', 'Bundle principal (routage Quick Entry)'),
+    'native_binding': ('Resources/app.asar.unpacked/node_modules/@ant/claude-native/claude-native-binding.node', 'Additif natif claude-native'),
+    'swift_addon': ('Resources/app.asar.unpacked/node_modules/@ant/claude-swift', 'Additif Swift (overlay Quick Entry)'),
+}
+
+
+def quick_entry_features():
+    """Deterministic check of the Claude Desktop features Quick Entry relies on.
+
+    Presence and readability only; never launches or automates the app. A
+    missing dependency is reported so an update that drops one is caught
+    before a submission silently fails.
+    """
+    checks = {}
+    for name, (rel, label) in FEATURES.items():
+        path = CLAUDE_APP / 'Contents' / rel
+        checks[name] = {'label': label, 'present': path.exists(),
+                        'readable': path.is_file() and os.access(path, os.R_OK) if path.is_file() else path.is_dir(),
+                        'path': str(path)}
+    # Quick Entry preference shortcuts live in the Desktop config.
+    prefs = Path.home() / 'Library/Application Support/Claude/claude_desktop_config.json'
+    shortcuts = {}
+    try:
+        data = json.loads(prefs.read_text())
+        p = data.get('preferences', {})
+        shortcuts = {'quickEntryShortcut': p.get('quickEntryShortcut'),
+                     'quickEntryDictationShortcut': p.get('quickEntryDictationShortcut')}
+    except (OSError, ValueError):
+        shortcuts = {'quickEntryShortcut': None, 'quickEntryDictationShortcut': None}
+    checks['preferences'] = {'label': 'Raccourcis Quick Entry', 'shortcuts': shortcuts,
+                             'present': all(v is not None for v in shortcuts.values())}
+    missing = [n for n, c in checks.items() if not c.get('present')]
+    return {'checks': checks, 'missing': missing, 'ready': not missing,
+            'note': 'Deterministic presence check; does not open or automate Claude Desktop.'}
+
+
+
+def local_synthesis(log_dir=DEFAULT_LOG_DIR, binary=None):
+    """Generative local analysis: updates, inter-harness relations, recent activity.
+
+    Reads the deterministic facts (health + log history + Quick Entry features)
+    and asks Foundation Models for a simplified synthesis. Optional: returns
+    {'available': False} without the helper or model. Never a source of truth.
+    """
+    health = check('.', log_dir)
+    features = quick_entry_features()
+    import reprise_logs
+    history = reprise_logs.history(log_dir, limit=10)
+    facts = (
+        f"Santé post-update — versions: {health['versions']}; "
+        f"à relancer: {health['needs_relaunch'] or 'aucun'}; "
+        f"signatures de logs obsolètes: {health['stale_log_signatures'] or 'aucune'}. "
+        f"Fonctionnalités Quick Entry: {'prêtes' if features['ready'] else 'manquantes ' + str(features['missing'])}. "
+        f"Activité récente — soumissions: {[s['state'] for s in history['submissions']]}; "
+        f"interactions MCP récentes: {[i['method'] for i in history['interactions'][-5:]]}. "
+    )
+    question = ("Fais une synthèse simplifiée : (1) ce que les mises à jour ont changé, "
+                "(2) les relations entre les Harness et leurs interactions, "
+                "(3) les dernières activités distinguées, et (4) les actions qui requièrent un humain.")
+    return explain(facts, question, binary=binary)

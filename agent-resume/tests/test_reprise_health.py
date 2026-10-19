@@ -52,12 +52,23 @@ class ExplainTests(unittest.TestCase):
         self.assertTrue(result['available'])
         self.assertEqual(result['answer'], 'explication')
 
-    def test_summarize_includes_explanation_key(self):
-        with patch.object(rh, 'explain', return_value={'available': False, 'answer': None}):
-            result = rh.summarize('.')
-        self.assertIn('explanation', result)
+    def test_summarize_is_deterministic_with_features(self):
+        result = rh.summarize('.')
+        self.assertNotIn('explanation', result)  # FM lives in local analysis now
+        self.assertIn('quick_entry_features', result)
         self.assertIn('actions_for_human', result)
         self.assertIn('versions', result)
+
+    def test_quick_entry_features_reports_presence(self):
+        feats = rh.quick_entry_features()
+        self.assertIn('checks', feats)
+        self.assertIn('missing', feats)
+        self.assertIn('ready', feats)
+        self.assertIn('preferences', feats['checks'])
+
+    def test_local_synthesis_degrades_without_binary(self):
+        synth = rh.local_synthesis(binary='/nonexistent/FoundationExplain')
+        self.assertFalse(synth['available'])
 
 
 if __name__ == '__main__':

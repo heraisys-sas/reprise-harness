@@ -27,6 +27,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var desktopConnectionVerified = false
     var desktopConnectionLoaded = false
     @Published var health: [String: Any] = [:]
+    @Published var localSynthesis: [String: Any] = [:]
     @Published var desktopBusy = false
     @Published var desktopStartup = UserDefaults.standard.bool(forKey: "DesktopLinkedStartup")
     @Published var desktopNote = ""
@@ -292,7 +293,13 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     func analyzeLocal() {
         guard !analysisBusy else { return }
         analysisBusy = true
-        perform(["analyze"]) { _ in self.analysisBusy = false; self.refresh() }
+        perform(["analyze"]) { _ in
+            self.analysisBusy = false
+            self.perform(["local-synthesis"]) { synth in
+                self.localSynthesis = synth ?? [:]
+                self.refresh()
+            }
+        }
     }
     func search() {
         let value = query.trimmingCharacters(in: .whitespacesAndNewlines)

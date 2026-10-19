@@ -131,6 +131,7 @@ def main():
     desktop_check.add_argument('--session')
     sub.add_parser('desktop-connection-status')
     sub.add_parser('reprise-health')
+    sub.add_parser('local-synthesis')
     sub.add_parser('health-watch')
     sub.add_parser('desktop-status')
     sub.add_parser('desktop-launch')
@@ -200,9 +201,12 @@ def main():
     elif args.action == 'health-watch':
         import reprise_health
         print(json.dumps(reprise_health.watch(db, '.'), ensure_ascii=False))
+    elif args.action == 'local-synthesis':
+        import reprise_health
+        print(json.dumps(reprise_health.local_synthesis(), ensure_ascii=False))
     elif args.action == 'reprise-health':
         import reprise_health
-        print(json.dumps(reprise_health.check('.'), ensure_ascii=False))
+        print(json.dumps(reprise_health.summarize('.'), ensure_ascii=False))
     elif args.action == 'reprise-resume':
         import reprise_logs
         print(json.dumps({'resumable': reprise_logs.resumable()}, ensure_ascii=False))

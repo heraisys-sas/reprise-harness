@@ -264,6 +264,18 @@ struct Dashboard: View {
     var analysis: some View {
         VStack(alignment: .leading, spacing: 18) {
             Surface { HStack { VStack(alignment: .leading, spacing: 6) { Label("Apple Intelligence", systemImage: "sparkles").font(.headline); Text(app.analysis["status"] as? String ?? "En attente").font(.callout).foregroundStyle(.secondary) }; Spacer(); Button(app.analysisBusy ? "Analyse…" : "Analyser") { app.analyzeLocal() }.disabled(app.analysisBusy) } }
+            Surface {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("Synthèse locale (Apple Intelligence, sur l’appareil)", systemImage: "sparkles").font(.headline)
+                    if app.localSynthesis["available"] as? Bool == true {
+                        Text("Mises à jour, relations entre Harness et dernières activités, d’après les journaux locaux.").font(.callout).foregroundStyle(.secondary)
+                        Text(app.localSynthesis["answer"] as? String ?? "").font(.callout)
+                    } else {
+                        Text("Modèle génératif indisponible. Les vérifications déterministes restent la référence.").font(.callout).foregroundStyle(.secondary)
+                    }
+                    Text("Enrichissement facultatif, en lecture seule ; n’autorise aucune action.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
             if app.verdicts.isEmpty { empty("Aucun signalement à afficher", icon: "text.badge.checkmark", detail: "L’absence de signalement ne garantit pas la réussite d’une session. Les vérifications du projet restent la référence.") }
             ForEach(Array(app.verdicts.enumerated()), id: \.offset) { _, value in Surface { VStack(alignment: .leading, spacing: 10) { Button { app.openSession(value) } label: { Text(value["title"] as? String ?? "Session").font(.headline) }.buttonStyle(.plain).help("Afficher l’application de cette session"); Text(value["reason"] as? String ?? ""); Text(value["evidence"] as? String ?? "").font(.callout).foregroundStyle(.secondary).textSelection(.enabled) } } }
             Text("Codex et Claude Code · un nouveau compte rendu au maximum par minute · aucune relance déclenchée par le modèle.").font(.caption).foregroundStyle(.secondary)
@@ -441,7 +453,8 @@ struct Dashboard: View {
         let actions = app.health["actions_for_human"] as? [String] ?? []
         let stale = app.health["stale_log_signatures"] as? [String] ?? []
         let relaunch = app.health["needs_relaunch"] as? [String] ?? []
-        let explanation = app.health["explanation"] as? [String: Any] ?? [:]
+        let features = app.health["quick_entry_features"] as? [String: Any] ?? [:]
+        let featureChecks = features["checks"] as? [String: Any] ?? [:]
         return VStack(alignment: .leading, spacing: 18) {
             Surface {
                 VStack(alignment: .leading, spacing: 12) {
@@ -468,13 +481,21 @@ struct Dashboard: View {
             }
             Surface {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Explication (Apple Intelligence, sur l’appareil)").font(.headline)
-                    if explanation["available"] as? Bool == true {
-                        Text(explanation["answer"] as? String ?? "").font(.callout)
-                    } else {
-                        Text("Modèle génératif indisponible. La couche déterministe ci-dessus reste valable.").font(.callout).foregroundStyle(.secondary)
+                    Text("Fonctionnalités Claude Desktop (Quick Entry)").font(.headline)
+                    Text("Présence des composants dont dépend la soumission Quick Entry ; vérification déterministe.").font(.callout).foregroundStyle(.secondary)
+                    ForEach(Array(featureChecks.keys.sorted()), id: \.self) { key in
+                        let item = featureChecks[key] as? [String: Any] ?? [:]
+                        HStack {
+                            Image(systemName: (item["present"] as? Bool == true) ? "checkmark.circle" : "xmark.circle")
+                                .foregroundStyle((item["present"] as? Bool == true) ? .green : .red)
+                            Text(item["label"] as? String ?? key).font(.callout)
+                            Spacer()
+                        }
                     }
-                    Text("Enrichissement facultatif ; n’autorise aucune action et ne pilote pas l’interface.").font(.caption).foregroundStyle(.secondary)
+                    if let shortcuts = featureChecks["preferences"] as? [String: Any], let sc = shortcuts["shortcuts"] as? [String: Any] {
+                        Text("Raccourcis : " + ((sc["quickEntryShortcut"] as? String) ?? "—") + " · dictée " + ((sc["quickEntryDictationShortcut"] as? String) ?? "—")).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("La synthèse Apple Intelligence est dans l’onglet Analyse locale.").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
