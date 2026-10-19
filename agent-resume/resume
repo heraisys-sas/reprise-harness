@@ -132,6 +132,9 @@ def main():
     sub.add_parser('desktop-connection-status')
     sub.add_parser('reprise-health')
     sub.add_parser('restart-chain')
+    sub.add_parser('quick-apply-daemon-start')
+    sub.add_parser('quick-apply-daemon-stop')
+    sub.add_parser('quick-apply-daemon-status')
     sub.add_parser('local-synthesis')
     sub.add_parser('health-watch')
     sub.add_parser('desktop-status')
@@ -205,6 +208,15 @@ def main():
     elif args.action == 'local-synthesis':
         import reprise_health
         print(json.dumps(reprise_health.local_synthesis(), ensure_ascii=False))
+    elif args.action == 'quick-apply-daemon-start':
+        import desktop_mode
+        print(json.dumps(desktop_mode.daemon_start(), ensure_ascii=False))
+    elif args.action == 'quick-apply-daemon-stop':
+        import desktop_mode
+        print(json.dumps(desktop_mode.daemon_stop(), ensure_ascii=False))
+    elif args.action == 'quick-apply-daemon-status':
+        import desktop_mode
+        print(json.dumps(desktop_mode.daemon_status(), ensure_ascii=False))
     elif args.action == 'restart-chain':
         import subprocess
         script = ROOT / 'restart-chain'

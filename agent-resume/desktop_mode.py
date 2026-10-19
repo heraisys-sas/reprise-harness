@@ -7,6 +7,7 @@ therefore exposes: launch (open the linked app if needed), start/stop (the
 Quick Entry server) and status. It never force-quits a running app and never
 starts anything implicitly; each action is explicit.
 """
+import os
 import plistlib
 from pathlib import Path
 import subprocess
@@ -113,3 +114,93 @@ def stop():
     """
     return {'ok': True, 'stopped': False,
             'reason': 'Arrêt du serveur via launchctl (unload) ; l’application liée n’est pas fermée.'}
+
+
+# --- Quick Apply daemon (mirrors the Codex app-server daemon) --------------
+DAEMON_NAME = 'reprise-quick-apply'
+DEFAULT_STATE = Path(__file__).parent / 'quick-state'
+
+
+def _pid_file(state):
+    return Path(state) / 'quick-apply.pid'
+
+
+def _log_file(state):
+    return Path(state) / 'quick-apply.log'
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def daemon_pid(state=None):
+    state = state or DEFAULT_STATE
+    try:
+        pid = int(_pid_file(state).read_text().strip())
+        return pid if _pid_alive(pid) else None
+    except (OSError, ValueError):
+        return None
+
+
+def daemon_start(socket=None, state=None, daily_limit=8):
+    """Start the Quick Apply daemon (detached), independent of Desktop being ready.
+
+    The server binds its socket without needing Claude Desktop, so it may start
+    first; submissions are delivered whenever Desktop is available.
+    """
+    state = state or str(DEFAULT_STATE)
+    if daemon_pid(state) or server_running():
+        return {'ok': True, 'started': False, 'reason': 'Daemon Quick Apply déjà actif.'}
+    socket = socket or str(DEFAULT_SOCKET)
+    Path(state).mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        log = open(_log_file(state), 'ab')
+        proc = subprocess.Popen([sys.executable, str(SERVER), '--socket', socket,
+                                 '--state', str(state), '--daily-limit', str(daily_limit)],
+                                stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                                start_new_session=True)
+        _pid_file(state).write_text(str(proc.pid))
+        import time
+        time.sleep(1.0)  # let a fast failure (e.g. orphan socket) surface
+        if server_running() or (proc.poll() is None and daemon_pid(state)):
+            return {'ok': True, 'started': True, 'daemon': DAEMON_NAME, 'pid': proc.pid,
+                    'needs_app': not app_running(),
+                    'reason': 'Daemon Quick Apply démarré. La soumission sera livrée dès que Claude Desktop sera prêt.'}
+        detail = ''
+        log = _log_file(state)
+        if log.is_file():
+            lines = log.read_text(errors='replace').strip().splitlines()
+            detail = lines[-1] if lines else ''
+        return {'ok': False, 'started': False, 'reason': f'Daemon Quick Apply non démarré : {detail or "voir le journal"}'}
+    except OSError as error:
+        return {'ok': False, 'started': False, 'reason': f'Démarrage impossible : {error}'}
+
+
+def daemon_stop(state=None):
+    """Stop the Quick Apply daemon by PID; never touches the linked app."""
+    pid = daemon_pid(state)
+    if pid is None:
+        return {'ok': True, 'stopped': False, 'reason': 'Aucun daemon Quick Apply en cours.'}
+    try:
+        os.kill(pid, 15)  # SIGTERM
+        import time
+        time.sleep(0.5)
+    except OSError:
+        pass
+    try:
+        _pid_file(state or DEFAULT_STATE).unlink(missing_ok=True)
+    except OSError:
+        pass
+    return {'ok': True, 'stopped': True, 'pid': pid,
+            'reason': 'Daemon Quick Apply arrêté. L’application liée n’a pas été fermée.'}
+
+
+def daemon_status(state=None):
+    pid = daemon_pid(state)
+    return {'daemon': DAEMON_NAME, 'running': pid is not None, 'pid': pid,
+            'app_running': app_running(), 'app_version': app_version(),
+            'socket': str(DEFAULT_SOCKET), 'listening': server_running()}

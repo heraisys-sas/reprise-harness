@@ -113,8 +113,16 @@ def serve(path, endpoint):
     if path.exists():
         if not stat.S_ISSOCK(path.lstat().st_mode):
             raise SystemExit('Le chemin de socket existe déjà sans être un socket.')
-        path.unlink()
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            path.unlink()
+        except OSError as error:
+            # An orphan socket we are not allowed to remove must fail loudly,
+            # not crash silently: the caller (daemon) reports the real cause.
+            raise SystemExit(f'Impossible de supprimer le socket orphelin {path} : {error}')
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError as error:
+        raise SystemExit(f'Impossible de créer le dossier de socket {path.parent} : {error}')
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     os.umask(0o077)
     sock.bind(str(path))

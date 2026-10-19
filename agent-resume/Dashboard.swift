@@ -7,7 +7,7 @@ struct Surface<Content: View>: View {
 }
 struct Dashboard: View {
     @ObservedObject var app: App
-    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("connection", "Connexion Codex", "point.3.connected.trianglepath.dotted"), ("desktop", "Connexion Claude Desktop", "desktopcomputer"), ("health", "Santé post-update", "heart.text.square"), ("privacy", "Confidentialité", "lock.shield")]
+    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("connection", "Connexion Codex", "point.3.connected.trianglepath.dotted"), ("desktop", "Quick Apply — Claude Desktop", "desktopcomputer"), ("health", "Santé post-update", "heart.text.square"), ("privacy", "Confidentialité", "lock.shield")]
     var title: String { sections.first { $0.0 == app.page }?.1 ?? "Reprise" }
     var body: some View {
         NavigationSplitView {
@@ -60,7 +60,7 @@ struct Dashboard: View {
         case "analysis": return "Un second regard sur les comptes rendus, sur votre Mac."
         case "search": return "Retrouvez un élément sans vous souvenir de l’application."
         case "connection": return "Connectez Reprise à un serveur existant, sans envoyer de message à un agent."
-        case "desktop": return "Connectez Reprise au serveur Quick Entry de Claude Desktop, sans envoyer de prompt."
+        case "desktop": return "Connectez Reprise au daemon Quick Apply de Claude Desktop, sans envoyer de prompt."
         case "health": return "Après une mise à jour : ce qu’il faut relancer, ce qui reste à parser, et les actions humaines."
         case "privacy": return "Vos données de recherche restent sous votre contrôle."
         default: return "L’essentiel de vos sessions, sans les interrompre."
@@ -388,7 +388,7 @@ struct Dashboard: View {
         VStack(alignment: .leading, spacing: 18) {
             Surface {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("Serveur Quick Entry et application liée").font(.headline)
+                    Text("Daemon Quick Apply et application liée").font(.headline)
                     Text("Le serveur valide et route la charge utile ; la soumission réelle nécessite Claude Desktop en cours d’exécution.").font(.callout).foregroundStyle(.secondary)
                     HStack {
                         Button("1. Démarrer l’appli liée") { app.desktopAction("launch") }.disabled(app.desktopBusy)
@@ -413,14 +413,14 @@ struct Dashboard: View {
                         if app.desktopConnectionBusy { ProgressView().controlSize(.small) }
                     }
                     if !app.desktopConnectionNote.isEmpty { Text(app.desktopConnectionNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Text("Le test initialise uniquement le protocole Quick Entry. Aucun envoi de prompt, aucun appel au modèle.").font(.caption).foregroundStyle(.secondary)
+                    Text("Le test initialise uniquement le protocole Quick Apply. Aucun envoi de prompt, aucun appel au modèle.").font(.caption).foregroundStyle(.secondary)
                     Divider()
                     Button("Rétablir la détection automatique") { app.restoreDesktopConnectionDetection() }.disabled(app.desktopConnectionBusy || app.desktopConnection["mode"] as? String != "server")
                 }
             }
             Surface {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("Serveurs Quick Entry locaux").font(.headline)
+                    Text("Daemons Quick Apply locaux").font(.headline)
                     ForEach(Array((app.desktopConnection["candidates"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, candidate in
                         HStack(alignment: .top, spacing: 12) {
                             Image(systemName: candidate["detected"] as? Bool == true ? "circle.fill" : "circle").font(.caption).foregroundStyle(.secondary).padding(.top, 4)
@@ -441,16 +441,16 @@ struct Dashboard: View {
             }
             Surface {
                 VStack(alignment: .leading, spacing: 14) {
-                    Label("Transport Quick Entry Claude Desktop", systemImage: "desktopcomputer").font(.headline)
+                    Label("Transport Quick Apply — Claude Desktop", systemImage: "desktopcomputer").font(.headline)
                     Text(app.desktopConnection.isEmpty ? "Configuration indisponible" : app.desktopConnection["mode"] as? String == "server" ? "Socket personnalisé enregistré" : "Détection automatique · socket local").font(.callout)
                     if let path = app.desktopConnection["configured_socket"] as? String { Text(path).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Text("Une connexion réussie confirme le serveur Quick Entry, pas la soumission dans l’overlay Desktop.").font(.callout).foregroundStyle(.secondary)
+                    Text("Une connexion réussie confirme le daemon Quick Apply, pas la soumission dans l’overlay Desktop.").font(.callout).foregroundStyle(.secondary)
                 }
             }
             Surface {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Soumission Quick Entry").font(.headline)
-                    Text("La soumission réelle dans l’overlay Quick Entry exige les autorisations macOS (Accessibilité, Capture d’écran) accordées par l’opérateur. Reprise valide et route la charge utile ; elle ne pilote pas l’interface Desktop.").font(.callout).foregroundStyle(.secondary)
+                    Text("Soumission Quick Apply").font(.headline)
+                    Text("La soumission réelle dans l’overlay Quick Apply exige les autorisations macOS (Accessibilité, Capture d’écran) accordées par l’opérateur. Reprise valide et route la charge utile ; elle ne pilote pas l’interface Desktop.").font(.callout).foregroundStyle(.secondary)
                 }
             }
         }
@@ -474,7 +474,7 @@ struct Dashboard: View {
                         Button("Tout redémarrer") { app.restartChain() }.disabled(app.chainBusy)
                         if app.chainBusy { ProgressView().controlSize(.small) }
                     }
-                    Text("Relance Reprise, le serveur Quick Entry et le daemon Codex, puis vérifie l’état. N’arrête jamais de force les applications liées.").font(.callout).foregroundStyle(.secondary)
+                    Text("Relance Reprise, le daemon Quick Apply et le daemon Codex, puis vérifie l’état. N’arrête jamais de force les applications liées.").font(.callout).foregroundStyle(.secondary)
                     if !app.chainNote.isEmpty { Text(app.chainNote).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
                 }
             }
