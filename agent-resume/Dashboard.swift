@@ -16,7 +16,18 @@ struct Dashboard: View {
                 List(selection: Binding<String?>(get: { app.page }, set: { app.page = $0 ?? "overview" })) {
                     Section("Activité") {
                         ForEach(sections, id: \.0) { entry in
-                            HStack { Label(entry.1, systemImage: entry.2); Spacer(); if entry.0 == "sessions" && !app.attention.isEmpty { Text("\(app.attention.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary) } }.tag(entry.0)
+                            HStack {
+                                Label(entry.1, systemImage: entry.2)
+                                Spacer()
+                                if let count = sidebarBadge(entry.0), count > 0 {
+                                    Text("\(count)")
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                        .accessibilityLabel("\(entry.1) : \(count) élément(s) à examiner")
+                                }
+                            }
+                            .contentShape(Rectangle())
+                            .tag(entry.0)
                         }
                     }
                 }.listStyle(.sidebar).frame(maxHeight: .infinity)
@@ -465,7 +476,19 @@ struct Dashboard: View {
         let codexFeatures = app.health["codex_features"] as? [String: Any] ?? [:]
         let codexChecks = codexFeatures["checks"] as? [String: Any] ?? [:]
         let codexAnomalies = app.health["codex_anomalies"] as? [[String: Any]] ?? []
+        let claudeAnomalies = (features["anomalies"] as? [String: Any])?["anomalies"] as? [[String: Any]] ?? []
+        let actionCount = actions.count + claudeAnomalies.count + codexAnomalies.count
         return VStack(alignment: .leading, spacing: 18) {
+            Surface {
+                HStack {
+                    Label(actionCount == 0 ? "Sain · aucune action requise" : "\(actionCount) action(s) requise(s)",
+                          systemImage: actionCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .font(.headline)
+                        .foregroundStyle(actionCount == 0 ? .green : .orange)
+                    Spacer()
+                }
+                .accessibilityElement(children: .combine)
+            }
             Surface {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
@@ -589,6 +612,17 @@ struct Dashboard: View {
     }()
     func localTime(_ date: Date) -> String { Self.localTime.string(from: date) }
     func localDateTime(_ date: Date) -> String { Self.localDateTime.string(from: date) }
+
+    // Attention count per sidebar section, so the user sees where to act
+    // without visiting all 9 tabs.
+    func sidebarBadge(_ section: String) -> Int? {
+        switch section {
+        case "sessions": return app.attention.count
+        case "resumptions": return app.verdicts.count
+        case "health": return (app.health["actions_for_human"] as? [String])?.count
+        default: return nil
+        }
+    }
 
     func friendlyDate(_ raw: String) -> String {
         let format = ISO8601DateFormatter(); format.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

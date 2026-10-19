@@ -11,7 +11,7 @@ Analyse statique du code (`Dashboard.swift`, `Native.swift`, 929 lignes). Livrab
 ## Problèmes UX observés (priorisés)
 
 ### 1. Accessibilité quasi absente — élevé
-Seulement 3 mentions `accessibility*` pour 9 écrans. Sur macOS, VoiceOver doit annoncer :
+Seulement 7 mentions `accessibility*` pour 9 écrans. Sur macOS, VoiceOver doit annoncer :
 - chaque bouton d'action (Tester/Enregistrer/Démarrer/Arrêter) ;
 - les indicateurs ✓/✗ des checks de fonctionnalités (actuellement des `Image` sans label) ;
 - les valeurs de quota (« Épuisé, renouvelle à 2h ») comme texte, pas seulement visuel.
@@ -38,3 +38,28 @@ Traiter (1) Accessibilité et (2) Résumé d'état Santé en priorité — le pl
 
 ## Limites
 Analyse statique du code, pas un test utilisateur ni un rendu visuel. Les préférences d'ergonomie (densité, couleurs) méritent un arbitrage humain.
+
+
+---
+
+# Analyse UX/UI complète (sous-agent DeepSeek, 2026-10-20)
+
+Lecture intégrale de Dashboard.swift (597 lignes) et Native.swift (355 lignes). Recommandations priorisées (haute/moyenne/basse) — voir l'ordre de traitement en fin de section.
+
+## Déjà bien (à conserver)
+Helpers `localTime`/`localDateTime` 24h ; états vides réutilisables `empty(...)` ; verrous « Tester avant d'enregistrer » ; clarifications « Le test initialise uniquement le protocole ».
+
+## Ordre de traitement recommandé
+1. **Badge sidebar multi-sections** + **résumé d'état Santé**.
+2. **Nomenclature daemon/socket** + unification **Quick Apply/Entry** (le mot « serveur » a 3 sens → risque opérationnel d'arrêter le mauvais service).
+3. **Labels d'état VoiceOver** + **feedback actions longues** (les messages existent dans les `*Note` mais ne sont ni visibles ni annoncés).
+4. **Fusion des onglets Connexion Codex / Quick Apply** (vues quasi identiques, 6 `@Published` parallèles) — refactorisation modérée, après la nomenclature.
+
+## Points saillants par axe
+- **Clarté** : badge d'attention (Sessions seul en a un) ; résumé Santé (« Sain / N actions / N anomalies ») avant le détail replié ; ordre de l'onglet Connexion par fréquence d'usage.
+- **Simplification** : fusionner les 2 onglets Connexion ; replier « Soumission Quick Apply » ; dédupliquer « Apple Intelligence » dans Analyse locale ; bouton « Comprendre » ambigu → « Voir les reprises à examiner ».
+- **Accessibilité** : labels complets sur les indicateurs ✓/✗, candidats socket, états sessions ; composant InlineStatus unique pour les actions longues ; contrastes (signe textuel + `.primary`) ; cibles ≥ 24 pt.
+- **Cohérence** : nomenclature daemon/socket ; format dates (relatif listes / absolu survol) ; états vides via `empty(...)` ; identité `ForEach` par id de session (pas par index, recycle à chaque refresh 60 s).
+
+## Limites
+Analyse statique (pas de rendu visuel ni test utilisateur) ; densité/couleurs = arbitrages de produit.
