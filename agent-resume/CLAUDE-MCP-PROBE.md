@@ -148,12 +148,12 @@ Independent local SQLite evidence:
   "tool_permissions": "Approval UI appeared; driver attempted Allow once but user UI changes intervened, so exact choice not captured. No permanent approval action issued by driver.",
   "receiver_verification": "Local SQLite state, independent of chat response text",
   "fully_unattended_proven": false,
-  "destination_user_confirmation": "User confirmed the destination was correct; menu click may have been redundant.",
+  "destination_user_confirmation": "User confirmed correct destination; apparent phrase insertion was a changed placeholder, not prompt content.",
   "menu_click_required": "Not established; inherited active chat is a hypothesis for a separate trial."
 }
 ```
 
-**User correction and remaining uncertainty:** the user reported that a menu click entered a phrase in the prompt, then explicitly confirmed that the destination was correct and suggested the click might be superfluous. The recorded snapshots establish the selected destination, submitted instruction and resulting chat; they do not establish that the menu interaction was necessary or free of side effects. Quick Entry may be able to reuse the already active chat. A separate minimal-path trial should omit the menu, verify the effective destination and use one fresh bounded job. No second inference was launched to resolve this point during the present trial.
+**Destination selection:** the menu selection succeeded. The user confirmed that the apparent phrase insertion was actually the Quick Entry placeholder changing to an invitation to resume the selected conversation, not text added to the prompt. The displayed destination, submitted instruction and resulting chat agree. Whether the same active chat can be reused without selecting it in the menu remains untested; no second inference was launched to answer that optional simplification.
 
 Conclusion: supervised **Quick Entry → one Return → existing chat → MCP result** worked on this installation. Opening Quick Entry required user assistance, tool approval UI appeared, and the menu step remains an optimization question. This is not proof of unattended operation, reliability when another chat is active, or operation with a locked/sleeping Mac.
 
