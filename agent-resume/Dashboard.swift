@@ -60,7 +60,7 @@ struct SocketCandidateMark: View {
 }
 struct Dashboard: View {
     @ObservedObject var app: App
-    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("connection", "Connexion à codex-desktop", "point.3.connected.trianglepath.dotted"), ("desktop", "Connexion à claude-desktop", "desktopcomputer"), ("health", "Santé post-update", "heart.text.square"), ("privacy", "Confidentialité", "lock.shield")]
+    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("connections", "Connexions", "point.3.connected.trianglepath.dotted"), ("health", "Santé post-update", "heart.text.square"), ("privacy", "Confidentialité", "lock.shield")]
     var title: String { sections.first { $0.0 == app.page }?.1 ?? "Reprise" }
     var body: some View {
         NavigationSplitView {
@@ -97,8 +97,7 @@ struct Dashboard: View {
                     case "resumptions": resumptions
                     case "analysis": analysis
                     case "search": search
-                    case "connection": connection
-                    case "desktop": desktopConnection
+                    case "connections": connections
                     case "health": health
                     case "privacy": privacy
                     default: overview
@@ -123,8 +122,7 @@ struct Dashboard: View {
         case "resumptions": return "Les tentatives sont regroupées par cause. Les détails restent accessibles à la demande."
         case "analysis": return "Un second regard sur les comptes rendus, sur votre Mac."
         case "search": return "Retrouvez un élément sans vous souvenir de l’application."
-        case "connection": return "Connectez Reprise au service codexd (codex-desktop), sans envoyer de message à un agent."
-        case "desktop": return "Connectez Reprise au service claude-desktopd (Quick Apply), sans envoyer de prompt."
+        case "connections": return "Connectez Reprise aux services codexd (codex-desktop) et claude-desktopd (Quick Apply)."
         case "health": return "Après une mise à jour : ce qu’il faut relancer, ce qui reste à parser, et les actions humaines."
         case "privacy": return "Vos données de recherche restent sous votre contrôle."
         default: return "L’essentiel de vos sessions, sans les interrompre."
@@ -369,6 +367,25 @@ struct Dashboard: View {
             ForEach(Array(app.searchResults.enumerated()), id: \.offset) { _, value in Surface { VStack(alignment: .leading, spacing: 8) { Button { app.openSession(value) } label: { Text(value["title"] as? String ?? "Session").font(.headline) }.buttonStyle(.plain).help("Afficher l’application de cette session"); Text((value["provider"] as? String ?? "") + " · " + String((value["id"] as? String ?? "").suffix(8))).font(.caption).foregroundStyle(.secondary); Text(value["text"] as? String ?? "").textSelection(.enabled) } } }
         }
     }
+    // Single "Connexions" tab: an internal picker switches between the two
+    // connection panels (codex-desktop / claude-desktop), freeing the sidebar.
+    var connections: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Picker("Service", selection: Binding(get: { app.connectionTab }, set: { app.connectionTab = $0 })) {
+                Text("codex-desktop").tag("codex")
+                Text("claude-desktop").tag("quickapply")
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 480)
+            .accessibilityLabel("Choisir le service à configurer")
+            if app.connectionTab == "codex" {
+                connection
+            } else {
+                desktopConnection
+            }
+        }
+    }
+
     var connection: some View {
         VStack(alignment: .leading, spacing: 18) {
             Surface {

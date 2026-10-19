@@ -33,6 +33,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var desktopStartup = UserDefaults.standard.bool(forKey: "DesktopLinkedStartup")
     @Published var chainBusy = false
     @Published var chainNote = ""
+    @Published var connectionTab = "codex"  // codex | quickapply
     @Published var desktopNote = ""
     @Published var sharedBusy = false
     @Published var sharedNote = ""
