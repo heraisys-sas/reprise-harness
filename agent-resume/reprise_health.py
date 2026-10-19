@@ -197,6 +197,9 @@ def summarize(bundle_root, log_dir=DEFAULT_LOG_DIR, binary=None):
     """Health + optional generative explanation, for the Reprise UI and MCP."""
     health = check(bundle_root, log_dir)
     health['quick_entry_features'] = quick_entry_features()
+    features = codex_features()
+    health['codex_features'] = features
+    health['codex_anomalies'] = codex_anomalies(features=features)['anomalies']
     # The generative explanation lives in local analysis; health stays deterministic.
     return health
 

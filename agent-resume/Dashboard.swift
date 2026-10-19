@@ -455,6 +455,9 @@ struct Dashboard: View {
         let relaunch = app.health["needs_relaunch"] as? [String] ?? []
         let features = app.health["quick_entry_features"] as? [String: Any] ?? [:]
         let featureChecks = features["checks"] as? [String: Any] ?? [:]
+        let codexFeatures = app.health["codex_features"] as? [String: Any] ?? [:]
+        let codexChecks = codexFeatures["checks"] as? [String: Any] ?? [:]
+        let codexAnomalies = app.health["codex_anomalies"] as? [[String: Any]] ?? []
         return VStack(alignment: .leading, spacing: 18) {
             Surface {
                 VStack(alignment: .leading, spacing: 12) {
@@ -505,6 +508,29 @@ struct Dashboard: View {
                         }
                     }
                     Text("La synthèse Apple Intelligence est dans l’onglet Analyse locale.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Surface {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Fonctionnalités Codex (interaction Reprise)").font(.headline)
+                    Text("Présence des composants dont dépend l’interaction Codex après une mise à jour ; vérification déterministe.").font(.callout).foregroundStyle(.secondary)
+                    ForEach(Array(codexChecks.keys.sorted()), id: \.self) { key in
+                        let item = codexChecks[key] as? [String: Any] ?? [:]
+                        HStack {
+                            Image(systemName: (item["present"] as? Bool == true) ? "checkmark.circle" : "xmark.circle")
+                                .foregroundStyle((item["present"] as? Bool == true) ? .green : .red)
+                            Text(item["label"] as? String ?? key).font(.callout)
+                            Spacer()
+                        }
+                    }
+                    if !codexAnomalies.isEmpty {
+                        Divider()
+                        Text("Anomalies post-update Codex").font(.headline)
+                        ForEach(Array(codexAnomalies.enumerated()), id: \.offset) { _, a in
+                            Label((a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
+                                .font(.callout).foregroundStyle(.orange)
+                        }
+                    }
                 }
             }
         }
