@@ -6,6 +6,7 @@ VERSION=$(cat "$ROOT/VERSION")
 mkdir -p "$APP/Contents/MacOS"
 swiftc -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Native.swift" "$ROOT/Dashboard.swift" -o "$APP/Contents/MacOS/Reprise"
 swiftc -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Embedding.swift" -o "$APP/Contents/MacOS/Embedding"
+swiftc -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/FoundationExplain.swift" -o "$APP/Contents/MacOS/FoundationExplain"
 swiftc -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Vault.swift" -o "$APP/Contents/MacOS/Vault"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleExecutable</key><string>Reprise</string><key>CFBundleIdentifier</key><string>local.agent-resume.native</string><key>CFBundleName</key><string>Reprise</string><key>CFBundleShortVersionString</key><string>$VERSION</string><key>CFBundleVersion</key><string>$VERSION</string><key>LSUIElement</key><true/></dict></plist>

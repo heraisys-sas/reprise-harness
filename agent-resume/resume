@@ -130,6 +130,7 @@ def main():
     desktop_check.add_argument('--socket')
     desktop_check.add_argument('--session')
     sub.add_parser('desktop-connection-status')
+    sub.add_parser('reprise-health')
     sub.add_parser('reprise-resume')
     history = sub.add_parser('reprise-history')
     history.add_argument('--limit', type=int, default=20)
@@ -178,6 +179,9 @@ def main():
     elif args.action == 'desktop-server-check':
         from claude_desktop import probe
         print(json.dumps(probe(executable, args.socket or str(Path.home()/'.claude-desktop/quick-entry.sock'), args.session), ensure_ascii=False))
+    elif args.action == 'reprise-health':
+        import reprise_health
+        print(json.dumps(reprise_health.check('.'), ensure_ascii=False))
     elif args.action == 'reprise-resume':
         import reprise_logs
         print(json.dumps({'resumable': reprise_logs.resumable()}, ensure_ascii=False))

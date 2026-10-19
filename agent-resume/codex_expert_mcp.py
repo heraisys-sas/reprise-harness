@@ -14,6 +14,7 @@ from codex_expert import review
 from claude_expert import review as claude_review
 import claude_desktop
 import reprise_logs
+import reprise_health
 from engines import executable, options
 
 SCHEMA = {'type': 'object', 'properties': {'question': {'type': 'string', 'maxLength': 12000}},
@@ -39,6 +40,8 @@ TOOLS = [
          'thread_id': {'type': 'string'}, 'backend': {'type': 'string', 'enum': ['codex', 'claude-code', 'claude-desktop']}},
          'required': ['question', 'thread_id', 'backend']}},
     {'name': 'reprise_resume', 'description': 'List interrupted tasks reconstructed from local logs that can be retried (quota, guard or missing dispatch). Read-only; no automatic retry.',
+     'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
+    {'name': 'reprise_health', 'description': 'Post-update health: versions, whether supervised servers need relaunch, whether watched log signatures are still present, human-required actions, plus an on-device Foundation Models explanation. Read-only.',
      'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
     {'name': 'reprise_history', 'description': 'Explain recent harness work and its Reprise interactions from local logs (Quick Entry submissions + MCP calls). Read-only.',
      'inputSchema': {'type': 'object', 'properties': {'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100}}, 'additionalProperties': False}},
@@ -86,8 +89,13 @@ class Bridge:
             return self._call(name, args)
 
     def _call(self, name, args):
-        if name not in ('reprise_backends', 'reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup', 'reprise_resume', 'reprise_history') or not isinstance(args, dict):
+        if name not in ('reprise_backends', 'reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup', 'reprise_resume', 'reprise_history', 'reprise_health') or not isinstance(args, dict):
             raise ValueError('Unknown tool or invalid arguments')
+        if name == 'reprise_health':
+            if args:
+                raise ValueError('No arguments expected')
+            return {'status': 'finished', 'automatic_fallback': False,
+                    **reprise_health.summarize(self.root)}
         if name == 'reprise_resume':
             if args:
                 raise ValueError('No arguments expected')
