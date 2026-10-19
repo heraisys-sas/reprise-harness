@@ -56,6 +56,18 @@ python3 agent-resume/claude_desktop_quick.py \
 
 Un autre terminal peut alors joindre le socket avec `agent-resume/claude_desktop_rpc.py` (méthode `ping` ou `quick_entry/submit`) ; aucune requête au modèle n’est envoyée par ce test. Le serveur n’ouvre ni ne pilote l’UI Claude Desktop, et aucune relance automatique n’est prévue : toute reprise est explicitement programmée.
 
+## Analyse des journaux et santé post-update
+
+Reprise lit les journaux locaux de Claude Desktop (aucune permission d’écran, aucune Accessibilité) pour trois usages :
+
+- **Reprise des tâches** : `reprise_logs.resumable()` reconstruit les soumissions Quick Entry interrompues (garde déclenchée, dispatch manquant) ; `reprise_history()` explique les travaux récents des Harness et leurs interactions via Reprise.
+- **Santé après mise à jour** : `reprise_health.check()` compare les versions installées (Claude Desktop, Claude Code, Codex…), vérifie si les serveurs supervisés doivent être relancés (par leur socket, pas `ps`) et si les signatures de logs surveillées sont toujours présentes.
+- **Veille** : `reprise_health.watch()`, lancée par le `tick` (intervalle 60 s), signale un changement de version post-update et persiste un rapport. Elle ne relance jamais rien ; elle liste les **actions requérant un humain**.
+
+Une couche **générative optionnelle** (`FoundationExplain.swift`, API Foundation Models sur l’appareil) explique l’activité et les actions humaines. Elle se désactive proprement si le modèle est indisponible ; la couche déterministe reste la source de vérité. Aucun de ces composants ne pilote l’interface ni n’automatise la soumission Quick Entry — cela exige des autorisations macOS accordées séparément par l’opérateur.
+
+Exposition : outils MCP `reprise_resume`, `reprise_history`, `reprise_health` ; sous-commandes CLI `./resume reprise-resume|reprise-history|reprise-health|health-watch` ; onglet **Santé post-update** dans l’application.
+
 ## Configuration Harness
 
 Lire [les instructions](deepseek-harness-config/CONFIGURATION.md). Les fichiers sont des modèles sans identifiants. L’installateur refuse d’écraser un profil déjà personnalisé ; fusionner ses paramètres après inspection. La présence d’un modèle dans la configuration ne prouve ni sa disponibilité ni l’authentification du compte. Aucun coût ou quota n’est garanti par les instructions.
