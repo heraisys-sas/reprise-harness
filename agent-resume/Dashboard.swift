@@ -220,12 +220,24 @@ struct Dashboard: View {
     func quotaRow(_ name: String, value: [String: Any]?) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             if let value, let used = value["used_percent"] as? Double, let reset = value["resets_at"] as? Double {
-                let remaining = max(0, min(100, 100-used)); let date = Date(timeIntervalSince1970: reset)
+                let remaining = max(0, min(100, 100-used))
+                let date = Date(timeIntervalSince1970: reset)
+                let expired = date < Date()
+                let renewal = "Renouvelle " + date.formatted(date: .omitted, time: .shortened)
                 Text(name).font(.callout).foregroundStyle(.secondary)
-                Text(date < Date() ? "Mesure expirée" : "\(Int(remaining)) %").font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit()
-                if date >= Date() { Text("disponibles").font(.caption).foregroundStyle(.secondary) }
-                if date >= Date() { ProgressView(value: remaining, total: 100).tint(remaining < 15 ? .orange : .accentColor); Text("Renouvellement " + date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary) }
-            } else { Text(name + " · indisponible").foregroundStyle(.secondary) }
+                if expired {
+                    // An expired window is spent: state it plainly and show when it renews.
+                    Text("Épuisé").font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(.secondary)
+                    Label(renewal, systemImage: "arrow.clockwise").font(.callout).foregroundStyle(.orange)
+                } else {
+                    Text("\(Int(remaining)) %").font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit()
+                    Text("disponibles").font(.caption).foregroundStyle(.secondary)
+                    ProgressView(value: remaining, total: 100).tint(remaining < 15 ? .orange : .accentColor)
+                    Label(renewal, systemImage: "clock").font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                Text(name + " · indisponible").foregroundStyle(.secondary)
+            }
         }
     }
     var sessions: some View {
