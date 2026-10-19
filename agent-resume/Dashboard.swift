@@ -5,6 +5,59 @@ struct Surface<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View { content.padding(22).frame(maxWidth: .infinity, alignment: .leading).background(.background, in: RoundedRectangle(cornerRadius: 18)).overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(.primary.opacity(0.06))) }
 }
+
+// Inline progress / result line for long-running actions: the busy flag runs the
+// spinner, the message carries the visible state, and both are announced together.
+struct InlineStatus: View {
+    var busy: Bool
+    var message: String
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if busy { ProgressView().controlSize(.small) } else { Image(systemName: "info.circle") }
+            Text(message).textSelection(.enabled)
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel((busy ? "En cours : " : "") + message)
+        .accessibilityAddTraits(.updatesFrequently)
+    }
+}
+
+// Result of a presence check: a text sign plus a full spoken label, so colour is
+// never the only signal.
+struct PresenceCheckLabel: View {
+    var present: Bool
+    var item: String
+    var body: some View {
+        Image(systemName: present ? "checkmark.circle" : "xmark.circle")
+            .foregroundStyle(present ? .green : .red)
+            .accessibilityLabel(item + (present ? " : présent" : " : absent"))
+    }
+}
+
+// Session state marker: readable glyph and spoken sentence instead of colour.
+struct SessionStateMark: View {
+    var stopped: Bool
+    var body: some View {
+        Image(systemName: stopped ? "pause.circle" : "exclamationmark.circle")
+            .font(.title2)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel(stopped ? "Session arrêtée" : "Session à vérifier")
+    }
+}
+
+// Socket candidate marker: the glyph alone means nothing to VoiceOver.
+struct SocketCandidateMark: View {
+    var detected: Bool
+    var body: some View {
+        Image(systemName: detected ? "circle.fill" : "circle")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.top, 4)
+            .accessibilityLabel(detected ? "Socket détecté" : "Socket indisponible")
+    }
+}
 struct Dashboard: View {
     @ObservedObject var app: App
     let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("connection", "Connexion à codex-desktop", "point.3.connected.trianglepath.dotted"), ("desktop", "Connexion à claude-desktop", "desktopcomputer"), ("health", "Santé post-update", "heart.text.square"), ("privacy", "Confidentialité", "lock.shield")]
@@ -56,7 +109,7 @@ struct Dashboard: View {
                 ToolbarItemGroup {
                     if app.busy { ProgressView().controlSize(.small) }
                     Button { app.page = "search" } label: { Label("Rechercher", systemImage: "magnifyingglass") }.help("Recherche privée").keyboardShortcut("f", modifiers: .command)
-                    Button { app.refresh() } label: { Label("Actualiser", systemImage: "arrow.clockwise") }.disabled(app.busy).keyboardShortcut("r", modifiers: .command)
+                    Button { app.refresh() } label: { Label("Actualiser", systemImage: "arrow.clockwise") }.disabled(app.busy).keyboardShortcut("r", modifiers: .command).accessibilityLabel("Actualiser les données")
                 }
             }
             .safeAreaInset(edge: .bottom) {
@@ -80,7 +133,7 @@ struct Dashboard: View {
     var overview: some View {
         VStack(alignment: .leading, spacing: 20) {
             if app.lastRefresh == nil && app.busy {
-                Surface { HStack(spacing: 12) { ProgressView().controlSize(.small); Text("Lecture de l’activité locale…").foregroundStyle(.secondary) } }
+                Surface { InlineStatus(busy: true, message: "Lecture de l’activité locale…") }
             } else {
                 resumptionStatus
                 Surface {
@@ -102,25 +155,25 @@ struct Dashboard: View {
                                             .padding(.horizontal, 10).padding(.vertical, 5).background(Color.accentColor.opacity(0.10), in: Capsule())
                                     } else { Text("Au repos").font(.callout).foregroundStyle(.secondary) }
                                 } else { Text("État indisponible").font(.callout).foregroundStyle(.secondary) }
-                            }.accessibilityElement(children: .combine)
+                            }.accessibilityElement(children: .combine).accessibilityLabel(entry.0 + " : " + (entry.3.map { $0 > 0 ? "\($0) en cours" : "au repos" } ?? "état indisponible"))
                         }
                     }
                 }
                 Surface {
                     VStack(alignment: .leading, spacing: 18) {
-                        HStack { Text("Disponibilité Codex").font(.headline); Spacer(); Text("Quota du compte").font(.caption).foregroundStyle(.secondary) }
+                        HStack { Text("Disponibilité Codex").font(.headline); Spacer(); Text("Quota du compte").font(.caption.weight(.medium)) }
                         if let quota = app.snapshot["codex_quota"] as? [String: Any], let rates = quota["rates"] as? [String: Any] {
                             HStack(alignment: .top, spacing: 28) {
                                 quotaRow("Fenêtre courte", value: rates["primary"] as? [String: Any])
                                 quotaRow("Semaine", value: rates["secondary"] as? [String: Any])
                             }
-                            if let stamp = quota["measured_at"] as? String { Text("Mesure du " + friendlyDate(stamp)).font(.caption).foregroundStyle(.secondary) }
+                            if let stamp = quota["measured_at"] as? String { Text("Mesure du " + friendlyDate(stamp)).font(.caption).foregroundStyle(.secondary).accessibilityLabel("Quota mesuré le " + friendlyDate(stamp)) }
                         } else { Text("Aucune mesure locale disponible.").foregroundStyle(.secondary) }
                     }
                 }
                 Surface {
                     HStack(spacing: 16) {
-                        Image(systemName: "clock.arrow.circlepath").font(.title2).foregroundStyle(.secondary)
+                        Image(systemName: "clock.arrow.circlepath").font(.title2).foregroundStyle(.secondary).accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 5) {
                             let count = app.resumeSummary["review_count"] as? Int ?? 0
                             Text(count > 0 ? "\(count) tentatives à examiner" : "Historique des reprises").font(.headline)
@@ -132,7 +185,7 @@ struct Dashboard: View {
                     }
                 }
                 HStack {
-                    Text("\(app.attention.count) signalements récents dans les sessions").foregroundStyle(.secondary)
+                    Text("\(app.attention.count) signalements récents dans les sessions").foregroundStyle(.secondary).accessibilityLabel("\(app.attention.count) signalements récents dans les sessions")
                     Spacer()
                     Button("Voir les sessions") { app.page = "sessions"; app.sessionFilter = "Récentes" }.buttonStyle(.link)
                 }.font(.callout)
@@ -155,11 +208,11 @@ struct Dashboard: View {
                 if app.scheduler.isEmpty {
                     Text("État du service indisponible").foregroundStyle(.secondary)
                 } else if app.scheduler["installed"] as? Bool != true || app.scheduler["executable_available"] as? Bool != true {
-                    Label("Service de reprise indisponible", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    Label("⚠ Service de reprise indisponible", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                 } else if (app.scheduler["running"] as? Int ?? 0) + (app.scheduler["launching"] as? Int ?? 0) == 0 && Date().timeIntervalSince1970 - (app.scheduler["last_tick"] as? Double ?? 0) > 180 {
-                    Label("Dernière vérification du service trop ancienne", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    Label("⚠ Dernière vérification du service trop ancienne", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                 } else if let error = app.scheduler["last_error"] as? String, !error.isEmpty {
-                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    Label("⚠ " + error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                 } else {
                     let running = app.scheduler["running"] as? Int ?? 0
                     let launching = app.scheduler["launching"] as? Int ?? 0
@@ -235,14 +288,14 @@ struct Dashboard: View {
                 let date = Date(timeIntervalSince1970: reset)
                 let expired = date < Date()
                 let renewal = "Renouvelle à " + localTime(date)
-                Text(name).font(.callout).foregroundStyle(.secondary)
+                Text(name).font(.callout.weight(.semibold))
                 if expired {
                     // An expired window is spent: state it plainly and show when it renews.
-                    Text("Épuisé").font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(.secondary)
+                    Text("⚠ Épuisé").font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(.secondary)
                         .accessibilityLabel(name + " : épuisé, " + renewal)
                     Label(renewal, systemImage: "arrow.clockwise").font(.callout).foregroundStyle(.orange)
                 } else {
-                    Text("\(Int(remaining)) %").font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit()
+                    Text("\(Int(remaining)) % restant" + (remaining < 15 ? " ⚠" : "")).font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit()
                         .accessibilityLabel(name + " : " + String(Int(remaining)) + " % disponibles, " + renewal)
                     Text("disponibles").font(.caption).foregroundStyle(.secondary)
                     ProgressView(value: remaining, total: 100).tint(remaining < 15 ? .orange : .accentColor)
@@ -275,9 +328,9 @@ struct Dashboard: View {
                     } label: {
                         Button { app.openSession(row) } label: {
                         HStack(spacing: 12) {
-                            Image(systemName: row["state"] as? String == "stopped" ? "pause.circle" : "exclamationmark.circle").font(.title2).foregroundStyle(.secondary)
+                            SessionStateMark(stopped: row["state"] as? String == "stopped")
                             VStack(alignment: .leading, spacing: 4) { Text(sessionTitle(row)).font(.headline); Text((row["provider"] as? String ?? "") + " · " + ((row["updated"] as? Double).map { localDateTime(Date(timeIntervalSince1970: $0)) } ?? "Date inconnue")).font(.caption).foregroundStyle(.secondary) }
-                            Spacer(); Text(row["state"] as? String == "stopped" ? "Arrêtée" : "À vérifier").font(.caption).foregroundStyle(.secondary)
+                            Spacer(); Text(row["state"] as? String == "stopped" ? "⏸ Arrêtée" : "⚠ À vérifier").font(.callout.weight(.medium)).accessibilityLabel(row["state"] as? String == "stopped" ? "Arrêtée" : "À vérifier")
                         }
                         }.buttonStyle(.plain).help("Afficher l’application de cette session")
                     }
@@ -288,7 +341,7 @@ struct Dashboard: View {
     }
     var analysis: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Surface { HStack { VStack(alignment: .leading, spacing: 6) { Label("Apple Intelligence", systemImage: "sparkles").font(.headline); Text(app.analysis["status"] as? String ?? "En attente").font(.callout).foregroundStyle(.secondary) }; Spacer(); Button(app.analysisBusy ? "Analyse…" : "Analyser") { app.analyzeLocal() }.disabled(app.analysisBusy) } }
+            Surface { HStack { VStack(alignment: .leading, spacing: 6) { Label("Apple Intelligence", systemImage: "sparkles").font(.headline); Text(app.analysis["status"] as? String ?? "En attente").font(.callout).foregroundStyle(.secondary).accessibilityLabel("Statut de l'analyse : " + (app.analysis["status"] as? String ?? "En attente")) }; Spacer(); HStack(spacing: 8) { Button(app.analysisBusy ? "Analyse…" : "Analyser") { app.analyzeLocal() }.disabled(app.analysisBusy); if app.analysisBusy { InlineStatus(busy: true, message: "Synthèse en cours…") } } } }
             Surface {
                 VStack(alignment: .leading, spacing: 12) {
                     Label("Synthèse locale (Apple Intelligence, sur l’appareil)", systemImage: "sparkles").font(.headline)
@@ -308,7 +361,7 @@ struct Dashboard: View {
     }
     var search: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 12) { Image(systemName: "magnifyingglass").foregroundStyle(.secondary); TextField("Tests Rust, quota, nom de fichier…", text: $app.query).textFieldStyle(.plain).onSubmit { app.search() }; if app.searching { ProgressView().controlSize(.small) }; Button("Rechercher") { app.search() }.disabled(app.searching || app.query.trimmingCharacters(in: .whitespaces).isEmpty).buttonStyle(.borderedProminent) }.padding(14).background(.background, in: RoundedRectangle(cornerRadius: 14))
+            HStack(spacing: 12) { Image(systemName: "magnifyingglass").foregroundStyle(.secondary); TextField("Tests Rust, quota, nom de fichier…", text: $app.query).textFieldStyle(.plain).onSubmit { app.search() }; if app.searching { InlineStatus(busy: true, message: app.searchNote) }; Button("Rechercher") { app.search() }.disabled(app.searching || app.query.trimmingCharacters(in: .whitespaces).isEmpty).buttonStyle(.borderedProminent).accessibilityLabel("Lancer la recherche") }.padding(14).background(.background, in: RoundedRectangle(cornerRadius: 14))
             Text(app.searchNote).font(.callout).foregroundStyle(.secondary)
             if app.searchResults.isEmpty && !app.searching {
                 empty(app.searchHasRun ? "Aucun résultat pour cette recherche" : "Retrouvez le fil d’une session", icon: "doc.text.magnifyingglass", detail: app.searchHasRun ? "Essayez un terme plus court ou un code d’erreur exact." : "Recherchez dans les états récents et comptes rendus analysés, toutes applications confondues.")
@@ -326,7 +379,7 @@ struct Dashboard: View {
                         Button("1. Préparer le service codexd") { app.sharedAction("prepare") }.disabled(app.sharedBusy)
                         Button("2. Démarrer l’appli liée") { app.sharedAction("launch") }
                             .disabled(app.sharedBusy || app.running.contains("com.openai.codex"))
-                        if app.sharedBusy { ProgressView().controlSize(.small) }
+                        if app.sharedBusy { InlineStatus(busy: true, message: app.sharedNote) }
                     }
                     if app.running.contains("com.openai.codex") { Text("Desktop est ouvert. Fermez-le normalement avant l’étape 2 ; Reprise reste ouvert.").font(.caption).foregroundStyle(.secondary) }
                     HStack {
@@ -361,10 +414,10 @@ struct Dashboard: View {
                     Text("Sockets disponibles").font(.headline)
                     ForEach(Array((app.connection["candidates"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, candidate in
                         HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: candidate["detected"] as? Bool == true ? "circle.fill" : "circle").font(.caption).foregroundStyle(.secondary).padding(.top, 4)
+                            SocketCandidateMark(detected: candidate["detected"] as? Bool == true)
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(candidate["label"] as? String ?? "Socket").font(.callout.weight(.semibold))
-                                Text(candidate["detected"] as? Bool == true ? "Socket détecté · connexion à tester" : "Socket indisponible").font(.caption).foregroundStyle(.secondary)
+                                Text(candidate["detected"] as? Bool == true ? "● Socket détecté · connexion à tester" : "○ Socket indisponible").font(.caption).foregroundStyle(.secondary).accessibilityLabel(candidate["detected"] as? Bool == true ? "Socket détecté, connexion à tester" : "Socket indisponible")
                                 Text(candidate["path"] as? String ?? "").font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
                             }
                             Spacer()
@@ -385,7 +438,7 @@ struct Dashboard: View {
                         Button("Enregistrer ce socket") { app.testConnection(save: true) }
                             .disabled(app.connectionBusy || !app.connectionVerified || app.testedSocket != app.socketPath.trimmingCharacters(in: .whitespacesAndNewlines))
                         Spacer()
-                        if app.connectionBusy { ProgressView().controlSize(.small) }
+                        if app.connectionBusy { InlineStatus(busy: true, message: app.connectionNote) }
                     }
                     if !app.connectionNote.isEmpty { Text(app.connectionNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
                     Text("Le test initialise uniquement le protocole. Aucun appel au modèle, aucune reprise de session.").font(.caption).foregroundStyle(.secondary)
@@ -405,7 +458,7 @@ struct Dashboard: View {
                         Button("1. Démarrer l’appli liée") { app.desktopAction("launch") }.disabled(app.desktopBusy)
                         Button("2. Démarrer le service claude-desktopd") { app.desktopAction("start") }.disabled(app.desktopBusy)
                         Button("Arrêter le service claude-desktopd") { app.desktopAction("stop") }.disabled(app.desktopBusy)
-                        if app.desktopBusy { ProgressView().controlSize(.small) }
+                        if app.desktopBusy { InlineStatus(busy: true, message: app.desktopNote) }
                     }
                     if !app.desktopNote.isEmpty { Text(app.desktopNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
                     Toggle("Démarrer l’appli liée et le service claude-desktopd à l’ouverture de Reprise", isOn: Binding(get: { app.desktopStartup }, set: { app.setDesktopStartup($0) }))
@@ -421,7 +474,7 @@ struct Dashboard: View {
                         Button("Enregistrer ce socket") { app.testDesktopConnection(save: true) }
                             .disabled(app.desktopConnectionBusy || !app.desktopConnectionVerified || app.desktopTestedSocket != app.desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines))
                         Spacer()
-                        if app.desktopConnectionBusy { ProgressView().controlSize(.small) }
+                        if app.desktopConnectionBusy { InlineStatus(busy: true, message: app.desktopConnectionNote) }
                     }
                     if !app.desktopConnectionNote.isEmpty { Text(app.desktopConnectionNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
                     Text("Le test initialise uniquement le protocole Quick Apply. Aucun envoi de prompt, aucun appel au modèle.").font(.caption).foregroundStyle(.secondary)
@@ -434,10 +487,10 @@ struct Dashboard: View {
                     Text("Sockets claude-desktopd").font(.headline)
                     ForEach(Array((app.desktopConnection["candidates"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, candidate in
                         HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: candidate["detected"] as? Bool == true ? "circle.fill" : "circle").font(.caption).foregroundStyle(.secondary).padding(.top, 4)
+                            SocketCandidateMark(detected: candidate["detected"] as? Bool == true)
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(candidate["label"] as? String ?? "Socket").font(.callout.weight(.semibold))
-                                Text(candidate["detected"] as? Bool == true ? "Socket détecté · connexion à tester" : "Socket indisponible").font(.caption).foregroundStyle(.secondary)
+                                Text(candidate["detected"] as? Bool == true ? "● Socket détecté · connexion à tester" : "○ Socket indisponible").font(.caption).foregroundStyle(.secondary).accessibilityLabel(candidate["detected"] as? Bool == true ? "Socket détecté, connexion à tester" : "Socket indisponible")
                                 Text(candidate["path"] as? String ?? "").font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
                             }
                             Spacer()
@@ -481,10 +534,11 @@ struct Dashboard: View {
         return VStack(alignment: .leading, spacing: 18) {
             Surface {
                 HStack {
-                    Label(actionCount == 0 ? "Sain · aucune action requise" : "\(actionCount) action(s) requise(s)",
+                    Label(actionCount == 0 ? "✓ Sain · aucune action requise" : "⚠ \(actionCount) action(s) requise(s)",
                           systemImage: actionCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                         .font(.headline)
                         .foregroundStyle(actionCount == 0 ? .green : .orange)
+                        .accessibilityLabel(actionCount == 0 ? "Sain, aucune action requise" : "\(actionCount) action(s) requise(s)")
                     Spacer()
                 }
                 .accessibilityElement(children: .combine)
@@ -495,7 +549,7 @@ struct Dashboard: View {
                         Label("Redémarrer la chaîne de dépendances", systemImage: "arrow.clockwise.circle").font(.headline)
                         Spacer()
                         Button("Tout redémarrer") { app.restartChain() }.disabled(app.chainBusy)
-                        if app.chainBusy { ProgressView().controlSize(.small) }
+                        if app.chainBusy { InlineStatus(busy: true, message: app.chainNote) }
                     }
                     Text("Relance Reprise, le service claude-desktopd et le service codexd, puis vérifie l’état. N’arrête jamais de force les applications liées.").font(.callout).foregroundStyle(.secondary)
                     if !app.chainNote.isEmpty { Text(app.chainNote).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
@@ -532,9 +586,7 @@ struct Dashboard: View {
                         let item = featureChecks[key] as? [String: Any] ?? [:]
                         HStack {
                             let present = (item["present"] as? Bool == true)
-                            Image(systemName: present ? "checkmark.circle" : "xmark.circle")
-                                .foregroundStyle(present ? .green : .red)
-                                .accessibilityLabel(present ? "Présent" : "Absent")
+                            PresenceCheckLabel(present: present, item: item["label"] as? String ?? key)
                             Text(item["label"] as? String ?? key).font(.callout)
                             Spacer()
                         }
@@ -547,7 +599,7 @@ struct Dashboard: View {
                         Divider()
                         Text("Anomalies post-update").font(.headline)
                         ForEach(Array(anomalies.enumerated()), id: \.offset) { _, a in
-                            Label((a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
+                            Label("⚠ " + (a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
                                 .font(.callout).foregroundStyle(.orange)
                         }
                     }
@@ -562,9 +614,7 @@ struct Dashboard: View {
                         let item = codexChecks[key] as? [String: Any] ?? [:]
                         HStack {
                             let present = (item["present"] as? Bool == true)
-                            Image(systemName: present ? "checkmark.circle" : "xmark.circle")
-                                .foregroundStyle(present ? .green : .red)
-                                .accessibilityLabel(present ? "Présent" : "Absent")
+                            PresenceCheckLabel(present: present, item: item["label"] as? String ?? key)
                             Text(item["label"] as? String ?? key).font(.callout)
                             Spacer()
                         }
@@ -573,7 +623,7 @@ struct Dashboard: View {
                         Divider()
                         Text("Anomalies post-update Codex").font(.headline)
                         ForEach(Array(codexAnomalies.enumerated()), id: \.offset) { _, a in
-                            Label((a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
+                            Label("⚠ " + (a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
                                 .font(.callout).foregroundStyle(.orange)
                         }
                     }
