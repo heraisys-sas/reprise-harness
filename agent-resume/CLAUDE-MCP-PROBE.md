@@ -119,3 +119,42 @@ Six local tests cover capability-only operation, missing UI support, bounded res
 The temporary connector was removed, its original config restored byte-for-byte, and the previously enabled conversation connectors/search restored. Desktop was reopened to unload the experimental tools. No persistent installation, startup setting or isolated profile was activated.
 
 Sources: [MCP Apps protocol](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx), [current protocol types](https://github.com/modelcontextprotocol/ext-apps/blob/main/src/spec.types.ts). Host behavior above is direct local evidence, not an inference from generic SDK documentation.
+
+## Quick Entry trial — 19 October 2026
+
+Installed bundle version was captured before and after the trial: **2.42304.2**. A fresh one-job connector (`reprise_quick_probe`) was registered temporarily. The existing test chat was active, and its unrelated connectors and search were disabled for the trial.
+
+The automation driver could not emit a modifier-only double Option (`keyPressIncludedNoNonModifierKeys`) and could not obtain a screenshot. The user opened Quick Entry using the shortcut. After dismissing a native menu left open by the driver, accessibility inspection showed the actual Quick Entry system dialog: empty text field, screenshot controls, destination menu and Send button. No screenshot controls or attachments were used.
+
+The destination menu listed the five recent conversations. Selecting **Test technique Reprise** changed the destination label accordingly. The driver entered one short instruction naming the expected job UUID and pressed **Return once**. Quick Entry dismissed itself and the existing chat URL `178dcceb-fcd3-4f2d-ac4f-116a8a153bc3` showed the new user message and a model turn in progress. No additional Send click in the main composer was needed. Ordinary MCP tools remained usable; approval UI appeared during the turn.
+
+Independent local SQLite evidence:
+
+```json
+{
+  "installed_version_before_test": "2.42304.2",
+  "job_id": "619a69f2-03a9-44cd-9b81-f53028d763b5",
+  "client_date": "2026-10-19",
+  "installed_version_after_test": "2.42304.2",
+  "conversation_id": "178dcceb-fcd3-4f2d-ac4f-116a8a153bc3",
+  "conversation_selected_in_quick_entry": "Test technique Reprise",
+  "quick_entry_opened_by": "User double-Option; automation tool refused modifier-only keypress",
+  "driver_send_actions": "One Return in Quick Entry; no additional Send in main composer",
+  "attachments_sent": false,
+  "claim_count": 1,
+  "attempt_id": "8f027aa8-ca00-48fa-bc50-fc0cb618a76a",
+  "status": "completed",
+  "answer": "2,5,7",
+  "tool_permissions": "Approval UI appeared; driver attempted Allow once but user UI changes intervened, so exact choice not captured. No permanent approval action issued by driver.",
+  "receiver_verification": "Local SQLite state, independent of chat response text",
+  "fully_unattended_proven": false,
+  "destination_user_confirmation": "User confirmed the destination was correct; menu click may have been redundant.",
+  "menu_click_required": "Not established; inherited active chat is a hypothesis for a separate trial."
+}
+```
+
+**User correction and remaining uncertainty:** the user reported that a menu click entered a phrase in the prompt, then explicitly confirmed that the destination was correct and suggested the click might be superfluous. The recorded snapshots establish the selected destination, submitted instruction and resulting chat; they do not establish that the menu interaction was necessary or free of side effects. Quick Entry may be able to reuse the already active chat. A separate minimal-path trial should omit the menu, verify the effective destination and use one fresh bounded job. No second inference was launched to resolve this point during the present trial.
+
+Conclusion: supervised **Quick Entry → one Return → existing chat → MCP result** worked on this installation. Opening Quick Entry required user assistance, tool approval UI appeared, and the menu step remains an optimization question. This is not proof of unattended operation, reliability when another chat is active, or operation with a locked/sleeping Mac.
+
+Cleanup: the original Desktop config was restored byte-for-byte and the unrelated connector/search selections restored in the test conversation. The two matching local stdio test processes were stopped without further UI interaction; their reason for multiplicity was not investigated. Claude was left open while the user was typing. No keyboard shortcut, startup setting, profile, credential or subscription was changed.
