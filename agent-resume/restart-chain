@@ -1,0 +1,51 @@
+#!/bin/sh
+# Restart the Reprise dependency chain: GUI + Quick Entry server (+ optional
+# relaunch of the linked app). Explicit and reversible: it only stops/starts
+# what it owns, and reports the resulting state. Never force-quits a linked app.
+#
+# Usage:
+#   ./restart-chain              rebuild + restart Quick Entry server + GUI
+#   ./restart-chain --no-build   restart without recompiling
+#   ./restart-chain --server     only the Quick Entry server (no GUI relaunch)
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+APP="$ROOT/Reprise.app"
+SOCKET="$HOME/.claude-desktop/quick-entry.sock"
+STATE="${AGENT_RESUME_STATE:-$ROOT/quick-state}"
+PYTHON=$(command -v python3)
+
+build=1
+gui=1
+for arg in "$@"; do
+    case "$arg" in
+        --no-build) build=0 ;;
+        --server)   gui=0 ;;
+    esac
+done
+
+echo "1/4 · Nettoyage du socket Quick Entry orphelin"
+rm -f "$SOCKET" 2>/dev/null || echo "   (socket non supprimable ici — ignoré)"
+
+echo "2/4 · Arrêt d'une éventuelle instance du serveur Quick Entry"
+pkill -f "claude_desktop_quick.py" 2>/dev/null || true
+
+if [ "$build" = "1" ]; then
+    echo "3/4 · Recompilation de Reprise"
+    sh "$ROOT/native-install"
+else
+    echo "3/4 · Recompilation ignorée (--no-build)"
+fi
+
+echo "4/4 · Démarrage du serveur Quick Entry"
+("$PYTHON" "$ROOT/claude_desktop_quick.py" --state "$STATE" >/dev/null 2>&1 &) || true
+sleep 1
+
+if [ "$gui" = "1" ]; then
+    echo "5/5 · Relance de l'application Reprise"
+    open -n -a "$APP" --args "$ROOT" "$PYTHON"
+else
+    echo "5/5 · Application non relancée (--server)"
+fi
+
+echo "État :"
+"$PYTHON" "$ROOT/resume" desktop-status 2>/dev/null || true

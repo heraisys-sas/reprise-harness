@@ -68,6 +68,19 @@ Une couche **générative optionnelle** (`FoundationExplain.swift`, API Foundati
 
 Exposition : outils MCP `reprise_resume`, `reprise_history`, `reprise_health` ; sous-commandes CLI `./resume reprise-resume|reprise-history|reprise-health|health-watch` ; onglet **Santé post-update** dans l’application.
 
+## Redémarrage de la chaîne
+
+`agent-resume/restart-chain` redémarre proprement la chaîne de dépendances (GUI Reprise + serveur Quick Entry) et vérifie l'état :
+
+```sh
+cd agent-resume
+./restart-chain              # recompile + relance le serveur Quick Entry + Reprise
+./restart-chain --no-build   # relance sans recompiler
+./restart-chain --server     # seul le serveur Quick Entry (pas de relance du GUI)
+```
+
+Le script nettoie le socket Quick Entry orphelin, arrête une éventuelle instance du serveur, recompile (`native-install`, sans relancer sauf `--open`), démarre le serveur, puis relance l'application. Chaque étape est résiliente : un échec local (ex. socket protégé) n'interrompt pas la chaîne. Il ne force jamais l'arrêt d'une application liée (Claude Desktop, Codex Desktop).
+
 ## Configuration Harness
 
 Lire [les instructions](deepseek-harness-config/CONFIGURATION.md). Les fichiers sont des modèles sans identifiants. L’installateur refuse d’écraser un profil déjà personnalisé ; fusionner ses paramètres après inspection. La présence d’un modèle dans la configuration ne prouve ni sa disponibilité ni l’authentification du compte. Aucun coût ou quota n’est garanti par les instructions.
