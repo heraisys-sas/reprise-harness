@@ -18,3 +18,14 @@
 ## Ordre de travail quotas actualisé
 
 Le plafond local quotidien des sollicitations Codex est supprimé. Priorité à une observation fiable et sourcée des quotas par compte/pool, avec portée, fraîcheur et inconnus explicites. Le comportement de reprise dépendant des quotas sera conçu ensuite ; ne pas étendre l’automatisation actuelle avant cette validation. Les contrôles fournisseur et protections de concurrence existants sont conservés.
+
+## Lot planifié — remplacer les plafonds arbitraires restants
+
+Décision utilisateur du 20/10. Statut : **à implémenter**, suppression Codex déjà livrée (`4e3f39b`). Ce lot ne modifie pas la priorité de l’aller-retour Claude Desktop.
+
+1. **Protections ciblées** : identité durable de demande/tentative, déduplication persistante, récupération après accusé perdu, absence de redistribution d’une tentative incertaine, limites de concurrence et détection des cycles de délégation. Surveiller les répétitions avec preuves et conserver une intervention graduée ; ne pas remplacer le plafond quotidien par un arrêt aveugle après un nombre fixe d’itérations.
+2. **Supprimer les plafonds quotidiens locaux restants** : admission non-Codex de `codex_expert_mcp.py` (Claude Code/Desktop) et soumissions de `claude_desktop_quick.py`. Mettre à jour installateurs, options `--daily-limit`, tests et documentation ; traiter les compteurs hérités sans blocage résiduel. Aucun nouveau canal ne doit hériter de ces plafonds arbitraires. Les limites réelles du fournisseur et budgets explicitement demandés par l’utilisateur restent distincts.
+3. **Fiabiliser la connaissance des quotas** : preuve par compte/profil/pool, portée, fraîcheur, échéance connue ou inconnue, changement de compte et indisponibilité de mesure ; aucune conversion arbitraire d’un compteur d’appels en quota.
+4. **Ensuite seulement**, définir le comportement de reprise selon ces quotas ; ne pas généraliser entre-temps la reprise automatique actuelle.
+
+Acceptation : appels légitimes au-delà des anciens plafonds sans `budget_blocked` local ; anciens compteurs/options sans blocage fantôme ; doublon après redémarrage sans nouvelle exécution ; envoi incertain sans renvoi automatique ; cycle de délégation signalé ; répétition légitime non assimilée automatiquement à une boucle ; refus fournisseur conservé et quota inconnu affiché explicitement. Tests simulés d’abord, aucun appel payant requis pour ces contrôles.

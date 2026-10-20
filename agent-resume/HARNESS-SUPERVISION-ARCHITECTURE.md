@@ -209,3 +209,5 @@ Aucune nouvelle fonctionnalité de contrôle implémentée par cette décision. 
 ## Ordre de travail quotas actualisé
 
 Le plafond local quotidien des sollicitations Codex est supprimé. Priorité à une observation fiable et sourcée des quotas par compte/pool, avec portée, fraîcheur et inconnus explicites. Le comportement de reprise dépendant des quotas sera conçu ensuite ; ne pas étendre l’automatisation actuelle avant cette validation. Les contrôles fournisseur et protections de concurrence existants sont conservés.
+
+Les plafonds locaux non-Codex restants doivent également disparaître : lot explicite « remplacer les plafonds arbitraires restants » dans [la roadmap](ROADMAP.md). Déduplication et protection contre les boucles précèdent cette suppression ; connaissance fiable des quotas puis politique de reprise viennent ensuite.
