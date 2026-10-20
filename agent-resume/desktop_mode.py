@@ -89,8 +89,7 @@ def start(socket=None, state=None, daily_limit=8):
     err = Path(tempfile.gettempdir()) / 'reprise-quick-entry-error.log'
     try:
         with err.open('w') as sink:
-            subprocess.Popen([sys.executable, str(SERVER), '--socket', socket, '--state', str(state),
-                              '--daily-limit', str(daily_limit)],
+            subprocess.Popen([sys.executable, str(SERVER), '--socket', socket, '--state', str(state)],
                              start_new_session=True, stdout=subprocess.DEVNULL, stderr=sink)
         time.sleep(0.5)
         if server_running():
@@ -160,7 +159,7 @@ def daemon_start(socket=None, state=None, daily_limit=8):
     try:
         log = open(_log_file(state), 'ab')
         proc = subprocess.Popen([sys.executable, str(SERVER), '--socket', socket,
-                                 '--state', str(state), '--daily-limit', str(daily_limit)],
+                                 '--state', str(state)],
                                 stdout=log, stderr=log, stdin=subprocess.DEVNULL,
                                 start_new_session=True)
         _pid_file(state).write_text(str(proc.pid))

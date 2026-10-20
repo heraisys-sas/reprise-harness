@@ -1,3 +1,5 @@
+> Actualisation du 21/10 : les plafonds quotidiens ci-dessous sont historiques et supprimés pour tous les backends. [Protections persistantes et contrat actuel](DELEGATION-PERSISTENCE.md).
+
 # Question architecturale en attente — récupération de la sortie IA dans Reprise
 
 **Mise à jour du 20/10 :** plafond quotidien local Codex supprimé du code ; les compteurs/plafonds mentionnés ci-dessous décrivent l’état historique lors de l’avis. Contrôles fournisseur conservés. Aucun nombre d’appels restants local ne doit être utilisé pour Codex.

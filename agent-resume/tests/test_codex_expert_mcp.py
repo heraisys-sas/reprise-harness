@@ -5,12 +5,20 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from codex_expert_mcp import Bridge
 from test_codex_expert import ID
 
-class BridgeTests(unittest.TestCase):
+class RequestCalls:
+    def call(self, name, args):
+        if name not in ('reprise_backends', 'reprise_health', 'reprise_resume', 'reprise_history', 'reprise_requests'):
+            args = {'request_key': str(uuid.uuid4()), **args}
+        return self.bridge.call(name, args)
+
+
+class BridgeTests(RequestCalls, unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -19,13 +27,13 @@ class BridgeTests(unittest.TestCase):
         self.addCleanup(self.bridge.db.close)
     def test_protocol_lists_only_bounded_tools(self):
         self.assertIn('tools', self.bridge.dispatch({'method': 'initialize'})['capabilities'])
-        self.assertEqual({item['name'] for item in self.bridge.dispatch({'method': 'tools/list'})['tools']}, {'codex_review','codex_followup','reprise_delegate','reprise_backends','reprise_followup','reprise_resume','reprise_history','reprise_health'})
+        self.assertEqual({item['name'] for item in self.bridge.dispatch({'method': 'tools/list'})['tools']}, {'codex_review','codex_followup','reprise_delegate','reprise_backends','reprise_followup','reprise_resume','reprise_history','reprise_health','reprise_requests'})
     def test_followup_requires_own_thread(self):
         with self.assertRaises(ValueError):
-            self.bridge.call('codex_followup', {'thread_id': ID, 'question': 'continue'})
+            self.call('codex_followup', {'thread_id': ID, 'question': 'continue'})
     def test_codex_has_no_local_cap_even_after_restart_and_old_counter(self):
         with patch('codex_expert_mcp.review', return_value={'status': 'quota_blocked'}) as review:
-            for _ in range(2): self.bridge.call('codex_review', {'question': 'review'})
+            for _ in range(2): self.call('codex_review', {'question': 'review'})
             other = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
             other.program = 'codex'
             try:
@@ -33,18 +41,18 @@ class BridgeTests(unittest.TestCase):
                 other.db.commit()
                 for name, args in [('codex_review', {'question': 'review'}),
                                    ('reprise_delegate', {'question': 'review', 'kind': 'review', 'backend': 'codex'})]:
-                    self.assertEqual(other.call(name, args)['status'], 'quota_blocked')
+                    self.assertEqual(other.call(name, {'request_key': str(uuid.uuid4()), **args})['status'], 'quota_blocked')
             finally: other.db.close()
             self.assertEqual(review.call_count, 4)
     def test_followup_preserves_thread(self):
         with patch('codex_expert_mcp.review', return_value={'status': 'finished', 'resumable': True, 'thread_id': ID, 'response': 'review'}) as review:
-            self.bridge.call('codex_review', {'question': 'review'})
-            result = self.bridge.dispatch({'method': 'tools/call', 'params': {'name': 'codex_followup', 'arguments': {'thread_id': ID, 'question': 'explain'}}})
+            self.call('codex_review', {'question': 'review'})
+            result = self.bridge.dispatch({'method': 'tools/call', 'params': {'name': 'codex_followup', 'arguments': {'thread_id': ID, 'question': 'explain', 'request_key': 'followup'}}})
             self.assertFalse(result['isError'])
             self.assertEqual(review.call_args.kwargs['thread_id'], ID)
     def test_arbitrary_parameters_refused(self):
         with self.assertRaises(ValueError):
-            self.bridge.call('codex_review', {'question': 'review', 'cwd': '/'})
+            self.call('codex_review', {'question': 'review', 'cwd': '/'})
 
     def test_padded_oversized_followup_rejected_before_budget(self):
         self.bridge.db.execute('INSERT INTO expert_threads VALUES (?,?)', (self.bridge.scope, ID))
@@ -54,7 +62,7 @@ class BridgeTests(unittest.TestCase):
                                 ('reprise_followup', {'backend':'claude-code'})]:
                 for question in (' '*12000+'x', 'x'+' '*12000):
                     with self.assertRaises(ValueError):
-                        self.bridge.call(name, {'thread_id':ID, 'question':question, **extra})
+                        self.call(name, {'thread_id':ID, 'question':question, **extra})
             codex.assert_not_called()
             claude.assert_not_called()
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM expert_calls').fetchone()[0],0)
@@ -77,7 +85,7 @@ class BridgeTests(unittest.TestCase):
                               text=True) as bridge:
             try:
                 bridge.stdin.write(json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{
-                    'name':'reprise_delegate','arguments':{'backend':'claude-code','kind':'expertise','question':'Review'}}})+'\n')
+                    'name':'reprise_delegate','arguments':{'backend':'claude-code','kind':'expertise','question':'Review','request_key':'signal'}}})+'\n')
                 bridge.stdin.flush()
                 deadline = time.monotonic()+5
                 while not ready.exists() and bridge.poll() is None and time.monotonic()<deadline:
@@ -95,25 +103,25 @@ class BridgeTests(unittest.TestCase):
         for kind,level,model in [('expertise','standard','gpt-6.1-sol'),('review','deep','gpt-6-astra'),('batch','standard','gpt-6-luna')]:
             with patch('codex_expert_mcp.review', return_value={'status':'finished','resumable':True,'thread_id':ID}) as review:
                 self.bridge.limit=20
-                self.bridge.call('reprise_delegate',{'kind':kind,'level':level,'question':'Check this contract'})
+                self.call('reprise_delegate',{'kind':kind,'level':level,'question':'Check this contract'})
                 self.assertEqual(review.call_args.kwargs['model'],model)
-                self.bridge.call('codex_followup',{'thread_id':ID,'question':'Explain'})
+                self.call('codex_followup',{'thread_id':ID,'question':'Explain'})
                 self.assertEqual(review.call_args.kwargs['model'],model)
     def test_backends_no_inference_or_budget_consumption(self):
         with patch('codex_expert_mcp.review') as review:
-            result=self.bridge.call('reprise_backends',{})
+            result=self.call('reprise_backends',{})
             review.assert_not_called()
         self.assertFalse(result['automatic_fallback'])
         self.assertFalse(result['backends'][1]['configured'])
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM expert_calls').fetchone()[0],0)
     def test_invalid_delegation_rejected_before_budget(self):
         for args in [{'kind':'write','question':'x'},{'kind':'review','level':'ultra','question':'x'}]:
-            with self.assertRaises(ValueError):self.bridge.call('reprise_delegate',args)
+            with self.assertRaises(ValueError):self.call('reprise_delegate',args)
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM expert_calls').fetchone()[0],0)
 
     def test_nonpersistent_thread_is_not_registered(self):
         with patch('codex_expert_mcp.review', return_value={'status':'blocked_permission','thread_id':ID,'resumable':False}):
-            self.bridge.call('codex_review', {'question':'review'})
+            self.call('codex_review', {'question':'review'})
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM expert_threads').fetchone()[0], 0)
 
     def test_claude_explicit_route_followup_and_backend_isolation(self):
@@ -121,22 +129,22 @@ class BridgeTests(unittest.TestCase):
         self.bridge.claude_subscription_only = True
         with patch('codex_expert_mcp.claude_review', return_value={
                 'status':'finished','resumable':True,'thread_id':ID,'model':'claude-sonnet-test'}) as review:
-            self.bridge.call('reprise_delegate', {'backend':'claude-code','kind':'expertise','question':'Review'})
+            self.call('reprise_delegate', {'backend':'claude-code','kind':'expertise','question':'Review'})
             self.assertEqual(review.call_args.kwargs['model'], 'sonnet')
-            self.bridge.call('reprise_followup', {'backend':'claude-code','thread_id':ID,'question':'Continue'})
+            self.call('reprise_followup', {'backend':'claude-code','thread_id':ID,'question':'Continue'})
             self.assertEqual(review.call_args.kwargs['model'], 'claude-sonnet-test')
             with self.assertRaises(ValueError):
-                self.bridge.call('codex_followup', {'thread_id':ID,'question':'Continue'})
+                self.call('codex_followup', {'thread_id':ID,'question':'Continue'})
             self.bridge.claude_program = '/other-claude'
             with self.assertRaises(ValueError):
-                self.bridge.call('reprise_followup', {'backend':'claude-code','thread_id':ID,'question':'Continue'})
+                self.call('reprise_followup', {'backend':'claude-code','thread_id':ID,'question':'Continue'})
 
     def test_claude_disabled_never_falls_back_or_consumes_budget(self):
         with patch('codex_expert_mcp.review') as codex, patch('codex_expert_mcp.claude_review') as claude:
-            result = self.bridge.call('reprise_delegate', {'backend':'claude-code','kind':'expertise','question':'Review'})
+            result = self.call('reprise_delegate', {'backend':'claude-code','kind':'expertise','question':'Review'})
             self.assertEqual(result['status'],'engine_unavailable')
             self.bridge.claude_program = '/claude'
-            result = self.bridge.call('reprise_delegate', {'backend':'claude-code','kind':'expertise','question':'Review'})
+            result = self.call('reprise_delegate', {'backend':'claude-code','kind':'expertise','question':'Review'})
             self.assertEqual(result['status'],'billing_unverified')
             codex.assert_not_called()
             claude.assert_not_called()
@@ -146,16 +154,16 @@ class BridgeTests(unittest.TestCase):
         self.bridge.claude_program = '/claude'
         self.bridge.claude_subscription_only = True
         with patch('codex_expert_mcp.review', return_value={'status':'quota_blocked'}):
-            self.bridge.call('codex_review', {'question':'Review'})
-        with patch('codex_expert_mcp.claude_review', return_value={'status':'timed_out','resumable':False}) as review:
-            self.bridge.call('reprise_delegate', {'backend':'claude-code','kind':'review','question':'Review'})
-            self.bridge.call('reprise_delegate', {'backend':'claude-code','kind':'review','question':'Review'})
-            self.assertEqual(self.bridge.call('reprise_delegate', {'backend':'claude-code','kind':'review','question':'Review'})['status'],'budget_blocked')
-            self.assertEqual(review.call_count,2)
+            self.call('codex_review', {'question':'Review'})
+        with patch('codex_expert_mcp.claude_review', return_value={'status':'finished','resumable':False}) as review:
+            self.call('reprise_delegate', {'backend':'claude-code','kind':'review','question':'Review'})
+            self.call('reprise_delegate', {'backend':'claude-code','kind':'review','question':'Review'})
+            self.assertEqual(self.call('reprise_delegate', {'backend':'claude-code','kind':'review','question':'Review'})['status'],'finished')
+            self.assertEqual(review.call_count,3)
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM claude_expert_routes').fetchone()[0],0)
 
 
-class ClaudeDesktopBridgeTests(unittest.TestCase):
+class ClaudeDesktopBridgeTests(RequestCalls, unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -164,13 +172,13 @@ class ClaudeDesktopBridgeTests(unittest.TestCase):
         self.addCleanup(self.bridge.db.close)
 
     def test_backends_include_claude_desktop(self):
-        ids = {b['id'] for b in self.bridge.call('reprise_backends', {})['backends']}
+        ids = {b['id'] for b in self.call('reprise_backends', {})['backends']}
         self.assertIn('claude-desktop', ids)
 
     def test_delegate_routes_to_quick_entry_endpoint(self):
         with patch('claude_desktop.review', return_value={'status': 'finished', 'resumable': False,
                    'thread_id': ID, 'dispatch': 'dispatchOnQuickEntrySubmit', 'model': 'claude-desktop'}) as review:
-            result = self.bridge.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
+            result = self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
                                        'backend': 'claude-desktop', 'chatId': ID})
         self.assertEqual(result['status'], 'finished')
         self.assertEqual(result['backend'], 'claude-desktop')
@@ -179,9 +187,9 @@ class ClaudeDesktopBridgeTests(unittest.TestCase):
 
     def test_delegate_rejects_unknown_backend(self):
         with self.assertRaises(ValueError):
-            self.bridge.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise', 'backend': 'nope'})
+            self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise', 'backend': 'nope'})
 
     def test_delegate_rejects_arbitrary_fields(self):
         with self.assertRaises(ValueError):
-            self.bridge.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
+            self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
                                        'backend': 'claude-desktop', 'hack': 'x'})

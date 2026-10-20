@@ -31,12 +31,10 @@ def plist_settings(*, server, socket_path, state, daily_limit, home):
         resolved = Path(path).expanduser().resolve()
         if not resolved.is_relative_to(home.resolve()):
             raise ValueError('Les chemins du LaunchAgent doivent rester sous le domicile courant')
-    if not 1 <= daily_limit <= 1000:
-        raise ValueError('Plafond quotidien invalide')
     return {
         'Label': LABEL,
         'ProgramArguments': [sys.executable, str(SERVER), '--socket', str(Path(socket_path).expanduser()),
-                             '--state', str(Path(state).expanduser()), '--daily-limit', str(daily_limit)],
+                             '--state', str(Path(state).expanduser())],
         # No RunAtLoad / KeepAlive: the server runs only once explicitly loaded.
         'ProcessType': 'Interactive',
         'StandardOutPath': str(Path(state).expanduser() / 'launchd-out.log'),
@@ -62,7 +60,6 @@ def install(*, home=None, socket_path=None, state=None, daily_limit=8, force=Fal
     os.replace(temporary, target)
     return {'changed': True, 'plist': str(target), 'label': LABEL,
             'socket': str(Path(socket_path).expanduser()), 'state': str(Path(state).expanduser()),
-            'daily_limit': daily_limit,
             'next_step': f'launchctl load {target}  # explicite, jamais exécuté par ce script'}
 
 
@@ -70,7 +67,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--socket', default=str(DEFAULT_SOCKET))
     parser.add_argument('--state', default=str(DEFAULT_STATE))
-    parser.add_argument('--daily-limit', type=int, default=8)
+    parser.add_argument('--daily-limit', type=int, default=8, help='Deprecated compatibility option; ignored')
     parser.add_argument('--force', action='store_true',
                         help='remplacer un plist existant')
     parser.add_argument('--home', default=str(Path.home()),

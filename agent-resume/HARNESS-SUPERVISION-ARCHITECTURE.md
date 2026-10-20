@@ -4,6 +4,8 @@ Décision de conception du 20 octobre 2026, issue des demandes utilisateur et de
 
 Revue critique : [réserves Astra et MVP resserré](ARCHITECTURE-CRITIQUE-ASTRA.md). Les garanties de concurrence, permissions, quota et récupération asynchrone restent à consolider avant implémentation active.
 
+État du 21/10 : [premier lot de protections persistantes](DELEGATION-PERSISTENCE.md) implémenté dans les prototypes, avec récupération/acquittement, lignée et plafonds quotidiens retirés. Cela ne livre pas encore leur unification ni le parcours autonome Claude.
+
 ## Décision
 
 Reprise suit un travail durable, même lorsqu'il traverse plusieurs sessions. Codex, DeepSeek Harness, AutoClaw, Claude Code, Cowork et Chat Desktop participent au même pipeline. Quick Apply + MCP est un adaptateur de délégation Claude, pas l'architecture centrale du produit.

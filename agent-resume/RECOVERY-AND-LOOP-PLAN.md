@@ -83,7 +83,7 @@ Le plafond local quotidien des sollicitations Codex est supprimé. Priorité à 
 
 ## Lot planifié — remplacer les plafonds arbitraires restants
 
-Décision utilisateur du 20/10. Statut : **à implémenter**, suppression Codex déjà livrée (`4e3f39b`). Ce lot ne modifie pas la priorité de l’aller-retour Claude Desktop.
+Décision utilisateur du 20/10. Statut au 21/10 : **premier lot implémenté en simulation**, voir [contrat livré et limites](DELEGATION-PERSISTENCE.md). Identité/récupération, barrière incertaine, lignée et suppression des plafonds locaux sont présentes ; intégration autonome Claude et validation réelle restent à confirmer. Suppression Codex antérieure (`4e3f39b`). Ce lot ne modifie pas la priorité de l’aller-retour Claude Desktop.
 
 1. **Protections ciblées** : identité durable de demande/tentative, déduplication persistante, récupération après accusé perdu, absence de redistribution d’une tentative incertaine, limites de concurrence et détection des cycles de délégation. Surveiller les répétitions avec preuves et conserver une intervention graduée ; ne pas remplacer le plafond quotidien par un arrêt aveugle après un nombre fixe d’itérations.
 2. **Supprimer les plafonds quotidiens locaux restants** : admission non-Codex de `codex_expert_mcp.py` (Claude Code/Desktop) et soumissions de `claude_desktop_quick.py`. Mettre à jour installateurs, options `--daily-limit`, tests et documentation ; traiter les compteurs hérités sans blocage résiduel. Aucun nouveau canal ne doit hériter de ces plafonds arbitraires. Les limites réelles du fournisseur et budgets explicitement demandés par l’utilisateur restent distincts.

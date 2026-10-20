@@ -158,7 +158,7 @@ def configure(db, program, path=None):
 
 
 def review(root, question, *, kind='expertise', level='standard', paths=None,
-           chat_id=None, file_paths=None, program=None, values=None, timeout=30):
+           chat_id=None, file_paths=None, program=None, values=None, timeout=30, request_key=None):
     """Delegate a bounded Quick Apply submission to the local supervision endpoint.
 
     Mirrors the shape of codex_expert.review / claude_expert.review: returns
@@ -182,7 +182,7 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
         values = values or {}
         client = Client(program, values, timeout=timeout)
         client.call('initialize', {'clientInfo': {'name': 'reprise-delegation', 'version': '0.1.0'}})
-        payload_args = {'prompt': prompt}
+        payload_args = {'prompt': prompt, 'request_key': request_key}
         if chat_id:
             payload_args['chatId'] = chat_id
         if file_paths:
@@ -193,7 +193,7 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
                              'reason': submitted.get('reason', 'Soumission Quick Entry non aboutie.')}
         return result | {'status': 'finished', 'thread_id': submitted.get('submission_id'),
                          'resumable': False, 'model': 'claude-desktop', 'dispatch': submitted.get('dispatch'),
-                         'response': None, 'billing': 'Claude Desktop session; quota not reported'}
+                         'response': None, 'admission_only': True, 'billing': 'Claude Desktop session; quota not reported'}
     except engines.Unavailable as error:
         return result | {'status': error.state, 'reason': error.reason}
     except (OSError, ValueError, TimeoutError):
