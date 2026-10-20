@@ -8,7 +8,9 @@ Outils macOS pour suivre les sessions d’agents, rechercher leurs diagnostics l
 | --- | --- |
 | `agent-resume/` | Application native SwiftUI/AppKit, collecte locale, quotas disponibles, recherche privée et cache d’analyse chiffrés |
 | `deepseek-harness-config/` | Instructions et six compétences de développement, DevOps, sécurité, preuves scientifiques, orchestration et portage Rust ; configuration de référence |
-| `routing/` | Adaptation du routeur avec helper Apple local, tests et comparaison des deux moteurs |
+| `routing/` | Routeur expérimental avec embeddings Apple locaux, tests et comparaisons |
+| `role-routing/` | Routage optionnel par rôles planner/executor, désactivé par défaut |
+| `harness-tools/` | Outils de vérification et pilotes d’évaluation |
 
 Le routage par embeddings Apple est implémenté et testé dans un profil Harness isolé. Il reste expérimental et n’est pas activé dans le profil quotidien. Le modèle génératif Apple Intelligence ne participe pas au routage.
 
@@ -17,20 +19,20 @@ Le routage par embeddings Apple est implémenté et testé dans un profil Harnes
 Sur un Mac avec les outils de compilation Swift et Python 3.13 :
 
 ```sh
-./agent-resume/native-install
+sh agent-resume/native-install --open
 ```
 
-Ce script compile l’application et les helpers, puis ouvre Reprise. Consulter [le guide Reprise](agent-resume/README.md) avant d’installer le service de reprise : ses relances doivent être explicitement programmées. Le suivi des autres applications ne leur ajoute pas de mécanisme automatique de reprise.
+Avec `--open`, ce script compile l’application et les helpers, puis ouvre Reprise. Sans cette option, il compile seulement et ne perturbe pas une instance en cours. Consulter [le guide Reprise](agent-resume/README.md) avant d’installer le service de reprise : ses relances doivent être explicitement programmées. Le suivi des autres applications ne leur ajoute pas de mécanisme automatique de reprise.
 
 ```sh
 python3 -m unittest discover -s agent-resume/tests -q
 ```
 
-## Serveur Quick Entry
+## Daemon Quick Apply (`claude-desktopd`)
 
 Le serveur `agent-resume/claude_desktop_quick.py` accepte, sur un socket UNIX privé, des charges utiles Quick Entry validées (prompt, images, fichiers, chat cible) et applique un plafond quotidien de soumissions. Il ne pilote pas l’interface de Claude Desktop : la soumission réelle dans l’overlay Quick Entry exige des autorisations macOS (Accessibilité, Capture d’écran) accordées par l’opérateur, et reste du ressort d’un pilote supervisé.
 
-Le LaunchAgent `com.example.reprise.quick-entry` démarre ce serveur au login. Il ne contient que des chemins de ce dépôt et du dossier de l’utilisateur courant, et ne porte ni `RunAtLoad` ni `KeepAlive` : le serveur ne démarre jamais automatiquement sans action explicite de l’opérateur.
+L’installateur historique écrit le LaunchAgent `com.example.reprise.quick-entry`. Sans `RunAtLoad`, `KeepAlive` ou déclencheur, son chargement seul ne programme pas un démarrage au login. L’écriture du plist ne démarre aucun daemon. Pour démarrer explicitement le daemon, utiliser `python3 agent-resume/resume quick-apply-daemon-start` ; vérifier avec `quick-apply-daemon-status`. Les identifiants historiques `quick-entry` restent utilisés dans les chemins et le protocole.
 
 Installation (écriture du plist uniquement, sans démarrage) :
 
@@ -70,16 +72,28 @@ Exposition : outils MCP `reprise_resume`, `reprise_history`, `reprise_health` ; 
 
 ## Redémarrage de la chaîne
 
-`agent-resume/restart-chain` redémarre proprement la chaîne de dépendances (GUI Reprise + serveur Quick Entry) et vérifie l'état :
+`agent-resume/restart-chain` tente de redémarrer `claude-desktopd`, `codexd` si disponible, puis Reprise, et affiche l’état :
 
 ```sh
 cd agent-resume
-./restart-chain              # recompile + relance le serveur Quick Entry + Reprise
+./restart-chain              # recompile + redémarre les daemons + ouvre Reprise
 ./restart-chain --no-build   # relance sans recompiler
-./restart-chain --server     # seul le serveur Quick Entry (pas de relance du GUI)
+./restart-chain --server     # redémarre les daemons sans ouvrir Reprise
 ```
 
-Le script nettoie le socket Quick Entry orphelin, arrête une éventuelle instance du serveur, recompile (`native-install`, sans relancer sauf `--open`), démarre le serveur, puis relance l'application. Chaque étape est résiliente : un échec local (ex. socket protégé) n'interrompt pas la chaîne. Il ne force jamais l'arrêt d'une application liée (Claude Desktop, Codex Desktop).
+Le script tente de supprimer le socket Quick Apply, arrête une éventuelle instance du daemon, recompile (`native-install`, sans ouverture), redémarre les daemons Quick Apply et Codex, puis ouvre Reprise. Il ne ferme pas explicitement une instance Reprise déjà ouverte. Chaque étape est résiliente : un échec local (ex. socket protégé) n'interrompt pas la chaîne. Il ne force jamais l'arrêt d'une application liée (Claude Desktop, Codex Desktop).
+
+## Délégation et retour des analyses
+
+Codex fournit un aller-retour exploitable via `reprise_delegate`. Le plafond de huit appels par jour UTC/projet/endpoint est un compteur local : `budget_blocked` indique ce plafond ; `quota_blocked` indique un refus lié au quota fournisseur.
+
+Pour Claude Desktop, l’architecture recommandée par Astra combine trois composants : **Quick Apply déclenche** le tour, **MCP `get_task`/`submit_result` transporte** la demande et le résultat, **SQLite conserve** l’état durable. Un accusé de soumission Quick Apply ne signifie pas que l’analyse est terminée : seul un `submit_result` validé et enregistré marque l’achèvement.
+
+Le prototype MCP existe dans `agent-resume/ux_review_probe.py`. Le contrat complet reste à implémenter : instantanés des fichiers, manifeste et `request_hash`, résultat lié à la bonne tentative, écriture atomique et revalidation à la lecture. Le branchement `reprise_ux_review` dans Claude Desktop reste à valider par l’opérateur. Aucun renvoi automatique après une soumission incertaine. Voir [l’avis Astra et le contrat prévu](agent-resume/ARCHITECTURE-QUESTION-PENDING.md).
+
+## Contribution
+
+Travailler sur `dev`, puis intégrer via la MR `dev` → `main`. Ne pas committer directement sur `main`.
 
 ## Configuration Harness
 
