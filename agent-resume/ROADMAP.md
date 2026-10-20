@@ -7,3 +7,5 @@
 - **Priorité produit réaffirmée le 20/10 :** reprise multi-harness après quota, checkpoints et compactage adapté, détection des boucles et budgets parent/sous-agents. Inventaire local Claude et lots de validation : [plan de reprise et de surveillance](RECOVERY-AND-LOOP-PLAN.md). Observation passive d’abord ; contrôle actif selon capacités natives vérifiées.
 
 - **Architecture commune à chaque harness** : [contrat de supervision et reprise](HARNESS-SUPERVISION-ARCHITECTURE.md). Même parcours pour quotas, checkpoints, boucles, consommation et contexte ; registre de capacités vérifiées et repli manuel explicite. Première tranche verticale Codex + DeepSeek Harness avant extension Claude/Cowork et AutoClaw.
+
+- **Work/Cowork déléguable** : permettre à un harness sans ce mode de soumettre un job outillé à un environnement Work réel via outil ou connecteur Reprise. Contrat asynchrone durable, budgets, checkpoints, livrables et reprise communs ; choix du transport après comparaison fiabilité/coût. Le lancement Cowork reste à démontrer, distinct du déclenchement Chat Quick Apply. Voir le contrat multi-harness.

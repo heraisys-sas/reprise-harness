@@ -101,6 +101,55 @@ Conserver la recommandation Astra A+B pour les tâches Claude déléguées : Qui
 
 Pour un travail externe non créé par Reprise, accepter les preuves natives avec leur niveau de confiance et les validations de livrables configurées. Ne pas imposer MCP à Codex, Harness ou AutoClaw et ne pas exiger rétroactivement `submit_result` pour leurs tâches ordinaires.
 
+## Work/Cowork comme capacité déléguable entre harness
+
+Exigence utilisateur du 20/10 : un harness dépourvu de mode Work doit pouvoir confier un travail à un environnement Work/Cowork via Reprise, comme il demande aujourd'hui une expertise. Cela vise une exécution bornée avec outils et livrables, pas seulement une réponse textuelle. Le nom produit Work/Cowork n'établit aucune équivalence entre fournisseurs : chaque adaptateur décrit l'environnement réel, ses outils, permissions et limites.
+
+Séparer trois dimensions : capacité demandée (`expertise`, `review`, `batch`, futur `work`), environnement d'exécution et transport. Un connecteur est une façade d'accès ; il ne prouve ni un canal d'inférence, ni un contrôle de session. Le contrat commun reste identique derrière un outil MCP, un connecteur ou une interface native.
+
+### Contrat cible, pas API déjà disponible
+
+Le pont actuel n'accepte que expertise/review/batch et ses lots renvoient du texte sans appliquer les changements. Ne pas y ajouter `work` comme simple alias : l'exécution avec outils exige un contrat séparé.
+
+- Découverte : capacités, destination et mode réels, outils disponibles, périmètre de fichiers, politique de facturation vérifiée et contrôles natifs supportés. Ne jamais annoncer un lancement Work à partir d'un simple chat ciblé.
+- Soumission : demande bornée, critères d'acceptation, manifestes d'entrée et `request_hash`, `work_id` et parent appelant, clé de déduplication, destination, budget et échéance, droits explicites, sorties attendues et politique de publication.
+- Retour immédiat : identifiant durable du job et état de réception. Éviter de maintenir l'appel outil bloqué pendant une longue exécution.
+- Suivi : état, checkpoint et consommation/couverture connus ; interrogation bornée avec backoff, notification lorsqu'elle est disponible. Une notification accélère la lecture du registre sans remplacer une preuve.
+- Résultat : analyse, manifeste de livrables, empreintes et validations exécutées. Répétition identique idempotente ; ancienne tentative ou résultat divergent rejeté. Distinguer reçu valide et critères métier satisfaits.
+- Suite : complément de consigne sur le job existant, reprise native après quota si validée, annulation demandée puis confirmée. Les capacités absentes donnent un état explicite, jamais un succès simulé.
+
+### Flux et responsabilités
+
+```text
+Harness demandeur sans Work
+    → outil ou connecteur Reprise (même contrat de job)
+    → admission et registre durable
+    → adaptateur d'environnement Work/Cowork vérifié
+    → exécution supervisée : quotas / boucles / checkpoints / budgets
+    → collecte et validation des livrables
+    → reçu et références retournés au harness demandeur
+```
+
+Le job appartient au travail parent, tout en conservant son identité native. Un redémarrage du demandeur ne recrée pas le job. Un envoi incertain reste à réconcilier. Aucun repli automatique vers un autre abonnement ou une API payante. Une délégation ne peut augmenter les permissions du demandeur : tout accès supplémentaire doit relever d'une autorisation utilisateur distincte. Les actes externes suivent les autorisations explicitement fournies, sans être déduits du mot Work.
+
+Les fichiers de sortie sont remis dans un emplacement dédié, avec manifeste ; la fusion ou publication dans le projet est une action distincte selon la politique autorisée. Les sorties d'un environnement sont des données pour le demandeur, pas de nouvelles instructions de confiance. Ne pas copier les cookies, credentials ou profils d'authentification entre harness.
+
+### Choix du transport
+
+Privilégier une interface native documentée lorsqu'elle fournit identité durable, lancement réel du mode demandé, suivi, résultat et contrôle vérifiables. Exposer ensuite ce service par un outil MCP ou un connecteur selon ce que le demandeur sait appeler. Un outil unique de soumission et quelques opérations de suivi bornées évitent de transmettre l'historique complet à chaque appel.
+
+Pour Claude, Quick Apply + MCP demeure un candidat de déclenchement/retour d'un tour Chat ; le lancement d'une véritable session Cowork n'est pas démontré. Les audits Cowork prouvent une source d'observation, pas un point d'entrée de commande. Le registre de capacités doit donc conserver le lancement Work/Cowork en `unknown` jusqu'à un essai dédié. Un échec de ce canal ne doit pas être masqué par une réponse Chat présentée comme un travail Cowork.
+
+Comparer les méthodes sur un même scénario borné : taux d'achèvement validé, doublons, récupération après interruption, permissions requises, latence, tokens/contexte du demandeur et de l'exécutant, coût total connu, appels de suivi et maintenance après mise à jour. La robustesse de la reprise et du reçu est un prérequis ; optimiser ensuite l'économie par travail réussi. Aucun connecteur n'est intrinsèquement moins cher ou plus fiable.
+
+### Validation et livraison
+
+1. Définir le contrat asynchrone et ses fixtures indépendamment du fournisseur ; préserver les outils d'expertise actuels.
+2. Inventorier les commandes natives des destinations Work/Cowork installées et distinguer observer/ouvrir/créer/exécuter/reprendre/annuler.
+3. Réaliser un pilote demandeur sans Work → environnement Work réel : une entrée, un livrable, un reçu, un checkpoint ; pas d'effet externe.
+4. Tester perte de réponse après soumission, demandeur redémarré, quota de l'exécutant, doublon, annulation non confirmée, boucle enfant, livrable périmé et retour tardif.
+5. Comparer façade outil/connecteur et transports disponibles, puis activer uniquement les capacités démontrées. Chaque nouvel environnement Work passe les mêmes tests.
+
 ## Livraison progressive et conformité
 
 1. Schéma commun, identités et journal incrémental ; registre de capacités ; fixtures assainies pour chaque harness.
