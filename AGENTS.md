@@ -25,7 +25,7 @@ Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui s
 ## Contraintes d'environnement (à connaître avant de coder)
 - **Sandbox** : écriture limitée au workspace. Bloqué : `~/.claude-desktop` (socket orphinel impossible à `rm`), `~/.dsh`, `Documents/ChatGPT/productivité`. Un agent qui l'ignore boucle — c'est arrivé.
 - **`ps` / `osascript` bloqués** — pas d'inspection de processus fine. Vérifier l'état par **connexion au socket** (`connect()`), pas par existence du fichier socket.
-- **Clone du pont MCP** (`Documents/ChatGPT/productivité` = même dossier que `~/Library/Mobile Documents/…/productivité`, inode `.git` identique) = `project_root` du pont `reprise_delegate`. État vérifié le 20/10 : `HEAD` = `18ff0b4`, soit **23 commits derrière `origin/dev`** (`2702215` ; `ad70784` est déjà inclus depuis 9 commits) + **7 fichiers modifiés localement non committés**. Les fichiers créés après `18ff0b4` (ex. `ARCHITECTURE-QUESTION-PENDING.md`, `ux_review_probe.py`, `UX-UI-ANALYSIS.md`) y sont absents → `reprise_delegate` avec ces `paths` échoue (`resolve(strict=True)`). Synchroniser par `git fetch` + `merge --ff-only` hors sandbox, **sans écraser les 7 modifications locales** (vérifier le chevauchement avant).
+- **Clone du pont MCP** (`Documents/ChatGPT/productivité` = même dossier que `~/Library/Mobile Documents/…/productivité`, inode `.git` identique) = `project_root` du pont `reprise_delegate`. **Synchronisé le 20/10** : `18ff0b4` → `2702215` par `fetch` + `merge --ff-only`, après vérification d'un **chevauchement vide** avec les **7 fichiers modifiés localement non committés** (préservés). Les fichiers créés après `18ff0b4` (`ARCHITECTURE-QUESTION-PENDING.md`, `ux_review_probe.py`, `UX-UI-ANALYSIS.md`) sont donc présents → `reprise_delegate` avec `paths` résout (`resolve(strict=True)`). Avant tout futur `merge`, revérifier le chevauchement incoming ↔ 7 fichiers sales.
 
 ## Nomenclature (Unix) — respecter
 - **Services/daemons** : `codexd` (daemon Codex / `app-server daemon`), `claude-desktopd` (daemon Quick Apply).
@@ -49,9 +49,9 @@ Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui s
 - Ne jamais laisser un sous-agent boucler indéfiniment sur une tâche hors de sa portée : le constater, l'interrompre, et **escalader ou faire soi-même**. Deux échecs sur un même volet = changer d'approche (modèle ou auteur).
 
 ## État et suivi
-- Issues GitHub #2–#5 : symptômes UI, architecture de retour (avis Astra bloqué `budget_blocked`), canal MCP UX review (prêt, non branché), analyse UX/UI.
+- Issues GitHub #2–#5 : symptômes UI, architecture de retour (avis Astra obtenu le 20/10 — voir plus bas), canal MCP UX review (prêt, non branché), analyse UX/UI.
 - Revue UX/UI : les 4 priorités sont traitées (badges + résumé Santé, nomenclature, accessibilité + feedback, fusion onglets). Détails dans `agent-resume/UX-UI-ANALYSIS.md`.
-- Demande de conseil architectural **Astra** en attente : voir `agent-resume/ARCHITECTURE-QUESTION-PENDING.md` (compteur local remis à zéro le 20/10 — relance possible ; origine du `budget_blocked` documentée dedans).
+- Conseil architectural **Astra obtenu le 20/10** (`gpt-6-astra` high, thread `01a15938…`) : **A + B** — Quick Apply déclenche, MCP `get_task`/`submit_result` reçoit, SQLite registre ; seul `submit_result` vaut retour. Réponse intégrale + invariant dans `agent-resume/ARCHITECTURE-QUESTION-PENDING.md`. **Suite : implémenter le manifeste/`request_hash` et brancher `reprise_ux_review` (validation opérateur)**. Suivi via `codex_followup` sur ce thread.
 
 ## Points de vigilance
 - Ne pas supposer un résultat de test non exécuté ; annoncer précisément les contrôles.
