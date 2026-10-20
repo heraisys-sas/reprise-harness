@@ -26,6 +26,20 @@ Réconciliation avec preuves natives + état réel des livrables
 
 La lecture et l'action sont séparées. Un parseur ne déclenche jamais de commande. Le moteur de règles ne dépend pas des chemins ou du protocole d'un fournisseur. Aucun agent génératif permanent n'est nécessaire pour surveiller.
 
+## Point d'entrée Reprise commun et bidirectionnel
+
+Décision utilisateur du 20/10 : chaque harness connecté doit pouvoir, via le même service Reprise, **recevoir une tâche, rendre son résultat et solliciter un autre harness**. La façade de référence est un serveur MCP Reprise regroupant ces outils ; un connecteur ou une interface native peut exposer le même contrat si nécessaire. Un seul service logique et registre durable, sans imposer un seul processus stdio à tous les clients. Les connexions clientes peuvent être séparées et partagent le service au travers d'un mécanisme local explicite, sans supposer que leurs mémoires de processus sont communes.
+
+Séparer les rôles et leurs autorisations : demandeur, exécutant, destinataire du résultat, opérateur. Une connexion n'obtient pas automatiquement accès à tous les projets ou à toutes les fonctions. Le périmètre est lié au client/projet autorisé, pas à un champ déclaré librement par le modèle.
+
+Familles d'opérations : découverte de capacités ; soumission/délégation ; réception/réservation de tâche ; remise de résultat ; liste/récupération/acquittement des résultats non réclamés ; suivi/reprise/annulation lorsque supportés. `reprise_backends`, `reprise_delegate`, `reprise_followup`, `get_task` et `submit_result` existent dans des prototypes distincts ; les noms et schémas des autres opérations restent à stabiliser. La réunion des prototypes n'est pas encore livrée.
+
+La tâche d'expertise ou Work sollicitée par un exécutant devient un enfant explicite du travail courant : conserver racine, parent, profondeur, demandeur et clé de requête. Limiter profondeur, nombre d'enfants, concurrence et budget agrégé, en distinguant plafonds imposables et alertes. Détecter les cycles de demandes équivalentes dans une même lignée, sans interdire toute revue réciproque légitime. Une attente d'expertise ne doit pas bloquer le traitement des retours MCP ni maintenir un verrou SQLite pendant l'inférence. Un avis reçu ne crée pas de nouvelle délégation par défaut.
+
+**Priorité immédiate : interroger Claude Desktop sur son compte disponible, y compris gratuit, et récupérer la réponse sans bascule payante.** Chemin : harness demandeur → Reprise/SQLite → Quick Apply → Claude appelle `get_task` → éventuelle expertise enfant via Reprise → `submit_result` → résultat durable récupérable par le demandeur. Le plan gratuit demeure soumis à ses limites et permissions ; leur épuisement conserve le job en attente/incertain selon preuve, sans changement de facturation. L'essai supervisé a fonctionné ; l'autonomie et le service unifié restent à valider.
+
+Pour les autres harness, privilégier la même façade de délégation et retour pour les jobs créés par Reprise. Le transport de déclenchement reste natif par adaptateur ; les observations et reçus natifs peuvent compléter le contrat. Cela ne force pas l'installation MCP dans une application qui ne le supporte pas, ni la conversion rétroactive de ses tâches ordinaires.
+
 ## Identité, données et états
 
 - `work_id` : travail utilisateur ; rassemble éventuellement plusieurs sessions. Aucun regroupement fondé uniquement sur un titre similaire ou un même dossier.
@@ -180,7 +194,7 @@ Tests : résultat rendu pendant quota du parent ; accusé perdu ; parent redéma
 ## Livraison progressive et conformité
 
 1. Schéma commun, identités et journal incrémental ; registre de capacités ; fixtures assainies pour chaque harness.
-2. Premier parcours vertical en lecture seule sur **Codex et DeepSeek Harness**, puis Cowork/Claude Code et AutoClaw : activité, quota, consommation, parent/enfants, provenance. Cela évite un socle implicitement conçu pour Claude seulement.
+2. Priorité fonctionnelle : aller-retour Claude Desktop via le service Reprise unifié, avec résultat récupérable après redémarrage et limites du compte gratuit respectées. Pour la supervision, parcours minimal Codex puis observation DeepSeek Harness, avant extension Cowork/Claude Code et AutoClaw. Les contrats et tests demeurent communs.
 3. Checkpoints et écran de reprise commun ; intégrer progressivement le scheduler Codex existant.
 4. Détection de boucles en observation sur chaque adaptateur, replay de traces positives ET légitimes ; calibrer faux positifs et coût de surveillance.
 5. Commandes natives par capacité : reprise, interruption, puis compactage. Une capacité absente conserve un parcours manuel utile.

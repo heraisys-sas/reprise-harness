@@ -88,3 +88,6 @@ Une relance invalide atomiquement l'ancienne tâche et crée un nouveau job lié
 1. **Implémenter le contrat ci-dessus** au-delà du prototype : manifeste ordonné + `request_hash` canonique, `pending → claimed` atomique, `submit_result` vérifié (UTF-8, taille, SHA-256), écriture immuable, relecture/revalidation côté Reprise. Puis tests ciblés sur chaque branche d'échec du tableau.
 2. **Brancher `reprise_ux_review`** dans la config Claude Desktop — validation opérateur requise.
 3. **Précisions complémentaires** : réutiliser ce thread avec `codex_followup` (backend `codex`, modèle et effort conservés ; thread `01a15938-9c52-7603-bfc8-4f182098799e`) — compteur local **1/8** le 20/10, donc 7 appels restants aujourd'hui. Un `quota_blocked` viendrait du fournisseur (réserve 5 %), pas du compteur : ne pas réessayer dans la foulée.
+
+
+Suite de conception après cet avis : [service Reprise commun bidirectionnel](HARNESS-SUPERVISION-ARCHITECTURE.md), regroupant réception, retour et sollicitation d’autres harness. Cette évolution ne modifie pas le texte historique de l’avis Astra. Priorité au retour Claude Desktop, compte gratuit compris ; unification non encore implémentée.

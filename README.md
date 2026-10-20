@@ -108,3 +108,6 @@ Le dépôt contient uniquement les sources et la documentation sélectionnées. 
 ## Routage local expérimental
 
 Règles françaises → comparaison locale par embeddings → repli standard en cas d’ambiguïté → politique déterministe de modèles autorisés. Aucun serveur réseau ou MCP nécessaire. Voir [la compilation, les tests et les limites](routing/README.md).
+
+
+Décision actuelle : un [point d’entrée Reprise commun et bidirectionnel](agent-resume/HARNESS-SUPERVISION-ARCHITECTURE.md) permettra à chaque harness de recevoir des tâches, rendre ses résultats et solliciter les autres. Priorité : aller-retour Claude Desktop, y compris compte gratuit, sans repli payant. Le regroupement des prototypes reste à implémenter.

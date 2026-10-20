@@ -36,3 +36,8 @@ A subsequent [one-job Desktop test](CLAUDE-MCP-PROBE.md#single-job-round-trip-su
 On 19 October, MCP Apps support was confirmed and a visible button round trip completed. However, `ui/message` only prefilled the Desktop composer with a warning; explicit Send was still required. See the [MCP Apps experiment](CLAUDE-MCP-PROBE.md#mcp-apps-button-experiment--19-october-2026). This is a supervised Desktop path, not autonomous inference control.
 
 A [Quick Entry trial](CLAUDE-MCP-PROBE.md#quick-entry-trial--19-october-2026) on 2.42304.2 subsequently launched one turn with a single Return and returned its result by MCP in the existing test chat. The user opened Quick Entry; the destination was confirmed correct, while the necessity of the destination-menu click remains unproven. This is a supervised UI path, not a public inference API or validated unattended mode.
+
+
+## Orientation actuelle — service Reprise unifié
+
+La [cible multi-harness](HARNESS-SUPERVISION-ARCHITECTURE.md) regroupe dans le même service logique les outils de réception/retour et de délégation. Claude Desktop pourra recevoir une tâche et solliciter un autre harness avant de rendre son résultat. Priorité au parcours Desktop avec le compte disponible, même gratuit ; aucun repli API payant. Les prototypes restent séparés. Le CLI d’expertise restreint décrit ci-dessus conserve ses limitations : cette cible ne lui active pas implicitement des outils.

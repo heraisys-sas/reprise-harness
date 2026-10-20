@@ -73,3 +73,6 @@ Revue ciblée reçue du sous-agent `gpt-6-astra` high, fondée sur le code local
 - Après quota, privilégier un checkpoint déterministe sans appel de résumé. Les seuils de contexte ne sont utilisables que si taille ET limite sont connues. Un résumé externe ne compacte pas la conversation native.
 
 La revue est une proposition architecturale appuyée sur les sources locales, pas une étude des meilleures pratiques externes ni une garantie des API actuelles des fournisseurs. Compléter la matrice des capacités par documentation officielle et essais sur les versions installées avant intervention active.
+
+
+Décision complémentaire : le [service Reprise bidirectionnel](HARNESS-SUPERVISION-ARCHITECTURE.md) regroupera réception, retour et délégation pour chaque harness. Priorité immédiate à la réponse Claude Desktop récupérable, y compris compte gratuit ; les fonctions de reprise et surveillance réutilisent ce registre.
