@@ -152,6 +152,31 @@ Comparer les méthodes sur un même scénario borné : taux d'achèvement valid�
 4. Tester perte de réponse après soumission, demandeur redémarré, quota de l'exécutant, doublon, annulation non confirmée, boucle enfant, livrable périmé et retour tardif.
 5. Comparer façade outil/connecteur et transports disponibles, puis activer uniquement les capacités démontrées. Chaque nouvel environnement Work passe les mêmes tests.
 
+## Registre des travaux non réclamés et rattachement après redémarrage
+
+Exigence utilisateur du 20/10 : Reprise conserve les travaux qui attendent un destinataire et peut préparer leur reprise dans une session redémarrée ou ayant cessé de progresser. Le registre appartient au travail durable, pas à la vie du processus ou de la conversation demandeuse.
+
+Ne pas regrouper sous un seul statut des situations différentes :
+
+| Situation | Sens | Réponse proposée |
+|---|---|---|
+| Demande non prise en charge | Aucun exécutant n'a confirmé la réception/réservation | Réconcilier la soumission ; ne pas renvoyer si réception incertaine |
+| Travail réservé sans progrès connu | Tentative active ou incertaine, pas de résultat | Chercher propriétaire, événements et checkpoint ; pas de redistribution implicite |
+| Résultat disponible non récupéré | Exécution rendue, parent absent ou redémarré | Présenter le résultat existant au destinataire autorisé, sans nouvelle exécution |
+| Résultat récupéré non intégré | Parent a reçu les données mais usage/validation non confirmé | Conserver les références et demander ou observer l'intégration ; ne pas annoncer la tâche terminée |
+| Travail interrompu à reprendre | Quota ou interruption confirmée, reste à faire | Préparer une continuation après revalidation |
+| Session sans progrès apparent | Silence, répétitions ou contexte dégradé suspectés | Incident à examiner ; ne pas assimiler une impression d'essoufflement à un arrêt confirmé |
+
+Conserver `work_id`, demandeur et destination d'origine, références natives, clés de requête, tentative active, checkpoint, manifeste des résultats, dernière preuve de progrès, motif d'attente et état de livraison. La réception/acceptation du résultat et son acquittement par le destinataire sont enregistrés séparément. Un acquittement ne prouve pas à lui seul la validation métier. Prévoir annulation, archivage explicite et rétention configurable pour éviter un registre rempli de travaux obsolètes.
+
+Au redémarrage, une session authentifiée peut retrouver les travaux par identité stable de demandeur/projet et clé de requête persistée. Fournir une opération de liste/récupération, plutôt que d'obliger le modèle à connaître un job_id perdu. La liste est filtrée par autorisation ; pas d'accès global aux résultats des autres projets. Une notification ou un outil peut signaler les travaux disponibles, sans injecter automatiquement un message dans toute conversation ouverte.
+
+Si la même session native est reprise, conserver son identité et vérifier son état. Si une nouvelle session remplace l'ancienne, créer un rattachement explicite à `work_id` avec provenance et autorité vérifiées ; ni titre similaire ni dossier identique ne suffisent. La nouvelle session reçoit un paquet de reprise borné : objectif, contraintes, décisions, travail déjà fait, livrables et prochaine étape. Si une ancienne tentative peut encore produire des effets, bloquer toute nouvelle exécution concurrente jusqu'à réconciliation ou décision autorisée tenant compte de ce risque. Le rattachement ne clôt pas fictivement l'ancienne tentative.
+
+Une session « essoufflée » peut recevoir une proposition de checkpoint, changement d'approche, compactage natif vérifié ou transfert. Ne pas envoyer une instruction de reprise répétée au même agent en boucle. Politique proposée : un incident durable, une notification dédupliquée, et au plus une action automatique autorisée par incident avant réévaluation ; les lectures de réconciliation restent possibles. Aucun retour résultat ne doit provoquer une cascade de nouveaux jobs.
+
+Tests : résultat rendu pendant quota du parent ; accusé perdu ; parent redémarré sans job_id ; résultat déjà récupéré ; parent archivé ; nouveau destinataire non autorisé ; rattachement légitime ; ancien exécutant encore actif ; retour tardif ; session silencieuse mais productive ; plusieurs résultats pour un même travail sans double exécution.
+
 ## Livraison progressive et conformité
 
 1. Schéma commun, identités et journal incrémental ; registre de capacités ; fixtures assainies pour chaque harness.

@@ -9,3 +9,5 @@
 - **Architecture commune à chaque harness** : [contrat de supervision et reprise](HARNESS-SUPERVISION-ARCHITECTURE.md). Même parcours pour quotas, checkpoints, boucles, consommation et contexte ; registre de capacités vérifiées et repli manuel explicite. Première tranche verticale Codex + DeepSeek Harness avant extension Claude/Cowork et AutoClaw.
 
 - **Work/Cowork déléguable** : permettre à un harness sans ce mode de soumettre un job outillé à un environnement Work réel via outil ou connecteur Reprise. Contrat asynchrone durable, budgets, checkpoints, livrables et reprise communs ; choix du transport après comparaison fiabilité/coût. Le lancement Cowork reste à démontrer, distinct du déclenchement Chat Quick Apply. Voir le contrat multi-harness.
+
+- **Registre des travaux non réclamés** : distinguer demandes sans exécutant, tentatives incertaines, résultats non récupérés/non intégrés et travaux interrompus. Retrouver les résultats après redémarrage du demandeur et préparer le rattachement autorisé à une session de remplacement, sans double exécution ni relance en boucle. Contrat détaillé dans l’architecture multi-harness.
