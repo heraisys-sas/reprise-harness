@@ -2,6 +2,8 @@
 
 Demandes utilisateur du 20 octobre 2026. Statut : exploration et plan, aucune nouvelle surveillance ni interruption activée.
 
+Architecture affinée : [socle commun multi-harness](HARNESS-SUPERVISION-ARCHITECTURE.md). Ce contrat généralise les lots ci-dessous à tout nouvel adaptateur, y compris AutoClaw.
+
 ## Priorité produit
 
 La mission première est de reprendre une tâche interrompue par quota dans son harness d'origine. La délégation externe sert cet objectif ; elle ne le remplace pas. Préserver la session, son parent, les décisions, les fichiers et les effets déjà produits. Un changement de harness est un transfert explicite de contexte, pas une reprise native garantie.

@@ -91,6 +91,8 @@ Pour Claude Desktop, l’architecture recommandée par Astra combine trois compo
 
 Le prototype MCP existe dans `agent-resume/ux_review_probe.py`. Le contrat complet reste à implémenter : instantanés des fichiers, manifeste et `request_hash`, résultat lié à la bonne tentative, écriture atomique et revalidation à la lecture. Le branchement `reprise_ux_review` dans Claude Desktop reste à valider par l’opérateur. Aucun renvoi automatique après une soumission incertaine. Voir [l’avis Astra et le contrat prévu](agent-resume/ARCHITECTURE-QUESTION-PENDING.md).
 
+La supervision et la reprise doivent suivre un [socle commun multi-harness](agent-resume/HARNESS-SUPERVISION-ARCHITECTURE.md) : quotas, checkpoints, consommation, boucles et contexte, avec capacités vérifiées par adaptateur. Ce contrat est une cible de développement, pas une annonce de prise en charge complète.
+
 ## Contribution
 
 Travailler sur `dev`, puis intégrer via la MR `dev` → `main`. Ne pas committer directement sur `main`.
