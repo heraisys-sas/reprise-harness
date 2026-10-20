@@ -129,7 +129,7 @@ class Bridge:
                  'dispatch': 'dispatchOnQuickEntrySubmit (full turn, not a prefill)',
                  'context': 'Structured Quick Apply payload; images/files bounded; target chat routing'},
                 {'id': 'ironclaw', 'configured': bool(self.ironclaw_program) and bool(self.ironclaw_values),
-                 'billing': 'Remote IronClaw runtime (default model observe: morph-dsv41flash-1017)',
+                 'billing': 'Remote IronClaw runtime (default model observed: morph-dsv41flash-1017)',
                  'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': False,
                  'context': 'SSH session; tasks via ironclaw run -m and answer read back; no UI relaying yet'}],
                 'automatic_fallback': False}

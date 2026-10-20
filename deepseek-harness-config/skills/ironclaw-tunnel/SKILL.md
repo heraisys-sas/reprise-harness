@@ -71,7 +71,9 @@ Le canal de tâche est désormais branché dans le pont MCP (pas seulement docum
 - `agent-resume/codex_expert_mcp.py` : backend `ironclaw` déclaré dans `reprise_backends`, accepté par `reprise_delegate`, **sous le même compteur de budget** (réservation avant dispatch, `budget_blocked`, aucun fallback) ; `reprise_followup` backend ironclaw refusé (run -m sans état) ; nouveau flag CLI `--ironclaw-config '<JSON host,port,user,key>'`. Testé (5 cas via Bridge).
 - `agent-resume/Vault.swift` : purpose `ironclaw-key-v1` ajouté à la whitelist (source) — **recompilation requise** (`sh native-install`) pour que `vault.save(..., purpose='ironclaw-key-v1')` fonctionne.
 
-Restant (suite) : daemon `ironclawd` persistant avec relais UI mono-connexion (schéma ci-dessous), recompilation de `Vault`, fichier `--ironclaw-config` 0600 de référence, vérification bout-en-bout via le pont en conditions réelles.
+Vérification bout-en-bout du canal MCP réel (20/10/2026) : pont lancé avec `--ironclaw-config` → `reprise_backends` déclare ironclaw `configured: true` et `reprise_delegate backend=ironclaw` retourne `status: finished` avec la réponse du modèle distant (`PONG`), sous le compteur de budget (`expert.sqlite`).
+
+Restant (suite) : daemon `ironclawd` persistant avec relais UI mono-connexion (schéma ci-dessous), recompilation de `Vault`, accroche d'une config 0600 réelle (`agent-resume/ironclaw-config.example.json`).
 ## Sécurité
 
 1. **Coffre, pas fichier clair** : `vault.save(path, clé, purpose='ironclaw-key-v1')` après avoir étendu le bin utilitaire `Vault.swift` (whitelist de `purpose` + service Keychain `local.agent-resume.vault.v1`). Le `purpose` est une **AAD** : changer de clé de purpose invalide le chiffré.
