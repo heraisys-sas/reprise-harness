@@ -1,6 +1,19 @@
 # Question architecturale en attente — récupération de la sortie IA dans Reprise
 
-**Statut :** demande à Codex Astra (deep) **bloquée — `budget_blocked`** (plafond quotidien d'appels MCP atteint, 8 appels/projet/jour). À relancer le jour suivant le déblocage du compteur.
+**Statut :** demande à Codex Astra (deep) **bloquée le 19/10 — `budget_blocked`**. Origine vérifiée : c'est le **compteur local du pont**, pas un quota ChatGPT (voir « D'où sort le plafond » ci-dessous). Le compteur a remis à zéro le 20/10 (0 appel sur 8) → **relance possible maintenant**, sous réserve que le quota fournisseur reste disponible.
+
+## D'où sort le plafond (vérifié le 20/10)
+
+Deux compteurs **locaux et distincts**, ni l'un ni l'autre n'est lié à un plan ChatGPT :
+
+| Compteur | Fichier | Portée | Plafond |
+|---|---|---|---|
+| Expertises (`reprise_delegate`) | `expert_calls` dans `expert.sqlite` (état du pont) | `scope` = sha256(`project_root` + socket), jour = `int(time.time()//86400)` (UTC) | 8/jour, défaut `--daily-limit 8` non surchargé par la config |
+| Soumissions Quick Entry | `quick_calls` dans `quick.sqlite` | idem | 8/jour, même défaut |
+
+Les deux retournent `budget_blocked` **avant** toute transmission (`codex_expert_mcp.py:179`, `claude_desktop_quick.py:63`) ; un échec admis est compté aussi. État du compteur expert : 17/10 = 7, 18/10 = 2, **19/10 = 8 (plafond atteint)**, 20/10 = absent (0).
+
+Côté fournisseur, le statut distinct est **`quota_blocked`** : `codex_expert.py:30` refuse si `ordinaryUsageAllowed != true` ou si `primary`/`secondary.usedPercent >= 95` (réserve 5 %, `account/rateLimits/read`). Mesures locales des journaux Codex : 19/10 maxima `primary 25 %` / `secondary 58 %` → **loin du seuil** ; vraies erreurs « You've hit your usage limit » observées du 14 au 18/10, **aucune les 19 et 20/10**. Plan enregistré dans `~/.codex/auth.json` : `chatgpt_plan_type = "plus"` (claims du 12/10, `last_checked` 22/09 — à re-vérifier en cas de refus fournisseur). Le plan « free » n'est donc pas en cause.
 
 ## Contexte
 Deux canaux Claude Desktop pour récupérer une analyse dans Reprise :
@@ -22,4 +35,4 @@ Contrainte : Claude Desktop tel quel (pas d'API d'inférence publique ; `samplin
 - Prêt à brancher dans la config Claude Desktop (bloc `reprise_ux_review`), en attente de validation.
 
 ## Relance
-Dès que le plafond se réinitialise (UTC day), relancer `reprise_delegate` kind=expertise level=deep avec le texte des questions ci-dessus.
+Compteur local remis à zéro le 20/10 : relancer `reprise_delegate` kind=expertise level=deep avec le texte des questions ci-dessus. Une seule demande à la fois ; si le pont renvoie `quota_blocked`, c'est le fournisseur (réserve 5 %) et non ce compteur — ne pas réessayer dans la foulée.
