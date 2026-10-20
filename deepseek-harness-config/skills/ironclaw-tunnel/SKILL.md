@@ -46,7 +46,8 @@ Cette page est la source maîtresse. La réplique installée dans `~/.dsh/skills
 ## Canal de tâche recommandé
 
 - **Aller-retour vérifiable** : `ssh … 'ironclaw run -m "<prompt>"'` → réponse sur stdout. Borner le prompt (pas de tuyaux interactifs), `tail` pour couper les logs INFO du runtime.
-- **Health** : `ironclaw status` puis `curl` local → déterministe, sans UI.
+- **Health déterministe** (par ordre de coût) : `curl` local sur l'UI (200) puis `ironclaw status`, `ironclaw service status` (unité OS si installée), `ironclaw models status` (route du modèle).
+- **Modèle du canal** : `ironclaw models status` expose `default.provider` (observé : `morph`) et `default.model` (observé : `morph-dsv41flash-1017`) → l'agent distant tourne déjà sur Morph/DeepSeek V4.1 Flash ; inutile d'aligner un modèle local, le `run -m` consomme celui-là.
 - **Pas d'inference publique** : l'UI est un WebChat avec token ; n'invente aucun endpoint `/api`. Ne pas confondre la base SQLite du runtime (index FS/triggers) avec une API de tâche.
 
 ## Relais de l'UI sans `-L` (quand le forwarding est refusé)
@@ -55,12 +56,14 @@ Si `ssh -L 127.0.0.1:39999:127.0.0.1:3000` échoue avec `administratively prohib
 
 ## Architecture de supervision (cible)
 
-Un daemon local à la `codexd`/`claude-desktopd` — exploiter le modèle existant :
-- `agent-resume/engines.py` : ajouter un moteur `ironclaw` (exécutable = `ssh` ; transport = session SSH + éventuel socket local de contrôle), mêmes règles `socket_path`/`select`.
-- `agent-resume/codex_expert_mcp.py` : nouveau backend `ironclaw` dans `reprise_backends` + branche dans `_call` sous le **même** compteur `expert_calls` (8/jour, `budget_blocked` avant transmission, aucun fallback automatique). Statuts partagés : `engine_unavailable`, `timed_out`, `needs_review`.
-- États du tunnel : `stopped / starting / running / stale / failed`, vérification par **`connect()`** sur le socket de contrôle (un socket orphelin = `stopped`, pas `running`).
-- Reconnexion **bornée** : règle de retry explicite (jamais de boucle), alerte après N échecs.
-
+Un daemon local à la `codexd`/`claude-desktopd` — exploiter le modèle existant (synthèse de conception croisée, pas encore implémentée) :
+- **Deux transports distincts** (pas de multiplexage stdin/stdout partagé) : une session SSH persistante dédiée au relais UI (mini-relais `exec 4<>/dev/tcp/.../3000; cat >&4 &; exec cat <&4`, une connexion à la fois, timeout 8 s), et les tâches `ironclaw run -m` en sessions courtes bornées.
+- `agent-resume/engines.py` : ajouter un moteur `ironclaw` (exécutable = `ssh` ; transport = session SSH + socket local de contrôle Unix 0600 type `claude_desktop_quick.py`), mêmes règles `socket_path`/`select`.
+- `agent-resume/codex_expert_mcp.py` : nouveau backend `ironclaw` dans `reprise_backends` ; brancher sous le même compteur `expert_calls` (réservation avant dispatch, 8/jour, `budget_blocked`, aucun fallback ni double décompte). Statuts partagés : `engine_unavailable`, `timed_out`, `needs_review`.
+- JSON-RPC minimal : `initialize`, `ping`, `status`, `submit`, `proxy`, `health`. SQLite : `ironclaw_tasks` (hash du prompt, jamais le prompt brut) + `ironclaw_events`.
+- États : `stopped / starting / running / stale / failed`, vérifiés par `connect()` (orphelin = `stopped`). Reconnexion bornée (10-60 s, 3 échecs max) ; erreurs permanentes (Permission denied, empreinte inconnue) non retentées.
+- Health ladder déterministe : shell + `ironclaw status` + curl 200 (lecture seule) ; `ironclaw models status` (dispo de slot) ; canary `run -m "PING"` borné (<=1/h).
+- Ordre d'implémentation conseillé : d'abord la preuve de bornage bout en bout (PING->PING puis budget_blocked au 9e appel, sans fallback), ensuite le relais mono-connexion (partie la plus risquée, blocage possible).
 ## Sécurité
 
 1. **Coffre, pas fichier clair** : `vault.save(path, clé, purpose='ironclaw-key-v1')` après avoir étendu le bin utilitaire `Vault.swift` (whitelist de `purpose` + service Keychain `local.agent-resume.vault.v1`). Le `purpose` est une **AAD** : changer de clé de purpose invalide le chiffré.
