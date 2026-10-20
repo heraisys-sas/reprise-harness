@@ -28,7 +28,7 @@ do {
     let input = FileHandle.standardInput.readDataToEndOfFile()
     guard input.count <= 64 * 1024 * 1024 else { throw NSError(domain: "RepriseSize", code: 1) }
     let request = try JSONDecoder().decode(Request.self, from: input)
-    guard ["search-index-v1", "analysis-cache-v1", "test-v1"].contains(request.purpose), let payload = Data(base64Encoded: request.payload) else { throw NSError(domain: "RepriseRequest", code: 1) }
+    guard ["search-index-v1", "analysis-cache-v1", "test-v1", "ironclaw-key-v1"].contains(request.purpose), let payload = Data(base64Encoded: request.payload) else { throw NSError(domain: "RepriseRequest", code: 1) }
     let result: Data
     let aad = Data(request.purpose.utf8)
     switch request.operation {

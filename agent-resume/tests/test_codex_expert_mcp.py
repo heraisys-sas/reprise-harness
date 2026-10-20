@@ -180,3 +180,45 @@ class ClaudeDesktopBridgeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.bridge.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
                                        'backend': 'claude-desktop', 'hack': 'x'})
+
+
+class IronclawBridgeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
+        self.bridge.program = 'codex'
+        self.addCleanup(self.bridge.db.close)
+
+    def test_backends_declare_ironclaw_unconfigured(self):
+        result = self.bridge.call('reprise_backends', {})
+        row = next(b for b in result['backends'] if b['id'] == 'ironclaw')
+        self.assertFalse(row['configured'])
+        self.assertFalse(result['automatic_fallback'])
+
+    def test_backends_declare_ironclaw_configured(self):
+        self.bridge.ironclaw_values = {'key': '/'}
+        row = next(b for b in self.bridge.call('reprise_backends', {})['backends'] if b['id'] == 'ironclaw')
+        self.assertTrue(row['configured'])
+
+    def test_delegate_ironclaw_reserves_budget_and_calls_review(self):
+        self.bridge.ironclaw_values = {'key': '/'}
+        with patch('codex_expert_mcp.ironclaw.review', return_value={
+                'status': 'finished', 'response': 'PONG', 'model': 'ironclaw-distant'}) as review:
+            result = self.bridge.call('reprise_delegate', {'backend': 'ironclaw', 'kind': 'expertise', 'question': 'Ping'})
+        self.assertEqual(result['status'], 'finished')
+        self.assertEqual(result['response'], 'PONG')
+        self.assertFalse(result['automatic_fallback'])
+        review.assert_called_once()
+        self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM expert_calls').fetchone()[0], 1)
+
+    def test_delegate_ironclaw_unconfigured_rejected_before_budget(self):
+        with patch('codex_expert_mcp.ironclaw.review') as review:
+            result = self.bridge.call('reprise_delegate', {'backend': 'ironclaw', 'kind': 'expertise', 'question': 'Ping'})
+        self.assertEqual(result['status'], 'engine_unavailable')
+        review.assert_not_called()
+        self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM expert_calls').fetchone()[0], 0)
+
+    def test_followup_ironclaw_rejected(self):
+        with self.assertRaises(ValueError):
+            self.bridge.call('reprise_followup', {'backend': 'ironclaw', 'thread_id': 'x', 'question': 'continue'})

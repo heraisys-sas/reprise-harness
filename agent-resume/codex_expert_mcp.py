@@ -13,8 +13,10 @@ import time
 from codex_expert import review
 from claude_expert import review as claude_review
 import claude_desktop
+import ironclaw
 import reprise_logs
 import reprise_health
+import shutil
 from engines import executable, options
 
 SCHEMA = {'type': 'object', 'properties': {'question': {'type': 'string', 'maxLength': 12000}},
@@ -24,7 +26,7 @@ TOOLS = [
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {
          'kind': {'type': 'string', 'enum': ['expertise', 'review', 'batch']},
          'level': {'type': 'string', 'enum': ['standard', 'deep']},
-         'backend': {'type': 'string', 'enum': ['codex', 'claude-code', 'claude-desktop']},
+         'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop']},
          'paths': {'type': 'array', 'maxItems': 30, 'items': {'type': 'string'}},
          'chatId': {'type': 'string'},
          'filePaths': {'type': 'array', 'maxItems': 10, 'items': {'type': 'string'}}},
@@ -37,7 +39,7 @@ TOOLS = [
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {'thread_id': {'type': 'string'}}, 'required': ['question', 'thread_id']}},
     {'name': 'reprise_followup', 'description': 'Continue an owned project expertise session, preserving backend, model and effort. No fallback.',
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {
-         'thread_id': {'type': 'string'}, 'backend': {'type': 'string', 'enum': ['codex', 'claude-code', 'claude-desktop']}},
+         'thread_id': {'type': 'string'}, 'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop']}},
          'required': ['question', 'thread_id', 'backend']}},
     {'name': 'reprise_resume', 'description': 'List interrupted tasks reconstructed from local logs that can be retried (quota, guard or missing dispatch). Read-only; no automatic retry.',
      'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
@@ -55,7 +57,7 @@ MODES = {
 
 
 class Bridge:
-    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None):
+    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, ironclaw_values=None):
         self.root = Path(root).resolve(strict=True)
         if not self.root.is_dir() or not 1 <= daily_limit <= 100:
             raise ValueError('Project directory and daily limit 1..100 required')
@@ -68,6 +70,8 @@ class Bridge:
         self.claude_subscription_only = claude_subscription_only
         self.desktop_values = {'socket': desktop_socket} if desktop_socket else {}
         self.desktop_program = executable('claude-desktop')
+        self.ironclaw_program = shutil.which('ssh') or 'ssh'
+        self.ironclaw_values = ironclaw_values or {}
         self.limit = daily_limit
         self.scope = hashlib.sha256((str(self.root)+'\0'+str(self.values.get('socket', 'default'))).encode()).hexdigest()
         state = Path(state)
@@ -123,7 +127,11 @@ class Bridge:
                  'billing': 'Claude Desktop session; quota not reported',
                  'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': False,
                  'dispatch': 'dispatchOnQuickEntrySubmit (full turn, not a prefill)',
-                 'context': 'Structured Quick Apply payload; images/files bounded; target chat routing'}],
+                 'context': 'Structured Quick Apply payload; images/files bounded; target chat routing'},
+                {'id': 'ironclaw', 'configured': bool(self.ironclaw_program) and bool(self.ironclaw_values),
+                 'billing': 'Remote IronClaw runtime (default model observe: morph-dsv41flash-1017)',
+                 'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': False,
+                 'context': 'SSH session; tasks via ironclaw run -m and answer read back; no UI relaying yet'}],
                 'automatic_fallback': False}
         allowed = {'question', 'thread_id'} if name in ('codex_followup', 'reprise_followup') else {'question', 'paths'}
         if name == 'reprise_followup':
@@ -135,7 +143,7 @@ class Bridge:
             raise ValueError('Invalid question or arguments')
         routing = {}
         backend = args.get('backend', 'codex')
-        if backend not in ('codex', 'claude-code', 'claude-desktop'):
+        if backend not in ('codex', 'ironclaw', 'claude-code', 'claude-desktop'):
             raise ValueError('Unknown expertise backend')
         question = args['question']
         if name == 'reprise_delegate':
@@ -152,6 +160,8 @@ class Bridge:
         ident = args.get('thread_id')
         if name == 'reprise_followup' and 'backend' not in args:
             raise ValueError('Explicit followup backend required')
+        if name == 'reprise_followup' and backend == 'ironclaw':
+            raise ValueError('Pas de session IronClaw suiveuse ; run -m est sans état.')
         if name == 'reprise_followup' and backend == 'claude-code':
             if not isinstance(ident, str):
                 raise ValueError('Owned Claude session required')
@@ -168,7 +178,11 @@ class Bridge:
             route = self.db.execute('SELECT model,effort FROM expert_routes WHERE scope=? AND id=?', (self.scope, ident)).fetchone()
             if route:
                 routing = dict(zip(('model', 'effort'), route))
-        if backend != 'claude-desktop' and not (self.program if backend == 'codex' else self.claude_program):
+        if backend == 'ironclaw' and not self.ironclaw_values:
+            return {'status': 'engine_unavailable', 'backend': backend,
+                    'reason': 'Point d’acceptation IronClaw (host/port/user/key) non configure', 'automatic_fallback': False}
+        if backend != 'claude-desktop' and not (self.ironclaw_program if backend == 'ironclaw'
+                                                else (self.program if backend == 'codex' else self.claude_program)):
             return {'status': 'engine_unavailable', 'backend': backend, 'reason': 'Requested executable not configured', 'automatic_fallback': False}
         if backend == 'claude-code' and not self.claude_subscription_only:
             return {'status': 'billing_unverified', 'backend': backend, 'reason': 'Operator must confirm paid usage credits disabled before enabling Claude.', 'automatic_fallback': False}
@@ -180,6 +194,11 @@ class Bridge:
                 return {'status': 'budget_blocked', 'reason': 'Daily expertise call cap reached; no automatic retry.'}
             # Reserve before any transmission; failures are charged to this local cap too.
             self.db.execute('INSERT INTO expert_calls VALUES (?,?,1) ON CONFLICT(scope,day) DO UPDATE SET count=count+1', (self.scope, day))
+        if backend == 'ironclaw':
+            result = ironclaw.review(self.ironclaw_program, self.ironclaw_values, self.root, question,
+                                     kind=args.get('kind', 'expertise'), level=args.get('level', 'standard'),
+                                     paths=args.get('paths'), timeout=300)
+            return result | {'backend': backend, 'automatic_fallback': False}
         if backend == 'claude-desktop':
             result = claude_desktop.review(self.root, question, kind=args.get('kind', 'expertise'),
                                           level=args.get('level', 'standard'), paths=args.get('paths'),
@@ -232,10 +251,17 @@ def main():
     parser.add_argument('--claude-program', help='Explicit absolute Claude CLI path; disabled by default')
     parser.add_argument('--claude-included-quota-confirmed', action='store_true', help='Operator confirms paid usage credits disabled; CLI cannot verify this')
     parser.add_argument('--desktop-socket', help='Explicit absolute Quick Entry socket path; disabled by default')
+    parser.add_argument('--ironclaw-config', help='JSON 0600: {host,port,user,key} du point d’acceptation IronClaw')
     args = parser.parse_args()
+    ironclaw_values = {}
+    if args.ironclaw_config:
+        try:
+            ironclaw_values = json.loads(Path(args.ironclaw_config).read_text())
+        except (OSError, ValueError):
+            raise SystemExit('--ironclaw-config doit être un JSON 0600 lisible')
     bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.state, args.daily_limit,
                     claude_program=args.claude_program, claude_subscription_only=args.claude_included_quota_confirmed,
-                    desktop_socket=args.desktop_socket)
+                    desktop_socket=args.desktop_socket, ironclaw_values=ironclaw_values)
     def terminate(signum, frame):
         # Unwind active CLI cleanup before closing the DB and releasing the lock.
         raise SystemExit(128 + signum)

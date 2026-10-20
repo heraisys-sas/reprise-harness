@@ -64,6 +64,14 @@ Un daemon local à la `codexd`/`claude-desktopd` — exploiter le modèle exista
 - États : `stopped / starting / running / stale / failed`, vérifiés par `connect()` (orphelin = `stopped`). Reconnexion bornée (10-60 s, 3 échecs max) ; erreurs permanentes (Permission denied, empreinte inconnue) non retentées.
 - Health ladder déterministe : shell + `ironclaw status` + curl 200 (lecture seule) ; `ironclaw models status` (dispo de slot) ; canary `run -m "PING"` borné (<=1/h).
 - Ordre d'implémentation conseillé : d'abord la preuve de bornage bout en bout (PING->PING puis budget_blocked au 9e appel, sans fallback), ensuite le relais mono-connexion (partie la plus risquée, blocage possible).
+## État de l'implémentation (lot 20/10/2026)
+
+Le canal de tâche est désormais branché dans le pont MCP (pas seulement documenté) :
+- `agent-resume/ironclaw.py` : adaptateur `submit`/`review`/`health` — SSH BatchMode, prompt transmis en base64 (aucun échappement), réponse relue ; clé en octets matérialisée en fichier 0600 puis supprimée ; statuts partagés `engine_unavailable/timed_out/blocked_permission/needs_review`. Testé (13 cas).
+- `agent-resume/codex_expert_mcp.py` : backend `ironclaw` déclaré dans `reprise_backends`, accepté par `reprise_delegate`, **sous le même compteur de budget** (réservation avant dispatch, `budget_blocked`, aucun fallback) ; `reprise_followup` backend ironclaw refusé (run -m sans état) ; nouveau flag CLI `--ironclaw-config '<JSON host,port,user,key>'`. Testé (5 cas via Bridge).
+- `agent-resume/Vault.swift` : purpose `ironclaw-key-v1` ajouté à la whitelist (source) — **recompilation requise** (`sh native-install`) pour que `vault.save(..., purpose='ironclaw-key-v1')` fonctionne.
+
+Restant (suite) : daemon `ironclawd` persistant avec relais UI mono-connexion (schéma ci-dessous), recompilation de `Vault`, fichier `--ironclaw-config` 0600 de référence, vérification bout-en-bout via le pont en conditions réelles.
 ## Sécurité
 
 1. **Coffre, pas fichier clair** : `vault.save(path, clé, purpose='ironclaw-key-v1')` après avoir étendu le bin utilitaire `Vault.swift` (whitelist de `purpose` + service Keychain `local.agent-resume.vault.v1`). Le `purpose` est une **AAD** : changer de clé de purpose invalide le chiffré.
