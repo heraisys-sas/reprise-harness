@@ -14,3 +14,7 @@
 
 
 **Priorité actualisée :** unifier réception (`get_task`), retour (`submit_result`) et délégation (`reprise_delegate`/suivi) dans le même service Reprise pour tous les harness. Premier parcours : question à Claude Desktop, compte gratuit compris, réponse durable récupérable ; aucun repli payant. Dépendances enfants, limites de délégation et absence de verrou bloquant les retours exigées. Cette priorité précède le pilote Work réel, qui reste distinct.
+
+## Ordre de travail quotas actualisé
+
+Le plafond local quotidien des sollicitations Codex est supprimé. Priorité à une observation fiable et sourcée des quotas par compte/pool, avec portée, fraîcheur et inconnus explicites. Le comportement de reprise dépendant des quotas sera conçu ensuite ; ne pas étendre l’automatisation actuelle avant cette validation. Les contrôles fournisseur et protections de concurrence existants sont conservés.

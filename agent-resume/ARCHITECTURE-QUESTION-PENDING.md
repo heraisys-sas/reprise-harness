@@ -1,5 +1,7 @@
 # Question architecturale en attente — récupération de la sortie IA dans Reprise
 
+**Mise à jour du 20/10 :** plafond quotidien local Codex supprimé du code ; les compteurs/plafonds mentionnés ci-dessous décrivent l’état historique lors de l’avis. Contrôles fournisseur conservés. Aucun nombre d’appels restants local ne doit être utilisé pour Codex.
+
 **Statut :** **répondu le 20/10** par Codex Astra (`gpt-6-astra`, effort high) via `reprise_delegate` kind=expertise level=deep — thread `01a15938-9c52-7603-bfc8-4f182098799e`, turn `01a15938-9d06-7031-9cd1-f16cf568682f`, `resumable: true`. Réponse consignée dans « Réponse Astra » ci-dessous. Appel consommé : compteur local 1/8 pour le jour UTC 20/10.
 
 Le blocage du 19/10 en `budget_blocked` venait du **compteur local du pont**, pas d'un quota ChatGPT (voir « D'où sort le plafond »).

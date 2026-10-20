@@ -76,3 +76,7 @@ La revue est une proposition architecturale appuyée sur les sources locales, pa
 
 
 Décision complémentaire : le [service Reprise bidirectionnel](HARNESS-SUPERVISION-ARCHITECTURE.md) regroupera réception, retour et délégation pour chaque harness. Priorité immédiate à la réponse Claude Desktop récupérable, y compris compte gratuit ; les fonctions de reprise et surveillance réutilisent ce registre.
+
+## Ordre de travail quotas actualisé
+
+Le plafond local quotidien des sollicitations Codex est supprimé. Priorité à une observation fiable et sourcée des quotas par compte/pool, avec portée, fraîcheur et inconnus explicites. Le comportement de reprise dépendant des quotas sera conçu ensuite ; ne pas étendre l’automatisation actuelle avant cette validation. Les contrôles fournisseur et protections de concurrence existants sont conservés.

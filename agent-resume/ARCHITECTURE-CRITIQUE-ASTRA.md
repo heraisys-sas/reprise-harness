@@ -1,5 +1,7 @@
 # Critique Astra de l'architecture multi-harness
 
+**Mise à jour du 20/10 :** plafond quotidien local Codex supprimé du code ; les compteurs/plafonds mentionnés ci-dessous décrivent l’état historique lors de l’avis. Contrôles fournisseur conservés. Aucun nombre d’appels restants local ne doit être utilisé pour Codex.
+
 20 octobre 2026 — sous-agent `gpt-6-astra`, raisonnement high, lecture seule du code et des documents. Aucun test ni essai fournisseur exécuté. Revue du contrat cible, pas constat que toutes ses fonctions seraient livrées.
 
 ## Verdict

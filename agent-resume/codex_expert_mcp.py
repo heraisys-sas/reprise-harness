@@ -172,14 +172,15 @@ class Bridge:
             return {'status': 'engine_unavailable', 'backend': backend, 'reason': 'Requested executable not configured', 'automatic_fallback': False}
         if backend == 'claude-code' and not self.claude_subscription_only:
             return {'status': 'billing_unverified', 'backend': backend, 'reason': 'Operator must confirm paid usage credits disabled before enabling Claude.', 'automatic_fallback': False}
-        day = int(time.time()//86400)
-        with self.db:
-            self.db.execute('BEGIN IMMEDIATE')
-            count = self.db.execute('SELECT count FROM expert_calls WHERE scope=? AND day=?', (self.scope, day)).fetchone()
-            if count and count[0] >= self.limit:
-                return {'status': 'budget_blocked', 'reason': 'Daily expertise call cap reached; no automatic retry.'}
-            # Reserve before any transmission; failures are charged to this local cap too.
-            self.db.execute('INSERT INTO expert_calls VALUES (?,?,1) ON CONFLICT(scope,day) DO UPDATE SET count=count+1', (self.scope, day))
+        if backend != 'codex':
+            day = int(time.time()//86400)
+            with self.db:
+                self.db.execute('BEGIN IMMEDIATE')
+                count = self.db.execute('SELECT count FROM expert_calls WHERE scope=? AND day=?', (self.scope, day)).fetchone()
+                if count and count[0] >= self.limit:
+                    return {'status': 'budget_blocked', 'reason': 'Daily expertise call cap reached; no automatic retry.'}
+                # Legacy admission cap for non-Codex backends only.
+                self.db.execute('INSERT INTO expert_calls VALUES (?,?,1) ON CONFLICT(scope,day) DO UPDATE SET count=count+1', (self.scope, day))
         if backend == 'claude-desktop':
             result = claude_desktop.review(self.root, question, kind=args.get('kind', 'expertise'),
                                           level=args.get('level', 'standard'), paths=args.get('paths'),
@@ -228,7 +229,7 @@ def main():
     parser.add_argument('--project-root', required=True)
     parser.add_argument('--socket')
     parser.add_argument('--state', default=str(Path(__file__).parent/'state'))
-    parser.add_argument('--daily-limit', type=int, default=8)
+    parser.add_argument('--daily-limit', type=int, default=8, help='Legacy cap for non-Codex backends only; Codex has no local daily cap')
     parser.add_argument('--claude-program', help='Explicit absolute Claude CLI path; disabled by default')
     parser.add_argument('--claude-included-quota-confirmed', action='store_true', help='Operator confirms paid usage credits disabled; CLI cannot verify this')
     parser.add_argument('--desktop-socket', help='Explicit absolute Quick Entry socket path; disabled by default')

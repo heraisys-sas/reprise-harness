@@ -205,3 +205,7 @@ Critères communs : pas de double comptage après replay/redémarrage, pas de do
 ## Limites et recherches restantes
 
 Aucune nouvelle fonctionnalité de contrôle implémentée par cette décision. Valider les API des versions installées et consulter les documents officiels par harness avant commandes actives. Mesurer l'économie par tâche validée, y compris résumés et escalades ; les inventaires locaux ne démontrent ni une économie ni la fiabilité d'un détecteur de boucle.
+
+## Ordre de travail quotas actualisé
+
+Le plafond local quotidien des sollicitations Codex est supprimé. Priorité à une observation fiable et sourcée des quotas par compte/pool, avec portée, fraîcheur et inconnus explicites. Le comportement de reprise dépendant des quotas sera conçu ensuite ; ne pas étendre l’automatisation actuelle avant cette validation. Les contrôles fournisseur et protections de concurrence existants sont conservés.

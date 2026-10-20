@@ -23,15 +23,19 @@ class BridgeTests(unittest.TestCase):
     def test_followup_requires_own_thread(self):
         with self.assertRaises(ValueError):
             self.bridge.call('codex_followup', {'thread_id': ID, 'question': 'continue'})
-    def test_limit_survives_restart_and_failures(self):
+    def test_codex_has_no_local_cap_even_after_restart_and_old_counter(self):
         with patch('codex_expert_mcp.review', return_value={'status': 'quota_blocked'}) as review:
             for _ in range(2): self.bridge.call('codex_review', {'question': 'review'})
             other = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
             other.program = 'codex'
             try:
-                self.assertEqual(other.call('codex_review', {'question': 'review'})['status'], 'budget_blocked')
+                other.db.execute('INSERT OR REPLACE INTO expert_calls VALUES (?,?,?)', (other.scope, int(time.time()//86400), 999))
+                other.db.commit()
+                for name, args in [('codex_review', {'question': 'review'}),
+                                   ('reprise_delegate', {'question': 'review', 'kind': 'review', 'backend': 'codex'})]:
+                    self.assertEqual(other.call(name, args)['status'], 'quota_blocked')
             finally: other.db.close()
-            self.assertEqual(review.call_count, 2)
+            self.assertEqual(review.call_count, 4)
     def test_followup_preserves_thread(self):
         with patch('codex_expert_mcp.review', return_value={'status': 'finished', 'resumable': True, 'thread_id': ID, 'response': 'review'}) as review:
             self.bridge.call('codex_review', {'question': 'review'})
@@ -138,15 +142,16 @@ class BridgeTests(unittest.TestCase):
             claude.assert_not_called()
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM expert_calls').fetchone()[0],0)
 
-    def test_claude_budget_shared_with_codex_and_failed_session_not_owned(self):
+    def test_codex_does_not_consume_claude_budget_and_failed_session_not_owned(self):
         self.bridge.claude_program = '/claude'
         self.bridge.claude_subscription_only = True
         with patch('codex_expert_mcp.review', return_value={'status':'quota_blocked'}):
             self.bridge.call('codex_review', {'question':'Review'})
         with patch('codex_expert_mcp.claude_review', return_value={'status':'timed_out','resumable':False}) as review:
             self.bridge.call('reprise_delegate', {'backend':'claude-code','kind':'review','question':'Review'})
+            self.bridge.call('reprise_delegate', {'backend':'claude-code','kind':'review','question':'Review'})
             self.assertEqual(self.bridge.call('reprise_delegate', {'backend':'claude-code','kind':'review','question':'Review'})['status'],'budget_blocked')
-            self.assertEqual(review.call_count,1)
+            self.assertEqual(review.call_count,2)
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM claude_expert_routes').fetchone()[0],0)
 
 

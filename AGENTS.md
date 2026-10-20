@@ -16,7 +16,7 @@ Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui s
 ## Architecture — canaux de délégation et leurs limites
 | Canal | Sens | Limite |
 |---|---|---|
-| **Codex** (`reprise_delegate`) | aller-retour, vérifiable | **seul opérationnel** ; plafond **local** de 8 appels/jour UTC/projet/endpoint → `budget_blocked` (compteur `expert_calls` du pont dans `expert.sqlite` — **pas** un quota ChatGPT ; le quota fournisseur donne `quota_blocked`) |
+| **Codex** (`reprise_delegate`) | aller-retour, vérifiable | **seul opérationnel** ; aucun plafond local quotidien Codex ; contrôles fournisseur existants (`quota_blocked`) conservés |
 | **Quick Entry / Quick Apply** | Reprise → Claude Desktop | **unidirectionnel** : soumet un tour, ne relit PAS la réponse (`response: None`) |
 | **MCP `get_task`/`submit_result`** | aller-retour via SQLite | 1 fichier joint, 1 réponse/tâche ; Claude doit invoquer l'outil (pas push) |
 
@@ -62,3 +62,5 @@ Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui s
 - Contrat de référence : `agent-resume/HARNESS-SUPERVISION-ARCHITECTURE.md`. Même service logique Reprise pour réception, retour et délégation inter-harness ; prototypes encore séparés.
 - Priorité : question/réponse Claude Desktop récupérable, compte gratuit compris, sans repli payant. Work/Cowork réel reste une capacité distincte à démontrer.
 - Registre durable des résultats non réclamés ; contrôle des dépendances, budgets et cycles ; aucun verrou de retour conservé pendant une inférence.
+
+- Décision quota : le plafond quotidien local Codex est supprimé. Fiabiliser d’abord la connaissance des quotas par compte/pool ; concevoir ensuite la reprise fondée sur ces quotas. Ne pas étendre entre-temps l’automatisation existante.

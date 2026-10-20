@@ -85,7 +85,7 @@ Le script tente de supprimer le socket Quick Apply, arrête une éventuelle inst
 
 ## Délégation et retour des analyses
 
-Codex fournit un aller-retour exploitable via `reprise_delegate`. Le plafond de huit appels par jour UTC/projet/endpoint est un compteur local : `budget_blocked` indique ce plafond ; `quota_blocked` indique un refus lié au quota fournisseur.
+Codex fournit un aller-retour exploitable via `reprise_delegate`, sans plafond local quotidien d’appels. Les contrôles fournisseur existants restent actifs (`quota_blocked`). Le paramètre historique `--daily-limit` du pont ne concerne plus Codex.
 
 Pour Claude Desktop, l’architecture recommandée par Astra combine trois composants : **Quick Apply déclenche** le tour, **MCP `get_task`/`submit_result` transporte** la demande et le résultat, **SQLite conserve** l’état durable. Un accusé de soumission Quick Apply ne signifie pas que l’analyse est terminée : seul un `submit_result` validé et enregistré marque l’achèvement.
 
