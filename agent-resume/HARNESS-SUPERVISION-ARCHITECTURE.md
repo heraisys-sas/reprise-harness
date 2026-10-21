@@ -223,3 +223,7 @@ Le [registre d’observations](QUOTA-KNOWLEDGE.md) distingue désormais route, p
 Le [contrat d’installation autonome](INSTALLATION-CONTRACT.md) définit le paquet indépendant du dépôt, les données durables séparées et les opérations `inspect`, `plan`, `apply`, `verify`, `remove`. Premier parcours complet Harness, puis extension par capacités prouvées. Installation, activation, découverte des outils et résultat vérifié sont des états distincts ; installer une intégration ne lui accorde pas automatiquement l’autorisation d’agir. Chantier planifié, non livré.
 
 L’intégration inclut les consignes du harness pour utiliser ce service de manière économique : découverte, tâches bornées, contexte minimal, réutilisation pertinente et escalade justifiée. Voir l’[exigence d’installation inter-harness](INSTALLATION-CONTRACT.md#usage-inter-harness-depuis-codex-et-les-autres-clients). La décision de déléguer n’est pas systématique ; le coût total et la réussite priment sur un prix de token ou un taux de cache isolé.
+
+## Clarifications bidirectionnelles en cours de mission
+
+Le [contrat de clarification](CLARIFICATION-CONTRACT.md) planifie les questions intermédiaires de l’expert, les réponses du demandeur et l’escalade humaine si nécessaire. Identité, persistance et récupération communes ; une question n’est pas un résultat final. Les skills/instructions devront encourager le recadrage utile et les alternatives ; le service contrôlera routage, déduplication et budgets. Ce protocole automatique n’est pas encore livré par les follow-ups actuels.
