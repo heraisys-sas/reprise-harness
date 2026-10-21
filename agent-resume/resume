@@ -12,6 +12,10 @@ import subprocess
 import sys
 import uuid
 import zipfile
+if len(sys.argv) > 1 and sys.argv[1] in ('state-status', 'state-plan', 'state-apply'):
+    import state_setup
+    sys.exit(state_setup.main(Path(__file__).resolve().parent, sys.argv[1:]))
+
 if len(sys.argv) > 1 and sys.argv[1] in ('state-init', 'state-import'):
     import state_install
     state_install.main(sys.argv[1:])

@@ -23,7 +23,7 @@ Le remplacement du runtime est préparé avant renommage ; une exception de publ
 
 Swift ne cherche plus Homebrew, Python.framework ou `env python3` en mode embarqué. Il lance les helpers avec `-E -s -B`, retire les variables de personnalisation Python et borne les sous-processus comme auparavant. Les imports des helpers voisins restent disponibles ; `-I` est réservé à la sonde de bibliothèque standard. Un runtime absent produit un diagnostic visible. Les helpers continuent d’utiliser `sys.executable` pour leurs enfants : l’interpréteur reste dans le bundle.
 
-L’archive n’est pas élaguée : bibliothèque standard, bibliothèques natives, ressources et notices de pip restent présentes. Aucune dépendance Python supplémentaire de production, aucun `pip install` lors de l’installation utilisateur. Les harness et leurs authentifications restent externes. Les chemins stables pour intégrations/LaunchAgents, la sélection graphique d’état, la signature/notarisation et le compte vierge relèvent encore des incréments suivants.
+L’archive n’est pas élaguée : bibliothèque standard, bibliothèques natives, ressources et notices de pip restent présentes. Aucune dépendance Python supplémentaire de production, aucun `pip install` lors de l’installation utilisateur. Les harness et leurs authentifications restent externes. Les chemins stables pour intégrations/LaunchAgents, la validation visuelle de la préparation graphique d’état, la signature/notarisation et le compte vierge relèvent encore des incréments suivants.
 
 ## Licences et sources
 
@@ -46,3 +46,7 @@ Aucune application lancée, aucun service redémarré, aucune migration de donn�
 ## Dépendances natives Apple
 
 `FoundationModels` est un framework Swift système, distinct du runtime Python et du SDK Python Apple FM (non utilisé). La synthèse est facultative et exige un modèle Apple Intelligence disponible ; `FoundationExplain --status` permet une sonde sans génération. `NaturalLanguage` fournit séparément les embeddings. Les modèles ne sont pas embarqués. Le manifeste `native-manifest.json` vérifie et enregistre minimum macOS 26.0, SDK et empreintes des quatre exécutables natifs. Voir le [contrat d’installation](INSTALLATION-CONTRACT.md#prérequis-apple--foundation-models).
+
+## Préparation graphique avant utilisation
+
+Le bundle dispose d’un parcours exclusif de création/import explicite des états, sans commande manuelle, fondé sur `state-status`, `state-plan` et `state-apply`. Il utilise ce runtime sans ouvrir de registre avant choix, plan et confirmation. Le paquet de helpers inclut `state_setup.py` ; `StateSetup.swift` est compilé dans Reprise. Les prérequis et refus du runtime restent visibles sur cet écran. Parcours compilé et backend testé, sans lancement GUI : voir [le contrat](INSTALLATION-CONTRACT.md#quatrième-incrément-d1--préparation-graphique-des-états).

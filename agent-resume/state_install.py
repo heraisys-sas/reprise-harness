@@ -53,12 +53,14 @@ def _target(path):
     return path
 
 
-def initialize(target):
+def initialize(target, setup_id=None):
     target = _target(target)
     with tempfile.TemporaryDirectory(prefix='.reprise-init-', dir=target.parent) as temporary:
         stage = Path(temporary) / 'state'
         stage.mkdir(mode=0o700)
         receipt = {'format': FORMAT, 'status': 'ready', 'operation': 'initialize', 'id': str(uuid.uuid4())}
+        if setup_id is not None:
+            receipt['setup_id'] = setup_id
         _write(stage / MARKER, receipt)
         # rename refuses a concurrent nonempty target; no existing state is merged.
         if target.exists() or target.is_symlink():
@@ -108,7 +110,7 @@ def _copy(source, destination, inventory):
         output.chmod(0o600)
 
 
-def import_state(source, target, source_stopped=False):
+def import_state(source, target, source_stopped=False, setup_id=None):
     if not source_stopped:
         raise ValueError('Import hors ligne requis : confirmer --source-stopped après arrêt des écrivains.')
     source = Path(source).expanduser().absolute()
@@ -143,6 +145,8 @@ def import_state(source, target, source_stopped=False):
         receipt = {'format': FORMAT, 'status': 'ready', 'operation': 'import', 'id': operation,
                    'backup': str(backup), 'target': str(target), 'files': files, 'source_files': before,
                    'schema_policy': 'preserved-without-migration'}
+        if setup_id is not None:
+            receipt['setup_id'] = setup_id
         _write(stage / MARKER, receipt)
         # A complete verified recovery copy exists before publication. If publication
         # fails, it remains available; retry never overwrites it or the destination.

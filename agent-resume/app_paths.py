@@ -7,13 +7,21 @@ def bundled(root):
     return root.name == 'helpers' and root.parent.name == 'Resources' and root.parent.parent.name == 'Contents'
 
 
-def state_directory(root, name="state"):
+def state_location(root, name="state"):
     root = Path(root).resolve()
     if 'AGENT_RESUME_STATE' in os.environ:
-        return Path(os.environ['AGENT_RESUME_STATE']).expanduser() if name == 'state' else Path(os.environ['AGENT_RESUME_STATE']).expanduser() / name
+        selected = Path(os.environ['AGENT_RESUME_STATE']).expanduser()
+        return selected if name == 'state' else selected / name
     if not bundled(root):
         return root / name
-    target = Path.home() / 'Library/Application Support/Reprise' / name
+    return Path.home() / 'Library/Application Support/Reprise' / name
+
+
+def state_directory(root, name="state"):
+    root = Path(root).resolve()
+    target = state_location(root, name)
+    if 'AGENT_RESUME_STATE' in os.environ or not bundled(root):
+        return target
     legacy = root.parents[3] / name
     if any(legacy.glob('*.sqlite')) and not target.exists():
         raise RuntimeError('État historique détecté près du bundle ; import sauvegardé requis, ou AGENT_RESUME_STATE explicite.')

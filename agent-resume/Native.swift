@@ -17,6 +17,17 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             ? "Runtime Python embarqué absent ou non exécutable. Réinstallez Reprise."
             : nil
     }
+    @Published var stateReady = CommandLine.arguments.count > 1
+    @Published var setupBusy = false
+    @Published var setupStatus: [String: Any] = [:]
+    @Published var setupPlan: [String: Any]? = nil
+    @Published var setupReceipt: [String: Any]? = nil
+    @Published var setupMessage = "Vérification de l’état local…"
+    @Published var setupSource = ""
+    @Published var setupOperation = "import"
+    @Published var setupConfirmNew = false
+    @Published var setupSourceStopped = false
+    var setupProcess: Process?
     @Published var scheduler: [String: Any] = [:]
     @Published var quotaKnowledge: [String: Any] = [:]
     @Published var quotaBusy = false
@@ -118,7 +129,8 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         window.center()
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(reload), name: NSWorkspace.didLaunchApplicationNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(reload), name: NSWorkspace.didTerminateApplicationNotification, object: nil)
-        refresh(); show(); analyzeLocal()
+        show()
+        if usesBundledRuntime { checkState() } else { refresh(); analyzeLocal() }
         Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in self.refresh() }
         // The generative synthesis is a slow-changing recap: run it far less
         // often than the lightweight refresh (and it is digest-cached anyway).
@@ -128,7 +140,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @objc func quit() { NSApp.terminate(nil) }
     @objc func reload() { refresh() }
     func execute(_ args: [String]) -> [String: Any]? {
-        guard runtimeError == nil else { return nil }
+        guard runtimeError == nil, stateReady || ["state-status", "state-plan", "state-apply"].contains(args.first ?? "") else { return nil }
         let process = Process(); let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: python)
         process.arguments = (python == "/usr/bin/env" ? ["python3"] : []) + (usesBundledRuntime ? ["-E", "-s", "-B"] : []) + [root.appendingPathComponent("resume").path] + args
@@ -147,6 +159,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         } catch { return nil }
     }
     func refresh() {
+        guard stateReady else { return }
         running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
         if busy { refreshPending = true; return }; busy = true
         DispatchQueue.global(qos: .utility).async {
@@ -340,7 +353,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         UserDefaults.standard.set(enabled, forKey: "SharedCodexStartup")
     }
     func analyzeLocal() {
-        guard !analysisBusy else { return }
+        guard stateReady, !analysisBusy else { return }
         // Throttle: never re-run the generative synthesis more than once / 10 min.
         if Date().timeIntervalSince(lastSynthesisAt) < 600 { return }
         lastSynthesisAt = Date()

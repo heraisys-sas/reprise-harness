@@ -194,3 +194,14 @@ Vérification : `python3 -W error::ResourceWarning -m unittest discover -s agent
 ### Prérequis du prototype macOS
 
 Reprise cible macOS **26.0+** ; construction avec SDK macOS **26+**, Swift et Python développeur. Le bundle ARM64 peut embarquer son propre CPython (voir [RUNTIME-PACKAGING.md](RUNTIME-PACKAGING.md)). La synthèse locale utilise le framework Swift Foundation Models, sans dépendance au SDK Python Apple FM. Apple Intelligence doit être disponible sur l’appareil pour cette fonction facultative ; son absence conserve les vérifications déterministes. Diagnostic sans génération : `Reprise.app/Contents/MacOS/FoundationExplain --status`. Les versions minimales effectivement produites figurent dans `Contents/Resources/native-manifest.json`.
+
+### Préparer les états depuis le bundle
+
+Sans arguments de développement, Reprise présente le parcours de préparation avant sa supervision :
+
+1. Choisir **Importer un état existant** et sélectionner le dossier contenant `tasks.sqlite`, ou choisir une création neuve volontaire.
+2. Prévisualiser les sources, destinations et sauvegardes. Le dossier Quick Apply associé, s’il est reconnu, figure dans le plan ; les états UX séparés restent hors de ce parcours.
+3. Arrêter les applications/services qui écrivent dans ces états, puis confirmer l’attestation et appliquer. Reprise ne les arrête pas.
+4. Vérifier le reçu et les sauvegardes, puis choisir **Continuer**. Une interruption retrouve le plan conservé et les étapes publiées ; un conflit bloque sans écrasement.
+
+Un ancien état principal seul peut être conservé et son dossier Quick préparé séparément par ce même écran. Le mode développement (`native-install --open`) conserve son état historique explicite. Les commandes CLI `state-init`/`state-import` restent disponibles ; `state-status`/`state-plan` sont sans écriture. Interface compilée, parcours visuel et compte vierge non encore validés : voir [INSTALLATION-CONTRACT.md](INSTALLATION-CONTRACT.md).

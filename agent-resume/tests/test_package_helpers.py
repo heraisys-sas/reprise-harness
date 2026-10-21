@@ -63,6 +63,37 @@ class PackageHelpersTests(unittest.TestCase):
             self.assertTrue((target / 'tasks.sqlite').exists())
             self.assertFalse((root / 'state').exists())
 
+    def test_packaged_setup_preview_and_apply_without_initial_registry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary).resolve()
+            root = package(SOURCE, folder / 'Reprise.app')
+            environment = dict(os.environ, HOME=str(folder / 'home'))
+            for key in ('AGENT_RESUME_STATE', 'REPRISE_ALLOW_NEW_STATE', 'PYTHONPATH'):
+                environment.pop(key, None)
+            def command(*args, input=None):
+                result = subprocess.run([sys.executable, str(root / 'resume'), *args], env=environment,
+                                        input=input, capture_output=True, text=True)
+                return result, json.loads(result.stdout)
+            result, state = command('state-status')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(state['status'], 'needs_setup')
+            self.assertFalse((folder / 'home').exists())
+            result, planned = command('state-plan', '--operation', 'initialize', '--target', state['target'],
+                                      '--quick-target', state['quick_target'])
+            self.assertEqual(planned['status'], 'planned')
+            self.assertFalse((folder / 'home').exists())
+            result, refused = command('state-apply', input=json.dumps({'plan': planned['plan']}))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(refused['status'], 'refused')
+            self.assertFalse((folder / 'home').exists())
+            result, done = command('state-apply', input=json.dumps({'plan': planned['plan'], 'confirm_new': True}))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(done['status'], 'completed')
+            result, state = command('state-status')
+            self.assertEqual(state['status'], 'ready')
+            self.assertFalse((Path(state['target']) / 'tasks.sqlite').exists())
+            self.assertFalse((root / 'state').exists())
+
     def test_legacy_state_is_not_silently_replaced(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {}, clear=True):
             folder = Path(temporary).resolve()
