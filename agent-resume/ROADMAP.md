@@ -33,3 +33,9 @@ Acceptation : appels légitimes au-delà des anciens plafonds sans `budget_block
 ## Connaissance des quotas — incrément du 21/10
 
 Registre sourcé par route/compte opaque/pool livré : [contrat, inventaire et limites](QUOTA-KNOWLEDGE.md). CLI `quota-status`, MCP `reprise_quotas`, lecture explicite dans Reprise. Source Codex validée sur le socket existant ; quotas Claude/DSH inconnus. Compteur de cinq heures signalé : mesures non attribuées séparées, reset complet et périmé distinct d’épuisé. Aucun changement de politique de reprise/routage ni de réserve 5 %. Suite : valider les autres sources et la restitution visuelle, puis seulement concevoir la politique multi-compte.
+
+## Installation autonome et intégrations — planifié le 21/10
+
+[Issue de suivi #6](https://github.com/heraisys-sas/reprise-harness/issues/6) · [Contrat d’installation et critères](INSTALLATION-CONTRACT.md). Faire de Reprise le point d’installation et de maintenance de ses outils, sans dépendance au clone Git ni aux outils de développement chez l’utilisateur. Premier parcours complet sur Harness avant généralisation de l’écran « Intégrations ».
+
+Ordre : **D1** paquet autonome, helpers/runtime et données séparées → **D2** installation/maintenance Harness depuis Reprise → **D3** validation sur compte macOS vierge, conflits et mises à jour interrompues → **D4** autres clients, signature/notarisation et distribution. Packaging Python à confirmer par prototype ; aucune installation ou activation déclenchée par cette planification. Priorité aller-retour Claude maintenue ; suivi des quotas indépendant.

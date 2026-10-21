@@ -217,3 +217,7 @@ Les plafonds locaux non-Codex restants doivent également disparaître : lot exp
 ## État quota du 21/10
 
 Le [registre d’observations](QUOTA-KNOWLEDGE.md) distingue désormais route, profil explicite, compte pseudonyme, pool, source, date de lecture et fraîcheur. Il est consultable sans commande d’inférence. La source Codex actuelle est vérifiée en métadonnées ; Claude/DSH et rattachement fiable des journaux restent inconnus. Les politiques du scheduler existant ne consomment pas ce nouveau registre. Les plafonds journaliers mentionnés plus haut ont été retirés pour tous les backends dans `3bae737` ; la réserve fournisseur 5 % demeure.
+
+## Installation et maintenance des intégrations
+
+Le [contrat d’installation autonome](INSTALLATION-CONTRACT.md) définit le paquet indépendant du dépôt, les données durables séparées et les opérations `inspect`, `plan`, `apply`, `verify`, `remove`. Premier parcours complet Harness, puis extension par capacités prouvées. Installation, activation, découverte des outils et résultat vérifié sont des états distincts ; installer une intégration ne lui accorde pas automatiquement l’autorisation d’agir. Chantier planifié, non livré.
