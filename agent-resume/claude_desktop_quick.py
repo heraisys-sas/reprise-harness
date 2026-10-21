@@ -42,7 +42,18 @@ class Endpoint:
         self.db.execute('CREATE TABLE IF NOT EXISTS quick_submissions(scope TEXT,id TEXT,payload TEXT,day INTEGER,PRIMARY KEY(scope,id))')
         self.db.execute('CREATE TABLE IF NOT EXISTS quick_calls(scope TEXT,day INTEGER,count INTEGER,PRIMARY KEY(scope,day))')
         self.db.commit()
-        self.scope = str(state.resolve())
+        self.db.execute('CREATE TABLE IF NOT EXISTS quick_identity(scope TEXT NOT NULL)')
+        identities = {row[0] for row in self.db.execute('SELECT scope FROM quick_identity')}
+        identities.update(row[0] for row in self.db.execute('SELECT DISTINCT scope FROM quick_submissions'))
+        if self.db.execute("SELECT 1 FROM sqlite_master WHERE name='delegation_requests'").fetchone():
+            identities.update(row[0] for row in self.db.execute('SELECT DISTINCT scope FROM delegation_requests'))
+        if len(identities) > 1:
+            self.db.close()
+            raise ValueError('Identités Quick Apply multiples : réconciliation explicite requise.')
+        self.scope = next(iter(identities), str(state.resolve()))
+        if not self.db.execute('SELECT 1 FROM quick_identity').fetchone():
+            self.db.execute('INSERT INTO quick_identity VALUES (?)', (self.scope,))
+        self.db.commit()
         self.requests = Store(self.db, self.scope)
 
     def close(self):

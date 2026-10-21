@@ -17,8 +17,9 @@ def state_directory(root, name="state"):
     legacy = root.parents[3] / name
     if any(legacy.glob('*.sqlite')) and not target.exists():
         raise RuntimeError('État historique détecté près du bundle ; import sauvegardé requis, ou AGENT_RESUME_STATE explicite.')
-    if not any(target.glob('*.sqlite')) and os.environ.get('REPRISE_ALLOW_NEW_STATE') != '1':
-        raise RuntimeError('Initialisation du prototype bloquée : import historique requis ou REPRISE_ALLOW_NEW_STATE=1 explicite pour un état neuf.')
+    from state_install import initialized
+    if not initialized(target) and not any(target.glob('*.sqlite')) and os.environ.get('REPRISE_ALLOW_NEW_STATE') != '1':
+        raise RuntimeError('Initialisation du prototype bloquée : utiliser state-import ou state-init --target explicite (REPRISE_ALLOW_NEW_STATE=1 reste compatible).')
     return target
 
 

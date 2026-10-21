@@ -46,6 +46,23 @@ class PackageHelpersTests(unittest.TestCase):
             package(SOURCE, moved)
             self.assertFalse((root / 'stale.py').exists())
 
+    def test_bundled_explicit_initialization_without_environment_bypass(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary).resolve()
+            root = package(SOURCE, folder / 'Reprise.app')
+            environment = dict(os.environ, HOME=str(folder / 'home'))
+            for key in ('AGENT_RESUME_STATE', 'REPRISE_ALLOW_NEW_STATE', 'PYTHONPATH'):
+                environment.pop(key, None)
+            target = folder / 'home/Library/Application Support/Reprise/state'
+            result = subprocess.run([sys.executable, str(root / 'resume'), 'state-init', '--target', str(target)],
+                                    env=environment, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = subprocess.run([sys.executable, str(root / 'resume'), 'scheduler-status'],
+                                    env=environment, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((target / 'tasks.sqlite').exists())
+            self.assertFalse((root / 'state').exists())
+
     def test_legacy_state_is_not_silently_replaced(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {}, clear=True):
             folder = Path(temporary).resolve()

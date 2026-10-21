@@ -12,6 +12,11 @@ import subprocess
 import sys
 import uuid
 import zipfile
+if len(sys.argv) > 1 and sys.argv[1] in ('state-init', 'state-import'):
+    import state_install
+    state_install.main(sys.argv[1:])
+    sys.exit(0)
+
 import scheduler
 import run_status
 import engines
