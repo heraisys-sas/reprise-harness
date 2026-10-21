@@ -104,3 +104,11 @@ L’import couvre exactement le dossier sélectionné, récursivement : `state`,
 La cohérence entre plusieurs bases exige l’arrêt effectif des écrivains : l’attestation et la détection par empreintes ne constituent pas un verrou contre un autre processus. Ne pas publier simultanément vers la même cible ; le remplacement atomique ne fournit pas d’exclusion contre un acteur non coopératif. Aucun état réel n’a été importé pendant le développement. Le runtime Python embarqué, l’interface graphique d’installation et la validation sur compte macOS vierge restent à livrer ; D1 reste décoché.
 
 Validation de cet incrément : **317 tests, OK, 1 ignoré**, dont 17 tests d’import/initialisation sur copies temporaires et 3 tests du payload déplaçable. `py_compile`, `git diff --check` et `sh agent-resume/native-install` hors sandbox réussis, sans `--open`. Les avertissements de ressources non fermées dans les anciennes fixtures restent présents. Ruff/Gitleaks absents, aucun scan de ces outils revendiqué. Aucun redémarrage, aucune migration de données réelles.
+
+### Troisième incrément D1 — runtime Python ARM64
+
+Le prototype embarque maintenant CPython 3.13.16 (python-build-standalone 20261020) via une archive locale officielle épinglée par SHA256. `native-install --runtime-archive FILE` vérifie, extrait et teste le runtime avant de l’intégrer ; aucun téléchargement implicite. Le lancement embarqué utilise exclusivement ce runtime, sans repli système, avec environnement Python assaini. Provenance, empreintes et notices tierces sont conservées. Les rebuilds refusent un runtime modifié et un remplacement interrompu sans archive explicite. Détails, commande de build et limites : [RUNTIME-PACKAGING.md](RUNTIME-PACKAGING.md).
+
+Le runtime est ARM64 seulement ; Intel, universal, compte macOS vierge, parcours graphique d’initialisation et chemins stables d’intégrations restent non validés. L’application n’a pas été lancée. D1 reste décoché : ce prototype n’établit ni distribution complète ni mise à jour transactionnelle/signée du bundle.
+
+Preuves du troisième incrément : **330 tests OK, 2 ignorés** avec CPython embarqué ; **13 tests ciblés OK** avec archive réelle, dont déplacement, initialisation temporaire, altération et reprise après échec de publication. Compilation sans lancement réussie. Aucun service ni état réel modifié.

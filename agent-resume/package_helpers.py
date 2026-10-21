@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+from package_runtime import metadata
 
 
 ASSETS = ('VERSION', 'app_paths.py', 'state_install.py', 'claude_desktop.py', 'claude_desktop_cli.py', 'claude_desktop_quick.py', 'claude_desktop_rpc.py', 'claude_expert.py', 'codex_expert.py', 'codex_expert_mcp.py', 'codex_rpc.py', 'connection.py', 'dashboard.html', 'dashboard.py', 'delegation_store.py', 'desktop_app_probe.py', 'desktop_job_probe.py', 'desktop_mode.py', 'detect.py', 'engine_events.py', 'engines.py', 'harness-events.cjs', 'install-expertise.py', 'install-quick-entry.py', 'local_analysis.py', 'owner_route.py', 'package_helpers.py', 'presentation.py', 'private_search.py', 'prompt.example.txt', 'quota.py', 'quota_knowledge.py', 'reprise-delegation.md', 'reprise_health.py', 'reprise_logs.py', 'resume', 'run_status.py', 'runtime.py', 'scheduler.py', 'shared_mode.py', 'task_archive.py', 'ux_review_probe.py', 'vault.py', 'verdict-schema.json')
@@ -21,7 +22,7 @@ def package(source, app):
         for item in files:
             shutil.copyfile(item, payload / item.name)
         manifest = {'version': (source / 'VERSION').read_text().strip(),
-                    'runtime': 'external-python-required',
+                    'runtime': metadata(app),
                     'files': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}}
         (payload / 'payload-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
         destination = resources / 'helpers'

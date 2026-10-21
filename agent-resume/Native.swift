@@ -5,7 +5,18 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     var item: NSStatusItem!
     var window: NSWindow!
     let root = CommandLine.arguments.count > 1 ? URL(fileURLWithPath: CommandLine.arguments[1]) : Bundle.main.resourceURL!.appendingPathComponent("helpers")
-    let python = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : (["/Library/Frameworks/Python.framework/Versions/Current/bin/python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"].first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/env")
+    let usesBundledRuntime = CommandLine.arguments.count <= 1
+    let python: String = {
+        if CommandLine.arguments.count <= 1 {
+            return Bundle.main.resourceURL!.appendingPathComponent("runtime/bin/python3").path
+        }
+        return CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : (["/Library/Frameworks/Python.framework/Versions/Current/bin/python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"].first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/env")
+    }()
+    var runtimeError: String? {
+        usesBundledRuntime && !FileManager.default.isExecutableFile(atPath: python)
+            ? "Runtime Python embarqué absent ou non exécutable. Réinstallez Reprise."
+            : nil
+    }
     @Published var scheduler: [String: Any] = [:]
     @Published var quotaKnowledge: [String: Any] = [:]
     @Published var quotaBusy = false
@@ -117,9 +128,15 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @objc func quit() { NSApp.terminate(nil) }
     @objc func reload() { refresh() }
     func execute(_ args: [String]) -> [String: Any]? {
+        guard runtimeError == nil else { return nil }
         let process = Process(); let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: python)
-        process.arguments = (python == "/usr/bin/env" ? ["python3"] : []) + [root.appendingPathComponent("resume").path] + args
+        process.arguments = (python == "/usr/bin/env" ? ["python3"] : []) + (usesBundledRuntime ? ["-E", "-s", "-B"] : []) + [root.appendingPathComponent("resume").path] + args
+        var environment = ProcessInfo.processInfo.environment
+        for name in ["PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE", "PYTHONSTARTUP"] { environment.removeValue(forKey: name) }
+        environment["PYTHONNOUSERSITE"] = "1"
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        process.environment = environment
         process.standardOutput = pipe; process.standardError = FileHandle.nullDevice
         do {
             try process.run()
@@ -160,7 +177,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                     if self.desktopStartup { self.desktopAction("launch"); self.desktopAction("start") }
                 }
                 if let result { self.snapshot = result; self.lastRefresh = Date() }
-                else { self.snapshot["error"] = "Actualisation indisponible. Les dernières informations restent affichées." }
+                else { self.snapshot["error"] = self.runtimeError ?? "Actualisation indisponible. Les dernières informations restent affichées." }
                 self.item.button?.title = self.counters.map { "\($0.1) \($0.3.map(String.init) ?? "—")" }.joined(separator: " · ")
                 if self.refreshPending { self.refreshPending = false; self.refresh() }
             }

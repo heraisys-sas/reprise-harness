@@ -3,6 +3,20 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 APP="$ROOT/Reprise.app"
 VERSION=$(cat "$ROOT/VERSION")
+OPEN=0
+RUNTIME_ARCHIVE=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --open) OPEN=1; shift ;;
+        --runtime-archive)
+            [ "$#" -ge 2 ] || { echo "--runtime-archive exige un chemin" >&2; exit 2; }
+            RUNTIME_ARCHIVE=$2; shift 2 ;;
+        *) echo "Usage: $0 [--runtime-archive FILE] [--open]" >&2; exit 2 ;;
+    esac
+done
+if [ -n "$RUNTIME_ARCHIVE" ]; then
+    python3 "$ROOT/package_runtime.py" --archive "$RUNTIME_ARCHIVE" --app "$APP"
+fi
 python3 "$ROOT/package_helpers.py" "$ROOT" "$APP"
 mkdir -p "$APP/Contents/MacOS"
 swiftc -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Native.swift" "$ROOT/Dashboard.swift" -o "$APP/Contents/MacOS/Reprise"
@@ -14,6 +28,6 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 # Launch only when explicitly requested: a plain run just rebuilds.
 # Compiling should not disturb an already-running instance.
-if [ "${1:-}" = "--open" ]; then
+if [ "$OPEN" = 1 ]; then
     open -n -a "$APP" --args "$ROOT" "$(command -v python3)"
 fi

@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "python_version": "3.13.16",
+  "release": "20261020",
+  "targets": {
+    "arm64": {
+      "triple": "aarch64-apple-darwin",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261020/cpython-3.13.16%2B20261020-aarch64-apple-darwin-install_only.tar.gz",
+      "sha256": "235f3d5b182a171f6564ee98ef2812cfb2da8a73c4a37fca1937b25702f94880",
+      "size": 25400715,
+      "minimum_macos_runtime": "11.0"
+    }
+  },
+  "notices": "PYTHON-THIRD-PARTY-NOTICES.txt",
+  "notices_sha256": "2ab1326640dc995118d3e4ea8c95f38b7269a2bb1ec8bb4afd643146040b2f8a",
+  "metadata_archive_sha256": "e0cbb8f06082ef30841cda8bf409d7348659cb1be6d66931017fd9489345245e"
+}
