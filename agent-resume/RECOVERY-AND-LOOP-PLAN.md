@@ -91,3 +91,7 @@ Décision utilisateur du 20/10. Statut au 21/10 : **premier lot implémenté en 
 4. **Ensuite seulement**, définir le comportement de reprise selon ces quotas ; ne pas généraliser entre-temps la reprise automatique actuelle.
 
 Acceptation : appels légitimes au-delà des anciens plafonds sans `budget_blocked` local ; anciens compteurs/options sans blocage fantôme ; doublon après redémarrage sans nouvelle exécution ; envoi incertain sans renvoi automatique ; cycle de délégation signalé ; répétition légitime non assimilée automatiquement à une boucle ; refus fournisseur conservé et quota inconnu affiché explicitement. Tests simulés d’abord, aucun appel payant requis pour ces contrôles.
+
+## Connaissance des quotas — état du 21/10
+
+Premier incrément livré et documenté dans [QUOTA-KNOWLEDGE.md](QUOTA-KNOWLEDGE.md) : collecte native Codex sans tour de modèle, identités opaques, pools et fenêtres, dates/fraîcheur/inconnus. Les compteurs tokens/coûts DSH et les refus Claude ne deviennent pas des quotas restants. Aucune politique automatique supplémentaire n’est activée. Le cache global historique du scheduler ne démontre pas un suivi multi-compte et sa migration reste une étape future.

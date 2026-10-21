@@ -20,6 +20,8 @@ from engines import executable, options
 SCHEMA = {'type': 'object', 'properties': {'question': {'type': 'string', 'maxLength': 12000}, 'request_key': {'type': 'string', 'maxLength': 128}, 'parent_request_key': {'type': 'string', 'maxLength': 128}},
           'required': ['question', 'request_key'], 'additionalProperties': False}
 TOOLS = [
+    {'name': 'reprise_quotas', 'description': 'Observe quota knowledge by explicit engine/route, account and pool. Cached by default; refresh reads native metadata only. Unknown is not zero. Never resumes/routes inference.',
+     'inputSchema': {'type': 'object', 'properties': {'engine': {'type': 'string', 'enum': ['codex-cli', 'codex-server', 'codex-parent', 'claude-code', 'claude-desktop', 'harness-cli']}, 'refresh': {'type': 'boolean'}}, 'additionalProperties': False}},
     {'name': 'reprise_requests', 'description': 'Recover durable requests/results by caller-persisted request_key, or list requests after a lost acknowledgement. Never dispatches inference.',
      'inputSchema': {'type': 'object', 'properties': {'request_key': {'type': 'string'}, 'acknowledge': {'type': 'boolean'}}, 'additionalProperties': False}},
     {'name': 'reprise_delegate', 'description': 'Delegate expertise, review or a bounded batch. Default Codex: standard Sol, deep Astra, standard batch Luna. Explicit claude-code when configured: Sonnet/medium or Opus/high, no tools, only question and supplied project file snapshots. Returns text/patches to verify. Never silently switches backend or billing. Continue via reprise_followup.',
@@ -83,6 +85,13 @@ class Bridge:
         self.requests = Store(self.db, str(self.root))
 
     def call(self, name, args):
+        if name == 'reprise_quotas':
+            if not isinstance(args, dict) or args.keys() - {'engine', 'refresh'} or not isinstance(args.get('refresh', False), bool):
+                raise ValueError('Invalid quota observation arguments')
+            import quota_knowledge
+            engine = args.get('engine', 'codex-server')
+            settings = self.values if engine in ('codex-server', 'codex-parent') else self.desktop_values if engine == 'claude-desktop' else {}
+            return {'status': 'finished', 'automatic_fallback': False, 'quota_knowledge': quota_knowledge.status(self.db, engine, settings, refresh=args.get('refresh', False))}
         if name == 'reprise_requests':
             return self.requests.lookup(args)
         if name in ('reprise_backends', 'reprise_health', 'reprise_history', 'reprise_resume'):

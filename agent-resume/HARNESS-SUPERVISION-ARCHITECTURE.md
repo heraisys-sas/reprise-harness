@@ -213,3 +213,7 @@ Aucune nouvelle fonctionnalité de contrôle implémentée par cette décision. 
 Le plafond local quotidien des sollicitations Codex est supprimé. Priorité à une observation fiable et sourcée des quotas par compte/pool, avec portée, fraîcheur et inconnus explicites. Le comportement de reprise dépendant des quotas sera conçu ensuite ; ne pas étendre l’automatisation actuelle avant cette validation. Les contrôles fournisseur et protections de concurrence existants sont conservés.
 
 Les plafonds locaux non-Codex restants doivent également disparaître : lot explicite « remplacer les plafonds arbitraires restants » dans [la roadmap](ROADMAP.md). Déduplication et protection contre les boucles précèdent cette suppression ; connaissance fiable des quotas puis politique de reprise viennent ensuite.
+
+## État quota du 21/10
+
+Le [registre d’observations](QUOTA-KNOWLEDGE.md) distingue désormais route, profil explicite, compte pseudonyme, pool, source, date de lecture et fraîcheur. Il est consultable sans commande d’inférence. La source Codex actuelle est vérifiée en métadonnées ; Claude/DSH et rattachement fiable des journaux restent inconnus. Les politiques du scheduler existant ne consomment pas ce nouveau registre. Les plafonds journaliers mentionnés plus haut ont été retirés pour tous les backends dans `3bae737` ; la réserve fournisseur 5 % demeure.

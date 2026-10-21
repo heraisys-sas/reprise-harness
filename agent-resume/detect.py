@@ -97,7 +97,7 @@ def scan(home=None):
                 active += int(details.get('active', False))
                 stamp = details.get('measured_at')
                 if details.get('rates') and stamp and (quota is None or stamp > quota['measured_at']):
-                    quota = {'rates': details['rates'], 'measured_at': stamp}
+                    quota = {'rates': details['rates'], 'measured_at': stamp, 'source': 'codex_rollout.token_count.rate_limits', 'evidence_scope': 'session', 'account_key': None, 'freshness': 'unverified'}
             except (OSError, ValueError, TypeError):
                 continue
             if status:

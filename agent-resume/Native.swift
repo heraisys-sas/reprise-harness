@@ -7,6 +7,8 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     let root = CommandLine.arguments.count > 1 ? URL(fileURLWithPath: CommandLine.arguments[1]) : Bundle.main.bundleURL.deletingLastPathComponent()
     let python = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : (["/Library/Frameworks/Python.framework/Versions/Current/bin/python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"].first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/env")
     @Published var scheduler: [String: Any] = [:]
+    @Published var quotaKnowledge: [String: Any] = [:]
+    @Published var quotaBusy = false
     @Published var snapshot: [String: Any] = [:]
     @Published var navigationNote = ""
     @Published var page = "overview"
@@ -136,12 +138,14 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             let connection = self.execute(["connection-status"])
             let desktopConnection = self.execute(["desktop-connection-status"])
             let health = self.execute(["reprise-health"])
+            let quotaKnowledge = self.execute(["quota-status"])
             DispatchQueue.main.async {
                 self.busy = false
                 self.scheduler = scheduler ?? [:]
                 self.connection = connection ?? [:]
                 self.desktopConnection = desktopConnection ?? [:]
                 self.health = health ?? [:]
+                self.quotaKnowledge = quotaKnowledge ?? [:]
                 if !self.connectionLoaded, let connection {
                     self.socketPath = connection["configured_socket"] as? String ?? (connection["candidates"] as? [[String: Any]])?.first?["path"] as? String ?? ""
                     self.connectionLoaded = true
@@ -159,6 +163,17 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                 else { self.snapshot["error"] = "Actualisation indisponible. Les dernières informations restent affichées." }
                 self.item.button?.title = self.counters.map { "\($0.1) \($0.3.map(String.init) ?? "—")" }.joined(separator: " · ")
                 if self.refreshPending { self.refreshPending = false; self.refresh() }
+            }
+        }
+    }
+    func refreshQuotas() {
+        guard !quotaBusy else { return }
+        quotaBusy = true
+        DispatchQueue.global(qos: .utility).async {
+            let result = self.execute(["quota-status", "--refresh"])
+            DispatchQueue.main.async {
+                self.quotaBusy = false
+                self.quotaKnowledge = result ?? [:]
             }
         }
     }

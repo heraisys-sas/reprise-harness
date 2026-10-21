@@ -130,6 +130,11 @@ def main():
     desktop_check.add_argument('--socket')
     desktop_check.add_argument('--session')
     sub.add_parser('desktop-connection-status')
+    quota_status = sub.add_parser('quota-status')
+    quota_status.add_argument('--engine', choices=[e for e in engines.ENGINES if e != 'codex'], default='codex-server')
+    quota_status.add_argument('--refresh', action='store_true', help='Read native quota metadata; never starts a turn')
+    quota_status.add_argument('--profile')
+    quota_status.add_argument('--socket')
     sub.add_parser('reprise-health')
     sub.add_parser('restart-chain')
     sub.add_parser('quick-apply-daemon-start')
@@ -163,7 +168,14 @@ def main():
     args = parser.parse_args()
     db = database()
     executable = codex_executable()
-    if args.action == 'add':
+    if args.action == 'quota-status':
+        import quota_knowledge
+        row = db.execute('SELECT options FROM engine_settings WHERE engine=?', (args.engine,)).fetchone()
+        if row is None and args.engine in ('codex-server', 'codex-parent'):
+            row = db.execute("SELECT options FROM engine_settings WHERE engine='codex'").fetchone()
+        settings = (json.loads(row[0]) if row else {}) | {key: getattr(args, key) for key in ('profile', 'socket') if getattr(args, key) is not None}
+        print(json.dumps(quota_knowledge.status(db, args.engine, settings, refresh=args.refresh), ensure_ascii=False))
+    elif args.action == 'add':
         args.session = engines.validate_session(args.engine, args.session)
         settings = engines.options(args.engine, {k: getattr(args, k) for k in ('profile', 'socket', 'parent') if getattr(args, k) is not None})
         when = dt.datetime.fromisoformat(args.at)
@@ -343,7 +355,7 @@ def main():
     elif args.action == 'share':
         dest = Path.cwd() / 'agent-resume-share.zip'
         with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as archive:
-            for name in ('resume', 'VERSION', 'scheduler.py', 'presentation.py', 'connection.py', 'shared_mode.py', 'ROADMAP.md', 'quota.py', 'run_status.py', 'runtime.py', 'engines.py', 'engine_events.py', 'codex_rpc.py', 'owner_route.py', 'task_archive.py', 'codex_expert.py', 'claude_expert.py', 'codex_expert_mcp.py', 'install-expertise.py', 'reprise-delegation.md', 'CODEX-INTEGRATION.md', 'CLAUDE-INTEGRATION.md', 'CACHE-POLICY.md', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'restart-chain', 'claude_desktop.py', 'claude_desktop_quick.py', 'claude_desktop_rpc.py', 'claude_desktop_cli.py', 'desktop_mode.py', 'reprise_logs.py', 'reprise_health.py', 'FoundationExplain.swift', 'install-quick-entry.py', 'ux_review_probe.py', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
+            for name in ('resume', 'VERSION', 'scheduler.py', 'presentation.py', 'connection.py', 'shared_mode.py', 'ROADMAP.md', 'quota.py', 'quota_knowledge.py', 'delegation_store.py', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'run_status.py', 'runtime.py', 'engines.py', 'engine_events.py', 'codex_rpc.py', 'owner_route.py', 'task_archive.py', 'codex_expert.py', 'claude_expert.py', 'codex_expert_mcp.py', 'install-expertise.py', 'reprise-delegation.md', 'CODEX-INTEGRATION.md', 'CLAUDE-INTEGRATION.md', 'CACHE-POLICY.md', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'restart-chain', 'claude_desktop.py', 'claude_desktop_quick.py', 'claude_desktop_rpc.py', 'claude_desktop_cli.py', 'desktop_mode.py', 'reprise_logs.py', 'reprise_health.py', 'FoundationExplain.swift', 'install-quick-entry.py', 'ux_review_probe.py', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
                 archive.write(ROOT / name, 'agent-resume/' + name)
         print(dest)
     elif args.action in ('install', 'uninstall'):

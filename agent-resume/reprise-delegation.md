@@ -26,3 +26,6 @@ Explicit `backend: "claude-desktop"` targets a running Claude Desktop session th
 ## Planned common service — not implemented
 
 The [multi-harness contract](HARNESS-SUPERVISION-ARCHITECTURE.md) targets a single logical Reprise service exposing task receipt, result submission/retrieval and outward delegation to every authorized harness. Existing expertise and task-return probes are still separate. Current priority is a recoverable Claude Desktop answer, including on a free account, without paid fallback. Child requests must retain lineage and bounded depth/concurrency/budget; never hold the result channel or a database transaction while awaiting inference. Existing restricted CLI expertise remains restricted.
+
+
+Quota knowledge is read-only via `reprise_quotas`: explicit engine, cached by default, optional metadata refresh. It reports source, opaque account/pool identity and freshness/unknown states; it is not an admission/routing decision. Claude and Harness quota sources remain unimplemented. The existing Codex 5% guard is unchanged. See [quota knowledge](QUOTA-KNOWLEDGE.md).

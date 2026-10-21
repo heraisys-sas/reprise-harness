@@ -159,14 +159,38 @@ struct Dashboard: View {
                 }
                 Surface {
                     VStack(alignment: .leading, spacing: 18) {
-                        HStack { Text("Disponibilité Codex").font(.headline); Spacer(); Text("Quota du compte").font(.caption.weight(.medium)) }
-                        if let quota = app.snapshot["codex_quota"] as? [String: Any], let rates = quota["rates"] as? [String: Any] {
-                            HStack(alignment: .top, spacing: 28) {
-                                quotaRow("Fenêtre courte", value: rates["primary"] as? [String: Any])
-                                quotaRow("Semaine", value: rates["secondary"] as? [String: Any])
+                        HStack {
+                            Text("Quotas Codex").font(.headline)
+                            Spacer()
+                            Button(app.quotaBusy ? "Lecture…" : "Lire les quotas") { app.refreshQuotas() }.disabled(app.quotaBusy)
+                        }
+                        let knowledge = app.quotaKnowledge
+                        let freshness = knowledge["freshness"] as? String ?? "unobserved"
+                        Text(freshness == "recent_read" ? "Lecture récente · aucune reprise déduite" : "Quota actuel inconnu · lecture absente ou périmée").font(.caption).foregroundStyle(.secondary)
+                        if let stamp = knowledge["observed_at"] as? Double { Text("Lu le " + localDateTime(Date(timeIntervalSince1970: stamp))).font(.caption).foregroundStyle(.secondary) }
+                        if let pools = knowledge["pools"] as? [[String: Any]], !pools.isEmpty {
+                            ForEach(Array(pools.enumerated()), id: \.offset) { _, pool in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Pool : " + (pool["limit_id"] as? String ?? "inconnu")).font(.callout.weight(.semibold))
+                                    if let windows = pool["windows"] as? [[String: Any]] {
+                                        HStack(alignment: .top, spacing: 28) {
+                                            ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
+                                                quotaRow(window["name"] as? String == "secondary" ? "Fenêtre secondaire" : "Fenêtre primaire", value: window, attributed: pool["quota_pool_key"] as? String != nil)
+                                            }
+                                        }
+                                    }
+                                }
                             }
-                            if let stamp = quota["measured_at"] as? String { Text("Mesure du " + friendlyDate(stamp)).font(.caption).foregroundStyle(.secondary).accessibilityLabel("Quota mesuré le " + friendlyDate(stamp)) }
-                        } else { Text("Aucune mesure locale disponible.").foregroundStyle(.secondary) }
+                        } else { Text("Aucune fenêtre fournisseur connue pour cette route.").foregroundStyle(.secondary) }
+                        if let quota = app.snapshot["codex_quota"] as? [String: Any], let rates = quota["rates"] as? [String: Any] {
+                            DisclosureGroup("Dernier signal de session · compte non attribué") {
+                                HStack(alignment: .top, spacing: 28) {
+                                    quotaRow("Fenêtre primaire", value: rates["primary"] as? [String: Any])
+                                    quotaRow("Fenêtre secondaire", value: rates["secondary"] as? [String: Any])
+                                }
+                                if let stamp = quota["measured_at"] as? String { Text("Événement du " + friendlyDate(stamp)).font(.caption).foregroundStyle(.secondary) }
+                            }
+                        }
                     }
                 }
                 Surface {
@@ -279,25 +303,30 @@ struct Dashboard: View {
             }.buttonStyle(.link)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
-    func quotaRow(_ name: String, value: [String: Any]?) -> some View {
+    func quotaRow(_ name: String, value: [String: Any]?, attributed: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            if let value, let used = value["used_percent"] as? Double, let reset = value["resets_at"] as? Double {
-                let remaining = max(0, min(100, 100-used))
-                let date = Date(timeIntervalSince1970: reset)
-                let expired = date < Date()
-                let renewal = "Renouvelle à " + localTime(date)
-                Text(name).font(.callout.weight(.semibold))
+            if let value, let used = value["used_percent"] as? Double, used.isFinite, (0...100).contains(used) {
+                let remaining = 100-used
+                let minutes = (value["duration_minutes"] ?? value["window_minutes"]) as? Int
+                let title = minutes == 300 ? "Fenêtre de 5 heures" : minutes == 10080 ? "Fenêtre hebdomadaire" : name
+                let reset = value["resets_at"] as? Double
+                let date = reset.flatMap { $0.isFinite && $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
+                let expired = date.map { $0 <= Date() } ?? false
+                Text(title).font(.callout.weight(.semibold))
+                if let minutes, minutes > 0 { Text("Durée déclarée : \(minutes) min").font(.caption).foregroundStyle(.secondary) }
                 if expired {
-                    // An expired window is spent: state it plainly and show when it renews.
-                    Text("⚠ Épuisé").font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(.secondary)
-                        .accessibilityLabel(name + " : épuisé, " + renewal)
-                    Label(renewal, systemImage: "arrow.clockwise").font(.callout).foregroundStyle(.orange)
+                    Text("Mesure périmée").font(.system(size: 27, weight: .semibold, design: .rounded)).foregroundStyle(.secondary)
+                        .accessibilityLabel(title + " : reset dépassé, quota actuel inconnu")
                 } else {
-                    Text("\(Int(remaining)) % restant" + (remaining < 15 ? " ⚠" : "")).font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit()
-                        .accessibilityLabel(name + " : " + String(Int(remaining)) + " % disponibles, " + renewal)
-                    Text("disponibles").font(.caption).foregroundStyle(.secondary)
+                    Text("\(Int(remaining)) % observés restants" + (remaining < 15 ? " ⚠" : "")).font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit()
+                        .accessibilityLabel(title + " : " + String(Int(remaining)) + " % observés restants")
                     ProgressView(value: remaining, total: 100).tint(remaining < 15 ? .orange : .accentColor)
-                    Label(renewal, systemImage: "clock").font(.caption).foregroundStyle(.secondary)
+                }
+                Text(attributed ? "Compte associé à cette observation" : "Compte non attribué").font(.caption).foregroundStyle(.secondary)
+                if let date {
+                    Label("Reset déclaré : " + localDateTime(date), systemImage: "clock").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("Date de reset inconnue").font(.caption).foregroundStyle(.secondary)
                 }
             } else {
                 Text(name + " · indisponible").foregroundStyle(.secondary)

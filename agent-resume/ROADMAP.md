@@ -29,3 +29,7 @@ Décision utilisateur du 20/10. Statut au 21/10 : **premier lot implémenté en 
 4. **Ensuite seulement**, définir le comportement de reprise selon ces quotas ; ne pas généraliser entre-temps la reprise automatique actuelle.
 
 Acceptation : appels légitimes au-delà des anciens plafonds sans `budget_blocked` local ; anciens compteurs/options sans blocage fantôme ; doublon après redémarrage sans nouvelle exécution ; envoi incertain sans renvoi automatique ; cycle de délégation signalé ; répétition légitime non assimilée automatiquement à une boucle ; refus fournisseur conservé et quota inconnu affiché explicitement. Tests simulés d’abord, aucun appel payant requis pour ces contrôles.
+
+## Connaissance des quotas — incrément du 21/10
+
+Registre sourcé par route/compte opaque/pool livré : [contrat, inventaire et limites](QUOTA-KNOWLEDGE.md). CLI `quota-status`, MCP `reprise_quotas`, lecture explicite dans Reprise. Source Codex validée sur le socket existant ; quotas Claude/DSH inconnus. Compteur de cinq heures signalé : mesures non attribuées séparées, reset complet et périmé distinct d’épuisé. Aucun changement de politique de reprise/routage ni de réserve 5 %. Suite : valider les autres sources et la restitution visuelle, puis seulement concevoir la politique multi-compte.
