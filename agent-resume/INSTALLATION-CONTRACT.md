@@ -16,6 +16,18 @@ L’écran « Intégrations » doit permettre de détecter, choisir, installer, 
 
 Ces scripts sont des briques existantes, pas encore un installateur autonome transactionnel.
 
+## Usage inter-harness depuis Codex et les autres clients
+
+Exigence utilisateur du 21/10 : une intégration installée doit rendre les outils Reprise découvrables et fournir des consignes adaptées au harness pour les employer efficacement et économiquement. Codex doit pouvoir solliciter un autre harness via le même service ; la disponibilité des outils propres à Desktop ne conditionne pas ce parcours. Cette exigence ne signifie pas que tous les adaptateurs soient déjà opérationnels.
+
+Reprise installe/configure son pont MCP et, selon les mécanismes supportés du client, une skill ou des instructions ciblées et versionnées. Il ne modifie ni le binaire Codex ni les fichiers internes du plugin Desktop. Préserver les instructions et permissions utilisateur ; activation et autorisation restent distinctes. Vérifier sur un profil neuf la découverte effective des outils et la disponibilité des consignes, puis séparer cet examen sans inférence d’un échange supervisé.
+
+Les consignes doivent enseigner : découverte des backends/capacités réellement disponibles ; tâche bornée et critères de réussite ; entrées minimales et chemins autorisés ; identité persistante, lignée et récupération d’un résultat avant tout nouvel envoi. Réutiliser une session utile et envoyer les seuls changements, sans supposer un cache partagé entre modèles ou fournisseurs. Pas de délégation systématique lorsque le traitement local déterministe suffit, ni cascade automatique d’experts.
+
+Le choix doit chercher le coût total de la tâche validée : capacité et qualité requises, coût connu, contexte transféré, latence et probabilité de reprise. Ces éléments restent des observations ou heuristiques tant qu’ils ne sont pas mesurés ; ne pas annoncer un routage optimal. Escalade pour difficulté concrète ou échec borné, revue indépendante quand utile, contrôle des doublons/cycles et respect des budgets utilisateur. Les modèles ne sont pas figés dans le contrat ; disponibilité et facturation sont vérifiées au moment du choix. Quota inconnu reste inconnu ; aucun repli payant ni automatisation nouvelle fondée sur des quotas non fiables.
+
+Acceptation à ajouter au parcours D2/D3 : sur profil Codex neuf et autorisé, outils Reprise et consignes installables/réparables/retirables ; découverte sans inférence ; test supervisé d’une délégation vers un backend validé puis récupération de son résultat sans double exécution. Une admission Quick Apply seule ne valide pas ce test. Les adaptateurs non validés restent signalés comme tels.
+
 ## Paquet et données
 
 Le paquet contient les helpers versionnés et un runtime Python maîtrisé. Le mécanisme de packaging reste à choisir par prototype, en vérifiant architectures/macOS supportés, dépendances, licences et taille. Aucun composant installé ne dépend du chemin du clone ni d’un interpréteur de développement.
