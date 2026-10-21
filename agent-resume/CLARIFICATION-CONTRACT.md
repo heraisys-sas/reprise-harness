@@ -6,6 +6,12 @@ Décision du 21/10/2026. **Contrat cible, non implémenté**. Complément du [se
 
 Un expert sollicité doit pouvoir remettre en cause le cadrage, demander des faits manquants et examiner des alternatives. Le harness demandeur doit pouvoir répondre pendant la même mission pour améliorer la qualité de l’investissement, sans délégation systématique ni contexte démesuré. Les skills/instructions installées enseignent ce comportement ; le service garantit la durabilité, le routage, les autorisations et les limites. Une consigne seule ne fournit pas ces garanties.
 
+## Tous les modèles : demander plutôt que boucler
+
+Cette règle vaut pour tous les modèles, y compris les modèles à faible coût. Un fait déterminant manquant, plusieurs interprétations incompatibles ou une tentative répétée sans progrès déclenchent une demande ciblée au harness d’origine, plutôt qu’une suite d’essais spéculatifs. Les consignes à déployer doivent l’enseigner explicitement. L’expert coûteux n’a pas l’exclusivité des clarifications.
+
+La demande précise l’objectif, ce qui est établi, le doute bloquant, les essais et erreurs déjà observés, et la réponse minimale nécessaire. Le demandeur exploite d’abord ses informations ou une vérification déterministe bornée ; il sollicite l’utilisateur si nécessaire. Clarifier un fait et escalader une difficulté de raisonnement sont deux actions différentes. Après deux échecs sur un même volet, changer d’approche ou d’auteur conformément aux instructions du projet ; ne pas renouveler la même tentative ni demander indéfiniment la même précision. La détection de boucle du service doit compléter cette consigne, sans dépendre uniquement de l’obéissance du modèle.
+
 ## Échange durable
 
 La mission conserve son identité et sa session experte lorsque le harness le permet. Une clarification est un événement intermédiaire corrélé à la mission, à la tentative et à un identifiant de question stable ; ce n’est ni un résultat final ni une nouvelle mission enfant. Enregistrer la question avant notification. Les noms et schémas des futurs outils de question/réponse restent à définir ; ne pas les présenter comme disponibles.
