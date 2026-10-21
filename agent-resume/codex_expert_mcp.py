@@ -60,7 +60,11 @@ MODES = {
 
 
 class Bridge:
-    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None):
+    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, allowed_tools=None):
+        known_tools = {item['name'] for item in TOOLS}
+        if allowed_tools is not None and (not allowed_tools or set(allowed_tools) - known_tools):
+            raise ValueError('Unknown or empty tool selection')
+        self.allowed_tools = set(allowed_tools) if allowed_tools is not None else known_tools
         self.root = Path(root).resolve(strict=True)
         if not self.root.is_dir():
             raise ValueError('Project directory required')
@@ -86,6 +90,8 @@ class Bridge:
         self.requests = Store(self.db, str(self.root))
 
     def call(self, name, args):
+        if name not in self.allowed_tools:
+            raise ValueError('Tool not enabled for this integration')
         if name == 'reprise_quotas':
             if not isinstance(args, dict) or args.keys() - {'engine', 'refresh'} or not isinstance(args.get('refresh', False), bool):
                 raise ValueError('Invalid quota observation arguments')
@@ -247,7 +253,7 @@ class Bridge:
         if method == 'ping':
             return {}
         if method == 'tools/list':
-            return {'tools': TOOLS}
+            return {'tools': [item for item in TOOLS if item['name'] in self.allowed_tools]}
         if method == 'tools/call':
             result = self.call(params.get('name'), params.get('arguments', {}))
             return {'content': [{'type': 'text', 'text': json.dumps(result, ensure_ascii=False)}],
@@ -260,15 +266,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--project-root', required=True)
     parser.add_argument('--socket')
-    parser.add_argument('--state', default=str(state_directory(Path(__file__).parent)))
+    parser.add_argument('--state')
+    parser.add_argument('--tools', help='Explicit comma-separated exposed tool allowlist; legacy default exposes all')
     parser.add_argument('--daily-limit', type=int, default=8, help='Deprecated compatibility option; ignored for all backends')
     parser.add_argument('--claude-program', help='Explicit absolute Claude CLI path; disabled by default')
     parser.add_argument('--claude-included-quota-confirmed', action='store_true', help='Operator confirms paid usage credits disabled; CLI cannot verify this')
     parser.add_argument('--desktop-socket', help='Explicit absolute Quick Entry socket path; disabled by default')
     args = parser.parse_args()
-    bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.state, args.daily_limit,
+    bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.state or str(state_directory(Path(__file__).parent)), args.daily_limit,
                     claude_program=args.claude_program, claude_subscription_only=args.claude_included_quota_confirmed,
-                    desktop_socket=args.desktop_socket)
+                    desktop_socket=args.desktop_socket, allowed_tools=args.tools.split(',') if args.tools is not None else None)
     def terminate(signum, frame):
         # Unwind active CLI cleanup before closing the DB and releasing the lock.
         raise SystemExit(128 + signum)

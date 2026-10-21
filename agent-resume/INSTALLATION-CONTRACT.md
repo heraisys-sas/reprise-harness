@@ -1,6 +1,6 @@
 # Installation autonome et intégrations maintenables
 
-Décision du 21 octobre 2026. **D1 partiellement implémenté ; installation autonome non validée**. Ce contrat complète le [service bidirectionnel](HARNESS-SUPERVISION-ARCHITECTURE.md) ; il ne change ni les autorisations d’inférence ni les politiques de reprise/quota.
+Décision du 21 octobre 2026. **D1 partiellement implémenté ; premier prototype D2 livré ; installation autonome non validée**. Ce contrat complète le [service bidirectionnel](HARNESS-SUPERVISION-ARCHITECTURE.md) ; il ne change ni les autorisations d’inférence ni les politiques de reprise/quota.
 
 ## Objectif et périmètre
 
@@ -140,3 +140,13 @@ La fenêtre affiche les refus, les chemins de sauvegarde et le résultat. Le bou
 Cet incrément est compilé et contrôlé par tests backend/payload sur copies temporaires ; l’interface n’a pas été lancée et son parcours visuel n’est donc pas déclaré validé. Compte macOS vierge, chemins stables des intégrations et distribution restent à démontrer. **D1 demeure incomplet ; D2 (outils MCP et consignes économiques Harness/Codex) est l’étape fonctionnelle suivante.**
 
 Preuves du quatrième incrément : **356 tests OK, 1 ignoré**, dont **19 tests de préparation** et **4 tests de payload** ; suite exécutée avec une copie temporaire du CPython embarqué, archive réelle et sonde FM sans génération. Préservation SQLite/WAL, reçus/identités/incertitude Quick, panne entre étapes, panne avant clôture, sources modifiées, conflits et statut sans écriture couverts. Parse/typecheck Swift, compilation sans `--open`, py_compile et diff-check réussis. Avertissements de ressources non fermées préexistants ; aucun scan Ruff/Gitleaks (outils absents). Aucun lancement GUI, arrêt/redémarrage de service, inférence ou migration réelle.
+
+### Premier incrément D2 — profil Harness géré
+
+L’onglet **Intégrations** livre `inspect → plan → apply → verify → remove` pour un profil Harness existant et un projet explicite. Installation/réparation/mise à jour et retrait passent par sauvegarde, ownership et journal de reprise ; aucune personnalisation non gérée n’est écrasée. Le provider de skills est isolé au profil, avec les consignes économiques et les quatre contrats/documents nécessaires. La clarification concerne tous les modèles ; son protocole automatique cible reste non implémenté.
+
+Le pont utilise une copie versionnée du payload/runtime hors du bundle et le registre Reprise déjà préparé. Une allowlist limite les outils réellement exposés : observations/reçus par défaut, délégation/follow-up seulement sur sélection explicite. Aucune activation ni inférence n’est autorisée par l’installation seule. Retrait sélectif conservant releases, sauvegardes et états ; anciens blocs non gérés à réconcilier manuellement. Détails et limites : [HARNESS-INTEGRATION.md](HARNESS-INTEGRATION.md).
+
+La vérification distingue les empreintes de configuration, la sonde directe MCP et les trois niveaux client non observés : chargement, découverte par Harness, échange. Le bloc produit a été analysé par le js-yaml du Harness installé sur fixture ; le profil complet, ses surcharges et sa configuration active ne sont pas déclarés validés. Référence statique : Harness 0.2.1-rc.2. Aucun lancement d’application/client, redémarrage de service, profil réel modifié ni appel payant. D2 reste à confirmer dans le client et sur compte vierge ; Codex client sera une extension séparée.
+
+Validation du premier incrément D2 : suite complète **379 tests OK, 1 ignoré**, avec copie temporaire du runtime, archive réelle et sonde FM sans génération ; **22 tests ciblés Harness** rejoués après les derniers ajustements du retour de reprise. Sonde MCP réelle après déplacement puis suppression du bundle source, état SQLite fixture inchangé. Idempotence, personnalisation, conflits, réparation, panne/reprise, fin de journal interrompue, retrait sélectif et isolation des profils couverts. Parse/typecheck Swift, compilation sans `--open`, py_compile et diff-check réussis. Avertissements de ressources non fermées préexistants ; aucun scan Ruff/Gitleaks (absents). Aucun profil réel, config Codex, service ou état réel modifié ; aucun client/application lancé ni inférence. Interface visuelle et compte vierge restent à valider.

@@ -205,3 +205,7 @@ Sans arguments de développement, Reprise présente le parcours de préparation 
 4. Vérifier le reçu et les sauvegardes, puis choisir **Continuer**. Une interruption retrouve le plan conservé et les étapes publiées ; un conflit bloque sans écrasement.
 
 Un ancien état principal seul peut être conservé et son dossier Quick préparé séparément par ce même écran. Le mode développement (`native-install --open`) conserve son état historique explicite. Les commandes CLI `state-init`/`state-import` restent disponibles ; `state-status`/`state-plan` sont sans écriture. Interface compilée, parcours visuel et compte vierge non encore validés : voir [INSTALLATION-CONTRACT.md](INSTALLATION-CONTRACT.md).
+
+### Installer les outils dans Harness
+
+Après préparation des états, **Intégrations** permet de sélectionner un profil Harness existant et son projet, prévisualiser l’installation/réparation ou le retrait puis appliquer explicitement le plan. Les skills sont isolées au profil ; observations/reçus sont exposés par défaut, délégation en option. La vérification directe du pont ne prouve pas son chargement dans Harness. Aucun redémarrage ni inférence automatique. Chemins du runtime installés hors du bundle et registre durable conservé : voir [HARNESS-INTEGRATION.md](HARNESS-INTEGRATION.md) pour garanties, refus et niveaux de preuve.

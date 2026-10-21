@@ -51,3 +51,5 @@ Exigence D2/D3 du 21/10 : installer également dans Codex et chaque client suppo
 - Issue #6 : prérequis Foundation Models explicites, cible macOS 26.0 contrôlée sur tous les binaires et plist, manifeste natif, sonde de disponibilité sans génération et motifs affichables. Validation macOS 26 réel encore requise.
 
 - Issue #6, D1 : préparation graphique avant supervision, prévisualisation sans registre, import main/Quick sauvegardé, journal de reprise par étape et refus sans écrasement. Mode développement conservé ; parcours visuel et compte vierge restent à valider. Prochain incrément fonctionnel : D2, installation MCP et consignes économiques ciblées Harness/Codex.
+
+- Issue #6, D2 : premier parcours Harness géré depuis Intégrations (inspect/plan/apply/verify/remove), provider skill propre au profil, consignes économiques/clarifications, releases indépendants du bundle et état conservé. Profil synthétique et sonde MCP directe validés ; chargement/client/outils/échange et compte vierge restent à confirmer. Codex client reste un adaptateur suivant. Voir HARNESS-INTEGRATION.md.

@@ -28,6 +28,16 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var setupConfirmNew = false
     @Published var setupSourceStopped = false
     var setupProcess: Process?
+    @Published var integrationHome = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".dsh").path
+    @Published var integrationProfile = ""
+    @Published var integrationProject = ""
+    @Published var integrationDelegate = false
+    @Published var integrationAcknowledged = false
+    @Published var integrationProfiles: [String] = []
+    @Published var integrationPlan: [String: Any]? = nil
+    @Published var integrationResult: [String: Any]? = nil
+    @Published var integrationVerification: [String: Any]? = nil
+    @Published var integrationMessage = "Inspectez le dossier Harness choisi avant de préparer une modification."
     @Published var scheduler: [String: Any] = [:]
     @Published var quotaKnowledge: [String: Any] = [:]
     @Published var quotaBusy = false

@@ -50,3 +50,7 @@ Aucune application lancée, aucun service redémarré, aucune migration de donn�
 ## Préparation graphique avant utilisation
 
 Le bundle dispose d’un parcours exclusif de création/import explicite des états, sans commande manuelle, fondé sur `state-status`, `state-plan` et `state-apply`. Il utilise ce runtime sans ouvrir de registre avant choix, plan et confirmation. Le paquet de helpers inclut `state_setup.py` ; `StateSetup.swift` est compilé dans Reprise. Les prérequis et refus du runtime restent visibles sur cet écran. Parcours compilé et backend testé, sans lancement GUI : voir [le contrat](INSTALLATION-CONTRACT.md#quatrième-incrément-d1--préparation-graphique-des-états).
+
+## Déploiement géré du pont Harness
+
+L’onglet Intégrations copie le payload et ce runtime dans un release versionné indépendant du bundle, au voisinage de l’état préparé. Le profil MCP vise ce release plutôt que le bundle mobile ; le retrait garde releases et données. Copie altérée refusée par empreintes, aucun téléchargement/installation Python supplémentaire. La validation directe du pont a fonctionné après déplacement puis suppression du bundle source sur fixtures ; elle ne vaut pas chargement du client. Voir [HARNESS-INTEGRATION.md](HARNESS-INTEGRATION.md).
