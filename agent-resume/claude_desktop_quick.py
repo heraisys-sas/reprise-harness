@@ -9,6 +9,7 @@ operator-granted macOS permissions and is intentionally left to the supervised
 driver. This server owns payload validation, target routing and the bounded
 admission contract so the harness can treat it as an external-expert channel.
 """
+from app_paths import state_directory
 import argparse
 import fcntl
 import json
@@ -170,7 +171,7 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--socket', default=str(claude_desktop.DEFAULT_SOCKET))
-    parser.add_argument('--state', default=str(Path(__file__).parent/'quick-state'))
+    parser.add_argument('--state', default=str(state_directory(Path(__file__).parent, 'quick-state')))
     parser.add_argument('--daily-limit', type=int, help='Deprecated compatibility option; ignored')
     args = parser.parse_args()
     endpoint = Endpoint(args.state, args.daily_limit)

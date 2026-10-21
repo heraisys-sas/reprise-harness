@@ -4,12 +4,13 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from app_paths import native_binary
 
 ROOT = Path(__file__).resolve().parent
 
 
 def crypt(data, purpose, operation):
-    executable = ROOT / 'Reprise.app/Contents/MacOS/Vault'
+    executable = native_binary(ROOT, 'Vault')
     try:
         result = subprocess.run([str(executable)], input=json.dumps({'operation': operation, 'payload': base64.b64encode(data).decode(), 'purpose': purpose}), text=True, capture_output=True, timeout=30)
         if result.returncode:

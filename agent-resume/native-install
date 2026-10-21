@@ -3,6 +3,7 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 APP="$ROOT/Reprise.app"
 VERSION=$(cat "$ROOT/VERSION")
+python3 "$ROOT/package_helpers.py" "$ROOT" "$APP"
 mkdir -p "$APP/Contents/MacOS"
 swiftc -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Native.swift" "$ROOT/Dashboard.swift" -o "$APP/Contents/MacOS/Reprise"
 swiftc -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Embedding.swift" -o "$APP/Contents/MacOS/Embedding"

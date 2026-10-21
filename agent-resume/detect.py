@@ -1,3 +1,4 @@
+from app_paths import state_directory
 from contextlib import closing
 import datetime as dt
 import json
@@ -203,7 +204,7 @@ def scan_harness(home=None):
 def scan_all():
     import os
     from local_analysis import read_cache
-    analysis = read_cache(Path(os.environ.get('AGENT_RESUME_STATE', Path(__file__).parent / 'state')))
+    analysis = read_cache(state_directory(Path(__file__).parent))
     codex = scan()
     harness = scan_harness()
     claude = scan_claude()

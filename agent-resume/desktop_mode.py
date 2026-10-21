@@ -7,6 +7,7 @@ therefore exposes: launch (open the linked app if needed), start/stop (the
 Quick Entry server) and status. It never force-quits a running app and never
 starts anything implicitly; each action is explicit.
 """
+from app_paths import state_directory
 import os
 import plistlib
 from pathlib import Path
@@ -83,7 +84,7 @@ def start(socket=None, state=None, daily_limit=8):
     if server_running():
         return {'ok': True, 'started': False, 'reason': 'Serveur Quick Entry déjà actif.'}
     socket = socket or str(DEFAULT_SOCKET)
-    state = state or str(Path(__file__).parent / 'quick-state')
+    state = state or str(state_directory(Path(__file__).parent, 'quick-state'))
     import tempfile
     import time
     err = Path(tempfile.gettempdir()) / 'reprise-quick-entry-error.log'
@@ -117,7 +118,7 @@ def stop():
 
 # --- Quick Apply daemon (mirrors the Codex app-server daemon) --------------
 DAEMON_NAME = 'reprise-quick-apply'
-DEFAULT_STATE = Path(__file__).parent / 'quick-state'
+DEFAULT_STATE = state_directory(Path(__file__).parent, 'quick-state')
 
 
 def _pid_file(state):

@@ -16,6 +16,7 @@ Nothing here automates the UI or launches anything without an explicit
 operator action.
 """
 from pathlib import Path
+from app_paths import native_binary
 import json
 import os
 
@@ -161,7 +162,7 @@ def explain(facts, question=None, binary=None):
         binary = Path(binary)
     else:
         candidates = [Path(__file__).parent / 'FoundationExplain',
-                      Path(__file__).parent / 'Reprise.app/Contents/MacOS/FoundationExplain']
+                      native_binary(Path(__file__).parent, 'FoundationExplain')]
         binary = next((c for c in candidates if c.is_file()), candidates[0])
     if not binary.is_file():
         return {'available': False, 'answer': None, 'reason': 'FoundationExplain helper not built'}

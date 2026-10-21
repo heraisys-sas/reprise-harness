@@ -1,0 +1,66 @@
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
+from app_paths import native_binary, state_directory
+from package_helpers import package
+
+SOURCE = Path(__file__).parents[1]
+
+
+class PackageHelpersTests(unittest.TestCase):
+    def test_moved_payload_runs_without_source_and_keeps_state_outside_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary).resolve()
+            app = folder / 'build/Reprise.app'
+            package(SOURCE, app)
+            moved = folder / 'distributed/Reprise.app'
+            moved.parent.mkdir()
+            shutil.move(app, moved)
+            root = moved / 'Contents/Resources/helpers'
+            manifest = json.loads((root / 'payload-manifest.json').read_text())
+            self.assertEqual(manifest['runtime'], 'external-python-required')
+            self.assertFalse((root / 'state').exists())
+            self.assertFalse((root / 'tests').exists())
+            self.assertFalse((root / 'quick-entry-com.example.reprise.plist').exists())
+            self.assertFalse((root / 'ARCHITECTURE-CRITIQUE-ASTRA.md').exists())
+            environment = dict(os.environ, HOME=str(folder / 'home'), REPRISE_ALLOW_NEW_STATE='1')
+            environment.pop('AGENT_RESUME_STATE', None)
+            environment.pop('PYTHONPATH', None)
+            result = subprocess.run([sys.executable, str(root / 'resume'), 'scheduler-status'],
+                                    cwd=folder, env=environment, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            json.loads(result.stdout)
+            self.assertTrue((folder / 'home/Library/Application Support/Reprise/state/tasks.sqlite').exists())
+            self.assertFalse((root / 'state').exists())
+            self.assertEqual(native_binary(root, 'Vault'), moved / 'Contents/MacOS/Vault')
+            # Repackaging must remove stale resources without touching user state.
+            (root / 'stale.py').write_text('')
+            package(SOURCE, moved)
+            self.assertFalse((root / 'stale.py').exists())
+
+    def test_legacy_state_is_not_silently_replaced(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {}, clear=True):
+            folder = Path(temporary).resolve()
+            root = folder / 'Reprise.app/Contents/Resources/helpers'
+            root.mkdir(parents=True)
+            (folder / 'state').mkdir()
+            (folder / 'state/tasks.sqlite').touch()
+            with patch('pathlib.Path.home', return_value=folder / 'home'):
+                with self.assertRaisesRegex(RuntimeError, 'import sauvegardé'):
+                    state_directory(root)
+                os.environ['AGENT_RESUME_STATE'] = str(folder / 'state')
+                self.assertEqual(state_directory(root), folder / 'state')
+            (folder / 'state/tasks.sqlite').unlink()
+            os.environ.pop('AGENT_RESUME_STATE', None)
+            with patch('pathlib.Path.home', return_value=folder / 'home'):
+                with self.assertRaisesRegex(RuntimeError, 'Initialisation du prototype bloquée'):
+                    state_directory(root)
+            self.assertEqual(native_binary(folder, 'Vault'), folder / 'Reprise.app/Contents/MacOS/Vault')

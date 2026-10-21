@@ -1,6 +1,6 @@
 # Installation autonome et intégrations maintenables
 
-Décision du 21 octobre 2026. **Planifié, non implémenté**. Ce contrat complète le [service bidirectionnel](HARNESS-SUPERVISION-ARCHITECTURE.md) ; il ne change ni les autorisations d’inférence ni les politiques de reprise/quota.
+Décision du 21 octobre 2026. **D1 partiellement implémenté ; installation autonome non validée**. Ce contrat complète le [service bidirectionnel](HARNESS-SUPERVISION-ARCHITECTURE.md) ; il ne change ni les autorisations d’inférence ni les politiques de reprise/quota.
 
 ## Objectif et périmètre
 
@@ -63,3 +63,11 @@ Le chantier peut avancer indépendamment de l’observation des quotas Claude. I
 [Issue de suivi #6](https://github.com/heraisys-sas/reprise-harness/issues/6).
 
 La roadmap porte l’ordre/priorité ; ce contrat porte les garanties ; l’issue GitHub porte l’avancement et les preuves. Les PR/commits référencent l’issue. Ne cocher un critère qu’avec une validation enregistrée, en distinguant tests simulés, compte vierge et distribution réelle. Une issue par incrément seulement lorsqu’il devient actionnable ; pas de duplication de toute cette spécification.
+
+### Premier incrément D1 — 21/10
+
+`native-install` embarque maintenant une liste explicite de helpers/assets dans `Contents/Resources/helpers`, avec manifeste de version et empreintes. Sans arguments de développement, l’application cherche ce payload ; Vault/Embedding sont résolus dans `Contents/MacOS`. Le CLI déplacé utilise `Application Support/Reprise/state` et le daemon Quick Apply un sous-dossier séparé. Le lancement `native-install --open` conserve explicitement le mode développement et son état historique. Aucun état utilisateur n’est copié dans le paquet.
+
+Une garde refuse un état vierge lorsqu’un dossier historique voisin du bundle contient des bases SQLite. Cette détection est locale : un bundle déplacé loin du clone ne peut pas découvrir tout ancien état. Pour éviter un registre vierge silencieux, toute première initialisation embarquée sans état cible existant est aussi refusée ; seules une sélection explicite `AGENT_RESUME_STATE` ou une création neuve volontaire `REPRISE_ALLOW_NEW_STATE=1` permettent le prototype. **Migration/import et installation de production ne sont pas encore supportés** ; ne pas utiliser ce prototype pour reprendre des travaux historiques sans chemin d’état explicite. Aucun registre réel déplacé ou modifié par ce lot.
+
+Deux tests sur copies temporaires couvrent payload déplacé, CLI sans chemin source, état hors bundle, garde historique, chemins binaires et remplacement des ressources obsolètes. Compilation `sh agent-resume/native-install` sans lancement réussie ; suite complète avec accès aux sockets : **299 tests, OK, 1 ignoré** (avertissement SQLite non fermé préexistant). En sandbox restreinte : 6 échecs et 8 erreurs dus aux permissions des sockets, 3 ignorés. `git diff --check` réussi. Le runtime reste externe (`external-python-required` dans le manifeste) : ni autonomie Python, architectures/macOS distribuables, licences du futur runtime ni compte vierge ne sont validés. Aucun téléchargement ni nouvelle dépendance. Le redémarrage groupé est explicitement indisponible dans ce prototype embarqué ; installation des services/clients, export des sources et chemins d’exécution stables restent à adapter. D1 reste décoché.

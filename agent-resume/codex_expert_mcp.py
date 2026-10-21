@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Project-bound MCP expertise tools; explicit backends, no background inference."""
+from app_paths import state_directory
 import argparse
 import fcntl
 import hashlib
@@ -259,7 +260,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--project-root', required=True)
     parser.add_argument('--socket')
-    parser.add_argument('--state', default=str(Path(__file__).parent/'state'))
+    parser.add_argument('--state', default=str(state_directory(Path(__file__).parent)))
     parser.add_argument('--daily-limit', type=int, default=8, help='Deprecated compatibility option; ignored for all backends')
     parser.add_argument('--claude-program', help='Explicit absolute Claude CLI path; disabled by default')
     parser.add_argument('--claude-included-quota-confirmed', action='store_true', help='Operator confirms paid usage credits disabled; CLI cannot verify this')
