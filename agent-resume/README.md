@@ -190,3 +190,7 @@ L'interface native utilise SwiftUI dans une fenêtre AppKit : NavigationSplitVie
 - `detect.py`, `local_analysis.py`, `private_search.py` et `vault.py` gardent leurs responsabilités distinctes.
 
 Vérification : `python3 -W error::ResourceWarning -m unittest discover -s agent-resume/tests`. L’installation native compile les deux fichiers de l’interface ; l’export `resume share` inclut tous les modules nécessaires. Aucune bibliothèque supplémentaire.
+
+### Prérequis du prototype macOS
+
+Reprise cible macOS **26.0+** ; construction avec SDK macOS **26+**, Swift et Python développeur. Le bundle ARM64 peut embarquer son propre CPython (voir [RUNTIME-PACKAGING.md](RUNTIME-PACKAGING.md)). La synthèse locale utilise le framework Swift Foundation Models, sans dépendance au SDK Python Apple FM. Apple Intelligence doit être disponible sur l’appareil pour cette fonction facultative ; son absence conserve les vérifications déterministes. Diagnostic sans génération : `Reprise.app/Contents/MacOS/FoundationExplain --status`. Les versions minimales effectivement produites figurent dans `Contents/Resources/native-manifest.json`.

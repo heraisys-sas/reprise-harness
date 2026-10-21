@@ -377,6 +377,7 @@ struct Dashboard: View {
                         Text(app.localSynthesis["answer"] as? String ?? "").font(.callout)
                     } else {
                         Text("Modèle génératif indisponible. Les vérifications déterministes restent la référence.").font(.callout).foregroundStyle(.secondary)
+                        if let reason = app.localSynthesis["reason"] as? String { Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
                     }
                     Text("Enrichissement facultatif, en lecture seule ; n’autorise aucune action.").font(.caption).foregroundStyle(.secondary)
                 }

@@ -14,18 +14,22 @@ while [ "$#" -gt 0 ]; do
         *) echo "Usage: $0 [--runtime-archive FILE] [--open]" >&2; exit 2 ;;
     esac
 done
+SDK_VERSION=$(xcrun --sdk macosx --show-sdk-version)
+python3 "$ROOT/native_contract.py" --check-sdk "$SDK_VERSION"
+TARGET="$(uname -m)-apple-macosx26.0"
 if [ -n "$RUNTIME_ARCHIVE" ]; then
     python3 "$ROOT/package_runtime.py" --archive "$RUNTIME_ARCHIVE" --app "$APP"
 fi
 python3 "$ROOT/package_helpers.py" "$ROOT" "$APP"
 mkdir -p "$APP/Contents/MacOS"
-swiftc -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Native.swift" "$ROOT/Dashboard.swift" -o "$APP/Contents/MacOS/Reprise"
-swiftc -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Embedding.swift" -o "$APP/Contents/MacOS/Embedding"
-swiftc -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/FoundationExplain.swift" -o "$APP/Contents/MacOS/FoundationExplain"
-swiftc -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Vault.swift" -o "$APP/Contents/MacOS/Vault"
+swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Native.swift" "$ROOT/Dashboard.swift" -o "$APP/Contents/MacOS/Reprise"
+swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Embedding.swift" -o "$APP/Contents/MacOS/Embedding"
+swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/FoundationExplain.swift" -o "$APP/Contents/MacOS/FoundationExplain"
+swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Vault.swift" -o "$APP/Contents/MacOS/Vault"
 cat > "$APP/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleExecutable</key><string>Reprise</string><key>CFBundleIdentifier</key><string>local.agent-resume.native</string><key>CFBundleName</key><string>Reprise</string><key>CFBundleShortVersionString</key><string>$VERSION</string><key>CFBundleVersion</key><string>$VERSION</string><key>LSUIElement</key><true/></dict></plist>
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleExecutable</key><string>Reprise</string><key>CFBundleIdentifier</key><string>local.agent-resume.native</string><key>CFBundleName</key><string>Reprise</string><key>CFBundleShortVersionString</key><string>$VERSION</string><key>CFBundleVersion</key><string>$VERSION</string><key>LSMinimumSystemVersion</key><string>26.0</string><key>LSUIElement</key><true/></dict></plist>
 PLIST
+python3 "$ROOT/native_contract.py" "$APP"
 # Launch only when explicitly requested: a plain run just rebuilds.
 # Compiling should not disturb an already-running instance.
 if [ "$OPEN" = 1 ]; then

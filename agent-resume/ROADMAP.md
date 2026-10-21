@@ -47,3 +47,5 @@ Premier incrément D1 (21/10) : helpers/assets embarqués et relogeables, manife
 Exigence D2/D3 du 21/10 : installer également dans Codex et chaque client supporté les consignes d’utilisation économique des outils Reprise (MCP + skill/instructions selon mécanisme vérifié). Découverte des capacités, tâches bornées, contexte minimal, récupération avant renvoi et escalade justifiée ; aucune dépendance aux outils Desktop pour la délégation commune. Critères dans le [contrat d’installation](INSTALLATION-CONTRACT.md#usage-inter-harness-depuis-codex-et-les-autres-clients). Routage automatique selon quotas différé jusqu’à connaissance fiable.
 
 - Issue #6, D1 : runtime CPython ARM64 embarqué et épinglé, extraction sûre, notices tierces, sélection native sans Python système. Test réel sur bundle déplacé et HOME temporaire ; voir RUNTIME-PACKAGING.md. Compte vierge, autres architectures et distribution restent à valider.
+
+- Issue #6 : prérequis Foundation Models explicites, cible macOS 26.0 contrôlée sur tous les binaires et plist, manifeste natif, sonde de disponibilité sans génération et motifs affichables. Validation macOS 26 réel encore requise.

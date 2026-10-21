@@ -165,14 +165,20 @@ def explain(facts, question=None, binary=None):
                       native_binary(Path(__file__).parent, 'FoundationExplain')]
         binary = next((c for c in candidates if c.is_file()), candidates[0])
     if not binary.is_file():
-        return {'available': False, 'answer': None, 'reason': 'FoundationExplain helper not built'}
+        return {'available': False, 'answer': None, 'reason_code': 'helper_missing', 'reason': 'Le composant local Foundation Models n’est pas installé.'}
     payload = {'facts': facts, 'question': question or 'Explique l activité récente et liste les actions qui requièrent un humain.'}
     try:
         out = subprocess.run([str(binary)], input=json.dumps(payload, ensure_ascii=False),
                              capture_output=True, text=True, timeout=60)
-        return json.loads(out.stdout or '{}')
+        if out.returncode != 0:
+            return {'available': False, 'answer': None, 'reason_code': 'helper_failed',
+                    'reason': 'Le composant Foundation Models ne peut pas être exécuté sur ce système.'}
+        result = json.loads(out.stdout or '{}')
+        if not isinstance(result, dict) or type(result.get('available')) is not bool:
+            raise ValueError('invalid Foundation Models response')
+        return result
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
-        return {'available': False, 'answer': None, 'reason': f'Foundation Models unavailable: {error}'}
+        return {'available': False, 'answer': None, 'reason_code': 'helper_unavailable', 'reason': 'Foundation Models indisponible ou délai dépassé.'}
 
 
 def _digest(facts):

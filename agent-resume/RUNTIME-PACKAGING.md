@@ -4,7 +4,7 @@ Incrément D1 de l’issue #6, 21 octobre 2026. Le lancement embarqué utilise e
 
 ## Construction reproductible à partir d’une archive épinglée
 
-`python-runtime.lock.json` épingle CPython **3.13.16**, release python-build-standalone **20261020**, cible **aarch64-apple-darwin**. Seul ARM64 est accepté pour ce prototype ; Intel et universal ne sont pas validés. Le plancher du runtime indiqué par les métadonnées amont est macOS 11.0 : ce n’est pas une garantie sur le plancher de l’application Swift complète.
+`python-runtime.lock.json` épingle CPython **3.13.16**, release python-build-standalone **20261020**, cible **aarch64-apple-darwin**. Seul ARM64 est accepté pour ce prototype ; Intel et universal ne sont pas validés. Le plancher du runtime indiqué par les métadonnées amont est macOS 11.0 : l’application Swift impose explicitement macOS 26.0 et un SDK de build 26+. Ce minimum n’est pas encore validé sur une machine macOS 26.
 
 L’archive officielle `install_only` est fournie explicitement au build. Aucun téléchargement au lancement ni dans `native-install` :
 
@@ -42,3 +42,7 @@ La lecture ponctuelle de l’archive complète a utilisé `zstandard` dans un en
 - `py_compile`, analyse syntaxique Swift et `git diff --check` réussis. Avertissements de ressources non fermées préexistants dans les anciennes fixtures ; Ruff/Gitleaks absents, aucun scan revendiqué.
 
 Aucune application lancée, aucun service redémarré, aucune migration de données réelles, aucune inférence externe. Le test en HOME temporaire n’équivaut pas à une validation sur compte macOS vierge sans outils de développement.
+
+## Dépendances natives Apple
+
+`FoundationModels` est un framework Swift système, distinct du runtime Python et du SDK Python Apple FM (non utilisé). La synthèse est facultative et exige un modèle Apple Intelligence disponible ; `FoundationExplain --status` permet une sonde sans génération. `NaturalLanguage` fournit séparément les embeddings. Les modèles ne sont pas embarqués. Le manifeste `native-manifest.json` vérifie et enregistre minimum macOS 26.0, SDK et empreintes des quatre exécutables natifs. Voir le [contrat d’installation](INSTALLATION-CONTRACT.md#prérequis-apple--foundation-models).

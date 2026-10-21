@@ -52,6 +52,23 @@ class ExplainTests(unittest.TestCase):
         self.assertTrue(result['available'])
         self.assertEqual(result['answer'], 'explication')
 
+    def test_failed_or_malformed_helper_preserves_deterministic_fallback(self):
+        for code, payload in ((1, ''), (0, '[]'), (0, '{}'), (0, '{"available":"yes"}')):
+            with self.subTest(code=code, payload=payload), patch('subprocess.run') as run:
+                run.return_value.stdout = payload
+                run.return_value.returncode = code
+                result = rh.explain('faits', binary='/usr/bin/true')
+                self.assertFalse(result['available'])
+                self.assertIsNone(result['answer'])
+                self.assertIn('reason_code', result)
+
+    def test_model_unavailability_reason_is_preserved(self):
+        with patch('subprocess.run') as run:
+            run.return_value.stdout = json.dumps({'available': False, 'answer': None,
+                'reason_code': 'model_not_ready', 'reason': 'Modèle en préparation.'})
+            run.return_value.returncode = 0
+            self.assertEqual(rh.explain('faits', binary='/usr/bin/true')['reason_code'], 'model_not_ready')
+
     def test_summarize_is_deterministic_with_features(self):
         result = rh.summarize('.')
         self.assertNotIn('explanation', result)  # FM lives in local analysis now

@@ -112,3 +112,15 @@ Le prototype embarque maintenant CPython 3.13.16 (python-build-standalone 202610
 Le runtime est ARM64 seulement ; Intel, universal, compte macOS vierge, parcours graphique d’initialisation et chemins stables d’intégrations restent non validés. L’application n’a pas été lancée. D1 reste décoché : ce prototype n’établit ni distribution complète ni mise à jour transactionnelle/signée du bundle.
 
 Preuves du troisième incrément : **330 tests OK, 2 ignorés** avec CPython embarqué ; **13 tests ciblés OK** avec archive réelle, dont déplacement, initialisation temporaire, altération et reprise après échec de publication. Compilation sans lancement réussie. Aucun service ni état réel modifié.
+
+### Prérequis Apple — Foundation Models
+
+Le prototype fixe désormais **macOS 26.0 minimum** dans les quatre binaires Swift et `LSMinimumSystemVersion`, au lieu d’hériter du minimum du poste de compilation (27.0 auparavant). Le build exige un **SDK macOS 26+** comprenant `FoundationModels`. `native-manifest.json` enregistre pour chaque binaire minimum effectif Mach-O, SDK observé et empreinte ; une incohérence bloque la construction. Ce minimum déclaré ne remplace pas une validation sur machine macOS 26.
+
+Reprise utilise directement le framework Swift `FoundationModels` via `FoundationExplain`, **pas le SDK Python `apple_fm_sdk`**. Le Python embarqué ne fournit ni ce framework ni le modèle Apple. Le modèle demeure une ressource système : disponibilité conditionnée par l’appareil, l’activation d’Apple Intelligence et un modèle prêt. La synthèse générative est facultative ; supervision, registres et diagnostics déterministes ne dépendent pas de sa disponibilité. `Embedding` utilise séparément `NaturalLanguage` ; aucun modèle Apple n’est copié dans le bundle.
+
+`Contents/MacOS/FoundationExplain --status` produit un diagnostic JSON sans lire de faits ni lancer de génération. Il distingue `device_not_eligible`, `apple_intelligence_not_enabled`, `model_not_ready` et motif futur inconnu. Ces motifs sont également renvoyés par la synthèse et affichés dans l’interface ; une erreur du helper conserve un résultat indisponible structuré. Pas de téléchargement, activation ou repli cloud automatique.
+
+Source d’API : [Apple — disponibilité de SystemLanguageModel](https://developer.apple.com/documentation/foundationmodels/systemlanguagemodel/availability-swift.enum/unavailablereason). SDK local observé 27.0 ; cible produite 26.0 pour Reprise, Embedding, FoundationExplain et Vault. L’ancien plancher 11.0 mentionné pour CPython concerne seulement ce runtime, pas Reprise.
+
+Validation : **336 tests OK, 1 ignoré**, avec CPython embarqué, archive réelle et sonde FM opt-in. Les quatre minos Mach-O et le plist sont vérifiés à 26.0 ; SDK observé 27.0. Parse Swift séparé (app et helper), py_compile et diff-check réussis. Construction finale avec archive épinglée pour éliminer les caches créés par certains sous-processus de tests. Aucun lancement GUI ni génération FM ; macOS 26 réel et cas d’indisponibilité sur plusieurs appareils restent à confirmer.
