@@ -9,6 +9,7 @@
 **/.credentials*
 **/state/
 **/quick-state/
+**/ux-state/
 **/backups/
 **/*.app/
 *.zip
