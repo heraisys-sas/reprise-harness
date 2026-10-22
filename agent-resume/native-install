@@ -22,7 +22,7 @@ if [ -n "$RUNTIME_ARCHIVE" ]; then
 fi
 python3 "$ROOT/package_helpers.py" "$ROOT" "$APP"
 mkdir -p "$APP/Contents/MacOS"
-swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Native.swift" "$ROOT/Dashboard.swift" "$ROOT/StateSetup.swift" "$ROOT/Integrations.swift" -o "$APP/Contents/MacOS/Reprise"
+swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Native.swift" "$ROOT/Dashboard.swift" "$ROOT/StateSetup.swift" "$ROOT/Integrations.swift" "$ROOT/SchedulerService.swift" -o "$APP/Contents/MacOS/Reprise"
 swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Embedding.swift" -o "$APP/Contents/MacOS/Embedding"
 swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/FoundationExplain.swift" -o "$APP/Contents/MacOS/FoundationExplain"
 swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Vault.swift" -o "$APP/Contents/MacOS/Vault"

@@ -38,6 +38,11 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var integrationResult: [String: Any]? = nil
     @Published var integrationVerification: [String: Any]? = nil
     @Published var integrationMessage = "Inspectez le dossier Harness choisi avant de préparer une modification."
+    @Published var schedulerService: [String: Any] = [:]
+    @Published var schedulerServicePlan: [String: Any]? = nil
+    @Published var schedulerServiceMessage = "Inspectez le planificateur avant de préparer une modification."
+    @Published var schedulerServiceActivate = false
+    @Published var schedulerServiceAcknowledged = false
     @Published var scheduler: [String: Any] = [:]
     @Published var quotaKnowledge: [String: Any] = [:]
     @Published var quotaBusy = false

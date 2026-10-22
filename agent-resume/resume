@@ -12,6 +12,10 @@ import subprocess
 import sys
 import uuid
 import zipfile
+if len(sys.argv) > 1 and sys.argv[1].startswith('scheduler-service-'):
+    import scheduler_service
+    sys.exit(scheduler_service.main(Path(__file__).resolve().parent, sys.argv[1:]))
+
 if len(sys.argv) > 1 and sys.argv[1] in ('integration-inspect', 'integration-plan', 'integration-apply', 'integration-verify'):
     import harness_integration
     sys.exit(harness_integration.main(Path(__file__).resolve().parent, sys.argv[1:]))
