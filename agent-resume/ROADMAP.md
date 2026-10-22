@@ -66,4 +66,4 @@ Suite installation #6/#7 implémentée : parcours Intégrations pour inspecter, 
 
 Anciennes interruptions #7 revalidées sur les événements natifs : quatre demandes devenues obsolètes annulées ; trois sous-agents conservés en examen avec état `blocked_parent`. Sauvegardes cohérentes des deux registres ; aucune relance ni succès métier déduit.
 
-Accès privé : diagnostic et pistes pour les dialogues du Trousseau dans [KEYCHAIN-AND-SSH.md](KEYCHAIN-AND-SSH.md). Sens SSH demandé : Reprise vers le conteneur distant IronClaw, autonomie après redémarrage ; configuration effective à identifier, aucune clé modifiée.
+Accès privé : diagnostic et pistes pour les dialogues du Trousseau dans [KEYCHAIN-AND-SSH.md](KEYCHAIN-AND-SSH.md). Sens SSH demandé : Reprise vers le conteneur distant IronClaw, autonomie après redémarrage ; clé dédiée existante sans passphrase vérifiée, authentification SSH et HTTP distant confirmés ; transfert de ports refusé par la couche SSH. Résoudre la politique de forwarding avant installation d’un LaunchAgent ; prévoir installation/diagnostic/retrait depuis Reprise. Aucun adaptateur de tâches IronClaw encore implémenté, aucune clé modifiée.
