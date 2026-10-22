@@ -45,6 +45,10 @@ if len(sys.argv) > 1 and sys.argv[1] in ('state-init', 'state-import'):
     state_install.main(sys.argv[1:])
     sys.exit(0)
 
+if len(sys.argv) > 1 and sys.argv[1] == 'ux-review-config':
+    import ux_review_setup
+    sys.exit(ux_review_setup.main(Path(__file__).resolve().parent, sys.argv[1:]))
+
 import scheduler
 import run_status
 import engines
@@ -191,13 +195,6 @@ def main():
     sub.add_parser('reprise-resume')
     history = sub.add_parser('reprise-history')
     history.add_argument('--limit', type=int, default=20)
-    ux = sub.add_parser('ux-review-config', help='pousser le serveur MCP de revue UX dans la config Claude Desktop')
-    ux.add_argument('--state', help='dossier d’état durable (défaut : agent-resume/ux-state)')
-    ux.add_argument('--attachment', help='fichier Swift à joindre à la tâche')
-    ux.add_argument('--task', help='texte de la tâche de revue')
-    ux.add_argument('--force', action='store_true', help='remplacer une entrée existante différente')
-    ux.add_argument('--relaunch', action='store_true', help='quitter puis rouvrir Claude Desktop (jamais automatique)')
-    ux.add_argument('--check', action='store_true', help='n’écrire rien, afficher seulement l’état attendu')
     desktop_config = sub.add_parser('desktop-connection-config')
     desktop_transport = desktop_config.add_mutually_exclusive_group(required=True)
     desktop_transport.add_argument('--socket')
@@ -295,23 +292,6 @@ def main():
     elif args.action == 'reprise-history':
         import reprise_logs
         print(json.dumps(reprise_logs.history(limit=args.limit), ensure_ascii=False))
-    elif args.action == 'ux-review-config':
-        import importlib.machinery
-        import importlib.util
-        loader = importlib.machinery.SourceFileLoader(
-            'install_ux_review', str(ROOT / 'install-ux-review.py'))
-        spec = importlib.util.spec_from_loader(loader.name, loader)
-        installer = importlib.util.module_from_spec(spec)
-        loader.exec_module(installer)
-        if args.check:
-            result = installer.install(state=args.state, attachment=args.attachment,
-                                       task=args.task, force=False, dry_run=True)
-        else:
-            result = installer.install(state=args.state, attachment=args.attachment,
-                                       task=args.task, force=args.force)
-            if args.relaunch and result.get('needs_relaunch'):
-                result['relaunch'] = installer.relaunch()
-        print(json.dumps(result, ensure_ascii=False, indent=1))
     elif args.action == 'desktop-connection-status':
         from claude_desktop import status
         print(json.dumps(status(db, STATE), ensure_ascii=False))

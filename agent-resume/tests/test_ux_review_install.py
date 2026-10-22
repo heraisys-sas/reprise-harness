@@ -89,7 +89,7 @@ class InstallUxReviewTests(unittest.TestCase):
         result = self.install(attachment=attach, task='Analyse la clarté')
         entry = self.read_config()['mcpServers']['reprise_ux_review']
         self.assertIn('--attachment', entry['args'])
-        self.assertIn(str(attach), entry['args'])
+        self.assertIn(str(attach.resolve()), entry['args'])
         self.assertIn('--task', entry['args'])
         self.assertIn('Analyse la clarté', entry['args'])
 
@@ -156,7 +156,8 @@ class InstallUxReviewTests(unittest.TestCase):
     def test_default_state_is_stable_outside_source_and_respects_explicit_state(self):
         with patch.dict(os.environ, {}, clear=True):
             result = installer.install(home=self.home, app_running=False)
-            self.assertEqual(result['state'], str(self.home / 'Library/Application Support/Reprise/ux-state'))
+            self.assertEqual(result['state'],
+                             str((self.home / 'Library/Application Support/Reprise/ux-state').resolve()))
         with patch.dict(os.environ, {'AGENT_RESUME_STATE': str(self.home / 'selected')}):
             self.assertEqual(installer.default_state(self.home), self.home / 'selected/ux-state')
 
@@ -179,6 +180,45 @@ class InstallUxReviewTests(unittest.TestCase):
         self.assertTrue(result['relaunch_performed'])
         self.assertTrue(result['launch_observed'])
         self.assertFalse(result['loaded'])
+    def test_relative_paths_resolve_against_current_directory(self):
+        work = (self.home / 'work').resolve()
+        work.mkdir()
+        attach = work / 'code.swift'
+        attach.write_text('struct V {}', encoding='utf-8')
+        previous = os.getcwd()
+        self.addCleanup(os.chdir, previous)
+        os.chdir(work)
+        self.install(state='relative-state', attachment='code.swift')
+        args = self.read_config()['mcpServers'][installer.NAME]['args']
+        self.assertIn(str(work / 'relative-state'), args)
+        self.assertIn(str(attach), args)
+        # The written entry must be recognized unchanged from another cwd.
+        elsewhere = self.home / 'elsewhere'
+        elsewhere.mkdir()
+        os.chdir(elsewhere)
+        second = self.install(state=work / 'relative-state', attachment=attach)
+        self.assertFalse(second['changed'])
+
+    def test_null_existing_entry_requires_force(self):
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text(json.dumps({'mcpServers': {installer.NAME: None}}), encoding='utf-8')
+        before = self.config.read_bytes()
+        with self.assertRaises(FileExistsError):
+            self.install()
+        self.assertEqual(self.config.read_bytes(), before)
+        result = self.install(force=True)
+        self.assertTrue(result['changed'])
+        self.assertIsInstance(self.read_config()['mcpServers'][installer.NAME], dict)
+
+    def test_non_object_mcp_servers_refused_without_write(self):
+        for broken in (None, [], 'x'):
+            with self.subTest(broken=broken):
+                self.config.parent.mkdir(parents=True, exist_ok=True)
+                self.config.write_text(json.dumps({'mcpServers': broken}), encoding='utf-8')
+                before = self.config.read_bytes()
+                with self.assertRaises(ValueError):
+                    self.install()
+                self.assertEqual(self.config.read_bytes(), before)
 
 
 if __name__ == '__main__':

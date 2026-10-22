@@ -63,14 +63,22 @@ def _read_dict(path):
         raise ValueError(f'Config Claude Desktop illisible ou JSON invalide : {path} ({error})') from error
     if not isinstance(data, dict):
         raise ValueError(f'Config Claude Desktop non-objet : {path}')
+    servers = data.get('mcpServers')
+    if 'mcpServers' in data and not isinstance(servers, dict):
+        kind = type(servers).__name__
+        raise ValueError(f'« mcpServers » doit être un objet JSON, pas {kind} : {path}')
     return data
 
 
 def server_args(*, state, attachment=None, task=None):
-    """The stdio argv Claude Desktop must run for the review server."""
-    args = [str(SERVER), '--state', str(Path(state).expanduser())]
+    """The stdio argv Claude Desktop must run for the review server.
+
+    Paths are resolved to absolutes: Claude Desktop starts the server with an
+    arbitrary cwd, so a relative path would not point where validation looked.
+    """
+    args = [str(SERVER), '--state', str(Path(state).expanduser().resolve())]
     if attachment:
-        args += ['--attachment', str(Path(attachment).expanduser())]
+        args += ['--attachment', str(Path(attachment).expanduser().resolve())]
     if task:
         args += ['--task', task]
     return args
@@ -99,7 +107,14 @@ def install(*, home=None, state=None, attachment=None, task=None, force=False,
     entry to be loaded.
     """
     home = Path.home() if home is None else Path(home)
-    state = default_state(home) if state is None else Path(state)
+    state = default_state(home) if state is None else Path(state).expanduser()
+    if attachment:
+        attachment = Path(attachment).expanduser()
+    # Normalize before validating and serializing: what is validated must be
+    # exactly what Claude Desktop will execute, whatever the caller's cwd.
+    state = state.resolve()
+    if attachment:
+        attachment = attachment.resolve()
     _validate(home, state, attachment)
     target = config_path(home)
     before = target.read_bytes() if target.exists() else None
@@ -107,7 +122,8 @@ def install(*, home=None, state=None, attachment=None, task=None, force=False,
     if (target.read_bytes() if target.exists() else None) != before:
         raise ValueError('Configuration modifiée pendant la lecture ; relancer le plan.')
     requested = {'command': sys.executable, 'args': server_args(state=state, attachment=attachment, task=task)}
-    entry = data.setdefault('mcpServers', {}).setdefault(NAME, None)
+    servers = data.setdefault('mcpServers', {})
+    entry = servers.get(NAME)
     if entry == requested:
         running = app_running if app_running is not None else claude_running()
         return {
@@ -120,7 +136,7 @@ def install(*, home=None, state=None, attachment=None, task=None, force=False,
             'next_step': 'Relancer Claude Desktop pour que le serveur soit chargé.' if running
                          else 'Aucune action : Claude Desktop chargera le serveur à la prochaine ouverture.',
         }
-    if entry is not None and not force:
+    if NAME in servers and not force:
         raise FileExistsError(
             f'Une entrée {NAME} existe déjà avec une configuration différente ; '
             f'utiliser --force pour la remplacer (backup conservé).')
