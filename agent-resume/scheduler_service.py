@@ -54,6 +54,29 @@ def scheduler_arguments(settings):
     return None
 
 
+def loaded_arguments(observed):
+    if observed.returncode != 0:
+        return None
+    lines = observed.stdout.splitlines()
+    starts = [i for i, line in enumerate(lines) if line.strip() == 'arguments = {']
+    if len(starts) != 1:
+        return None
+    args = []
+    for line in lines[starts[0] + 1:]:
+        if line.strip() == '}':
+            return args
+        if not line.strip():
+            return None
+        args.append(line.strip())
+    return None
+
+
+def loaded_matches(observed, settings):
+    # launchd retains loaded arguments independently of the plist on disk.
+    args = settings.get('ProgramArguments', [])
+    return bool(args) and loaded_arguments(observed) == args
+
+
 @contextmanager
 def readonly_registry(path):
     # SQLite RO can create WAL/SHM sidecars. Query a stable private snapshot instead.
@@ -103,7 +126,7 @@ def inspect(root, home=None, runner=launch):
         release = Path(args[1]).parents[3] if Path(args[1]).is_absolute() else Path('/')
         if release.parent == state.parent / 'integration-releases':
             result['configured_release'] = str(release)
-            if loaded.returncode == 0 and all(str(arg) in loaded.stdout for arg in args[:2]):
+            if loaded_matches(loaded, settings):
                 result['effective_release'] = str(release)
             try:
                 release_check(release)
@@ -111,7 +134,7 @@ def inspect(root, home=None, runner=launch):
             except (OSError, ValueError, KeyError):
                 pass
     result['configured_current'] = bool(result['expected_release']) and result['configured_release'] == result['expected_release']
-    result['loaded_current'] = bool(result['expected_release']) and result['effective_release'] == result['expected_release']
+    result['loaded_current'] = result['configured_current'] and loaded_matches(loaded, settings)
     dbpath = state / 'tasks.sqlite'
     if dbpath.is_file():
         with readonly_registry(dbpath) as db:
@@ -223,7 +246,9 @@ def _apply_locked(root, value, runner):
             wanted_hash = digest(value['content'].encode()) if value['content'] else None
             wanted_manifest = {'format': 1, 'plist_sha256': wanted_hash, 'release': value['release'], 'state': value['state']}
             if value['before_sha256'] == wanted_hash and read(managed / 'managed.json') == wanted_manifest and not value.get('repair_tree_sha256'):
-                if not value['activate'] or runner(['print', target() + '/' + LABEL]).returncode == 0:
+                observed = runner(['print', target() + '/' + LABEL])
+                settings = plistlib.loads(value['content'].encode()) if value['content'] else {}
+                if loaded_matches(observed, settings) or (not value['activate'] and observed.returncode != 0):
                     return {'status': 'completed', 'message': 'Configuration identique : aucune modification. Pause enregistrée conservée.'}
             backup = str(managed / ('backup-' + uuid.uuid4().hex + '.plist')) if plist.exists() else None
             journal = {'format': 1, 'status': 'pending', 'plan': value, 'backup': backup, 'steps': []}
@@ -242,11 +267,12 @@ def _apply_locked(root, value, runner):
         allowed = (after,) if 'published' in journal['steps'] else (value['before_sha256'], after)
         if file_hash(plist) not in allowed:
             raise ValueError('Plist modifié pendant l’opération ; sauvegarde et journal conservés.')
-        # No-op install keeps an already loaded service untouched.
+        settings = plistlib.loads(value['content'].encode()) if value['content'] else {}
+        observed = runner(['print', target() + '/' + LABEL])
+        stale_loaded = observed.returncode == 0 and not loaded_matches(observed, settings)
         changed = value['before_sha256'] != after
         should_unload = changed or value['action'] == 'remove' or bool(value.get('repair_tree_sha256'))
-        if should_unload and 'unloaded' not in journal['steps']:
-            observed = runner(['print', target() + '/' + LABEL])
+        if stale_loaded or (should_unload and 'unloaded' not in journal['steps']):
             if observed.returncode == 0:
                 if re.search(r'(?m)^\s*state = running\s*$', observed.stdout):
                     raise ValueError('Un tick est en cours ; attendre sa fin avant réparation ou retrait.')
@@ -281,6 +307,11 @@ def _apply_locked(root, value, runner):
                 result = runner(['bootstrap', target(), str(plist)])
                 if result.returncode:
                     raise ValueError('Activation non confirmée : ' + result.stderr)
+        if file_hash(plist) != after:
+            raise ValueError('Plist modifié avant clôture ; opération suspendue.')
+        if value['activate'] and value['action'] == 'install':
+            if not loaded_matches(runner(['print', target() + '/' + LABEL]), settings):
+                raise ValueError('Activation non confirmée : configuration chargée différente ou inconnue.')
         atomic(managed / 'managed.json', encoded(desired_manifest))
         journal['status'] = 'completed'
         atomic(journal_path, encoded(journal))

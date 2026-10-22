@@ -25,3 +25,13 @@ Onze tests sur copies temporaires avec launchctl simulé couvrent inspection DB/
 Le build et les contrôles Swift ne valident pas le parcours visuel. L’activation launchd, un tick de registre d’essai sans travail exécutable, le compte vierge, les autorisations macOS et la reprise fonctionnelle supervisée restent à confirmer séparément. Une présence de `last_tick` ne prouve pas la réussite de toute la boucle ; examiner aussi les erreurs et les résultats durables. L’installation autonome distribuée reste soumise aux limites du contrat d’installation.
 
 Vérifications du 22/10/2026 : suite complète **397 tests OK, 4 ignorés**, puis **11 tests ciblés OK** après le dernier garde de manifeste ; compilation `native-install` sans `--open`, parse Swift et contrôle des espaces réussis. Les avertissements de ressources préexistants restent présents. Aucun redémarrage de l’application ni installation réelle du nouveau service pendant ces vérifications.
+
+### Correctifs après revue contradictoire (22/10)
+
+La configuration chargée est observée indépendamment du plist : comparaison exacte du tableau `arguments` de `launchctl print`, avec son ordre, son interpréteur et sans argument supplémentaire. Une réparation décharge le job obsolète même si le plist est déjà à jour ; elle ne recharge que si l’activation a été explicitement choisie. Le refus d’un worker ou tick actif reste inchangé. Un journal repris ne permet pas de sauter ce contrôle.
+
+La clôture revalide le hash du plist et, lorsque l’activation est demandée, les arguments effectivement chargés avant publication du manifeste. Restaurer l’ancien plist après un échec laisse l’opération en attente et conserve le manifeste antérieur ; ce refus était déjà présent dans le code inspecté et possède désormais sa régression explicite. Le simulateur conserve désormais sa propre configuration chargée, indépendante du fichier courant, comme launchd.
+
+Dix-huit tests ciblés passent : les sept nouveaux cas couvrent la restauration d’un ancien plist, le release chargé obsolète, la réparation sans activation, un bootstrap annoncé réussi mais incohérent, une modification du plist pendant activation, les arguments ajoutés/permutés ou mauvais interpréteur, et une preuve de chargement absente/ambiguë/incomplète. Aucun service réel n’a été modifié par ces tests.
+
+Validation du correctif : suite complète de **404 tests réussie, dont 4 ignorés**, compilation `native-install` sans `--open` et contrôle des espaces réussis. Relecture indépendante du diff après correction ; aucun défaut résiduel identifié dans le périmètre des deux signalements. Les avertissements de ressources préexistants restent présents.

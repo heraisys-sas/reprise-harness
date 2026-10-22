@@ -46,6 +46,7 @@ class SchedulerServiceTests(unittest.TestCase):
         env = patch.dict(os.environ, {'AGENT_RESUME_STATE': str(self.state)})
         env.start(); self.addCleanup(env.stop)
         self.loaded = False
+        self.loaded_settings = None
         self.calls = []
         self.fail_bootstrap = False
         self.support, self.plist, self.managed = service.paths(self.home)
@@ -54,15 +55,17 @@ class SchedulerServiceTests(unittest.TestCase):
         self.calls.append(args)
         if args[0] == 'print':
             output = ''
-            if self.loaded and self.plist.exists():
-                output = '\n'.join(plistlib.loads(self.plist.read_bytes())['ProgramArguments'])
+            if self.loaded and self.loaded_settings:
+                output = '\targuments = {\n' + ''.join('\t\t' + arg + '\n' for arg in self.loaded_settings['ProgramArguments']) + '\t}\n'
             return subprocess.CompletedProcess(args, 0 if self.loaded else 113, output, '')
         if args[0] == 'bootstrap':
             if self.fail_bootstrap:
                 return subprocess.CompletedProcess(args, 1, '', 'fixture failure')
             self.loaded = True
+            self.loaded_settings = plistlib.loads(self.plist.read_bytes())
         elif args[0] == 'bootout':
             self.loaded = False
+            self.loaded_settings = None
         else:
             self.fail('Unexpected launchctl command')
         return subprocess.CompletedProcess(args, 0, '', '')
@@ -153,6 +156,96 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertTrue(release.exists())
         self.assertEqual(original, (self.state / 'tasks.sqlite').read_bytes())
         self.assertTrue(list(self.managed.glob('backup-*.plist')))
+
+    def test_resume_refuses_restored_old_plist_after_activation_failure(self):
+        self.apply(self.plan())
+        original = self.plist.read_bytes()
+        value = self.plan(activate=True, interval=90)
+        self.fail_bootstrap = True
+        with self.assertRaisesRegex(ValueError, 'Activation'):
+            self.apply(value)
+        manifest_before = (self.managed / 'managed.json').read_bytes()
+        self.plist.write_bytes(original)
+        self.fail_bootstrap = False
+        self.calls.clear()
+        with self.assertRaisesRegex(ValueError, 'Plist modifié'):
+            self.apply(value)
+        self.assertEqual(self.plist.read_bytes(), original)
+        self.assertEqual((self.managed / 'managed.json').read_bytes(), manifest_before)
+        self.assertEqual(self.inspect()['pending_plan'], value)
+        self.assertFalse(any(c[0] == 'bootstrap' for c in self.calls))
+
+    def test_repair_reloads_old_effective_release_when_plist_is_current(self):
+        self.apply(self.plan(activate=True))
+        old_settings = dict(self.loaded_settings)
+        current = self.plan()['release']
+        previous = str(Path(current).with_name('a' * 64))
+        old_settings['ProgramArguments'] = [arg.replace(current, previous) for arg in old_settings['ProgramArguments']]
+        self.loaded_settings = old_settings
+        self.assertFalse(self.inspect()['loaded_current'])
+        self.calls.clear()
+        result = self.apply(self.plan(activate=True))
+        self.assertEqual(result['status'], 'completed')
+        self.assertTrue(self.inspect()['loaded_current'])
+        self.assertEqual([c[0] for c in self.calls if c[0] in ('bootout', 'bootstrap')], ['bootout', 'bootstrap'])
+
+    def test_repair_without_activation_unloads_stale_service(self):
+        self.apply(self.plan(activate=True))
+        self.loaded_settings = {'ProgramArguments': ['/bin/false']}
+        self.calls.clear()
+        self.apply(self.plan())
+        self.assertFalse(self.loaded)
+        self.assertEqual([c[0] for c in self.calls if c[0] in ('bootout', 'bootstrap')], ['bootout'])
+
+    def test_activation_must_confirm_effective_configuration(self):
+        value = self.plan(activate=True)
+        def misleading_runner(args):
+            result = self.runner(args)
+            if args[0] == 'bootstrap':
+                self.loaded_settings = {'ProgramArguments': ['/bin/false']}
+            return result
+        with self.assertRaisesRegex(ValueError, 'configuration chargée'):
+            service.apply(self.root, value, misleading_runner)
+        self.assertFalse((self.managed / 'managed.json').exists())
+        self.assertEqual(self.inspect()['pending_plan'], value)
+        self.calls.clear()
+        self.apply(value)
+        self.assertTrue(self.inspect()['loaded_current'])
+        self.assertEqual([c[0] for c in self.calls if c[0] in ('bootout', 'bootstrap')], ['bootout', 'bootstrap'])
+
+    def test_plist_changed_during_activation_cannot_publish_manifest(self):
+        value = self.plan(activate=True)
+        def concurrent_runner(args):
+            result = self.runner(args)
+            if args[0] == 'bootstrap':
+                self.plist.write_bytes(plistlib.dumps({'Label': service.LABEL, 'ProgramArguments': ['/bin/false']}))
+            return result
+        with self.assertRaisesRegex(ValueError, 'Plist modifié avant clôture'):
+            service.apply(self.root, value, concurrent_runner)
+        self.assertFalse((self.managed / 'managed.json').exists())
+        self.assertEqual(self.inspect()['pending_plan'], value)
+
+    def test_loaded_argument_vector_must_match_exactly(self):
+        self.apply(self.plan(activate=True))
+        expected = list(self.loaded_settings['ProgramArguments'])
+        variants = [expected + ['--unexpected'], expected[:1] + list(reversed(expected[1:])), ['/bin/false'] + expected[1:]]
+        for args in variants:
+            with self.subTest(args=args):
+                self.loaded_settings = {'ProgramArguments': args}
+                observed = self.inspect()
+                self.assertFalse(observed['loaded_current'])
+                self.calls.clear()
+                self.apply(self.plan(activate=True))
+                self.assertTrue(self.inspect()['loaded_current'])
+                self.assertEqual([c[0] for c in self.calls if c[0] in ('bootout', 'bootstrap')], ['bootout', 'bootstrap'])
+
+    def test_loaded_arguments_require_unambiguous_complete_block(self):
+        settings = {'ProgramArguments': ['/path with spaces/python3', 'tick']}
+        good = 'program = /path with spaces/python3\n\targuments = {\n\t\t/path with spaces/python3\n\t\ttick\n\t}\n'
+        observed = subprocess.CompletedProcess([], 0, good, '')
+        self.assertTrue(service.loaded_matches(observed, settings))
+        for output in [good.split('arguments')[0], good + good, good.rsplit('}', 1)[0]]:
+            self.assertFalse(service.loaded_matches(subprocess.CompletedProcess([], 0, output, ''), settings))
 
     def test_update_uses_new_release_and_preserves_pause(self):
         first = self.plan(activate=True)
