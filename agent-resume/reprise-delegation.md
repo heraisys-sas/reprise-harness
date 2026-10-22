@@ -27,6 +27,65 @@ There is currently no automatic durable clarification protocol. In manual mode, 
 
 Persist a unique `request_key` locally before every inference call, including follow-ups and aliases; retain it after a lost reply. Supply `parent_request_key` for child delegations. Use `reprise_requests` to list recent project requests or retrieve one by key, and acknowledge a received receipt explicitly. Replaying a key does not start a new attempt. After a timeout, lost response or uncertain parent, inspect the durable receipt before any resend; do not choose a new key to bypass an uncertain-attempt barrier. See [DELEGATION-PERSISTENCE.md](DELEGATION-PERSISTENCE.md).
 
+
+### Bounded receipt retrieval (receipt-json-v1)
+
+Discover these optional parameters in the installed MCP schema before use.
+Historical calls default to `full`, including the recent-request list; their
+response format and explicit acknowledgement remain supported.
+
+Persist `request_key` before calling `reprise_delegate(..., return_mode="receipt")`.
+The complete result is persisted before the compact manifest is returned,
+including on replay. `return_mode` defaults to `full` and is removed before
+backend prevalidation, payload construction, identity and signature. Switching
+modes never starts a second inference. Existing admission and uncertainty
+barriers remain in force.
+
+1. Read `reprise_requests(request_key=key, view="receipt")`. The manifest contains
+   `status, request_key, state, attempt_id, acknowledged, available, format,
+   total_length, result_sha256`, without result content.
+2. If available, retain the fingerprint and request `view="page", offset=0,
+   max_chars=6000, result_sha256=fingerprint`. Each page adds
+   `offset, text, returned_length, has_more, next_offset`. Follow `next_offset`
+   with the same fingerprint until `has_more=false`; the terminal offset is null.
+3. Concatenate fragments in order, verify total length and SHA-256, then decode
+   JSON. Explicitly acknowledge through `view="receipt", acknowledge=true`
+   afterwards. Only `state="recorded"` can be acknowledged; pages cannot
+   acknowledge, and reads never acknowledge implicitly.
+
+`format="receipt-json-v1"` describes JSON of the entire persisted `result`
+object: sorted keys, compact separators, `ensure_ascii=False`, no Unicode
+normalization. Lengths and offsets count Unicode code points. SHA-256 hashes
+the canonical UTF-8 bytes; supplied hexadecimal fingerprints are case-insensitive.
+The consultation status does not replace the expertise status inside `result`.
+
+Both compact views require `request_key`. Only `page` accepts `offset`
+(nonnegative integer, default 0), `max_chars` (1..6000, default 6000) and
+`result_sha256` (64 hex digits). Offset > 0 requires the fingerprint.
+JSON integers such as 1.0 are accepted and normalized; booleans, fractional
+values and unknown arguments are rejected.
+
+Absent result: `available=false`, null length/fingerprint, no page fields.
+Unknown key: `not_found`. Fingerprint mismatch: `result_changed`, no fragment.
+Offset beyond the total: `invalid_offset`, no fragment. Offset equal to the
+total: empty terminal page. Compact blocked delegations retain their blocking
+status and point to an existing uncertain request when applicable.
+
+Compact responses are limited to 7000 serialized code points, including
+JSON-RPC envelope, MCP text-block escaping and metadata. Oversized fragments
+are deterministically halved, reserialized and checked; returned lengths and
+offsets describe the actual fragment. JSON-RPC ids must serialize to at most
+256 code points for compact calls; larger ids are rejected before dispatch
+(stdio error response uses a null id). Sizing reserves the maximum id and
+acknowledgement overhead so neither changes page boundaries.
+
+Fragments may split a grapheme or JSON token: decode only after assembly.
+Cumulative pages consume context and remain subject to later compaction.
+The historical list and other tools are outside the transport guarantee.
+Retrieval cannot recover content already truncated by backend collection.
+No transaction spans pages or inference; no SQLite migration, dependency,
+backend fallback or automatic retry is introduced.
+
 Use `mcp__reprise_codex__reprise_followup` only for an owned returned session, with its thread ID and explicit `backend: "codex"` or `backend: "claude-code"`. It retains the recorded model and effort. Send the answer or changed facts rather than full history. Legacy bridges may also expose the Codex-specific `codex_followup` alias; use it only if actually discovered. Follow-ups are not a bidirectional Claude Desktop channel.
 
 Respect `quota_blocked`, `budget_blocked`, `busy`, `timed_out`, `blocked_permission`, `needs_review`, `billing_unverified` and `blocked_auth`. No repeated polling, automatic retry, credential copying, authentication on the user's behalf or paid API fallback. A timeout may already have consumed quota; truncated output is incomplete. One request at a time. No backend has a local daily call cap: legacy `--daily-limit` and `expert_calls`/`quick_calls` counters are inert. Provider checks, including the current Codex 5% reserve, remain in force. Explicit user budgets remain separate from provider quotas.

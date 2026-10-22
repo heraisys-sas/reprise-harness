@@ -1,5 +1,7 @@
 import concurrent.futures
 import fcntl
+import hashlib
+import json
 import socket
 import sqlite3
 import sys
@@ -278,3 +280,105 @@ class DurableTests(unittest.TestCase):
             self.assertEqual(run.call_count, 10)
         other = self.bridge()
         self.assertEqual(other.call('reprise_requests', {'request_key': '9'})['state'], 'recorded')
+
+
+class ReceiptPaginationTests(unittest.TestCase):
+    def setUp(self):
+        self.db = sqlite3.connect(':memory:')
+        self.addCleanup(self.db.close)
+        self.store = Store(self.db, 'project')
+        self.store.begin('key', {'question': 'A'})
+
+    def lookup(self, **args):
+        return self.store.lookup({'request_key': 'key', **args})
+
+    def test_exact_reconstruction_and_unchanged_full_receipt(self):
+        sample = '"\\\n\r\t\x00\x01e\u0301é😀'
+        for length in (8850, 12862):
+            with self.subTest(length=length):
+                saved = self.store.finish('key', {'status': 'finished',
+                    'response': (sample * length)[:length], 'details': sample * 1000})
+                before = self.db.execute('SELECT * FROM delegation_requests').fetchall()
+                manifest = self.lookup(view='receipt')
+                expected = json.dumps(saved, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+                parts, offset = [], 0
+                while True:
+                    args = {'view': 'page', 'offset': offset, 'max_chars': 6000,
+                            'result_sha256': manifest['result_sha256']}
+                    page = self.lookup(**args)
+                    self.assertEqual(page, self.lookup(**args))
+                    self.assertEqual(page['offset'], offset)
+                    self.assertEqual(page['returned_length'], len(page['text']))
+                    parts.append(page['text'])
+                    if not page['has_more']:
+                        self.assertIsNone(page['next_offset'])
+                        break
+                    self.assertGreater(page['returned_length'], 0)
+                    self.assertEqual(page['next_offset'], offset + len(page['text']))
+                    offset = page['next_offset']
+                text = ''.join(parts)
+                self.assertEqual(text, expected)
+                self.assertEqual(json.loads(text), saved)
+                self.assertEqual(len(text), manifest['total_length'])
+                self.assertEqual(hashlib.sha256(text.encode('utf-8')).hexdigest(),
+                                 manifest['result_sha256'])
+                full = {'status': 'finished', 'request_key': 'key', 'state': 'recorded',
+                        'attempt_id': manifest['attempt_id'], 'acknowledged': False, 'result': saved}
+                self.assertEqual(self.lookup(), full)
+                self.assertEqual(self.lookup(view='full'), full)
+                self.assertEqual(self.db.execute('SELECT * FROM delegation_requests').fetchall(), before)
+                self.assertFalse(self.db.in_transaction)
+        self.assertEqual(self.store.lookup({}), {'status': 'finished', 'requests': [{
+            'request_key': 'key', 'state': 'recorded', 'parent_request_key': None,
+            'acknowledged': 0}], 'limit': 100})
+        self.assertEqual(self.store.lookup({'request_key': 'missing'}),
+                         {'status': 'not_found', 'request_key': 'missing'})
+
+    def test_absence_boundaries_changed_result_and_scope(self):
+        absent = self.lookup(view='page')
+        self.assertFalse(absent['available'])
+        self.assertIsNone(absent['total_length'])
+        self.assertIsNone(absent['result_sha256'])
+        self.assertNotIn('text', absent)
+        self.store.finish('key', {'status': 'finished', 'response': 'abc'})
+        manifest = self.lookup(view='receipt')
+        fingerprint, total = manifest['result_sha256'], manifest['total_length']
+        first = self.lookup(view='page', offset=0, max_chars=1)
+        self.assertEqual((first['returned_length'], first['next_offset']), (1, 1))
+        self.assertEqual(self.lookup(view='page', offset=0.0, max_chars=1.0), first)
+        terminal = self.lookup(view='page', offset=total, result_sha256=fingerprint.upper())
+        self.assertEqual((terminal['text'], terminal['returned_length'],
+                          terminal['has_more'], terminal['next_offset']), ('', 0, False, None))
+        outside = self.lookup(view='page', offset=total + 1, result_sha256=fingerprint)
+        self.assertEqual(outside['status'], 'invalid_offset')
+        self.assertNotIn('text', outside)
+        self.store.finish('key', {'status': 'finished', 'response': 'changed'})
+        for offset in (0, 1):
+            changed = self.lookup(view='page', offset=offset, result_sha256=fingerprint)
+            self.assertEqual(changed['status'], 'result_changed')
+            self.assertNotIn('text', changed)
+        other = Store(self.db, 'other')
+        for view in ('receipt', 'page'):
+            self.assertEqual(other.lookup({'request_key': 'key', 'view': view})['status'], 'not_found')
+        self.assertFalse(self.db.in_transaction)
+
+    def test_invalid_arguments(self):
+        invalid = [None, [], {'unknown': 1}, {'view': 'other'}, {'view': None},
+                   {'view': 'receipt'}, {'view': 'page'}, {'acknowledge': True},
+                   {'request_key': None}, {'request_key': ''}, {'request_key': ' '},
+                   {'request_key': 'x' * 129}, {'request_key': 1},
+                   {'request_key': 'key', 'acknowledge': 1}]
+        for field in ('offset', 'max_chars', 'result_sha256'):
+            for view in ('full', 'receipt'):
+                invalid.append({'request_key': 'key', 'view': view, field: 1})
+        base = {'request_key': 'key', 'view': 'page'}
+        for field, values in (
+                ('offset', [-1, True, False, 1.5, '0', None]),
+                ('max_chars', [0, 6001, True, False, 1.5, '1', None]),
+                ('result_sha256', ['', 'a' * 63, 'g' * 64, 'a' * 64 + '\n', None, 1]),
+                ('acknowledge', [True, 0, 'false']), ('extra', [False])):
+            invalid.extend(dict(base, **{field: value}) for value in values)
+        invalid.append(dict(base, offset=1))
+        for args in invalid:
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                self.store.lookup(args)

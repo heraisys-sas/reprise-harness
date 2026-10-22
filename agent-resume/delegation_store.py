@@ -43,6 +43,87 @@ def validate_key(key):
         raise ValueError('Persist a nonempty request_key (at most 128 characters) before sending')
 
 
+RECEIPT_FORMAT = 'receipt-json-v1'
+LOOKUP_PROPERTIES = {
+    'request_key': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': r'\S'},
+    'acknowledge': {'type': 'boolean'},
+}
+PAGE_PROPERTIES = {
+    'offset': {'type': 'integer', 'minimum': 0, 'default': 0},
+    'max_chars': {'type': 'integer', 'minimum': 1, 'maximum': 6000, 'default': 6000},
+    'result_sha256': {'type': 'string', 'minLength': 64, 'maxLength': 64,
+                      'pattern': '^[0-9a-fA-F]{64}$'},
+}
+LOOKUP_SCHEMA = {
+    'type': 'object',
+    'oneOf': [
+        {'properties': LOOKUP_PROPERTIES | {'view': {'const': 'full', 'default': 'full'}},
+         'additionalProperties': False,
+         'anyOf': [{'properties': {'acknowledge': {'const': False}}},
+                   {'required': ['request_key']}]},
+        {'properties': LOOKUP_PROPERTIES | {'view': {'const': 'receipt'}},
+         'required': ['view', 'request_key'], 'additionalProperties': False},
+        {'properties': LOOKUP_PROPERTIES | PAGE_PROPERTIES | {
+            'view': {'const': 'page'}, 'acknowledge': {'const': False}},
+         'required': ['view', 'request_key'], 'additionalProperties': False,
+         'anyOf': [{'properties': {'offset': {'const': 0}}},
+                   {'required': ['result_sha256']}]},
+    ],
+}
+
+
+def json_integer(value):
+    return type(value) is int or type(value) is float and value.is_integer()
+
+
+def validate_lookup(args):
+    if not isinstance(args, dict) or args.keys() - (
+            LOOKUP_PROPERTIES.keys() | PAGE_PROPERTIES.keys() | {'view'}):
+        raise ValueError('Invalid lookup arguments')
+    view = args.get('view', 'full')
+    if view not in ('full', 'receipt', 'page'):
+        raise ValueError('Invalid receipt view')
+    if 'request_key' in args:
+        validate_key(args['request_key'])
+    if type(args.get('acknowledge', False)) is not bool:
+        raise ValueError('Boolean acknowledge required')
+    if (view != 'full' or args.get('acknowledge')) and 'request_key' not in args:
+        raise ValueError('A request_key is required')
+    if view != 'page':
+        if args.keys() & PAGE_PROPERTIES.keys():
+            raise ValueError('Pagination arguments require page view')
+        return view
+    if args.get('acknowledge', False):
+        raise ValueError('Pages cannot acknowledge a receipt')
+    offset, maximum = args.get('offset', 0), args.get('max_chars', 6000)
+    if not json_integer(offset) or offset < 0:
+        raise ValueError('Nonnegative integer offset required')
+    if not json_integer(maximum) or not 1 <= maximum <= 6000:
+        raise ValueError('Integer max_chars from 1 to 6000 required')
+    expected = args.get('result_sha256')
+    if 'result_sha256' in args and (
+            not isinstance(expected, str) or len(expected) != 64
+            or any(c not in '0123456789abcdefABCDEF' for c in expected)):
+        raise ValueError('SHA-256 must contain 64 hexadecimal characters')
+    if offset and expected is None:
+        raise ValueError('Continuation requires result_sha256')
+    return view
+
+
+def receipt_view(receipt):
+    result = receipt.get('result')
+    text = None if result is None else json.dumps(
+        result, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+    manifest = {name: receipt.get(name) for name in
+                ('status', 'request_key', 'state', 'attempt_id')}
+    manifest.update(
+        acknowledged=bool(receipt.get('acknowledged', False)),
+        available=text is not None, format=RECEIPT_FORMAT,
+        total_length=None if text is None else len(text),
+        result_sha256=None if text is None else hashlib.sha256(text.encode('utf-8')).hexdigest())
+    return manifest, text
+
+
 class Store:
     def __init__(self, db, scope):
         self.db, self.scope = db, scope
@@ -55,6 +136,25 @@ class Store:
                 PRIMARY KEY(scope,request_key))''')
 
     def lookup(self, args):
+        view = validate_lookup(args)
+        receipt = self._lookup({k: v for k, v in args.items() if k in LOOKUP_PROPERTIES})
+        if view == 'full':
+            return receipt
+        manifest, text = receipt_view(receipt)
+        if view == 'receipt' or text is None:
+            return manifest
+        expected = args.get('result_sha256')
+        if expected is not None and expected.lower() != manifest['result_sha256']:
+            return dict(manifest, status='result_changed')
+        offset = int(args.get('offset', 0))
+        if offset > len(text):
+            return dict(manifest, status='invalid_offset')
+        fragment = text[offset:offset + int(args.get('max_chars', 6000))]
+        end = offset + len(fragment)
+        return dict(manifest, offset=offset, text=fragment, returned_length=len(fragment),
+                    has_more=end < len(text), next_offset=end if end < len(text) else None)
+
+    def _lookup(self, args):
         if not isinstance(args, dict) or args.keys() - {'request_key', 'acknowledge'}:
             raise ValueError('Invalid lookup arguments')
         key = args.get('request_key')

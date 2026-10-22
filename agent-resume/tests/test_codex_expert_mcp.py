@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -244,3 +245,107 @@ class IronclawBridgeTests(RequestCalls, unittest.TestCase):
     def test_followup_ironclaw_rejected(self):
         with self.assertRaises(ValueError):
             self.bridge.call('reprise_followup', {'backend': 'ironclaw', 'thread_id': 'x', 'question': 'continue'})
+
+
+class CompactReceiptTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state')
+        self.bridge.program = 'codex'
+        self.addCleanup(self.bridge.db.close)
+
+    def dispatch(self, name, args, ident=1):
+        content = self.bridge.dispatch({'method': 'tools/call', 'id': ident,
+            'params': {'name': name, 'arguments': args}})
+        wire = json.dumps({'jsonrpc': '2.0', 'id': ident, 'result': content}, ensure_ascii=False)
+        self.assertLessEqual(len(wire), 7000)
+        return json.loads(content['content'][0]['text'])
+
+    def test_full_then_receipt_replay_preserves_identity_and_result(self):
+        args = {'request_key': 'key', 'question': 'Inspect', 'kind': 'review'}
+        with patch('codex_expert_mcp.review', return_value={
+                'status': 'finished', 'response': 'x' * 20000, 'thread_id': ID}) as run:
+            result = self.bridge.call('reprise_delegate', args)
+            before = self.bridge.db.execute('SELECT * FROM delegation_requests').fetchall()
+            manifest = self.dispatch('reprise_delegate', dict(args, return_mode='receipt'))
+            self.assertEqual(manifest, self.dispatch(
+                'reprise_requests', {'request_key': 'key', 'view': 'receipt'}))
+            self.assertEqual(self.bridge.call('reprise_delegate', dict(args, return_mode='full')), result)
+            self.assertEqual(self.bridge.db.execute('SELECT * FROM delegation_requests').fetchall(), before)
+            run.assert_called_once()
+        with patch('codex_expert_mcp.review', return_value={'status': 'finished', 'response': 'y' * 20000}) as run:
+            manifest = self.dispatch('reprise_delegate', dict(args, request_key='new', return_mode='receipt'))
+            self.assertTrue(manifest['available'])
+            self.assertEqual(self.bridge.call('reprise_requests', {'request_key': 'new'})['result']['response'],
+                             'y' * 20000)
+            run.assert_called_once()
+
+    def test_complete_envelope_bound_and_stable_pages_with_id_reserve(self):
+        key = '\x01' * 127 + 'k'
+        sample = '"\\\n\r\t\x00\x01e\u0301é😀'
+        self.bridge.requests.begin(key, {'question': 'A'})
+        saved = self.bridge.requests.finish(key, {
+            'status': 'finished', 'response': sample * 1500, 'details': sample * 1500})
+        manifest = self.dispatch('reprise_requests', {'request_key': key, 'view': 'receipt'})
+        parts, offset = [], 0
+        with patch('codex_expert_mcp.review') as run:
+            while True:
+                args = {'request_key': key, 'view': 'page', 'offset': offset,
+                        'max_chars': 6000, 'result_sha256': manifest['result_sha256']}
+                page = self.dispatch('reprise_requests', args)
+                self.assertEqual(page, self.dispatch('reprise_requests', args, ident='x' * 254))
+                self.assertEqual(page, self.dispatch('reprise_requests', args, ident='"\\' * 50))
+                self.assertFalse(page['acknowledged'])
+                self.assertEqual(page['returned_length'], len(page['text']))
+                parts.append(page['text'])
+                if not page['has_more']:
+                    self.assertIsNone(page['next_offset'])
+                    break
+                self.assertGreater(page['returned_length'], 0)
+                self.assertEqual(page['next_offset'], offset + len(page['text']))
+                offset = page['next_offset']
+            run.assert_not_called()
+        text = ''.join(parts)
+        self.assertEqual(text, json.dumps(saved, ensure_ascii=False, sort_keys=True, separators=(',', ':')))
+        self.assertEqual(hashlib.sha256(text.encode('utf-8')).hexdigest(), manifest['result_sha256'])
+        args = {'request_key': key, 'view': 'page'}
+        first = self.dispatch('reprise_requests', args)
+        receipt = self.dispatch('reprise_requests', {
+            'request_key': key, 'view': 'receipt', 'acknowledge': True})
+        self.assertTrue(receipt['acknowledged'])
+        self.assertNotIn('result', receipt)
+        self.assertNotIn('text', receipt)
+        later = self.dispatch('reprise_requests', args, ident='x' * 254)
+        self.assertEqual(first['text'], later['text'])
+        self.assertEqual(first['next_offset'], later['next_offset'])
+        self.assertFalse(self.bridge.db.in_transaction)
+
+    def test_invalid_modes_ids_and_acknowledgement_states(self):
+        args = {'request_key': 'key', 'question': 'Inspect', 'kind': 'review'}
+        with patch('codex_expert_mcp.review') as run:
+            for mode in ('other', None, True, 1):
+                with self.subTest(mode=mode), self.assertRaises(ValueError):
+                    self.bridge.call('reprise_delegate', dict(args, return_mode=mode))
+            for name in ('codex_review', 'codex_followup', 'reprise_followup',
+                         'reprise_requests', 'reprise_backends'):
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    self.bridge.call(name, {'request_key': 'key', 'question': 'Inspect',
+                                           'return_mode': 'receipt'})
+            for ident in ('x' * 255, '\x01' * 43):
+                with self.subTest(ident=ident), self.assertRaises(ValueError):
+                    self.dispatch('reprise_delegate', dict(args, return_mode='receipt'), ident=ident)
+            run.assert_not_called()
+        self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0], 0)
+        self.bridge.requests.begin('key', {'question': 'A'})
+        for result in (None, {'status': 'timed_out'}, {'status': 'needs_review'},
+                       {'status': 'blocked_permission'}):
+            if result is not None:
+                self.bridge.requests.finish('key', result)
+            with self.subTest(result=result), self.assertRaises(ValueError):
+                self.dispatch('reprise_requests', {
+                    'request_key': 'key', 'view': 'receipt', 'acknowledge': True})
+        self.bridge.requests.finish('key', {'status': 'finished'})
+        with self.assertRaises(ValueError):
+            self.dispatch('reprise_requests', {
+                'request_key': 'key', 'view': 'page', 'acknowledge': True})

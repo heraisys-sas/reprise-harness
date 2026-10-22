@@ -10,7 +10,7 @@ from pathlib import Path
 import signal
 import sqlite3
 import sys
-from delegation_store import Store, file_evidence
+from delegation_store import LOOKUP_SCHEMA, Store, file_evidence
 from codex_expert import review
 from claude_expert import review as claude_review
 import claude_desktop
@@ -26,9 +26,10 @@ TOOLS = [
     {'name': 'reprise_quotas', 'description': 'Observe quota knowledge by explicit engine/route, account and pool. Cached by default; refresh reads native metadata only. Unknown is not zero. Never resumes/routes inference.',
      'inputSchema': {'type': 'object', 'properties': {'engine': {'type': 'string', 'enum': ['codex-cli', 'codex-server', 'codex-parent', 'claude-code', 'claude-desktop', 'harness-cli']}, 'refresh': {'type': 'boolean'}}, 'additionalProperties': False}},
     {'name': 'reprise_requests', 'description': 'Recover durable requests/results by caller-persisted request_key, or list requests after a lost acknowledgement. Never dispatches inference.',
-     'inputSchema': {'type': 'object', 'properties': {'request_key': {'type': 'string'}, 'acknowledge': {'type': 'boolean'}}, 'additionalProperties': False}},
+     'inputSchema': LOOKUP_SCHEMA},
     {'name': 'reprise_delegate', 'description': 'Delegate expertise, review or a bounded batch. Default Codex: standard Sol, deep Astra, standard batch Luna. Explicit claude-code when configured: Sonnet/medium or Opus/high, no tools, only question and supplied project file snapshots. Returns text/patches to verify. Never silently switches backend or billing. Continue via reprise_followup.',
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {
+         'return_mode': {'type': 'string', 'enum': ['full', 'receipt'], 'default': 'full'},
          'kind': {'type': 'string', 'enum': ['expertise', 'review', 'batch']},
          'level': {'type': 'string', 'enum': ['standard', 'deep']},
          'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop']},
@@ -59,6 +60,49 @@ MODES = {
     'review': 'Review for correctness, security and maintainability. Return only actionable findings with severity, file references, evidence and verification steps; say when no finding is established.',
     'batch': 'Produce the requested bounded batch of code, tests or transformations as text or unified patches. Do not apply changes. Preserve existing contracts; include deterministic validation commands and report any unfinished items.',
 }
+
+
+TRANSPORT_LIMIT = 7000
+
+
+def compact_call(message):
+    params = message.get('params') or {}
+    if message.get('method') != 'tools/call' or not isinstance(params, dict):
+        return False
+    args = params.get('arguments', {})
+    return isinstance(args, dict) and (
+        params.get('name') == 'reprise_requests' and args.get('view') in ('receipt', 'page')
+        or params.get('name') == 'reprise_delegate' and args.get('return_mode') == 'receipt')
+
+
+def tool_content(result):
+    return {'content': [{'type': 'text', 'text': json.dumps(result, ensure_ascii=False)}],
+            'isError': result.get('status') != 'finished'}
+
+
+def bounded_content(result, ident):
+    result = dict(result)
+    while True:
+        content = tool_content(result)
+        # Reserve the largest accepted id and acknowledgement representation.
+        budget = dict(result, acknowledged=False) if 'acknowledged' in result else result
+        envelope = {'jsonrpc': '2.0', 'id': 'x' * 254, 'result': tool_content(budget)}
+        if len(json.dumps(envelope, ensure_ascii=False)) <= TRANSPORT_LIMIT:
+            actual = {'jsonrpc': '2.0', 'id': ident, 'result': content}
+            if len(json.dumps(actual, ensure_ascii=False)) > TRANSPORT_LIMIT:
+                raise ValueError('Compact response exceeds transport limit')
+            return content
+        fragment = result.get('text')
+        if not fragment:
+            raise ValueError('Compact response exceeds transport limit')
+        # Halving is deterministic and bounds the number of serializations.
+        fragment = fragment[:len(fragment) // 2]
+        end = result['offset'] + len(fragment)
+        result.update(text=fragment, returned_length=len(fragment),
+                      has_more=end < result['total_length'],
+                      next_offset=end if end < result['total_length'] else None)
+        if result['has_more'] and not fragment:
+            raise ValueError('Transport limit prevents positive progress')
 
 
 class Bridge:
@@ -109,15 +153,21 @@ class Bridge:
             return self._call(name, args)
         if not isinstance(args, dict):
             raise ValueError('Object arguments required')
+        return_mode = args.get('return_mode', 'full')
+        if name == 'reprise_delegate':
+            if return_mode not in ('full', 'receipt'):
+                raise ValueError('Invalid return_mode')
+        elif 'return_mode' in args:
+            raise ValueError('return_mode requires reprise_delegate')
         with self.lock_path.open('a') as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 return {'status': 'busy', 'reason': 'One active expertise per state directory; no automatic retry.'}
-            clean = {k: v for k, v in args.items() if k not in ('request_key', 'parent_request_key')}
+            clean = {k: v for k, v in args.items() if k not in ('request_key', 'parent_request_key', 'return_mode')}
             self._call(name, clean, preflight=True)
             key = args.get('request_key')
-            payload = {'tool': name, **{k: v for k, v in args.items() if k not in ('request_key', 'parent_request_key')}}
+            payload = {'tool': name, **clean}
             payload['file_evidence'] = file_evidence(self.root, args.get('paths'), args.get('filePaths'))
             parent = args.get('parent_request_key')
             if name in ('reprise_followup', 'codex_followup') and parent is None:
@@ -126,6 +176,12 @@ class Bridge:
                 parent = own[0] if own else row[0] if row else None
             existing = self.requests.begin(key, payload, parent)
             if existing:
+                if return_mode == 'receipt':
+                    pointer = existing.get('request_key', key)
+                    manifest = self.requests.lookup({'request_key': pointer, 'view': 'receipt'})
+                    if not manifest['available']:
+                        manifest['status'] = existing['status']
+                    return manifest
                 return existing
             # Exceptions or process exit leave a durable uncertain attempt.
             result = self._call(name, clean)
@@ -135,7 +191,10 @@ class Bridge:
                 changed = True
             if changed:
                 result = dict(result, status='needs_review', reason='Input files changed during delegation; result requires reconciliation.', input_changed=True)
-            return self.requests.finish(key, result)
+            result = self.requests.finish(key, result)
+            if return_mode == 'receipt':
+                return self.requests.lookup({'request_key': key, 'view': 'receipt'})
+            return result
 
     def _call(self, name, args, *, preflight=False):
         if name not in ('reprise_backends', 'reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup', 'reprise_resume', 'reprise_history', 'reprise_health') or not isinstance(args, dict):
@@ -275,9 +334,13 @@ class Bridge:
         if method == 'tools/list':
             return {'tools': [item for item in TOOLS if item['name'] in self.allowed_tools]}
         if method == 'tools/call':
+            compact = compact_call(message)
+            if compact and len(json.dumps(message.get('id'), ensure_ascii=False)) > 256:
+                raise ValueError('Compact calls require a bounded JSON-RPC id')
             result = self.call(params.get('name'), params.get('arguments', {}))
-            return {'content': [{'type': 'text', 'text': json.dumps(result, ensure_ascii=False)}],
-                    'isError': result.get('status') != 'finished'}
+            if compact:
+                return bounded_content(result, message.get('id'))
+            return tool_content(result)
         raise ValueError('Unsupported MCP method')
 
 
@@ -316,6 +379,7 @@ def main():
             if len(raw) > 1024*1024:
                 break
             ident = None
+            message = None
             try:
                 message = json.loads(raw)
                 if not isinstance(message, dict):
@@ -326,6 +390,8 @@ def main():
                 result = bridge.dispatch(message)
                 reply = {'jsonrpc': '2.0', 'id': ident, 'result': result}
             except (ValueError, TypeError, KeyError, OSError, sqlite3.Error):
+                if isinstance(message, dict) and compact_call(message) and len(json.dumps(ident, ensure_ascii=False)) > 256:
+                    ident = None
                 reply = {'jsonrpc': '2.0', 'id': ident, 'error': {'code': -32602, 'message': 'Request refused or unavailable; no automatic retry.'}}
             print(json.dumps(reply, ensure_ascii=False), flush=True)
     finally:
