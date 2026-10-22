@@ -52,6 +52,31 @@ class IronClawConnectionTests(unittest.TestCase):
             connection.configure(self.base, self.value)
         self.assertEqual(target.read_text(), 'preserved')
 
+    def test_submission_requires_literal_consent_before_registry_open(self):
+        with patch.object(connection, 'Tasks') as tasks:
+            for value in ({'request_key': 'key', 'content': 'question'},
+                          {'request_key': 'key', 'content': 'question', 'allow_submit': 'true'}):
+                with self.assertRaises(ValueError):
+                    connection.task_operation(self.base, 'ironclaw-submit', value)
+            tasks.assert_not_called()
+        self.assertFalse(self.state.exists())
+
+    def test_local_receipts_work_without_config_or_network(self):
+        state_install.initialize(self.state)
+        with patch.object(connection, 'probe') as probe:
+            self.assertEqual(connection.task_operation(self.base, 'ironclaw-result', {'request_key': 'missing'}), {'state': 'not_found'})
+            self.assertEqual(connection.task_operation(self.base, 'ironclaw-requests', {}), {'requests': [], 'limit': 100})
+            probe.assert_not_called()
+        self.assertFalse(connection.config_path(self.base).exists())
+
+    def test_uncertain_submission_error_does_not_claim_nothing_was_sent(self):
+        from io import StringIO
+        with patch.object(sys, 'stdin', StringIO('{"request_key":"key","content":"question","allow_submit":true}')), patch.object(connection, 'task_operation', side_effect=connection.TaskError('unknown')), patch('builtins.print') as output:
+            self.assertEqual(connection.main(self.base, ['ironclaw-submit']), 1)
+        message = json.loads(output.call_args.args[0])['message']
+        self.assertIn('reçu durable', message)
+        self.assertNotIn('Aucune tâche soumise', message)
+
     def test_inspect_missing_config_has_no_side_effect_or_network(self):
         with patch.object(connection, 'probe') as probe, patch('builtins.print') as output:
             self.assertEqual(connection.main(self.base, ['ironclaw-inspect']), 0)

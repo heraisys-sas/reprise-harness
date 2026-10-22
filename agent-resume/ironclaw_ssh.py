@@ -1,4 +1,4 @@
-"""Read-only IronClaw probe over SSH; no inference or arbitrary remote commands."""
+"""Bounded IronClaw SSH API transport; probe is read-only, POST requires opt-in."""
 from dataclasses import dataclass
 import json
 import os
@@ -116,3 +116,58 @@ def probe(endpoint):
     evidence.update(authenticated=True, session_channel_configured=True,
                     session_keys=sorted(payload.keys() & allowed))
     return evidence
+
+
+def request(endpoint, method, path, payload=None, *, allow_submit=False):
+    """Bounded API transport; POST requires explicit caller opt-in, never retries."""
+    endpoint.validate()
+    base = '/api/webchat/v2'
+    identifier = r'[A-Za-z0-9_-]{1,128}'
+    valid_get = path == base + '/session' or re.fullmatch(
+        base + '/threads/' + identifier + r'/timeline\?limit=100(?:&cursor=[A-Za-z0-9%._~-]{1,2048})?', path)
+    valid_post = path == base + '/threads' or re.fullmatch(
+        base + '/channels/' + identifier + '/messages', path)
+    if method not in ('GET', 'POST') or (method == 'GET' and not valid_get) or (method == 'POST' and not valid_post):
+        raise ProbeError('API route not allowed')
+    if method == 'POST' and allow_submit is not True:
+        raise ProbeError('Submission requires explicit opt-in')
+    if method == 'GET' and payload is not None:
+        raise ProbeError('GET payload not allowed')
+    if method == 'POST':
+        expected = {'client_action_id'} if path == base + '/threads' else {'client_action_id', 'thread_id', 'content'}
+        if not isinstance(payload, dict) or set(payload) != expected:
+            raise ProbeError('Invalid submission fields')
+        for field in expected - {'content'}:
+            if not isinstance(payload[field], str) or not re.fullmatch(identifier, payload[field]):
+                raise ProbeError('Invalid submission identifier')
+        if 'content' in payload and (not isinstance(payload['content'], str) or not payload['content'].strip()):
+            raise ProbeError('Invalid submission content')
+    token = _read_token(endpoint.token_url_file)
+    config = (f'url = "http://127.0.0.1:{endpoint.http_port}{path}"\n'
+              f'request = "{method}"\nproxy = ""\nheader = "Accept: application/json"\n'
+              f'header = "Authorization: Bearer {token}"\n'
+              f'max-time = {endpoint.timeout}\nconnect-timeout = 5\n'
+              'max-filesize = 1048576\nsilent\nwrite-out = "\\n%{http_code}"\n')
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=True)
+        if len(body) > 65536:
+            raise ProbeError('Request too large')
+        config += 'header = "Content-Type: application/json"\n'
+        config += 'data = "' + body.replace('\\', '\\\\').replace('"', '\\"') + '"\n'
+    try:
+        result = subprocess.run(_ssh_args(endpoint), input=config, text=True,
+                                capture_output=True, timeout=endpoint.timeout + 5, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        raise ProbeError('API transport interrupted; outcome unknown') from None
+    if result.returncode or len(result.stdout) > 1048582:
+        raise ProbeError('API transport failed; outcome unknown')
+    body, _, status = result.stdout.rpartition('\n')
+    if not re.fullmatch(r'2[0-9]{2}', status):
+        raise ProbeError('API did not acknowledge success')
+    try:
+        value = json.loads(body)
+    except (ValueError, RecursionError):
+        raise ProbeError('Invalid API JSON') from None
+    if not isinstance(value, dict):
+        raise ProbeError('Invalid API object')
+    return value

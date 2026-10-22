@@ -47,3 +47,24 @@ La configuration privée est enregistrée dans `state/ironclaw-endpoint.json` av
 Validation réelle de la CLI embarquée : configuration enregistrée puis sonde HTTP200 authentifiée avec canal de session présent ; aucun secret affiché et aucune tâche soumise. Neuf tests ciblés couvrent transport, erreurs, absence de secret dans argv, permissions et configuration sans accès réseau implicite.
 
 Lecture statique complémentaire : création de thread renvoie `thread.thread_id` ; soumission renvoie `thread_id`, `run_id`, `status`, `outcome`, `accepted_message_ref`. L’événement final `final_reply.reply` fournit `turn_run_id`, `text`, `generated_at`. Les réponses POST n’ont pas été observées en conditions réelles ; pagination timeline et idempotence restent à démontrer. Aucun appel coûteux n’a été lancé pour les deviner.
+
+## Adaptateur durable expérimental
+
+Le payload inclut désormais `ironclaw_tasks.Tasks` et les commandes explicites suivantes, avec requêtes JSON sur stdin :
+
+| Commande | Entrée | Effet |
+| --- | --- | --- |
+| `ironclaw-submit` | `request_key`, `content`, `allow_submit: true` | Admission SQLite puis au plus une tentative de création et d’envoi ; peut consommer du quota distant |
+| `ironclaw-poll` | `request_key` | GET de la timeline, sans nouvelle soumission |
+| `ironclaw-result` | `request_key`, `acknowledge: false` (défaut) ou `true` | Lecture locale ; acquittement uniquement après résultat final |
+| `ironclaw-requests` | aucune | Liste locale bornée à 100 clés/états/acquittements, sans prompts |
+
+Une identité immuable lie le contenu et l’endpoint ; les identifiants d’action sont enregistrés avant tout appel externe. Une clé réutilisée ne renvoie jamais la tâche. Une tâche équivalente non terminée bloque aussi le contournement par une autre clé. Après perte d’accusé ou interruption d’envoi, l’état reste ambigu/dispatching : inspection requise, aucun rejeu automatique et aucune promesse d’idempotence du fournisseur.
+
+Le suivi accepte uniquement une réponse assistant `finalized` liée au `run_id` enregistré, pagine avec un nombre de pages et des curseurs bornés, et conserve le résultat jusqu’à acquittement. Une tâche `deferred` avec run connu est récupérable ; sans run, intervention requise. Les états busy/inconnus ne valent pas succès. Les lectures de résultats et la liste restent locales même si la connexion est supprimée ou changée ; les appels réseau conservent le contrôle strict de l’endpoint d’origine. Aucune transaction SQLite n’est gardée durant SSH.
+
+Les événements de gate/authentification peuvent être ingérés par l’API Python et suspendent la tâche pour intervention ; aucun branchement SSE automatique ni résolution de gate n’est activé. Les clarifications textuelles structurées restent non démontrées. Aucune intégration automatique au planificateur ni exposition MCP de ces nouvelles commandes n’est annoncée.
+
+L’adaptateur est vérifié sur transports simulés ; seule la sonde GET a été exécutée réellement. Aucun POST réel ni appel LLM n’a été lancé. Avant de qualifier la délégation opérationnelle, réaliser un essai unique autorisé avec un mécanisme de facturation compatible avec le plafond utilisateur, puis vérifier ACK, coupure locale et récupération corrélée sans renvoi.
+
+Validation du lot durable : suite complète de **443 tests réussie, dont 4 ignorés**, puis **28 tests IronClaw ciblés réussis** après ajout des deux cas de concurrence et fermeture/réouverture du registre. Relecture indépendante : cas différé initialement défectueux corrigé, aucun défaut critique résiduel identifié dans le périmètre relu. CLI embarquée vérifiée sur registre temporaire canonique : liste et résultat absent sans configuration ni réseau. Compilation Python, packaging et diff-check réussis ; scan Gitleaks ciblé, zéro détection. Les avertissements de ressources préexistants restent présents. La vérification réelle des POST/retours de tâches n’est pas acquise ; le plafond utilisateur reste de 2 € et le mode de facturation distant est à clarifier avant un essai réel.
