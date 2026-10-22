@@ -42,7 +42,8 @@ struct SchedulerService: View {
         return text
     }
     var body: some View {
-        GroupBox("Planificateur utilisateur Reprise") {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Planificateur utilisateur Reprise").font(.headline)
             VStack(alignment: .leading, spacing: 10) {
                 Text("Installez ou réparez le service de reprise indépendant du clone. L’activation peut exécuter les travaux déjà autorisés selon le mode automatique enregistré.").font(.caption).foregroundStyle(.secondary)
                 HStack {

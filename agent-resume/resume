@@ -12,6 +12,10 @@ import subprocess
 import sys
 import uuid
 import zipfile
+if len(sys.argv) > 1 and sys.argv[1] in ('ironclaw-inspect', 'ironclaw-configure', 'ironclaw-probe'):
+    import ironclaw_connection
+    sys.exit(ironclaw_connection.main(Path(__file__).resolve().parent, sys.argv[1:]))
+
 if len(sys.argv) > 1 and sys.argv[1] == 'vault-authorize':
     if len(sys.argv) != 2:
         sys.exit('Usage: resume vault-authorize')

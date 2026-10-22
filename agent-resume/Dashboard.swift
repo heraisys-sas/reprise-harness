@@ -409,12 +409,15 @@ struct Dashboard: View {
             Picker("Service", selection: Binding(get: { app.connectionTab }, set: { app.connectionTab = $0 })) {
                 Text("codex-desktop").tag("codex")
                 Text("claude-desktop").tag("quickapply")
+                Text("IronClaw SSH").tag("ironclaw")
             }
             .pickerStyle(.segmented)
             .frame(maxWidth: 480)
             .accessibilityLabel("Choisir le service à configurer")
             if app.connectionTab == "codex" {
                 connection
+            } else if app.connectionTab == "ironclaw" {
+                IronClawConnection(app: app)
             } else {
                 desktopConnection
             }

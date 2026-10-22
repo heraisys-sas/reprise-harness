@@ -35,3 +35,9 @@ La clôture revalide le hash du plist et, lorsque l’activation est demandée, 
 Dix-huit tests ciblés passent : les sept nouveaux cas couvrent la restauration d’un ancien plist, le release chargé obsolète, la réparation sans activation, un bootstrap annoncé réussi mais incohérent, une modification du plist pendant activation, les arguments ajoutés/permutés ou mauvais interpréteur, et une preuve de chargement absente/ambiguë/incomplète. Aucun service réel n’a été modifié par ces tests.
 
 Validation du correctif : suite complète de **404 tests réussie, dont 4 ignorés**, compilation `native-install` sans `--open` et contrôle des espaces réussis. Relecture indépendante du diff après correction ; aucun défaut résiduel identifié dans le périmètre des deux signalements. Les avertissements de ressources préexistants restent présents.
+
+### Validation réelle du service
+
+Le 22/10 : plan frais appliqué avec activation explicite, installation historique adoptée et sauvegardée, release configuré/chargé courant et intègre. Un tick automatique a ensuite progressé, dernière sortie launchd 0, aucune erreur enregistrée, aucun travail en attente ; les sept anciennes tâches et leurs marqueurs de consommation sont restés strictement inchangés. Aucun tour d’agent n’a été démarré pour ce contrôle. Cette preuve concerne le service, pas une reprise métier après quota.
+
+Le contrôle graphique a confirmé le bouton d’autorisation du cache, mais a reproduit un crash de récursion dans l’arbre d’accessibilité lors de la lecture de l’onglet Intégrations. Des groupes de présentation ont été simplifiés ; compilation réussie, validation visuelle non acquise car le canal natif de contrôle s’est ensuite fermé (`native pipe closed before response`), y compris après réinitialisation du client. Ne pas annoncer le crash corrigé sur la seule compilation.

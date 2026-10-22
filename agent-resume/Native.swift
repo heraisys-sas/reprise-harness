@@ -38,6 +38,13 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var integrationResult: [String: Any]? = nil
     @Published var integrationVerification: [String: Any]? = nil
     @Published var integrationMessage = "Inspectez le dossier Harness choisi avant de préparer une modification."
+    @Published var ironclawHost = ""
+    @Published var ironclawUser = ""
+    @Published var ironclawPort = "22"
+    @Published var ironclawHTTPPort = "3000"
+    @Published var ironclawIdentity = ""
+    @Published var ironclawTokenFile = ""
+    @Published var ironclawNote = "Configurez un accès SSH explicite ; aucune clé ni aucun jeton n’est copié."
     @Published var schedulerService: [String: Any] = [:]
     @Published var schedulerServicePlan: [String: Any]? = nil
     @Published var schedulerServiceMessage = "Inspectez le planificateur avant de préparer une modification."

@@ -83,7 +83,8 @@ struct Integrations: View {
         VStack(alignment: .leading, spacing: 18) {
             SchedulerService(app: app)
             Text("L’installation écrit la configuration et les consignes du profil choisi. Elle ne démarre aucun service et n’effectue aucune inférence.").foregroundStyle(.secondary)
-            GroupBox("Cible explicite") {
+            VStack(alignment: .leading, spacing: 10) {
+            Text("Cible explicite").font(.headline)
                 VStack(alignment: .leading, spacing: 12) {
                     HStack { path("Dossier Harness", app.integrationHome); Spacer(); Button("Choisir Harness…") { app.chooseIntegrationDirectory(project: false) } }
                     HStack {
@@ -98,14 +99,15 @@ struct Integrations: View {
                     Button("Inspecter") { app.inspectIntegration() }
                 }.padding(6)
             }
-            Text(app.integrationMessage).textSelection(.enabled).accessibilityLabel("Intégrations : " + app.integrationMessage)
+            Text(app.integrationMessage).textSelection(.enabled)
             if app.setupBusy { ProgressView("Opération en cours…") }
             HStack {
                 Button("Prévisualiser installation ou réparation") { app.previewIntegration(action: "install") }
                 Button("Prévisualiser le retrait") { app.previewIntegration(action: "remove") }
             }.disabled(!hasProfile || app.integrationProject.isEmpty)
             if let plan = app.integrationPlan {
-                GroupBox("Modifications prévues ou à reprendre") {
+                VStack(alignment: .leading, spacing: 10) {
+            Text("Modifications prévues ou à reprendre").font(.headline)
                     VStack(alignment: .leading, spacing: 10) {
                         path("Action", plan["action"] as? String ?? "")
                         path("Dossier Harness du plan", plan["home"] as? String ?? "")
@@ -133,7 +135,8 @@ struct Integrations: View {
             }
             Button("Vérifier la configuration et sonder le pont sans inférence") { app.verifyIntegration() }.disabled(!hasProfile)
             if let verification = app.integrationVerification {
-                GroupBox("Bornes de preuve") {
+                VStack(alignment: .leading, spacing: 10) {
+            Text("Bornes de preuve").font(.headline)
                     let levels = verification["levels"] as? [String: Any] ?? [:]
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Configuration écrite : " + ((levels["configuration_written"] as? Bool == true) ? "vérifiée" : "non confirmée"))
