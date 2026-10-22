@@ -4,20 +4,50 @@
 # what it owns, and reports the resulting state. Never force-quits a linked app.
 #
 # Usage:
-#   ./restart-chain              rebuild + restart Quick Entry server + GUI
-#   ./restart-chain --no-build   restart without recompiling
-#   ./restart-chain --server     only the Quick Entry server (no GUI relaunch)
+#   ./restart-chain --runtime-archive FILE  isolated build + standalone GUI only
+#   ./restart-chain --no-build   launch current verified standalone build
+#   ./restart-chain --server     explicit legacy Quick Apply service operation
+#   ./restart-chain --development explicit legacy development chain
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 APP="$ROOT/Reprise.app"
 PYTHON=$(command -v python3)
 
+# Standalone launch is the default. Legacy development and Quick Apply service
+# operations require explicit flags; never restart codexd.
+legacy=0
+for arg in "$@"; do
+    case "$arg" in --development|--server) legacy=1 ;; esac
+done
+if [ "$legacy" = 0 ]; then
+    rebuild=1
+    archive=${REPRISE_RUNTIME_ARCHIVE:-}
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --no-build) rebuild=0; shift ;;
+            --runtime-archive)
+                [ "$#" -ge 2 ] || { echo "--runtime-archive exige un fichier" >&2; exit 2; }
+                archive=$2; shift 2 ;;
+            *) echo "Option inconnue : $1" >&2; exit 2 ;;
+        esac
+    done
+    if [ "$rebuild" = 1 ]; then
+        [ -n "$archive" ] || { echo "Fournir --runtime-archive FILE (ou REPRISE_RUNTIME_ARCHIVE). Aucun service modifié." >&2; exit 2; }
+        "$PYTHON" "$ROOT/release_build.py" build --runtime-archive "$archive"
+    fi
+    exec /bin/sh "$ROOT/relaunch"
+fi
+# Explicit legacy service/dev path. Default service state follows the imported
+# standalone registry; opt into AGENT_RESUME_STATE only for a deliberate override.
+export AGENT_RESUME_STATE="${AGENT_RESUME_STATE:-$HOME/Library/Application Support/Reprise/state}"
 build=1
 gui=1
 for arg in "$@"; do
     case "$arg" in
+        --development) : ;;
         --no-build) build=0 ;;
         --server)   gui=0 ;;
+        *) echo "Option inconnue : $arg" >&2; exit 2 ;;
     esac
 done
 

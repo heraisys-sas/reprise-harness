@@ -16,13 +16,14 @@ Le routage par embeddings Apple est implémenté et testé dans un profil Harnes
 
 ## Démarrage de Reprise
 
-Sur un Mac avec les outils de compilation Swift et Python 3.13 :
+Sur macOS 26+ ARM64 avec les outils Swift/SDK 26+ et Python de build, construire puis lancer le bundle autonome :
 
 ```sh
-sh agent-resume/native-install --open
+python3 agent-resume/release_build.py build --runtime-archive /chemin/archive-python-epinglee.tar.gz
+sh agent-resume/relaunch
 ```
 
-Avec `--open`, ce script compile l’application et les helpers, puis ouvre Reprise. Sans cette option, il compile seulement et ne perturbe pas une instance en cours. Consulter [le guide Reprise](agent-resume/README.md) avant d’installer le service de reprise : ses relances doivent être explicitement programmées. Le suivi des autres applications ne leur ajoute pas de mécanisme automatique de reprise.
+Voir [build autonome, archive épinglée et CI](agent-resume/BUILD-AND-CI.md). La compilation ne lance rien ; `relaunch` refuse un build périmé et ouvre le bundle sans arguments de développement, avec son runtime et son état séparé. `native-install --open` reste réservé au mode développement historique. Les reprises automatiques restent explicitement autorisées séparément.
 
 ```sh
 python3 -m unittest discover -s agent-resume/tests -q
@@ -72,16 +73,17 @@ Exposition : outils MCP `reprise_resume`, `reprise_history`, `reprise_health` ; 
 
 ## Redémarrage de la chaîne
 
-`agent-resume/restart-chain` tente de redémarrer le daemon Quick Apply géré par Reprise, conserve `codexd`, puis ouvre Reprise et affiche l’état :
+`agent-resume/restart-chain` construit et ouvre par défaut le bundle autonome vérifié, sans redémarrer de daemon :
 
 ```sh
 cd agent-resume
-./restart-chain              # recompile + redémarre Quick Apply + ouvre Reprise
-./restart-chain --no-build   # relance sans recompiler
-./restart-chain --server     # redémarre Quick Apply sans ouvrir Reprise
+./restart-chain --runtime-archive /chemin/archive-python-epinglee.tar.gz
+./restart-chain --no-build   # ouvre uniquement un build courant vérifié
+./restart-chain --server     # action explicite sur Quick Apply uniquement
+./restart-chain --development # chaîne historique de développement
 ```
 
-Le script utilise l’arrêt ciblé du daemon Quick Apply, recompile sans ouverture puis demande son démarrage. Il ne supprime aucun socket à l’aveugle, ne tue pas de processus par son nom et ne redémarre pas codexd : les chats du moteur propriétaire sont conservés. Il ne ferme pas explicitement une instance Reprise déjà ouverte. Aucun arrêt forcé de Claude Desktop ou Codex Desktop.
+Le planificateur et les intégrations MCP se maintiennent séparément depuis Intégrations. Aucun redémarrage de codexd, aucune suppression aveugle de socket ni arrêt forcé de Claude Desktop/Harness/Codex Desktop. L’ouverture de Reprise peut fermer son autre instance existante. Détails et limites dans [BUILD-AND-CI.md](agent-resume/BUILD-AND-CI.md).
 
 ## Délégation et retour des analyses
 

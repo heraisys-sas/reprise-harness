@@ -1,0 +1,65 @@
+name: Reprise bundle
+on:
+  push:
+    branches: [dev, main]
+    paths: ['agent-resume/**', '.github/workflows/reprise.yml']
+  pull_request:
+    paths: ['agent-resume/**', '.github/workflows/reprise.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: reprise-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test-build:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm native build prerequisites
+        run: |
+          test "$(uname -m)" = arm64
+          xcrun --sdk macosx --show-sdk-version
+          python3 agent-resume/native_contract.py --check-sdk "$(xcrun --sdk macosx --show-sdk-version)"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/reprise-runtime.tar.gz
+          key: reprise-runtime-${{ hashFiles('agent-resume/python-runtime.lock.json') }}
+      - name: Fetch pinned official runtime if absent
+        env:
+          RUNTIME_ARCHIVE: ${{ runner.temp }}/reprise-runtime.tar.gz
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          from pathlib import Path
+          lock = json.loads(Path('agent-resume/python-runtime.lock.json').read_text())['targets']['arm64']
+          archive = Path(os.environ['RUNTIME_ARCHIVE'])
+          if not archive.exists():
+              urllib.request.urlretrieve(lock['url'], archive)
+          import sys
+          sys.path.insert(0, 'agent-resume')
+          from package_runtime import verify_archive
+          verify_archive(archive, lock['sha256'])
+          PY
+      - name: Deterministic tests with real archive, no services or inference
+        env:
+          REPRISE_TEST_RUNTIME_ARCHIVE: ${{ runner.temp }}/reprise-runtime.tar.gz
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 agent-resume/ci_test.py
+      - name: Build isolated standalone bundle and relocated CLI smoke
+        run: python3 agent-resume/release_build.py build --runtime-archive "$RUNNER_TEMP/reprise-runtime.tar.gz"
+      - name: Archive exact build with provenance
+        run: |
+          APP=$(python3 -c 'import sys;sys.path.insert(0,"agent-resume");import release_build as b;print(b.ROOT/"builds"/b.identity(b.inputs(b.ROOT))/"Reprise.app")')
+          python3 agent-resume/release_build.py check --app "$APP"
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/Reprise-${GITHUB_SHA}.zip"
+          shasum -a 256 "$RUNNER_TEMP/Reprise-${GITHUB_SHA}.zip" > "$RUNNER_TEMP/Reprise-${GITHUB_SHA}.zip.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Reprise-arm64-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/Reprise-*.zip
+            ${{ runner.temp }}/Reprise-*.zip.sha256
+          retention-days: 7
+          if-no-files-found: error
