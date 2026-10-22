@@ -1,4 +1,5 @@
 import json
+import tempfile
 import sys
 import unittest
 from pathlib import Path
@@ -164,6 +165,19 @@ class CodexReviewRound2Tests(unittest.TestCase):
 
 
 class QuickEntryAnomalyTests(unittest.TestCase):
+    def setUp(self):
+        # Diagnostics must see synthetic components, never an installed Claude app.
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        app = Path(self.temporary.name) / 'Claude.app'
+        for relative, _ in rh.FEATURES.values():
+            component = app / 'Contents' / relative
+            component.parent.mkdir(parents=True, exist_ok=True)
+            component.write_text('fixture component')
+        replacement = patch.object(rh, 'CLAUDE_APP', app)
+        replacement.start()
+        self.addCleanup(replacement.stop)
+
     def test_clean_when_no_update_and_signatures_present(self):
         with patch.object(rh, 'log_signatures', return_value={
                 'quick_entry_submitted': {'present': True}, 'quick_entry_routing': {'present': True},
