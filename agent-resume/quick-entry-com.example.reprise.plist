@@ -12,8 +12,6 @@
 		<string>__HOME__/.claude-desktop/quick-entry.sock</string>
 		<string>--state</string>
 		<string>__DEPOT__/agent-resume/quick-state</string>
-		<string>--daily-limit</string>
-		<string>8</string>
 	</array>
 	<key>ProcessType</key>
 	<string>Interactive</string>

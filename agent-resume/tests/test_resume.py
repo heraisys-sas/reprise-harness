@@ -17,6 +17,11 @@ module = importlib.util.module_from_spec(spec)
 loader.exec_module(module)
 
 class SchedulerTests(unittest.TestCase):
+    def setUp(self):
+        transport = patch('engines.select', return_value='codex-cli')
+        transport.start()
+        self.addCleanup(transport.stop)
+
     def test_due_once_and_failure_does_not_loop(self):
         with tempfile.TemporaryDirectory() as folder:
             module.STATE = Path(folder)
@@ -61,6 +66,9 @@ class SchedulerTests(unittest.TestCase):
 
 class AutomaticSchedulerTests(unittest.TestCase):
     def setUp(self):
+        transport = patch('engines.select', return_value='codex-cli')
+        transport.start()
+        self.addCleanup(transport.stop)
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
         self.previous_state = module.STATE
@@ -84,6 +92,56 @@ class AutomaticSchedulerTests(unittest.TestCase):
 
     def enqueue(self, row=None):
         scheduler.reconcile(self.db, self.data(row), self.now)
+
+    def test_quota_event_loads_owner_session_and_starts_only_once(self):
+        import codex_rpc
+        from collections import deque
+        task = self.row
+        class Owner:
+            starts = 0
+            def __init__(self, *args):
+                self.status = 'notLoaded'
+                self.notifications = deque([{'method':'turn/completed','params':{
+                    'threadId':task['id'],'turn':{'id':'resumed-turn','status':'completed'}}}])
+            def send(self, value): pass
+            def close(self): pass
+            def call(self, method, params=None):
+                if method == 'thread/resume': self.status = 'idle'
+                if method in ('thread/read','thread/resume'):
+                    return {'thread':{'id':task['id'],'cwd':task['cwd'],
+                        'status':{'type':self.status},'modelProvider':'openai'}}
+                if method == 'account/read': return {'account':{'type':'chatgpt'}}
+                if method == 'account/rateLimits/read': return {'ordinaryUsageAllowed':True}
+                if method == 'turn/start':
+                    Owner.starts += 1
+                    return {'turn':{'id':'resumed-turn'}}
+                return {}
+        self.enqueue()
+        with patch.object(scheduler,'snapshot',return_value=self.data()), \
+             patch('quota.read_limits',return_value={'ordinaryUsageAllowed':True}), \
+             patch('engines.select',return_value='codex-server'), patch.object(codex_rpc,'Client',Owner):
+            module.run_due(self.db,str(self.fake))
+            module.run_due(self.db,str(self.fake))
+        self.assertEqual(Owner.starts,1)
+        self.assertEqual(self.task()['status'],'finished')
+        self.assertEqual(self.task()['attempts'],1)
+        self.assertEqual(self.db.execute('SELECT consumed FROM automation_events').fetchone()[0],1)
+
+    def test_predispatch_deferral_releases_reservation_and_waits(self):
+        self.enqueue()
+        with patch.object(scheduler, 'snapshot', return_value=self.data()), \
+             patch('quota.read_limits', return_value={'ordinaryUsageAllowed': True}), \
+             patch('engines.select', return_value='codex-server'), \
+             patch('codex_rpc.execute', return_value='ready') as execute:
+            module.run_due(self.db, str(self.fake))
+            module.run_due(self.db, str(self.fake))
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual(self.task()['status'], 'ready')
+        self.assertEqual(self.task()['attempts'], 0)
+        self.assertGreater(self.task()['due'], self.now + 200)
+        self.assertEqual(self.db.execute('SELECT consumed FROM automation_events').fetchone()[0], 0)
+        scheduler.reconcile(self.db, {'sessions': [], 'error': None})
+        self.assertEqual(self.task()['status'], 'cancelled')
 
     def test_child_session_is_not_enqueued_independently(self):
         self.enqueue(self.row | {'is_subagent': True, 'automatic_resume_supported': False})

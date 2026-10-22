@@ -9,6 +9,7 @@ operator-granted macOS permissions and is intentionally left to the supervised
 driver. This server owns payload validation, target routing and the bounded
 admission contract so the harness can treat it as an external-expert channel.
 """
+from app_paths import state_directory
 import argparse
 import fcntl
 import json
@@ -24,6 +25,7 @@ import uuid
 
 import claude_desktop
 from claude_desktop import build_payload, validate_chat_id
+from delegation_store import Store, file_evidence
 
 SERVER_NAME = 'reprise-claude-desktop-quick'
 VERSION = '0.1.0'
@@ -40,8 +42,19 @@ class Endpoint:
         self.db.execute('CREATE TABLE IF NOT EXISTS quick_submissions(scope TEXT,id TEXT,payload TEXT,day INTEGER,PRIMARY KEY(scope,id))')
         self.db.execute('CREATE TABLE IF NOT EXISTS quick_calls(scope TEXT,day INTEGER,count INTEGER,PRIMARY KEY(scope,day))')
         self.db.commit()
-        self.limit = daily_limit
-        self.scope = str(state)
+        self.db.execute('CREATE TABLE IF NOT EXISTS quick_identity(scope TEXT NOT NULL)')
+        identities = {row[0] for row in self.db.execute('SELECT scope FROM quick_identity')}
+        identities.update(row[0] for row in self.db.execute('SELECT DISTINCT scope FROM quick_submissions'))
+        if self.db.execute("SELECT 1 FROM sqlite_master WHERE name='delegation_requests'").fetchone():
+            identities.update(row[0] for row in self.db.execute('SELECT DISTINCT scope FROM delegation_requests'))
+        if len(identities) > 1:
+            self.db.close()
+            raise ValueError('Identités Quick Apply multiples : réconciliation explicite requise.')
+        self.scope = next(iter(identities), str(state.resolve()))
+        if not self.db.execute('SELECT 1 FROM quick_identity').fetchone():
+            self.db.execute('INSERT INTO quick_identity VALUES (?)', (self.scope,))
+        self.db.commit()
+        self.requests = Store(self.db, self.scope)
 
     def close(self):
         self.db.close()
@@ -50,27 +63,26 @@ class Endpoint:
         """Validate, bound and record a submission; returns the routed payload."""
         if not isinstance(args, dict):
             raise ValueError('Objet de soumission requis')
-        allowed = {'prompt', 'images', 'filePaths', 'chatId'}
+        allowed = {'prompt', 'images', 'filePaths', 'chatId', 'request_key', 'parent_request_key'}
         if args.keys() - allowed:
             raise ValueError('Champs de soumission non pris en charge')
         payload = build_payload(args.get('prompt'), images=args.get('images'),
                                 file_paths=args.get('filePaths'), chat_id=args.get('chatId'))
+        identity = dict(payload, file_evidence=file_evidence(self.state, file_paths=payload['filePaths']))
+        existing = self.requests.begin(args.get('request_key'), identity, args.get('parent_request_key'))
+        if existing:
+            return existing
         day = int(time.time() // 86400)
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
-            row = self.db.execute('SELECT count FROM quick_calls WHERE scope=? AND day=?', (self.scope, day)).fetchone()
-            if row and row[0] >= self.limit:
-                return {'status': 'budget_blocked', 'reason': 'Plafond quotidien de soumissions Quick Entry atteint ; aucune relance automatique.'}
-            self.db.execute('INSERT INTO quick_calls VALUES (?,?,1) ON CONFLICT(scope,day) DO UPDATE SET count=count+1',
-                            (self.scope, day))
             ident = str(uuid.uuid4())
             self.db.execute('INSERT INTO quick_submissions VALUES (?,?,?,?)',
                             (self.scope, ident, json.dumps(payload, ensure_ascii=False), day))
-        return {'status': 'finished', 'submission_id': ident, 'chatId': payload['chatId'],
+        return self.requests.finish(args['request_key'], {'status': 'finished', 'submission_id': ident, 'chatId': payload['chatId'],
                 'images': len(payload['images']), 'files': len(payload['filePaths']),
                 'dispatch': 'dispatchOnQuickEntrySubmit',
                 'reason': 'Payload validé et routé ; la soumission réelle dépend du pilote Desktop autorisé.',
-                'automatic_fallback': False}
+                'automatic_fallback': False, 'admission_only': True})
 
     def call(self, name, args):
         if not isinstance(args, dict):
@@ -80,6 +92,8 @@ class Endpoint:
                     'serverInfo': {'name': SERVER_NAME, 'version': VERSION}}
         if name == 'ping':
             return {}
+        if name == 'quick_entry/requests':
+            return self.requests.lookup(args)
         if name == 'quick_entry/submit':
             return self.submit(args)
         raise ValueError('Méthode Quick Entry non prise en charge')
@@ -110,9 +124,30 @@ def _serve(conn, endpoint):
 
 def serve(path, endpoint):
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with Path(str(path) + '.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SystemExit('Socket already owned by another Quick Apply daemon')
+        return _serve_owned(path, endpoint)
+
+
+def _serve_owned(path, endpoint):
+    path = Path(path)
     if path.exists():
         if not stat.S_ISSOCK(path.lstat().st_mode):
             raise SystemExit('Le chemin de socket existe déjà sans être un socket.')
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.settimeout(1)
+            probe.connect(str(path))
+        except (ConnectionRefusedError, FileNotFoundError):
+            pass
+        else:
+            raise SystemExit('Socket is accepting connections; refusing replacement')
+        finally:
+            probe.close()
         try:
             path.unlink()
         except OSError as error:
@@ -132,7 +167,10 @@ def serve(path, endpoint):
         while True:
             conn, _ = sock.accept()
             try:
+                conn.settimeout(5)
                 _serve(conn, endpoint)
+            except (OSError, TimeoutError):
+                pass
             finally:
                 conn.close()
     finally:
@@ -144,8 +182,8 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--socket', default=str(claude_desktop.DEFAULT_SOCKET))
-    parser.add_argument('--state', default=str(Path(__file__).parent/'quick-state'))
-    parser.add_argument('--daily-limit', type=int, default=8)
+    parser.add_argument('--state', default=str(state_directory(Path(__file__).parent, 'quick-state')))
+    parser.add_argument('--daily-limit', type=int, help='Deprecated compatibility option; ignored')
     args = parser.parse_args()
     endpoint = Endpoint(args.state, args.daily_limit)
     def terminate(signum, frame):

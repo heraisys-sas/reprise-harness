@@ -1,3 +1,4 @@
+from app_paths import state_directory
 from contextlib import closing
 import datetime as dt
 import json
@@ -97,7 +98,7 @@ def scan(home=None):
                 active += int(details.get('active', False))
                 stamp = details.get('measured_at')
                 if details.get('rates') and stamp and (quota is None or stamp > quota['measured_at']):
-                    quota = {'rates': details['rates'], 'measured_at': stamp}
+                    quota = {'rates': details['rates'], 'measured_at': stamp, 'source': 'codex_rollout.token_count.rate_limits', 'evidence_scope': 'session', 'account_key': None, 'freshness': 'unverified'}
             except (OSError, ValueError, TypeError):
                 continue
             if status:
@@ -203,7 +204,7 @@ def scan_harness(home=None):
 def scan_all():
     import os
     from local_analysis import read_cache
-    analysis = read_cache(Path(os.environ.get('AGENT_RESUME_STATE', Path(__file__).parent / 'state')))
+    analysis = read_cache(state_directory(Path(__file__).parent))
     codex = scan()
     harness = scan_harness()
     claude = scan_claude()

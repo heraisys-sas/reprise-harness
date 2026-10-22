@@ -60,9 +60,12 @@ struct SocketCandidateMark: View {
 }
 struct Dashboard: View {
     @ObservedObject var app: App
-    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("connections", "Connexions", "point.3.connected.trianglepath.dotted"), ("health", "Santé post-update", "heart.text.square"), ("privacy", "Confidentialité", "lock.shield")]
+    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("connections", "Connexions", "point.3.connected.trianglepath.dotted"), ("integrations", "Intégrations", "puzzlepiece.extension"), ("health", "Santé post-update", "heart.text.square"), ("privacy", "Confidentialité", "lock.shield")]
     var title: String { sections.first { $0.0 == app.page }?.1 ?? "Reprise" }
-    var body: some View {
+    @ViewBuilder var body: some View {
+        if app.stateReady { normalDashboard } else { StateSetup(app: app) }
+    }
+    var normalDashboard: some View {
         NavigationSplitView {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 10) { Image(systemName: "arrow.clockwise.circle.fill").font(.title2).foregroundStyle(.primary); Text("Reprise").font(.title2.weight(.semibold)) }.padding(20)
@@ -98,6 +101,7 @@ struct Dashboard: View {
                     case "analysis": analysis
                     case "search": search
                     case "connections": connections
+                    case "integrations": Integrations(app: app)
                     case "health": health
                     case "privacy": privacy
                     default: overview
@@ -123,6 +127,7 @@ struct Dashboard: View {
         case "analysis": return "Un second regard sur les comptes rendus, sur votre Mac."
         case "search": return "Retrouvez un élément sans vous souvenir de l’application."
         case "connections": return "Connectez Reprise aux services codexd (codex-desktop) et claude-desktopd (Quick Apply)."
+        case "integrations": return "Préparez explicitement les outils MCP et les consignes de votre profil Harness."
         case "health": return "Après une mise à jour : ce qu’il faut relancer, ce qui reste à parser, et les actions humaines."
         case "privacy": return "Vos données de recherche restent sous votre contrôle."
         default: return "L’essentiel de vos sessions, sans les interrompre."
@@ -159,14 +164,38 @@ struct Dashboard: View {
                 }
                 Surface {
                     VStack(alignment: .leading, spacing: 18) {
-                        HStack { Text("Disponibilité Codex").font(.headline); Spacer(); Text("Quota du compte").font(.caption.weight(.medium)) }
-                        if let quota = app.snapshot["codex_quota"] as? [String: Any], let rates = quota["rates"] as? [String: Any] {
-                            HStack(alignment: .top, spacing: 28) {
-                                quotaRow("Fenêtre courte", value: rates["primary"] as? [String: Any])
-                                quotaRow("Semaine", value: rates["secondary"] as? [String: Any])
+                        HStack {
+                            Text("Quotas Codex").font(.headline)
+                            Spacer()
+                            Button(app.quotaBusy ? "Lecture…" : "Lire les quotas") { app.refreshQuotas() }.disabled(app.quotaBusy)
+                        }
+                        let knowledge = app.quotaKnowledge
+                        let freshness = knowledge["freshness"] as? String ?? "unobserved"
+                        Text(freshness == "recent_read" ? "Lecture récente · aucune reprise déduite" : "Quota actuel inconnu · lecture absente ou périmée").font(.caption).foregroundStyle(.secondary)
+                        if let stamp = knowledge["observed_at"] as? Double { Text("Lu le " + localDateTime(Date(timeIntervalSince1970: stamp))).font(.caption).foregroundStyle(.secondary) }
+                        if let pools = knowledge["pools"] as? [[String: Any]], !pools.isEmpty {
+                            ForEach(Array(pools.enumerated()), id: \.offset) { _, pool in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Pool : " + (pool["limit_id"] as? String ?? "inconnu")).font(.callout.weight(.semibold))
+                                    if let windows = pool["windows"] as? [[String: Any]] {
+                                        HStack(alignment: .top, spacing: 28) {
+                                            ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
+                                                quotaRow(window["name"] as? String == "secondary" ? "Fenêtre secondaire" : "Fenêtre primaire", value: window, attributed: pool["quota_pool_key"] as? String != nil)
+                                            }
+                                        }
+                                    }
+                                }
                             }
-                            if let stamp = quota["measured_at"] as? String { Text("Mesure du " + friendlyDate(stamp)).font(.caption).foregroundStyle(.secondary).accessibilityLabel("Quota mesuré le " + friendlyDate(stamp)) }
-                        } else { Text("Aucune mesure locale disponible.").foregroundStyle(.secondary) }
+                        } else { Text("Aucune fenêtre fournisseur connue pour cette route.").foregroundStyle(.secondary) }
+                        if let quota = app.snapshot["codex_quota"] as? [String: Any], let rates = quota["rates"] as? [String: Any] {
+                            DisclosureGroup("Dernier signal de session · compte non attribué") {
+                                HStack(alignment: .top, spacing: 28) {
+                                    quotaRow("Fenêtre primaire", value: rates["primary"] as? [String: Any])
+                                    quotaRow("Fenêtre secondaire", value: rates["secondary"] as? [String: Any])
+                                }
+                                if let stamp = quota["measured_at"] as? String { Text("Événement du " + friendlyDate(stamp)).font(.caption).foregroundStyle(.secondary) }
+                            }
+                        }
                     }
                 }
                 Surface {
@@ -279,25 +308,30 @@ struct Dashboard: View {
             }.buttonStyle(.link)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
-    func quotaRow(_ name: String, value: [String: Any]?) -> some View {
+    func quotaRow(_ name: String, value: [String: Any]?, attributed: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            if let value, let used = value["used_percent"] as? Double, let reset = value["resets_at"] as? Double {
-                let remaining = max(0, min(100, 100-used))
-                let date = Date(timeIntervalSince1970: reset)
-                let expired = date < Date()
-                let renewal = "Renouvelle à " + localTime(date)
-                Text(name).font(.callout.weight(.semibold))
+            if let value, let used = value["used_percent"] as? Double, used.isFinite, (0...100).contains(used) {
+                let remaining = 100-used
+                let minutes = (value["duration_minutes"] ?? value["window_minutes"]) as? Int
+                let title = minutes == 300 ? "Fenêtre de 5 heures" : minutes == 10080 ? "Fenêtre hebdomadaire" : name
+                let reset = value["resets_at"] as? Double
+                let date = reset.flatMap { $0.isFinite && $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
+                let expired = date.map { $0 <= Date() } ?? false
+                Text(title).font(.callout.weight(.semibold))
+                if let minutes, minutes > 0 { Text("Durée déclarée : \(minutes) min").font(.caption).foregroundStyle(.secondary) }
                 if expired {
-                    // An expired window is spent: state it plainly and show when it renews.
-                    Text("⚠ Épuisé").font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(.secondary)
-                        .accessibilityLabel(name + " : épuisé, " + renewal)
-                    Label(renewal, systemImage: "arrow.clockwise").font(.callout).foregroundStyle(.orange)
+                    Text("Mesure périmée").font(.system(size: 27, weight: .semibold, design: .rounded)).foregroundStyle(.secondary)
+                        .accessibilityLabel(title + " : reset dépassé, quota actuel inconnu")
                 } else {
-                    Text("\(Int(remaining)) % restant" + (remaining < 15 ? " ⚠" : "")).font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit()
-                        .accessibilityLabel(name + " : " + String(Int(remaining)) + " % disponibles, " + renewal)
-                    Text("disponibles").font(.caption).foregroundStyle(.secondary)
+                    Text("\(Int(remaining)) % observés restants" + (remaining < 15 ? " ⚠" : "")).font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit()
+                        .accessibilityLabel(title + " : " + String(Int(remaining)) + " % observés restants")
                     ProgressView(value: remaining, total: 100).tint(remaining < 15 ? .orange : .accentColor)
-                    Label(renewal, systemImage: "clock").font(.caption).foregroundStyle(.secondary)
+                }
+                Text(attributed ? "Compte associé à cette observation" : "Compte non attribué").font(.caption).foregroundStyle(.secondary)
+                if let date {
+                    Label("Reset déclaré : " + localDateTime(date), systemImage: "clock").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("Date de reset inconnue").font(.caption).foregroundStyle(.secondary)
                 }
             } else {
                 Text(name + " · indisponible").foregroundStyle(.secondary)
@@ -348,6 +382,7 @@ struct Dashboard: View {
                         Text(app.localSynthesis["answer"] as? String ?? "").font(.callout)
                     } else {
                         Text("Modèle génératif indisponible. Les vérifications déterministes restent la référence.").font(.callout).foregroundStyle(.secondary)
+                        if let reason = app.localSynthesis["reason"] as? String { Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
                     }
                     Text("Enrichissement facultatif, en lecture seule ; n’autorise aucune action.").font(.caption).foregroundStyle(.secondary)
                 }
@@ -374,12 +409,15 @@ struct Dashboard: View {
             Picker("Service", selection: Binding(get: { app.connectionTab }, set: { app.connectionTab = $0 })) {
                 Text("codex-desktop").tag("codex")
                 Text("claude-desktop").tag("quickapply")
+                Text("IronClaw SSH").tag("ironclaw")
             }
             .pickerStyle(.segmented)
             .frame(maxWidth: 480)
             .accessibilityLabel("Choisir le service à configurer")
             if app.connectionTab == "codex" {
                 connection
+            } else if app.connectionTab == "ironclaw" {
+                IronClawConnection(app: app)
             } else {
                 desktopConnection
             }
@@ -652,6 +690,12 @@ struct Dashboard: View {
         VStack(alignment: .leading, spacing: 18) {
             Surface { VStack(alignment: .leading, spacing: 16) { Label("Index et analyses chiffrés", systemImage: "lock.shield").font(.headline); Text("AES-256-GCM avec CryptoKit. La clé dédiée reste dans le Trousseau macOS. Les données de recherche sont déchiffrées en mémoire."); Divider(); Label("Sans publication Spotlight", systemImage: "eye.slash"); Label("Modèles Apple sur l’appareil", systemImage: "desktopcomputer"); Label("Purge quotidienne après sept jours", systemImage: "calendar") } }
             Surface { VStack(alignment: .leading, spacing: 12) { Text("Cache de recherche").font(.headline); Text("Vider l’index conserve les sessions. La prochaine recherche reconstruit les éléments récents.").foregroundStyle(.secondary); Button("Vider l’index") { app.clearIndex() }.disabled(app.searching); if app.searchNote.contains("Index vidé") { Text(app.searchNote).font(.caption).foregroundStyle(.secondary) } } }
+            Surface { VStack(alignment: .leading, spacing: 12) {
+                Text("Accès au Trousseau").font(.headline)
+                Text("En arrière-plan, un refus suspend le cache sans afficher de dialogue. Ce bouton permet de demander volontairement l’autorisation macOS ; il ne change pas les permissions des autres applications.").foregroundStyle(.secondary)
+                Button(app.vaultBusy ? "Autorisation…" : "Autoriser l’accès au cache") { app.authorizeVault() }.disabled(app.vaultBusy)
+                Text(app.vaultNote).font(.callout).foregroundStyle(.secondary)
+            } }
             Text("Le chiffrement concerne l’index et le cache d’analyse. Les instructions du scheduler, ses journaux et ses archives ZIP ne sont pas chiffrés par ce mécanisme. Les sources des autres applications restent inchangées.").font(.caption).foregroundStyle(.secondary)
         }
     }

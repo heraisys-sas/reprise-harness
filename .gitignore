@@ -26,3 +26,6 @@
 /routing/plugin/native/sentence-prototypes.plist
 
 /role-routing/plugin/lib/
+
+# Immutable local standalone builds and publication staging
+/agent-resume/builds/

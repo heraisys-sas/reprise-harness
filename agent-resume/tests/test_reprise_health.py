@@ -1,4 +1,5 @@
 import json
+import tempfile
 import sys
 import unittest
 from pathlib import Path
@@ -51,6 +52,23 @@ class ExplainTests(unittest.TestCase):
             result = rh.explain('faits', binary='/usr/bin/true')
         self.assertTrue(result['available'])
         self.assertEqual(result['answer'], 'explication')
+
+    def test_failed_or_malformed_helper_preserves_deterministic_fallback(self):
+        for code, payload in ((1, ''), (0, '[]'), (0, '{}'), (0, '{"available":"yes"}')):
+            with self.subTest(code=code, payload=payload), patch('subprocess.run') as run:
+                run.return_value.stdout = payload
+                run.return_value.returncode = code
+                result = rh.explain('faits', binary='/usr/bin/true')
+                self.assertFalse(result['available'])
+                self.assertIsNone(result['answer'])
+                self.assertIn('reason_code', result)
+
+    def test_model_unavailability_reason_is_preserved(self):
+        with patch('subprocess.run') as run:
+            run.return_value.stdout = json.dumps({'available': False, 'answer': None,
+                'reason_code': 'model_not_ready', 'reason': 'Modèle en préparation.'})
+            run.return_value.returncode = 0
+            self.assertEqual(rh.explain('faits', binary='/usr/bin/true')['reason_code'], 'model_not_ready')
 
     def test_summarize_is_deterministic_with_features(self):
         result = rh.summarize('.')
@@ -147,6 +165,19 @@ class CodexReviewRound2Tests(unittest.TestCase):
 
 
 class QuickEntryAnomalyTests(unittest.TestCase):
+    def setUp(self):
+        # Diagnostics must see synthetic components, never an installed Claude app.
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        app = Path(self.temporary.name) / 'Claude.app'
+        for relative, _ in rh.FEATURES.values():
+            component = app / 'Contents' / relative
+            component.parent.mkdir(parents=True, exist_ok=True)
+            component.write_text('fixture component')
+        replacement = patch.object(rh, 'CLAUDE_APP', app)
+        replacement.start()
+        self.addCleanup(replacement.stop)
+
     def test_clean_when_no_update_and_signatures_present(self):
         with patch.object(rh, 'log_signatures', return_value={
                 'quick_entry_submitted': {'present': True}, 'quick_entry_routing': {'present': True},

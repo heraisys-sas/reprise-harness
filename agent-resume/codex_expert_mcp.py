@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Project-bound MCP expertise tools; explicit backends, no background inference."""
+from app_paths import state_directory
 import argparse
 import fcntl
 import hashlib
@@ -9,7 +10,7 @@ from pathlib import Path
 import signal
 import sqlite3
 import sys
-import time
+from delegation_store import Store, file_evidence
 from codex_expert import review
 from claude_expert import review as claude_review
 import claude_desktop
@@ -19,9 +20,13 @@ import reprise_health
 import shutil
 from engines import executable, options
 
-SCHEMA = {'type': 'object', 'properties': {'question': {'type': 'string', 'maxLength': 12000}},
-          'required': ['question'], 'additionalProperties': False}
+SCHEMA = {'type': 'object', 'properties': {'question': {'type': 'string', 'maxLength': 12000}, 'request_key': {'type': 'string', 'maxLength': 128}, 'parent_request_key': {'type': 'string', 'maxLength': 128}},
+          'required': ['question', 'request_key'], 'additionalProperties': False}
 TOOLS = [
+    {'name': 'reprise_quotas', 'description': 'Observe quota knowledge by explicit engine/route, account and pool. Cached by default; refresh reads native metadata only. Unknown is not zero. Never resumes/routes inference.',
+     'inputSchema': {'type': 'object', 'properties': {'engine': {'type': 'string', 'enum': ['codex-cli', 'codex-server', 'codex-parent', 'claude-code', 'claude-desktop', 'harness-cli']}, 'refresh': {'type': 'boolean'}}, 'additionalProperties': False}},
+    {'name': 'reprise_requests', 'description': 'Recover durable requests/results by caller-persisted request_key, or list requests after a lost acknowledgement. Never dispatches inference.',
+     'inputSchema': {'type': 'object', 'properties': {'request_key': {'type': 'string'}, 'acknowledge': {'type': 'boolean'}}, 'additionalProperties': False}},
     {'name': 'reprise_delegate', 'description': 'Delegate expertise, review or a bounded batch. Default Codex: standard Sol, deep Astra, standard batch Luna. Explicit claude-code when configured: Sonnet/medium or Opus/high, no tools, only question and supplied project file snapshots. Returns text/patches to verify. Never silently switches backend or billing. Continue via reprise_followup.',
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {
          'kind': {'type': 'string', 'enum': ['expertise', 'review', 'batch']},
@@ -30,17 +35,17 @@ TOOLS = [
          'paths': {'type': 'array', 'maxItems': 30, 'items': {'type': 'string'}},
          'chatId': {'type': 'string'},
          'filePaths': {'type': 'array', 'maxItems': 10, 'items': {'type': 'string'}}},
-         'required': ['question', 'kind']}},
+         'required': ['question', 'kind', 'request_key']}},
     {'name': 'reprise_backends', 'description': 'List configured delegation capabilities without inference. Availability is not a price or quota guarantee.',
      'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
     {'name': 'codex_review', 'description': 'Ask Codex for a read-only project review. Uses ChatGPT quota. No automatic retries or approval. Returns its answer and session ID.',
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {'paths': {'type': 'array', 'maxItems': 30, 'items': {'type': 'string'}}}}},
     {'name': 'codex_followup', 'description': 'Continue a review created by this project bridge; preserves its Codex conversation.',
-     'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {'thread_id': {'type': 'string'}}, 'required': ['question', 'thread_id']}},
+     'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {'thread_id': {'type': 'string'}}, 'required': ['question', 'thread_id', 'request_key']}},
     {'name': 'reprise_followup', 'description': 'Continue an owned project expertise session, preserving backend, model and effort. No fallback.',
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {
          'thread_id': {'type': 'string'}, 'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop']}},
-         'required': ['question', 'thread_id', 'backend']}},
+         'required': ['question', 'thread_id', 'backend', 'request_key']}},
     {'name': 'reprise_resume', 'description': 'List interrupted tasks reconstructed from local logs that can be retried (quota, guard or missing dispatch). Read-only; no automatic retry.',
      'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
     {'name': 'reprise_health', 'description': 'Post-update health: versions, whether supervised servers need relaunch, whether watched log signatures are still present, human-required actions, plus an on-device Foundation Models explanation. Read-only.',
@@ -57,10 +62,14 @@ MODES = {
 
 
 class Bridge:
-    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, ironclaw_values=None):
+    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, allowed_tools=None, ironclaw_values=None):
+        known_tools = {item['name'] for item in TOOLS}
+        if allowed_tools is not None and (not allowed_tools or set(allowed_tools) - known_tools):
+            raise ValueError('Unknown or empty tool selection')
+        self.allowed_tools = set(allowed_tools) if allowed_tools is not None else known_tools
         self.root = Path(root).resolve(strict=True)
-        if not self.root.is_dir() or not 1 <= daily_limit <= 100:
-            raise ValueError('Project directory and daily limit 1..100 required')
+        if not self.root.is_dir():
+            raise ValueError('Project directory required')
         self.values = options('codex-server', values)
         self.program = executable('codex-cli')
         if claude_program and (not Path(claude_program).is_absolute() or not Path(claude_program).is_file()
@@ -72,7 +81,6 @@ class Bridge:
         self.desktop_program = executable('claude-desktop')
         self.ironclaw_program = shutil.which('ssh') or 'ssh'
         self.ironclaw_values = ironclaw_values or {}
-        self.limit = daily_limit
         self.scope = hashlib.sha256((str(self.root)+'\0'+str(self.values.get('socket', 'default'))).encode()).hexdigest()
         state = Path(state)
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -83,16 +91,53 @@ class Bridge:
         self.db.execute('CREATE TABLE IF NOT EXISTS expert_routes(scope TEXT,id TEXT,model TEXT,effort TEXT,PRIMARY KEY(scope,id))')
         self.db.execute('CREATE TABLE IF NOT EXISTS claude_expert_routes(scope TEXT,id TEXT,program TEXT,model TEXT,effort TEXT,PRIMARY KEY(scope,id))')
         self.db.commit()
+        self.requests = Store(self.db, str(self.root))
 
     def call(self, name, args):
+        if name not in self.allowed_tools:
+            raise ValueError('Tool not enabled for this integration')
+        if name == 'reprise_quotas':
+            if not isinstance(args, dict) or args.keys() - {'engine', 'refresh'} or not isinstance(args.get('refresh', False), bool):
+                raise ValueError('Invalid quota observation arguments')
+            import quota_knowledge
+            engine = args.get('engine', 'codex-server')
+            settings = self.values if engine in ('codex-server', 'codex-parent') else self.desktop_values if engine == 'claude-desktop' else {}
+            return {'status': 'finished', 'automatic_fallback': False, 'quota_knowledge': quota_knowledge.status(self.db, engine, settings, refresh=args.get('refresh', False))}
+        if name == 'reprise_requests':
+            return self.requests.lookup(args)
+        if name in ('reprise_backends', 'reprise_health', 'reprise_history', 'reprise_resume'):
+            return self._call(name, args)
+        if not isinstance(args, dict):
+            raise ValueError('Object arguments required')
         with self.lock_path.open('a') as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                return {'status': 'busy', 'reason': 'Another expertise request is active; no automatic retry.'}
-            return self._call(name, args)
+                return {'status': 'busy', 'reason': 'One active expertise per state directory; no automatic retry.'}
+            clean = {k: v for k, v in args.items() if k not in ('request_key', 'parent_request_key')}
+            self._call(name, clean, preflight=True)
+            key = args.get('request_key')
+            payload = {'tool': name, **{k: v for k, v in args.items() if k not in ('request_key', 'parent_request_key')}}
+            payload['file_evidence'] = file_evidence(self.root, args.get('paths'), args.get('filePaths'))
+            parent = args.get('parent_request_key')
+            if name in ('reprise_followup', 'codex_followup') and parent is None:
+                own = self.db.execute('SELECT parent FROM delegation_requests WHERE scope=? AND request_key=?', (self.requests.scope, key)).fetchone()
+                row = self.db.execute("SELECT request_key FROM delegation_requests WHERE scope=? AND json_extract(result,'$.thread_id')=? ORDER BY rowid DESC LIMIT 1", (self.requests.scope, args.get('thread_id'))).fetchone()
+                parent = own[0] if own else row[0] if row else None
+            existing = self.requests.begin(key, payload, parent)
+            if existing:
+                return existing
+            # Exceptions or process exit leave a durable uncertain attempt.
+            result = self._call(name, clean)
+            try:
+                changed = payload['file_evidence'] != file_evidence(self.root, args.get('paths'), args.get('filePaths'))
+            except (ValueError, OSError):
+                changed = True
+            if changed:
+                result = dict(result, status='needs_review', reason='Input files changed during delegation; result requires reconciliation.', input_changed=True)
+            return self.requests.finish(key, result)
 
-    def _call(self, name, args):
+    def _call(self, name, args, *, preflight=False):
         if name not in ('reprise_backends', 'reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup', 'reprise_resume', 'reprise_history', 'reprise_health') or not isinstance(args, dict):
             raise ValueError('Unknown tool or invalid arguments')
         if name == 'reprise_health':
@@ -186,14 +231,8 @@ class Bridge:
             return {'status': 'engine_unavailable', 'backend': backend, 'reason': 'Requested executable not configured', 'automatic_fallback': False}
         if backend == 'claude-code' and not self.claude_subscription_only:
             return {'status': 'billing_unverified', 'backend': backend, 'reason': 'Operator must confirm paid usage credits disabled before enabling Claude.', 'automatic_fallback': False}
-        day = int(time.time()//86400)
-        with self.db:
-            self.db.execute('BEGIN IMMEDIATE')
-            count = self.db.execute('SELECT count FROM expert_calls WHERE scope=? AND day=?', (self.scope, day)).fetchone()
-            if count and count[0] >= self.limit:
-                return {'status': 'budget_blocked', 'reason': 'Daily expertise call cap reached; no automatic retry.'}
-            # Reserve before any transmission; failures are charged to this local cap too.
-            self.db.execute('INSERT INTO expert_calls VALUES (?,?,1) ON CONFLICT(scope,day) DO UPDATE SET count=count+1', (self.scope, day))
+        if preflight:
+            return
         if backend == 'ironclaw':
             result = ironclaw.review(self.ironclaw_program, self.ironclaw_values, self.root, question,
                                      kind=args.get('kind', 'expertise'), level=args.get('level', 'standard'),
@@ -203,8 +242,8 @@ class Bridge:
             result = claude_desktop.review(self.root, question, kind=args.get('kind', 'expertise'),
                                           level=args.get('level', 'standard'), paths=args.get('paths'),
                                           chat_id=args.get('chatId'), file_paths=args.get('filePaths'),
-                                          program=self.desktop_program, values=self.desktop_values)
-            return result | {'backend': backend, 'automatic_fallback': False}
+                                          program=self.desktop_program, values=self.desktop_values, request_key=self.requests.active_key)
+            return result | {'backend': backend, 'automatic_fallback': False, 'admission_only': True, 'response': None}
         if backend == 'claude-code':
             result = claude_review(self.claude_program, self.root, question, paths=args.get('paths'),
                                    thread_id=ident, subscription_only=self.claude_subscription_only, **routing)
@@ -233,7 +272,7 @@ class Bridge:
         if method == 'ping':
             return {}
         if method == 'tools/list':
-            return {'tools': TOOLS}
+            return {'tools': [item for item in TOOLS if item['name'] in self.allowed_tools]}
         if method == 'tools/call':
             result = self.call(params.get('name'), params.get('arguments', {}))
             return {'content': [{'type': 'text', 'text': json.dumps(result, ensure_ascii=False)}],
@@ -246,8 +285,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--project-root', required=True)
     parser.add_argument('--socket')
-    parser.add_argument('--state', default=str(Path(__file__).parent/'state'))
-    parser.add_argument('--daily-limit', type=int, default=8)
+    parser.add_argument('--state')
+    parser.add_argument('--tools', help='Explicit comma-separated exposed tool allowlist; legacy default exposes all')
+    parser.add_argument('--daily-limit', type=int, default=8, help='Deprecated compatibility option; ignored for all backends')
     parser.add_argument('--claude-program', help='Explicit absolute Claude CLI path; disabled by default')
     parser.add_argument('--claude-included-quota-confirmed', action='store_true', help='Operator confirms paid usage credits disabled; CLI cannot verify this')
     parser.add_argument('--desktop-socket', help='Explicit absolute Quick Entry socket path; disabled by default')
@@ -259,9 +299,10 @@ def main():
             ironclaw_values = json.loads(Path(args.ironclaw_config).read_text())
         except (OSError, ValueError):
             raise SystemExit('--ironclaw-config doit être un JSON 0600 lisible')
-    bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.state, args.daily_limit,
+    bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.state or str(state_directory(Path(__file__).parent)), args.daily_limit,
                     claude_program=args.claude_program, claude_subscription_only=args.claude_included_quota_confirmed,
-                    desktop_socket=args.desktop_socket, ironclaw_values=ironclaw_values)
+                    desktop_socket=args.desktop_socket, allowed_tools=args.tools.split(',') if args.tools is not None else None,
+                    ironclaw_values=ironclaw_values)
     def terminate(signum, frame):
         # Unwind active CLI cleanup before closing the DB and releasing the lock.
         raise SystemExit(128 + signum)

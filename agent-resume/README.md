@@ -134,7 +134,7 @@ Le panneau réunit désormais Codex et Harness. Harness est lu depuis ~/.dsh : c
 
 ### Compteurs et quotas
 
-L'icône et la fenêtre affichent C (Codex) et H (Harness). Le compteur estime les sessions actives : un tour est ouvert et ses données ont été modifiées depuis moins de deux minutes. Une session silencieuse peut donc être sous-comptée ; ce n'est pas une interrogation des agents. Au maximum 100 sessions récentes par application sont examinées. Codex fournit la dernière mesure de quota du compte trouvée dans les événements locaux, avec son horodatage. Les quotas sont partagés entre les sessions. Une échéance passée est marquée « mesure expirée », sans inventer une remise à zéro. Harness affiche une absence de quota chiffré plutôt qu'une estimation à partir des tokens. Aucun appel réseau ni LLM n'est effectué par la détection.
+L'icône et la fenêtre affichent C (Codex) et H (Harness). Le compteur estime les sessions actives : un tour est ouvert et ses données ont été modifiées depuis moins de deux minutes. Une session silencieuse peut donc être sous-comptée ; ce n'est pas une interrogation des agents. Au maximum 100 sessions récentes par application sont examinées. La carte Codex consulte désormais un registre sourcé : **Lire les quotas** interroge explicitement les métadonnées du socket configuré, sans tour de modèle. Les identités compte/pool sont pseudonymes et les données absentes/périmées restent inconnues. Les signaux de journaux restent séparés, avec leur horodatage et sans attribution de compte. Une échéance passée signifie « mesure périmée », jamais épuisement ou reprise garantie ; le reset affiche sa date et son heure locales complètes. Harness affiche une absence de quota chiffré plutôt qu'une estimation à partir des tokens. La détection ordinaire reste passive ; seule la lecture explicite des quotas peut interroger la source native. CLI : `./resume quota-status --engine codex-server --refresh` ; MCP : `reprise_quotas`. [Contrat et limites](QUOTA-KNOWLEDGE.md).
 
 ### Claude Code
 
@@ -190,3 +190,22 @@ L'interface native utilise SwiftUI dans une fenêtre AppKit : NavigationSplitVie
 - `detect.py`, `local_analysis.py`, `private_search.py` et `vault.py` gardent leurs responsabilités distinctes.
 
 Vérification : `python3 -W error::ResourceWarning -m unittest discover -s agent-resume/tests`. L’installation native compile les deux fichiers de l’interface ; l’export `resume share` inclut tous les modules nécessaires. Aucune bibliothèque supplémentaire.
+
+### Prérequis du prototype macOS
+
+Reprise cible macOS **26.0+** ; construction avec SDK macOS **26+**, Swift et Python développeur. Le bundle ARM64 peut embarquer son propre CPython (voir [RUNTIME-PACKAGING.md](RUNTIME-PACKAGING.md)). La synthèse locale utilise le framework Swift Foundation Models, sans dépendance au SDK Python Apple FM. Apple Intelligence doit être disponible sur l’appareil pour cette fonction facultative ; son absence conserve les vérifications déterministes. Diagnostic sans génération : `Reprise.app/Contents/MacOS/FoundationExplain --status`. Les versions minimales effectivement produites figurent dans `Contents/Resources/native-manifest.json`.
+
+### Préparer les états depuis le bundle
+
+Sans arguments de développement, Reprise présente le parcours de préparation avant sa supervision :
+
+1. Choisir **Importer un état existant** et sélectionner le dossier contenant `tasks.sqlite`, ou choisir une création neuve volontaire.
+2. Prévisualiser les sources, destinations et sauvegardes. Le dossier Quick Apply associé, s’il est reconnu, figure dans le plan ; les états UX séparés restent hors de ce parcours.
+3. Arrêter les applications/services qui écrivent dans ces états, puis confirmer l’attestation et appliquer. Reprise ne les arrête pas.
+4. Vérifier le reçu et les sauvegardes, puis choisir **Continuer**. Une interruption retrouve le plan conservé et les étapes publiées ; un conflit bloque sans écrasement.
+
+Un ancien état principal seul peut être conservé et son dossier Quick préparé séparément par ce même écran. Le mode développement (`native-install --open`) conserve son état historique explicite. Les commandes CLI `state-init`/`state-import` restent disponibles ; `state-status`/`state-plan` sont sans écriture. Interface compilée, parcours visuel et compte vierge non encore validés : voir [INSTALLATION-CONTRACT.md](INSTALLATION-CONTRACT.md).
+
+### Installer les outils dans Harness
+
+Après préparation des états, **Intégrations** permet de sélectionner un profil Harness existant et son projet, prévisualiser l’installation/réparation ou le retrait puis appliquer explicitement le plan. Les skills sont isolées au profil ; observations/reçus sont exposés par défaut, délégation en option. La vérification directe du pont ne prouve pas son chargement dans Harness. Aucun redémarrage ni inférence automatique. Chemins du runtime installés hors du bundle et registre durable conservé : voir [HARNESS-INTEGRATION.md](HARNESS-INTEGRATION.md) pour garanties, refus et niveaux de preuve.

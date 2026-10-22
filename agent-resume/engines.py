@@ -102,7 +102,11 @@ def socket_path(values):
 def select(engine, values):
     if engine == 'codex':
         # An explicitly configured socket must never silently fall back to a new writer.
-        if 'socket' in values or SOCKET.exists():
+        try:
+            configured = 'socket' in values or SOCKET.exists() or SOCKET.is_symlink()
+        except OSError as error:
+            raise Unavailable('engine_unavailable', 'État du socket inaccessible ; aucune substitution CLI.') from error
+        if configured:
             socket_path(values)
             return 'codex-server'
         return 'codex-cli'
