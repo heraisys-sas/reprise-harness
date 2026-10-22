@@ -1,9 +1,16 @@
 ---
 name: ironclaw-tunnel
-description: Diagnostiquer, soumettre des tâches et exposer un agent IronClaw/OpenClaw distant à travers une session SSH, avec clé stockée dans le coffre Reprise et sans forwarding réseau direct.
+description: Diagnostiquer, soumettre des tâches et exposer un agent IronClaw/OpenClaw distant à travers une session SSH, par SSH direct, avec reçus durables et sans forwarding réseau direct.
 ---
 
 # Test et exploitation d'un agent IronClaw distant
+
+## Chemin actuel (23/10/2026)
+
+Utiliser les commandes Reprise durables `ironclaw-submit`, `ironclaw-poll`, `ironclaw-reconcile`, `ironclaw-followup`, `ironclaw-result` et `ironclaw-requests` décrites dans `agent-resume/IRONCLAW-SSH.md`. Soumission uniquement après autorisation explicite ; conserver `request_key`. Une réconciliation ne fait que des GET. La configuration gérée référence les fichiers SSH/token existants, sans coffre obligatoire.
+
+Le prototype MCP `ironclaw run -m` ci-dessous est historique et **désactivé dans le pont** : stdout n'est pas une preuve de résultat structuré, ni de restriction des outils distants. Ne pas le réactiver ni installer une autre configuration en contournement. Son raccordement à `Tasks`/`Endpoint` reste à réaliser. Les anciennes recommandations de coffre ci-dessous sont remplacées par le choix SSH direct ci-dessus.
+
 
 Traite un agent distant de type **IronClaw Reborn** (`ironclaw serve --host 0.0.0.0 --port 3000`, CLI `ironclaw` v1.4+, runtime qui fait tourner un LLM). Le canal est **SSH en mode commande** : le forwarding `-L` vers l'UI est souvent *refusé* par le sshd distant ; on utilise alors le shell pour (a) soumettre des tâches via `ironclaw run -m` et (b) relayer l'UI par-dessus la session.
 
@@ -20,7 +27,7 @@ Cette page est la source maîtresse. La réplique installée dans `~/.dsh/skills
 | Empreinte de l'hôte | `SHA256:4H4N7730TrPNMZMTbhmNxGxU98Ys4aKnxKgOjvRL+3k` (ed25519) | vérifier par `ssh-keygen -lf` |
 | Port UI distant | `127.0.0.1:3000` | `IRONCLAW_UI_PORT` |
 
-**Ne jamais** lire une clé privée en entier ni l'envoyer en log : `ssh-keygen -lf` (empreinte) et `stat` (droits) suffisent. La clé **ne doit pas** rester en clair sur le disque de travail : la stocker via le coffre Reprise (voir « Sécurité »).
+**Ne jamais** lire une clé privée en entier ni l'envoyer en log : `ssh-keygen -lf` (empreinte) et `stat` (droits) suffisent. Le choix utilisateur est SSH direct : clé existante privée `0600`, sans copie ni obligation de coffre Reprise. Ne jamais modifier son chiffrement ou ses droits implicitement.
 
 ## Checklist de diagnostic (dans l'ordre)
 
@@ -76,10 +83,10 @@ Vérification bout-en-bout du canal MCP réel (20/10/2026) : pont lancé avec `-
 Restant (suite) : daemon `ironclawd` persistant avec relais UI mono-connexion (schéma ci-dessous), recompilation de `Vault`, accroche d'une config 0600 réelle (`agent-resume/ironclaw-config.example.json`).
 ## Sécurité
 
-1. **Coffre, pas fichier clair** : `vault.save(path, clé, purpose='ironclaw-key-v1')` après avoir étendu le bin utilitaire `Vault.swift` (whitelist de `purpose` + service Keychain `local.agent-resume.vault.v1`). Le `purpose` est une **AAD** : changer de clé de purpose invalide le chiffré.
-2. **SSH durci** : `BatchMode=yes`, `ConnectTimeout`, `StrictHostKeyChecking=accept-new` une seule fois puis vérifier l'empreinte (`ssh-keygen -lf` du `known_hosts` ou de la clé) ; mode 0600 pour toute copie temporaire, `umask 077`.
-3. **Canal de tâche isolé** : prompt borné, réponse tronquée signalée (`Truncated output is incomplete`), pas de secret utilisateur envoyé à l'agent distant.
-4. **API modèle (ex. Morph/GLM en backend de pont)** : clé API via le **catalogue credentials Harness** (variable d'environnement type `MORPH_API_KEY` déclarée dans le patche `llm-pi-ai`), jamais inline, et vérifier facturation avant usage (voir `harness-tools/morph/README.md`).
+- SSH direct avec la clé existante privée `0600` ; aucun coffre obligatoire, aucune copie de credential.
+- Utiliser `ironclaw_ssh.py` : hôte déjà approuvé requis, agent et forwarding désactivés, configuration SSH utilisateur non héritée.
+- Aucun changement de fournisseur ni repli payant ; disponibilité fournisseur distincte de ses crédits restants.
+- Les anciennes commandes `ironclaw run -m` sont du diagnostic historique, pas le contrat d'exécution Reprise.
 
 ## Enrichir cette page
 

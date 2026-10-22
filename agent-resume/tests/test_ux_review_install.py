@@ -4,7 +4,12 @@ import json
 import sys
 import tempfile
 import unittest
+import os
+import subprocess
+from unittest.mock import patch
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
 
 _loader = importlib.machinery.SourceFileLoader(
     'install_ux_review', str(Path(__file__).parents[1] / 'install-ux-review.py'))
@@ -118,6 +123,62 @@ class InstallUxReviewTests(unittest.TestCase):
         result = self.install()
         self.assertIsNotNone(result['backup'])
         self.assertEqual(json.loads(Path(result['backup']).read_text())['mcpServers']['legacy']['command'], 'a')
+
+    def test_concurrent_change_during_staging_is_preserved(self):
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text('{}')
+        concurrent = '{"preferences": {"changed": true}}'
+        with patch.object(installer.os, 'fsync', side_effect=lambda fd: self.config.write_text(concurrent)):
+            with self.assertRaisesRegex(ValueError, 'modifiée'):
+                self.install()
+        self.assertEqual(self.config.read_text(), concurrent)
+        self.assertEqual(list(self.config.parent.glob('*.reprise-*')), [])
+        self.assertEqual(list(self.config.parent.glob('*.bak-*')), [])
+
+    def test_backup_and_published_config_are_private_and_temporary_unique(self):
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text('{}')
+        fixed = self.config.with_name(self.config.name + '.reprise-tmp')
+        fixed.write_text('unrelated')
+        result = self.install()
+        self.assertEqual(Path(result['backup']).stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(fixed.read_text(), 'unrelated')
+
+    def test_old_log_does_not_prove_loaded_tools(self):
+        log = installer.verification_log(self.home)
+        log.parent.mkdir(parents=True)
+        log.write_text('old launch failed')
+        for result in (self.install(), self.install()):
+            self.assertFalse(result['loaded'])
+            self.assertFalse(result['launch_observed'])
+
+    def test_default_state_is_stable_outside_source_and_respects_explicit_state(self):
+        with patch.dict(os.environ, {}, clear=True):
+            result = installer.install(home=self.home, app_running=False)
+            self.assertEqual(result['state'], str(self.home / 'Library/Application Support/Reprise/ux-state'))
+        with patch.dict(os.environ, {'AGENT_RESUME_STATE': str(self.home / 'selected')}):
+            self.assertEqual(installer.default_state(self.home), self.home / 'selected/ux-state')
+
+    def test_failed_quit_or_open_is_reported(self):
+        for running in (True, False):
+            with self.subTest(running=running), patch.object(installer, 'claude_running', return_value=running), \
+                    patch.object(installer.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'command')) as run:
+                result = installer.relaunch(home=self.home, wait=False)
+                self.assertFalse(result['relaunch_performed'])
+                self.assertTrue(run.call_args.kwargs['check'])
+
+    def test_relaunch_log_change_is_only_launch_observation(self):
+        log = installer.verification_log(self.home)
+        log.parent.mkdir(parents=True)
+        def opened(*args, **kwargs):
+            log.write_text('server process failed to import')
+        with patch.object(installer, 'claude_running', return_value=False), \
+                patch.object(installer.subprocess, 'run', side_effect=opened):
+            result = installer.relaunch(home=self.home)
+        self.assertTrue(result['relaunch_performed'])
+        self.assertTrue(result['launch_observed'])
+        self.assertFalse(result['loaded'])
 
 
 if __name__ == '__main__':

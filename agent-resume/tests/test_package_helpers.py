@@ -27,6 +27,10 @@ class PackageHelpersTests(unittest.TestCase):
             root = moved / 'Contents/Resources/helpers'
             manifest = json.loads((root / 'payload-manifest.json').read_text())
             self.assertEqual(manifest['runtime'], 'external-python-required')
+            imported = subprocess.run([sys.executable, '-c', 'import codex_expert_mcp'],
+                                      cwd=root, capture_output=True, text=True)
+            self.assertEqual(imported.returncode, 0, imported.stderr)
+            self.assertTrue((root / 'install-ux-review.py').is_file())
             self.assertFalse((root / 'state').exists())
             self.assertFalse((root / 'tests').exists())
             self.assertFalse((root / 'quick-entry-com.example.reprise.plist').exists())

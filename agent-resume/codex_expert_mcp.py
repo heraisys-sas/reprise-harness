@@ -173,10 +173,11 @@ class Bridge:
                  'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': False,
                  'dispatch': 'dispatchOnQuickEntrySubmit (full turn, not a prefill)',
                  'context': 'Structured Quick Apply payload; images/files bounded; target chat routing'},
-                {'id': 'ironclaw', 'configured': bool(self.ironclaw_program) and bool(self.ironclaw_values),
+                {'id': 'ironclaw', 'configured': False,
+                 'reason': 'CLI prototype not enabled: durable Tasks/Endpoint MCP binding pending.',
                  'billing': 'Remote IronClaw runtime (default model observed: morph-dsv41flash-1017)',
                  'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': False,
-                 'context': 'SSH session; tasks via ironclaw run -m and answer read back; no UI relaying yet'}],
+                 'context': 'Experimental CLI retained for audit; use explicit durable ironclaw-submit/poll/result commands.'}],
                 'automatic_fallback': False}
         allowed = {'question', 'thread_id'} if name in ('codex_followup', 'reprise_followup') else {'question', 'paths'}
         if name == 'reprise_followup':
@@ -223,9 +224,9 @@ class Bridge:
             route = self.db.execute('SELECT model,effort FROM expert_routes WHERE scope=? AND id=?', (self.scope, ident)).fetchone()
             if route:
                 routing = dict(zip(('model', 'effort'), route))
-        if backend == 'ironclaw' and not self.ironclaw_values:
+        if backend == 'ironclaw':
             return {'status': 'engine_unavailable', 'backend': backend,
-                    'reason': 'Point d’acceptation IronClaw (host/port/user/key) non configure', 'automatic_fallback': False}
+                    'reason': 'Prototype CLI IronClaw désactivé : raccordement MCP au registre durable Tasks/Endpoint requis.', 'automatic_fallback': False}
         if backend != 'claude-desktop' and not (self.ironclaw_program if backend == 'ironclaw'
                                                 else (self.program if backend == 'codex' else self.claude_program)):
             return {'status': 'engine_unavailable', 'backend': backend, 'reason': 'Requested executable not configured', 'automatic_fallback': False}

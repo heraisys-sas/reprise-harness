@@ -36,6 +36,16 @@ class IronClawConnectionTests(unittest.TestCase):
         self.assertFalse((self.base / 'url').exists())
         self.assertEqual(connection.endpoint(self.base).host, 'example.invalid')
 
+    def test_followup_dispatches_explicit_parent_without_new_session(self):
+        state_install.initialize(self.state)
+        connection.configure(self.base, self.value)
+        with patch.object(connection, 'Tasks') as cls:
+            connection.task_operation(self.base, 'ironclaw-followup',
+                                      {'request_key': 'child', 'parent_request_key': 'parent',
+                                       'content': 'continue', 'allow_submit': True})
+            cls.return_value.followup.assert_called_once_with('child', 'parent', 'continue', allow_submit=True)
+            cls.return_value.submit.assert_not_called()
+
     def test_invalid_or_symbolic_config_cannot_overwrite(self):
         state_install.initialize(self.state)
         connection.configure(self.base, self.value)

@@ -38,6 +38,19 @@ class TasksTests(unittest.TestCase):
     def submit(self):
         return self.tasks.submit('key','question',allow_submit=True)
 
+    def test_encoded_french_payload_rejected_before_admission_or_network(self):
+        with self.assertRaises(TaskError):
+            self.tasks.submit('large', 'é' * 11000, allow_submit=True)
+        self.assertEqual(self.tasks.get('large')['state'], 'not_found')
+        self.assertEqual(self.calls, [])
+
+    def test_session_get_failure_before_post_can_be_retried(self):
+        with patch.object(self.tasks, 'transport', side_effect=TimeoutError):
+            with self.assertRaises(TaskError): self.submit()
+        self.assertEqual(self.tasks.get('key')['state'], 'prepared')
+        self.assertEqual(self.submit()['state'], 'pending')
+        self.assertEqual(len([c for c in self.calls if c[0] == 'POST']), 2)
+
     def test_concurrent_equivalent_keys_cannot_dispatch_twice(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'requests.sqlite'
@@ -206,6 +219,97 @@ class TasksTests(unittest.TestCase):
         local = Tasks(self.db)
         with self.assertRaises(TaskError): local.list_requests(101)
         with self.assertRaises(TaskError): local.observe_event('key','gate',{})
+
+    def test_reconcile_lost_ack_get_only_then_final(self):
+        self.submit()
+        with self.db: self.db.execute("UPDATE ironclaw_tasks SET state='needs_review',run_id=NULL")
+        user = {'kind':'user','status':'submitted','content':'question','turn_run_id':'run'}
+        final = {'kind':'assistant','status':'finalized','content':'REPRISE_OK','turn_run_id':'run'}
+        self.pages = [{'messages':[user,final],'next_cursor':None}]*2
+        before = len(self.calls)
+        self.assertEqual(self.tasks.reconcile('key')['result'],'REPRISE_OK')
+        self.assertTrue(all(call[0]=='GET' for call in self.calls[before:]))
+        self.assertEqual(Tasks(self.db).reconcile('key')['result'],'REPRISE_OK')
+
+    def test_reconcile_refuses_wrong_or_multiple_content_matches(self):
+        self.submit()
+        with self.db: self.db.execute("UPDATE ironclaw_tasks SET state='ambiguous',run_id=NULL")
+        for messages in ([{'kind':'user','content':'wrong','turn_run_id':'run'}],
+                         [{'kind':'user','content':'question','turn_run_id':'run'}]*2):
+            self.pages = [{'messages':messages,'next_cursor':None}]
+            with self.assertRaises(TaskError): self.tasks.reconcile('key')
+            self.assertEqual(self.tasks.get('key')['state'],'ambiguous')
+
+    def test_reconcile_endpoint_and_missing_thread_are_rejected(self):
+        self.submit()
+        with self.db: self.db.execute("UPDATE ironclaw_tasks SET state='dispatching',run_id=NULL")
+        other = Tasks(self.db,Endpoint('other.example','agent',22,'/tmp/key','/tmp/token'),self.transport)
+        with self.assertRaises(TaskError): other.reconcile('key')
+        with self.db: self.db.execute('UPDATE ironclaw_tasks SET thread_id=NULL')
+        with self.assertRaises(TaskError): self.tasks.reconcile('key')
+
+    def test_unknown_ack_is_projected_and_keeps_valid_run(self):
+        base = self.transport
+        def transport(ep,method,path,payload=None,**kw):
+            ack = base(ep,method,path,payload,**kw)
+            if path.endswith('/messages'):
+                return dict(ack,status='unclassified',outcome='unclassified',api_key='secret-never-store')
+            return ack
+        tasks = Tasks(self.db,self.endpoint,transport)
+        result = tasks.submit('key','question',allow_submit=True)
+        self.assertEqual(result['state'],'needs_review')
+        self.assertEqual(result['run_id'],'run')
+        projection = self.db.execute('SELECT ack_json FROM ironclaw_tasks').fetchone()[0]
+        self.assertEqual(json.loads(projection)['status'],'unclassified')
+        self.assertNotIn('secret-never-store',projection)
+
+    def _finished_parent(self):
+        self.submit()
+        with self.db: self.db.execute("UPDATE ironclaw_tasks SET state='finished',result='\"done\"'")
+        calls = []
+        def transport(ep,method,path,payload=None,**kw):
+            self.assertFalse(self.db.in_transaction)
+            calls.append((method,path,payload))
+            if method == 'GET': return {'session_channel_extension_id':'channel'}
+            self.assertTrue(path.endswith('/messages'))
+            row = self.db.execute('SELECT message_action,state,parent_request_key,thread_id FROM ironclaw_tasks WHERE request_key=?',('next',)).fetchone()
+            if row:
+                self.assertEqual(row, (payload['client_action_id'],'dispatching','key','thread'))
+            return {'thread_id':'thread','run_id':'run2','status':'queued'}
+        return Tasks(self.db,self.endpoint,transport),calls
+
+    def test_followup_uses_one_message_post_owned_thread_and_reuses_key(self):
+        tasks,calls = self._finished_parent()
+        result = tasks.followup('next','key','quota1',allow_submit=True)
+        self.assertEqual(result['state'],'pending')
+        self.assertEqual(result['thread_id'],'thread')
+        self.assertEqual([c[1] for c in calls if c[0]=='POST'],['/api/webchat/v2/channels/channel/messages'])
+        before = len(calls)
+        tasks.followup('next','key','quota1',allow_submit=True)
+        self.assertEqual(len(calls),before)
+        with self.assertRaises(TaskError): tasks.followup('second','key','quota2',allow_submit=True)
+
+    def test_followup_ambiguous_blocks_new_key_and_no_replay(self):
+        tasks,calls = self._finished_parent()
+        base = tasks.transport
+        def failed(*args,**kwargs):
+            if args[1]=='POST': raise TimeoutError('private')
+            return base(*args,**kwargs)
+        tasks.transport = failed
+        with self.assertRaises(TaskError): tasks.followup('next','key','quota1',allow_submit=True)
+        self.assertEqual(tasks.followup('next','key','quota1',allow_submit=True)['state'],'ambiguous')
+        with self.assertRaises(TaskError): tasks.followup('second','key','quota2',allow_submit=True)
+
+    def test_followup_requires_finished_parent_binding_optin_and_bounded_lineage(self):
+        self.submit()
+        with self.assertRaises(TaskError): self.tasks.followup('next','key','quota1',allow_submit=True)
+        tasks,calls = self._finished_parent()
+        with self.assertRaises(TaskError): tasks.followup('next','key','quota1')
+        other = Tasks(self.db,Endpoint('other.example','agent',22,'/tmp/key','/tmp/token'),tasks.transport)
+        with self.assertRaises(TaskError): other.followup('next','key','quota1',allow_submit=True)
+        with self.db: self.db.execute("UPDATE ironclaw_tasks SET parent_request_key='key' WHERE request_key='key'")
+        with self.assertRaises(TaskError): tasks.followup('next','key','quota1',allow_submit=True)
+        self.assertEqual(calls,[])
 
     def test_changed_endpoint_cannot_poll_or_redispatch(self):
         self.submit()

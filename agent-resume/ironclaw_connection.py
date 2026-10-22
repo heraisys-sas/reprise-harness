@@ -42,18 +42,20 @@ def configure(root, value):
 
 
 def task_operation(root, command, value):
-    if not isinstance(value, dict) or value.keys() - {'request_key', 'content', 'allow_submit', 'acknowledge'}:
+    if not isinstance(value, dict) or value.keys() - {'request_key', 'parent_request_key', 'content', 'allow_submit', 'acknowledge'}:
         raise ValueError('Champs de requête inconnus.')
     if command != 'ironclaw-requests' and (not isinstance(value.get('request_key'), str) or not value['request_key'].strip() or len(value['request_key']) > 128):
         raise ValueError('Clé de requête persistée requise.')
+    if command != 'ironclaw-followup' and 'parent_request_key' in value:
+        raise ValueError('Parent réservé à une continuation explicite.')
     for key in ('allow_submit', 'acknowledge'):
         if key in value and type(value[key]) is not bool:
             raise ValueError('Autorisation booléenne explicite requise.')
-    if command == 'ironclaw-submit' and value.get('allow_submit') is not True:
+    if command in ('ironclaw-submit', 'ironclaw-followup') and value.get('allow_submit') is not True:
         raise ValueError('La soumission exige une autorisation explicite et peut consommer du quota distant.')
     if command == 'ironclaw-requests' and value:
         raise ValueError('La liste locale ne prend pas de paramètres.')
-    if command != 'ironclaw-submit' and ('content' in value or value.get('allow_submit')):
+    if command not in ('ironclaw-submit', 'ironclaw-followup') and ('content' in value or value.get('allow_submit')):
         raise ValueError('La lecture ne soumet aucune tâche.')
     path = config_path(root).parent
     if not initialized(path):
@@ -64,14 +66,16 @@ def task_operation(root, command, value):
         tasks = Tasks(db, None if command in ('ironclaw-result', 'ironclaw-requests') else endpoint(root))
         if command == 'ironclaw-requests':
             return {'requests': tasks.list_requests(), 'limit': 100}
-        if command == 'ironclaw-submit':
+        if command in ('ironclaw-submit', 'ironclaw-followup'):
             if value.get('acknowledge'):
                 raise ValueError('Réclamation distincte de la soumission.')
+            if command == 'ironclaw-followup':
+                return tasks.followup(value['request_key'], value.get('parent_request_key'), value.get('content'), allow_submit=value.get('allow_submit', False))
             return tasks.submit(value['request_key'], value.get('content'), allow_submit=value.get('allow_submit', False))
-        if command == 'ironclaw-poll':
+        if command in ('ironclaw-poll', 'ironclaw-reconcile'):
             if value.get('acknowledge'):
                 raise ValueError('Réclamation distincte du suivi.')
-            return tasks.poll(value['request_key'])
+            return tasks.reconcile(value['request_key']) if command == 'ironclaw-reconcile' else tasks.poll(value['request_key'])
         return tasks.get(value['request_key'], acknowledge=value.get('acknowledge', False))
 
 
@@ -86,7 +90,7 @@ def main(root, argv):
             path = config_path(root)
             value = asdict(endpoint(root)) if file_hash(path) else None
             result = {'status': 'inspected', 'endpoint': value, 'message': 'Inspection locale ; aucune connexion ni inférence.'}
-        elif argv[0] in ('ironclaw-submit', 'ironclaw-poll', 'ironclaw-result', 'ironclaw-requests'):
+        elif argv[0] in ('ironclaw-submit', 'ironclaw-poll', 'ironclaw-result', 'ironclaw-requests', 'ironclaw-reconcile', 'ironclaw-followup'):
             raw = sys.stdin.read(65537)
             if len(raw) > 65536:
                 raise ValueError('Requête trop volumineuse.')
@@ -100,6 +104,6 @@ def main(root, argv):
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except (OSError, ValueError, TypeError, sqlite3.Error, ProbeError, TaskError):
-        message = 'Opération IronClaw non confirmée. Consultez le reçu durable avec la même request_key ; ne renvoyez pas une tâche incertaine.' if argv and argv[0] in ('ironclaw-submit', 'ironclaw-poll', 'ironclaw-result', 'ironclaw-requests') else 'Connexion IronClaw non confirmée. Vérifiez les paramètres, les permissions des fichiers et l’hôte SSH approuvé. Aucune tâche soumise.'
+        message = 'Opération IronClaw non confirmée. Consultez le reçu durable avec la même request_key ; ne renvoyez pas une tâche incertaine.' if argv and argv[0] in ('ironclaw-submit', 'ironclaw-poll', 'ironclaw-result', 'ironclaw-requests', 'ironclaw-reconcile', 'ironclaw-followup') else 'Connexion IronClaw non confirmée. Vérifiez les paramètres, les permissions des fichiers et l’hôte SSH approuvé. Aucune tâche soumise.'
         print(json.dumps({'status': 'error', 'message': message}, ensure_ascii=False))
         return 1

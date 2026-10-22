@@ -14,7 +14,7 @@ script never starts or quits Claude silently. It reports whether Claude is
 running (`needs_relaunch`) and, with `--relaunch`, can apply the explicit
 graceful quit + reopen and verify the effective load through Claude's
 per-server log (`~/Library/Logs/Claude/mcp-server-reprise_ux_review.log`),
-whose recent mtime proves the server was actually spawned.
+whose recent mtime is only a launch observation, never proof of operational tools.
 """
 import argparse
 import datetime
@@ -24,13 +24,21 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import tempfile
+from app_paths import state_location
 
 NAME = 'reprise_ux_review'
 CONFIG_REL = Path('Library/Application Support/Claude/claude_desktop_config.json')
 LOG_REL = Path('Library/Logs/Claude/mcp-server-reprise_ux_review.log')
 SOURCE = Path(__file__).resolve().parent
 SERVER = SOURCE / 'ux_review_probe.py'
-DEFAULT_STATE = SOURCE / 'ux-state'
+def default_state(home=None):
+    if 'AGENT_RESUME_STATE' in os.environ:
+        return state_location(SOURCE, 'ux-state')
+    return (Path.home() if home is None else Path(home)) / 'Library/Application Support/Reprise/ux-state'
+
+
+DEFAULT_STATE = default_state()
 RELAUNCH_SIGNAL_TIMEOUT = 20
 RELAUNCH_QUIT_DELAY = 5
 
@@ -91,10 +99,13 @@ def install(*, home=None, state=None, attachment=None, task=None, force=False,
     entry to be loaded.
     """
     home = Path.home() if home is None else Path(home)
-    state = DEFAULT_STATE if state is None else Path(state)
+    state = default_state(home) if state is None else Path(state)
     _validate(home, state, attachment)
     target = config_path(home)
+    before = target.read_bytes() if target.exists() else None
     data = _read_dict(target)
+    if (target.read_bytes() if target.exists() else None) != before:
+        raise ValueError('Configuration modifiée pendant la lecture ; relancer le plan.')
     requested = {'command': sys.executable, 'args': server_args(state=state, attachment=attachment, task=task)}
     entry = data.setdefault('mcpServers', {}).setdefault(NAME, None)
     if entry == requested:
@@ -103,7 +114,8 @@ def install(*, home=None, state=None, attachment=None, task=None, force=False,
             'changed': False, 'config': str(target), 'name': NAME, 'state': str(state),
             'app_running': running, 'needs_relaunch': bool(running),
             'dry_run': dry_run, 'backup': None,
-            'loaded': verification_log(home).exists(),
+            'loaded': False,
+            'launch_observed': False,
             'verification_log': str(verification_log(home)),
             'next_step': 'Relancer Claude Desktop pour que le serveur soit chargé.' if running
                          else 'Aucune action : Claude Desktop chargera le serveur à la prochaine ouverture.',
@@ -122,7 +134,8 @@ def install(*, home=None, state=None, attachment=None, task=None, force=False,
         'changed': True, 'config': str(target), 'name': NAME, 'state': str(state),
         'backup': str(backup) if backup else None, 'dry_run': dry_run,
         'app_running': running, 'needs_relaunch': bool(running),
-        'loaded': verification_log(home).exists(),
+        'loaded': False,
+            'launch_observed': False,
         'verification_log': str(verification_log(home)),
         'command': sys.executable, 'args': server_args(state=state, attachment=attachment, task=task),
         'next_step': 'Relancer Claude Desktop (ou exécuter --relaunch) pour que le serveur soit chargé.'
@@ -131,14 +144,27 @@ def install(*, home=None, state=None, attachment=None, task=None, force=False,
     }
     if dry_run:
         return planned
-    if backup is not None:
-        backup.write_text(target.read_text(encoding='utf-8'), encoding='utf-8')
-    payload = json.dumps(data, indent=2, ensure_ascii=False)
+    payload = json.dumps(data, indent=2, ensure_ascii=False).encode('utf-8')
     target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(target.name + '.reprise-tmp')
-    temporary.write_text(payload, encoding='utf-8')
-    temporary.chmod(0o600)
-    os.replace(temporary, target)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=target.name + '.reprise-', dir=target.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, 'wb') as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if (target.read_bytes() if target.exists() else None) != before:
+            raise ValueError('Configuration modifiée depuis le plan ; aucune publication effectuée.')
+        if backup is not None:
+            backup_fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(backup_fd, 'wb') as handle:
+                handle.write(before)
+        # Revalidate after the backup too: another writer must not be overwritten.
+        if (target.read_bytes() if target.exists() else None) != before:
+            raise ValueError('Configuration modifiée depuis le plan ; aucune publication effectuée.')
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
     return planned
 
 
@@ -165,7 +191,7 @@ def relaunch(home=None, wait=True):
     if claude_running():
         try:
             subprocess.run(['/usr/bin/osascript', '-e', 'tell application "Claude" to quit'],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=True)
             actions.append('quit')
             if wait:
                 time.sleep(RELAUNCH_QUIT_DELAY)
@@ -174,27 +200,28 @@ def relaunch(home=None, wait=True):
                     'error': 'quitter Claude Desktop a échoué ; relance manuelle requise'}
     try:
         subprocess.run(['/usr/bin/open', '-a', 'Claude'], stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, timeout=10)
+                       stderr=subprocess.DEVNULL, timeout=10, check=True)
         actions.append('open')
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return {'relaunch_performed': False, 'actions': actions,
                 'error': 'réouverture de Claude Desktop a échoué'}
-    loaded = False
+    launch_observed = False
     if wait:
         deadline = time.time() + RELAUNCH_SIGNAL_TIMEOUT
         while time.time() < deadline:
             if log.exists() and (before is None or log.stat().st_mtime > before):
-                loaded = True
+                launch_observed = True
                 break
             time.sleep(1)
-    return {'relaunch_performed': True, 'actions': actions, 'loaded': loaded,
+    return {'relaunch_performed': True, 'actions': actions, 'loaded': False,
+            'launch_observed': launch_observed,
             'verification_log': str(log)}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state', default=str(DEFAULT_STATE),
-                        help='dossier d’état durable du serveur (défaut : agent-resume/ux-state)')
+                        help='dossier d’état durable du serveur (défaut : Application Support/Reprise/ux-state)')
     parser.add_argument('--attachment', help='fichier Swift à joindre à la tâche de revue')
     parser.add_argument('--task', help='texte de la tâche (défaut : celui du probe)')
     parser.add_argument('--force', action='store_true',

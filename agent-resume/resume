@@ -12,7 +12,7 @@ import subprocess
 import sys
 import uuid
 import zipfile
-if len(sys.argv) > 1 and sys.argv[1] in ('ironclaw-inspect', 'ironclaw-configure', 'ironclaw-probe', 'ironclaw-submit', 'ironclaw-poll', 'ironclaw-result', 'ironclaw-requests'):
+if len(sys.argv) > 1 and sys.argv[1] in ('ironclaw-inspect', 'ironclaw-configure', 'ironclaw-probe', 'ironclaw-submit', 'ironclaw-poll', 'ironclaw-result', 'ironclaw-requests', 'ironclaw-reconcile', 'ironclaw-followup'):
     import ironclaw_connection
     sys.exit(ironclaw_connection.main(Path(__file__).resolve().parent, sys.argv[1:]))
 

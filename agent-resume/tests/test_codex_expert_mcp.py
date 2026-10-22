@@ -219,22 +219,19 @@ class IronclawBridgeTests(RequestCalls, unittest.TestCase):
         self.assertFalse(row['configured'])
         self.assertFalse(result['automatic_fallback'])
 
-    def test_backends_declare_ironclaw_configured(self):
+    def test_legacy_configuration_does_not_enable_unverified_backend(self):
         self.bridge.ironclaw_values = {'key': '/'}
         row = next(b for b in self.bridge.call('reprise_backends', {})['backends'] if b['id'] == 'ironclaw')
-        self.assertTrue(row['configured'])
+        self.assertFalse(row['configured'])
 
-    def test_delegate_ironclaw_calls_review_and_records_receipt(self):
+    def test_legacy_cli_cannot_bypass_durable_admission(self):
         self.bridge.ironclaw_values = {'key': '/'}
-        with patch('codex_expert_mcp.ironclaw.review', return_value={
-                'status': 'finished', 'response': 'PONG', 'model': 'ironclaw-distant'}) as review:
+        with patch('codex_expert_mcp.ironclaw.review') as review:
             result = self.call('reprise_delegate', {'backend': 'ironclaw', 'kind': 'expertise', 'question': 'Ping'})
-        self.assertEqual(result['status'], 'finished')
-        self.assertEqual(result['response'], 'PONG')
-        self.assertFalse(result['automatic_fallback'])
-        review.assert_called_once()
+        self.assertEqual(result['status'], 'engine_unavailable')
+        review.assert_not_called()
         self.assertEqual(self.bridge.db.execute(
-            "SELECT json_extract(result,'$.status') FROM delegation_requests").fetchone()[0], 'finished')
+            "SELECT json_extract(result,'$.status') FROM delegation_requests").fetchone()[0], 'engine_unavailable')
 
     def test_delegate_ironclaw_unconfigured_returns_engine_unavailable(self):
         with patch('codex_expert_mcp.ironclaw.review') as review:

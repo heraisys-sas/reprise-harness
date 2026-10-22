@@ -58,7 +58,7 @@ do {
     let input = FileHandle.standardInput.readDataToEndOfFile()
     guard input.count <= 64 * 1024 * 1024 else { throw VaultError(code: "invalid_request", message: "Requête trop volumineuse.") }
     let request = try JSONDecoder().decode(Request.self, from: input)
-    guard ["search-index-v1", "analysis-cache-v1", "test-v1", "ironclaw-key-v1"].contains(request.purpose),
+    guard ["search-index-v1", "analysis-cache-v1", "test-v1"].contains(request.purpose),
           let payload = Data(base64Encoded: request.payload),
           ["seal", "open", "check", "authorize"].contains(request.operation),
           request.interactive != true || request.operation == "authorize" else {
