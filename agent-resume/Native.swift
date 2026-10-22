@@ -81,6 +81,8 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     var startupAttempted = false
     var refreshPending = false
     @Published var busy = false
+    @Published var vaultBusy = false
+    @Published var vaultNote = "Les accès automatiques au cache ne demandent aucune autorisation à l’écran."
     @Published var analysisBusy = false
     @Published var searching = false
     @Published var query = ""
@@ -167,7 +169,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         process.standardOutput = pipe; process.standardError = FileHandle.nullDevice
         do {
             try process.run()
-            DispatchQueue.global().asyncAfter(deadline: .now() + (["analyze", "search", "shared-mode"].contains(args.first ?? "") ? 45 : 15)) { if process.isRunning { process.terminate() } }
+            DispatchQueue.global().asyncAfter(deadline: .now() + (args.first == "vault-authorize" ? 100 : (["analyze", "search", "shared-mode"].contains(args.first ?? "") ? 45 : 15))) { if process.isRunning { process.terminate() } }
             let data = pipe.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
             guard process.terminationStatus == 0 else { return nil }
             return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
@@ -367,6 +369,16 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         sharedStartup = enabled
         UserDefaults.standard.set(enabled, forKey: "SharedCodexStartup")
     }
+    func authorizeVault() {
+        guard stateReady, !vaultBusy else { return }
+        vaultBusy = true
+        vaultNote = "Autorisation du cache demandée explicitement…"
+        perform(["vault-authorize"]) { result in
+            self.vaultBusy = false
+            self.vaultNote = result?["message"] as? String ?? "Autorisation non confirmée. Réessayez uniquement depuis ce bouton."
+            self.refresh()
+        }
+    }
     func analyzeLocal() {
         guard stateReady, !analysisBusy else { return }
         // Throttle: never re-run the generative synthesis more than once / 10 min.
@@ -388,7 +400,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         searchNote = "Recherche locale en cours…"
         perform(["search", String(value.prefix(500))]) { result in
             self.searching = false
-            guard let result else { self.searchNote = "Recherche indisponible. Vérifiez que le Trousseau est déverrouillé."; return }
+            guard let result else { self.searchNote = "Recherche indisponible. Autorisez le cache dans Confidentialité si le Trousseau bloque son accès."; return }
             self.searchHasRun = true
             self.searchResults = result["results"] as? [[String: Any]] ?? []
             self.searchNote = result["semantic_available"] as? Bool == true ? "Mots-clés et recherche sémantique Apple · index chiffré" : "Mots-clés · modèle sémantique indisponible"

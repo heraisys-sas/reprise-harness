@@ -26,6 +26,12 @@ swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cach
 swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Embedding.swift" -o "$APP/Contents/MacOS/Embedding"
 swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/FoundationExplain.swift" -o "$APP/Contents/MacOS/FoundationExplain"
 swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Vault.swift" -o "$APP/Contents/MacOS/Vault"
+# A persistent certificate and identifier preserve the helper's signing identity.
+# Ad-hoc development builds cannot promise Keychain trust across rebuilds.
+if [ -n "${REPRISE_SIGNING_IDENTITY:-}" ]; then
+    codesign --force --sign "$REPRISE_SIGNING_IDENTITY" --identifier local.agent-resume.vault "$APP/Contents/MacOS/Vault"
+    codesign --verify --strict "$APP/Contents/MacOS/Vault"
+fi
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleExecutable</key><string>Reprise</string><key>CFBundleIdentifier</key><string>local.agent-resume.native</string><key>CFBundleName</key><string>Reprise</string><key>CFBundleShortVersionString</key><string>$VERSION</string><key>CFBundleVersion</key><string>$VERSION</string><key>LSMinimumSystemVersion</key><string>26.0</string><key>LSUIElement</key><true/></dict></plist>
 PLIST

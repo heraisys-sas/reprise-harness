@@ -33,3 +33,13 @@ Après validation du transfert : LaunchAgent utilisateur installable/réparable 
 Pour l’intégration harness, SSH exec est déjà démontré et peut servir aux diagnostics déterministes. Soumission, clarifications, résultats durables et reprise nécessitent un adaptateur et un protocole distant vérifiés ; ne pas assimiler un GET ou une WebUI à une reprise fonctionnelle. Ne pas improviser un proxy shell ni transmettre un jeton dans les arguments des processus.
 
 Références : [OpenSSH — configuration client](https://man.openbsd.org/ssh_config), [Apple — agents launchd](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html).
+
+## Correctif des demandes répétées
+
+Les opérations de chiffrement, déchiffrement et vérification désactivent désormais l’interface du Trousseau dans le processus helper. Un refus échoue sans dialogue et sans copie en clair ; le cache existant est préservé. L’analyse vérifie l’accès à la clé avant d’appeler le modèle local, pour ne pas calculer un résultat qu’elle ne pourrait pas conserver. La reprise après quota reste indépendante du cache.
+
+L’action **Confidentialité → Autoriser l’accès au cache** est la seule voie interactive ; elle appelle `resume vault-authorize`, sans initialiser le registre ni lancer d’inférence. Elle peut créer la clé lors d’une absence authentique, jamais remplacer une clé inaccessible ou invalide. L’autorisation ne modifie pas les ACL automatiquement ; l’utilisateur garde les choix du dialogue macOS. Un accès ponctuellement autorisé peut ne pas suffire aux appels ultérieurs non interactifs.
+
+`native-install` accepte `REPRISE_SIGNING_IDENTITY` pour signer Vault avec un identifiant constant `local.agent-resume.vault`, puis vérifier sa signature. Réutiliser le même certificat et identifiant entre releases ; ne pas annoncer une identité durable pour une compilation ad hoc. Aucun certificat de signature valide n’a été trouvé sur le poste lors du diagnostic : cette voie de distribution reste à tester avec un certificat, sans création de certificat ni modification du Trousseau par ce chantier.
+
+Validation du correctif : 8 tests dédiés Vault/analyse, 5 recherche ; suite complète **412 tests réussie, dont 4 ignorés** ; compilation sans lancement réussie. Vérification réelle `check` sur le helper compilé : refus immédiat `keychain_unavailable`, aucune autorisation interactive appelée, aucune clé créée. Les API historiques Security utilisées pour le Trousseau classique produisent des avertissements de dépréciation ; aucun accès illimité n’a été accordé. Les fixtures du scheduler échouent sous les restrictions d’exécution temporaires puis passent avec les permissions prévues (17 tests).

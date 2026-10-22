@@ -687,6 +687,12 @@ struct Dashboard: View {
         VStack(alignment: .leading, spacing: 18) {
             Surface { VStack(alignment: .leading, spacing: 16) { Label("Index et analyses chiffrés", systemImage: "lock.shield").font(.headline); Text("AES-256-GCM avec CryptoKit. La clé dédiée reste dans le Trousseau macOS. Les données de recherche sont déchiffrées en mémoire."); Divider(); Label("Sans publication Spotlight", systemImage: "eye.slash"); Label("Modèles Apple sur l’appareil", systemImage: "desktopcomputer"); Label("Purge quotidienne après sept jours", systemImage: "calendar") } }
             Surface { VStack(alignment: .leading, spacing: 12) { Text("Cache de recherche").font(.headline); Text("Vider l’index conserve les sessions. La prochaine recherche reconstruit les éléments récents.").foregroundStyle(.secondary); Button("Vider l’index") { app.clearIndex() }.disabled(app.searching); if app.searchNote.contains("Index vidé") { Text(app.searchNote).font(.caption).foregroundStyle(.secondary) } } }
+            Surface { VStack(alignment: .leading, spacing: 12) {
+                Text("Accès au Trousseau").font(.headline)
+                Text("En arrière-plan, un refus suspend le cache sans afficher de dialogue. Ce bouton permet de demander volontairement l’autorisation macOS ; il ne change pas les permissions des autres applications.").foregroundStyle(.secondary)
+                Button(app.vaultBusy ? "Autorisation…" : "Autoriser l’accès au cache") { app.authorizeVault() }.disabled(app.vaultBusy)
+                Text(app.vaultNote).font(.callout).foregroundStyle(.secondary)
+            } }
             Text("Le chiffrement concerne l’index et le cache d’analyse. Les instructions du scheduler, ses journaux et ses archives ZIP ne sont pas chiffrés par ce mécanisme. Les sources des autres applications restent inchangées.").font(.caption).foregroundStyle(.secondary)
         }
     }

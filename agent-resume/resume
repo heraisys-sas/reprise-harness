@@ -12,6 +12,18 @@ import subprocess
 import sys
 import uuid
 import zipfile
+if len(sys.argv) > 1 and sys.argv[1] == 'vault-authorize':
+    if len(sys.argv) != 2:
+        sys.exit('Usage: resume vault-authorize')
+    from vault import authorize
+    try:
+        authorize()
+        print(json.dumps({'authorized': True, 'message': 'Accès au cache autorisé. Les accès automatiques restent sans dialogue.'}, ensure_ascii=False))
+    except ValueError as error:
+        print(json.dumps({'authorized': False, 'message': str(error)}, ensure_ascii=False))
+        sys.exit(1)
+    sys.exit(0)
+
 if len(sys.argv) > 1 and sys.argv[1].startswith('scheduler-service-'):
     import scheduler_service
     sys.exit(scheduler_service.main(Path(__file__).resolve().parent, sys.argv[1:]))
