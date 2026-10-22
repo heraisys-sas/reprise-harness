@@ -42,6 +42,10 @@ jobs:
           from package_runtime import verify_archive
           verify_archive(archive, lock['sha256'])
           PY
+      - name: Check patch and launch script syntax
+        run: |
+          git diff --check
+          sh -n agent-resume/native-install agent-resume/restart-chain agent-resume/relaunch
       - name: Deterministic tests with real archive, no services or inference
         env:
           REPRISE_TEST_RUNTIME_ARCHIVE: ${{ runner.temp }}/reprise-runtime.tar.gz
