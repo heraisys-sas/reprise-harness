@@ -53,3 +53,13 @@ Exigence D2/D3 du 21/10 : installer également dans Codex et chaque client suppo
 - Issue #6, D1 : préparation graphique avant supervision, prévisualisation sans registre, import main/Quick sauvegardé, journal de reprise par étape et refus sans écrasement. Mode développement conservé ; parcours visuel et compte vierge restent à valider. Prochain incrément fonctionnel : D2, installation MCP et consignes économiques ciblées Harness/Codex.
 
 - Issue #6, D2 : premier parcours Harness géré depuis Intégrations (inspect/plan/apply/verify/remove), provider skill propre au profil, consignes économiques/clarifications, releases indépendants du bundle et état conservé. Profil synthétique et sonde MCP directe validés ; chargement/client/outils/échange et compte vierge restent à confirmer. Codex client reste un adaptateur suivant. Voir HARNESS-INTEGRATION.md.
+
+## Priorité corrective — reprise Codex après quota (22/10)
+
+La reprise fonctionnelle passe avant les extensions d’installation. Corriger le chargement d’une session propriétaire `notLoaded` avant la vérification `idle`, conserver les refus sur session active/erreur/identité divergente et interdire le repli CLI en présence d’un lien de socket cassé. `restart-chain` doit préserver codexd et les sockets/processus non identifiés ; aucun arrêt systématique du moteur partagé.
+
+Diagnostic local : automatisation en pause et anciennes tentatives en examen ; ne pas réenfiler automatiquement ces dernières. Réactivation et validation de bout en bout doivent distinguer détection, quota actuel confirmé, chargement, démarrage et fin du tour. Ne pas présenter un test de chargement sans inférence comme une reprise métier réussie.
+
+Correctif [issue #7](https://github.com/heraisys-sas/reprise-harness/issues/7) : implémenté et vérifié par **386 tests OK, 4 ignorés** ; chargement réel `notLoaded` → `idle` confirmé sans lancement de tour. Le parcours simulé complet consomme une interruption une seule fois. Avertissements de ressources préexistants conservés. Réactivation explicitement autorisée par l’utilisateur ; anciennes tentatives en examen préservées. Le succès métier d’une reprise réelle reste distinct de ces preuves.
+
+Suite installation #6/#7 : rendre le planificateur complet installable/réparable depuis l’interface, avec preuve du chargement, mode automatique/pause visible, dernier tick et release exécuté. Contrat dans [INSTALLATION-CONTRACT.md](INSTALLATION-CONTRACT.md#planificateur-de-reprise-installable-et-vérifiable). La remise en service ponctuelle du poste ne vaut pas parcours produit livré.

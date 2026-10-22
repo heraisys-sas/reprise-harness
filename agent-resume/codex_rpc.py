@@ -141,14 +141,15 @@ class Client:
         raise TimeoutError('Réponse du serveur Codex non reçue')
 
 
-def checked_thread(client, task, resume=False):
+def checked_thread(client, task, resume=False, allow_unloaded=False):
     method = 'thread/resume' if resume else 'thread/read'
     params = {'threadId': task['session'], 'excludeTurns': True} if resume else {'threadId': task['session'], 'includeTurns': False}
     thread = client.call(method, params).get('thread', {})
     if thread.get('id') != task['session'] or not thread.get('cwd') or Path(thread['cwd']).resolve() != Path(task['cwd']).resolve():
         raise Unavailable('blocked_session', 'Identité ou dossier de la session non confirmé par le serveur.')
     state = (thread.get('status') or {}).get('type')
-    if state != 'idle':
+    allowed = ('idle', 'notLoaded') if allow_unloaded and not resume else ('idle',)
+    if state not in allowed:
         raise Unavailable('blocked_owner', 'Le serveur ne détient pas une session au repos ; aucune entrée envoyée.')
     return thread
 
@@ -162,7 +163,7 @@ def execute(db, task, program, values, log, automatic=False, timeout=7200):
         client = Client(program, values)
         client.call('initialize', {'clientInfo': {'name': 'reprise', 'version': '0.1.0'}, 'capabilities': None})
         client.send({'method': 'initialized'})
-        thread = checked_thread(client, task)
+        thread = checked_thread(client, task, allow_unloaded=True)
         if automatic:
             account = client.call('account/read', {'refreshToken': False}).get('account') or {}
             limits = client.call('account/rateLimits/read')

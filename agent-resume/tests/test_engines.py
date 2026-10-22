@@ -33,6 +33,18 @@ class EngineTests(unittest.TestCase):
         with patch.object(engines, 'SOCKET', self.root/'missing.sock'):
             self.assertEqual(engines.select('codex', {}), 'codex-cli')
 
+    def test_broken_default_socket_link_never_falls_back_to_cli(self):
+        endpoint = self.root/'control.sock'
+        endpoint.symlink_to(self.root/'missing-daemon.sock')
+        with patch.object(engines, 'SOCKET', endpoint):
+            with self.assertRaises(engines.Unavailable):
+                engines.select('codex', {})
+
+    def test_inaccessible_default_socket_never_falls_back(self):
+        with patch.object(Path, 'exists', side_effect=PermissionError('denied')):
+            with self.assertRaises(engines.Unavailable):
+                engines.select('codex', {})
+
     def test_socket_must_be_owned_and_private(self):
         path = self.root/'server.sock'
         path.write_text('not a socket')

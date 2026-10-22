@@ -10,8 +10,6 @@
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 APP="$ROOT/Reprise.app"
-SOCKET="$HOME/.claude-desktop/quick-entry.sock"
-STATE="${AGENT_RESUME_STATE:-$ROOT/quick-state}"
 PYTHON=$(command -v python3)
 
 build=1
@@ -23,11 +21,9 @@ for arg in "$@"; do
     esac
 done
 
-echo "1/6 · Nettoyage du socket Quick Apply orphelin"
-rm -f "$SOCKET" 2>/dev/null || echo "   (socket non supprimable ici — ignoré)"
-
-echo "2/6 · Arrêt d'une éventuelle instance du daemon Quick Apply"
-pkill -f "claude_desktop_quick.py" 2>/dev/null || true
+echo "1/6 · Conservation des sockets existants (aucune suppression aveugle)"
+echo "2/6 · Arrêt ciblé du daemon Quick Apply géré par Reprise"
+"$PYTHON" "$ROOT/resume" quick-apply-daemon-stop || echo "   (arrêt non confirmé — aucun processus tué par son nom)"
 
 if [ "$build" = "1" ]; then
     echo "3/6 · Recompilation de Reprise"
@@ -37,17 +33,9 @@ else
 fi
 
 echo "4/6 · Démarrage du daemon Quick Apply"
-"$PYTHON" "$ROOT/resume" quick-apply-daemon-stop >/dev/null 2>&1 || true
 "$PYTHON" "$ROOT/resume" quick-apply-daemon-start >/dev/null 2>&1 || echo "   (daemon Quick Apply non démarré ici — voir quick-apply-daemon-status)"
 
-echo "5/6 · Redémarrage du daemon Codex (si l'exécutable Codex est présent)"
-CODEX=$( "$PYTHON" -c "import sys; sys.path.insert(0,'$ROOT'); import engines; print(engines.executable('codex-cli') or '')" 2>/dev/null || true )
-if [ -n "$CODEX" ]; then
-    "$CODEX" app-server daemon stop >/dev/null 2>&1 || true
-    "$CODEX" app-server daemon start -c 'forced_login_method="chatgpt"' >/dev/null 2>&1 || echo "   (daemon Codex non démarré ici — ignoré)"
-else
-    echo "   (exécutable Codex absent — ignoré)"
-fi
+echo "5/6 · Daemon Codex conservé : aucune interruption des chats propriétaires"
 
 if [ "$gui" = "1" ]; then
     echo "6/6 · Relance de l'application Reprise"

@@ -30,7 +30,7 @@ python3 -m unittest discover -s agent-resume/tests -q
 
 ## Daemon Quick Apply (`claude-desktopd`)
 
-Le serveur `agent-resume/claude_desktop_quick.py` accepte, sur un socket UNIX privé, des charges utiles Quick Entry validées (prompt, images, fichiers, chat cible) et applique un plafond quotidien de soumissions. Il ne pilote pas l’interface de Claude Desktop : la soumission réelle dans l’overlay Quick Entry exige des autorisations macOS (Accessibilité, Capture d’écran) accordées par l’opérateur, et reste du ressort d’un pilote supervisé.
+Le serveur `agent-resume/claude_desktop_quick.py` accepte, sur un socket UNIX privé, des charges utiles Quick Entry validées (prompt, images, fichiers, chat cible) sans plafond quotidien local de soumissions. Il ne pilote pas l’interface de Claude Desktop : la soumission réelle dans l’overlay Quick Entry exige des autorisations macOS (Accessibilité, Capture d’écran) accordées par l’opérateur, et reste du ressort d’un pilote supervisé.
 
 L’installateur historique écrit le LaunchAgent `com.example.reprise.quick-entry`. Sans `RunAtLoad`, `KeepAlive` ou déclencheur, son chargement seul ne programme pas un démarrage au login. L’écriture du plist ne démarre aucun daemon. Pour démarrer explicitement le daemon, utiliser `python3 agent-resume/resume quick-apply-daemon-start` ; vérifier avec `quick-apply-daemon-status`. Les identifiants historiques `quick-entry` restent utilisés dans les chemins et le protocole.
 
@@ -72,16 +72,16 @@ Exposition : outils MCP `reprise_resume`, `reprise_history`, `reprise_health` ; 
 
 ## Redémarrage de la chaîne
 
-`agent-resume/restart-chain` tente de redémarrer `claude-desktopd`, `codexd` si disponible, puis Reprise, et affiche l’état :
+`agent-resume/restart-chain` tente de redémarrer le daemon Quick Apply géré par Reprise, conserve `codexd`, puis ouvre Reprise et affiche l’état :
 
 ```sh
 cd agent-resume
-./restart-chain              # recompile + redémarre les daemons + ouvre Reprise
+./restart-chain              # recompile + redémarre Quick Apply + ouvre Reprise
 ./restart-chain --no-build   # relance sans recompiler
-./restart-chain --server     # redémarre les daemons sans ouvrir Reprise
+./restart-chain --server     # redémarre Quick Apply sans ouvrir Reprise
 ```
 
-Le script tente de supprimer le socket Quick Apply, arrête une éventuelle instance du daemon, recompile (`native-install`, sans ouverture), redémarre les daemons Quick Apply et Codex, puis ouvre Reprise. Il ne ferme pas explicitement une instance Reprise déjà ouverte. Chaque étape est résiliente : un échec local (ex. socket protégé) n'interrompt pas la chaîne. Il ne force jamais l'arrêt d'une application liée (Claude Desktop, Codex Desktop).
+Le script utilise l’arrêt ciblé du daemon Quick Apply, recompile sans ouverture puis demande son démarrage. Il ne supprime aucun socket à l’aveugle, ne tue pas de processus par son nom et ne redémarre pas codexd : les chats du moteur propriétaire sont conservés. Il ne ferme pas explicitement une instance Reprise déjà ouverte. Aucun arrêt forcé de Claude Desktop ou Codex Desktop.
 
 ## Délégation et retour des analyses
 

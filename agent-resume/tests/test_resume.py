@@ -85,6 +85,40 @@ class AutomaticSchedulerTests(unittest.TestCase):
     def enqueue(self, row=None):
         scheduler.reconcile(self.db, self.data(row), self.now)
 
+    def test_quota_event_loads_owner_session_and_starts_only_once(self):
+        import codex_rpc
+        from collections import deque
+        task = self.row
+        class Owner:
+            starts = 0
+            def __init__(self, *args):
+                self.status = 'notLoaded'
+                self.notifications = deque([{'method':'turn/completed','params':{
+                    'threadId':task['id'],'turn':{'id':'resumed-turn','status':'completed'}}}])
+            def send(self, value): pass
+            def close(self): pass
+            def call(self, method, params=None):
+                if method == 'thread/resume': self.status = 'idle'
+                if method in ('thread/read','thread/resume'):
+                    return {'thread':{'id':task['id'],'cwd':task['cwd'],
+                        'status':{'type':self.status},'modelProvider':'openai'}}
+                if method == 'account/read': return {'account':{'type':'chatgpt'}}
+                if method == 'account/rateLimits/read': return {'ordinaryUsageAllowed':True}
+                if method == 'turn/start':
+                    Owner.starts += 1
+                    return {'turn':{'id':'resumed-turn'}}
+                return {}
+        self.enqueue()
+        with patch.object(scheduler,'snapshot',return_value=self.data()), \
+             patch('quota.read_limits',return_value={'ordinaryUsageAllowed':True}), \
+             patch('engines.select',return_value='codex-server'), patch.object(codex_rpc,'Client',Owner):
+            module.run_due(self.db,str(self.fake))
+            module.run_due(self.db,str(self.fake))
+        self.assertEqual(Owner.starts,1)
+        self.assertEqual(self.task()['status'],'finished')
+        self.assertEqual(self.task()['attempts'],1)
+        self.assertEqual(self.db.execute('SELECT consumed FROM automation_events').fetchone()[0],1)
+
     def test_child_session_is_not_enqueued_independently(self):
         self.enqueue(self.row | {'is_subagent': True, 'automatic_resume_supported': False})
         self.assertIsNone(self.task())
