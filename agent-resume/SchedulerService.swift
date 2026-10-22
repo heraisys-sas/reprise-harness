@@ -56,6 +56,7 @@ struct SchedulerService: View {
                 if !app.schedulerService.isEmpty {
                     Text("État préparé : " + flag("state_prepared") + " · Plist présent : " + flag("file_present") + " · Chargé : " + flag("loaded"))
                     Text("Release configuré à jour : " + flag("configured_current") + " · Release chargé à jour : " + flag("loaded_current"))
+                    Text("Registre configuré conforme : " + flag("configured_state_matches") + " · Registre chargé conforme : " + flag("loaded_state_matches"))
                     Text("Runtime/helpers intègres : " + flag("runtime_integrity") + " · Automatique actif : " + flag("auto_enabled"))
                     if let tick = app.schedulerService["last_tick"] as? Double { Text("Dernier tick : " + Dashboard.localDateTime.string(from: Date(timeIntervalSince1970: tick))) }
                     else { Text("Aucun tick observé : inspectez le chargement, le runtime et la pause ; préparez une réparation si nécessaire.").foregroundStyle(.orange) }

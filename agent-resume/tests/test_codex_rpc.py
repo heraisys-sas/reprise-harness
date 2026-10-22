@@ -117,12 +117,33 @@ class Execution(unittest.TestCase):
         self.assertTrue(FakeClient.last.closed)
         self.assertNotIn('turn/interrupt', [m for m, _ in FakeClient.last.calls])
 
-    def test_busy_or_error_never_starts(self):
-        for status in ['active', 'systemError']:
-            FakeClient.status = status
+    def test_busy_session_never_starts(self):
+        FakeClient.status = 'active'
+        self.assertEqual(self.execute(), 'needs_review')
+        self.assertEqual(self.states[-1], 'blocked_owner')
+        self.assertNotIn('turn/start', [m for m, _ in FakeClient.last.calls])
+        self.assertNotIn('thread/resume', [m for m, _ in FakeClient.last.calls])
+
+    def test_system_error_session_is_resumed_then_must_be_idle(self):
+        FakeClient.status, FakeClient.after_resume = 'systemError', 'idle'
+        self.assertEqual(self.execute(automatic=True), 'finished')
+        methods = [m for m, _ in FakeClient.last.calls]
+        self.assertLess(methods.index('thread/resume'), methods.index('turn/start'))
+        self.assertEqual(methods.count('turn/start'), 1)
+
+    def test_system_error_session_still_failing_after_resume_never_starts(self):
+        for state in ('systemError', 'active', 'notLoaded'):
+            FakeClient.status, FakeClient.after_resume = 'systemError', state
             self.assertEqual(self.execute(), 'needs_review')
             self.assertEqual(self.states[-1], 'blocked_owner')
+            self.assertIn('thread/resume', [m for m, _ in FakeClient.last.calls])
             self.assertNotIn('turn/start', [m for m, _ in FakeClient.last.calls])
+
+    def test_system_error_quota_unknown_never_resumes(self):
+        FakeClient.status, FakeClient.after_resume, FakeClient.limits = 'systemError', 'idle', None
+        self.execute(automatic=True)
+        self.assertEqual(self.states[-1], 'quota_blocked')
+        self.assertNotIn('thread/resume', [m for m, _ in FakeClient.last.calls])
 
     def test_unloaded_quota_session_is_loaded_before_start(self):
         FakeClient.status, FakeClient.after_resume = 'notLoaded', 'idle'
@@ -142,6 +163,16 @@ class Execution(unittest.TestCase):
         self.execute(automatic=True)
         self.assertEqual(self.states[-1], 'quota_blocked')
         self.assertNotIn('thread/resume', [m for m, _ in FakeClient.last.calls])
+
+    def test_automatic_owner_unavailable_is_retryable_without_input(self):
+        FakeClient.status = 'active'
+        self.assertEqual(self.execute(automatic=True), 'ready')
+        self.assertNotIn('turn/start', [m for m, _ in FakeClient.last.calls])
+
+    def test_automatic_connection_lost_after_dispatch_is_not_retried(self):
+        FakeClient.notifications_template = [event(turn='other')]
+        self.assertEqual(self.execute(automatic=True), 'needs_review')
+        self.assertEqual([m for m, _ in FakeClient.last.calls].count('turn/start'), 1)
 
     def test_wrong_workspace_never_starts(self):
         FakeClient.cwd = '/'

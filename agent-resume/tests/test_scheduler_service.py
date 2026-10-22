@@ -57,6 +57,7 @@ class SchedulerServiceTests(unittest.TestCase):
             output = ''
             if self.loaded and self.loaded_settings:
                 output = '\targuments = {\n' + ''.join('\t\t' + arg + '\n' for arg in self.loaded_settings['ProgramArguments']) + '\t}\n'
+                output += '\tenvironment = {\n' + ''.join('\t\t' + key + ' => ' + val + '\n' for key, val in self.loaded_settings.get('EnvironmentVariables', {}).items()) + '\t}\n'
             return subprocess.CompletedProcess(args, 0 if self.loaded else 113, output, '')
         if args[0] == 'bootstrap':
             if self.fail_bootstrap:
@@ -191,7 +192,7 @@ class SchedulerServiceTests(unittest.TestCase):
 
     def test_repair_without_activation_unloads_stale_service(self):
         self.apply(self.plan(activate=True))
-        self.loaded_settings = {'ProgramArguments': ['/bin/false']}
+        self.loaded_settings = {'ProgramArguments': ['/bin/false'], 'EnvironmentVariables': {'AGENT_RESUME_STATE': str(self.state)}}
         self.calls.clear()
         self.apply(self.plan())
         self.assertFalse(self.loaded)
@@ -202,7 +203,7 @@ class SchedulerServiceTests(unittest.TestCase):
         def misleading_runner(args):
             result = self.runner(args)
             if args[0] == 'bootstrap':
-                self.loaded_settings = {'ProgramArguments': ['/bin/false']}
+                self.loaded_settings = {'ProgramArguments': ['/bin/false'], 'EnvironmentVariables': {'AGENT_RESUME_STATE': str(self.state)}}
             return result
         with self.assertRaisesRegex(ValueError, 'configuration chargée'):
             service.apply(self.root, value, misleading_runner)
@@ -231,7 +232,7 @@ class SchedulerServiceTests(unittest.TestCase):
         variants = [expected + ['--unexpected'], expected[:1] + list(reversed(expected[1:])), ['/bin/false'] + expected[1:]]
         for args in variants:
             with self.subTest(args=args):
-                self.loaded_settings = {'ProgramArguments': args}
+                self.loaded_settings = {'ProgramArguments': args, 'EnvironmentVariables': {'AGENT_RESUME_STATE': str(self.state)}}
                 observed = self.inspect()
                 self.assertFalse(observed['loaded_current'])
                 self.calls.clear()
@@ -240,12 +241,58 @@ class SchedulerServiceTests(unittest.TestCase):
                 self.assertEqual([c[0] for c in self.calls if c[0] in ('bootout', 'bootstrap')], ['bootout', 'bootstrap'])
 
     def test_loaded_arguments_require_unambiguous_complete_block(self):
-        settings = {'ProgramArguments': ['/path with spaces/python3', 'tick']}
+        settings = {'ProgramArguments': ['/path with spaces/python3', 'tick'], 'EnvironmentVariables': {'AGENT_RESUME_STATE': '/state with spaces'}}
         good = 'program = /path with spaces/python3\n\targuments = {\n\t\t/path with spaces/python3\n\t\ttick\n\t}\n'
+        good += '\tenvironment = {\n\t\tAGENT_RESUME_STATE => /state with spaces\n\t}\n'
         observed = subprocess.CompletedProcess([], 0, good, '')
         self.assertTrue(service.loaded_matches(observed, settings))
         for output in [good.split('arguments')[0], good + good, good.rsplit('}', 1)[0]]:
             self.assertFalse(service.loaded_matches(subprocess.CompletedProcess([], 0, output, ''), settings))
+
+    def test_other_or_unknown_loaded_registry_cannot_be_stopped(self):
+        self.apply(self.plan(activate=True))
+        for environment in ({'AGENT_RESUME_STATE': str(self.base / 'other registry')}, {}):
+            with self.subTest(environment=environment):
+                self.loaded_settings['EnvironmentVariables'] = environment
+                observed = self.inspect()
+                self.assertFalse(observed['loaded_current'])
+                self.assertFalse(observed['loaded_state_matches'])
+                self.assertTrue(observed['configured_state_matches'])
+                self.calls.clear()
+                with self.assertRaisesRegex(ValueError, 'Registre du service chargé'):
+                    self.apply(self.plan(activate=True))
+                self.assertFalse(any(c[0] in ('bootout', 'bootstrap') for c in self.calls))
+                self.assertTrue(self.loaded)
+
+    def test_loaded_and_configured_other_registry_are_not_current(self):
+        self.apply(self.plan(activate=True))
+        settings = plistlib.loads(self.plist.read_bytes())
+        settings['EnvironmentVariables']['AGENT_RESUME_STATE'] = str(self.base / 'other registry')
+        self.plist.write_bytes(plistlib.dumps(settings))
+        self.loaded_settings = settings
+        observed = self.inspect()
+        self.assertFalse(observed['configured_current'])
+        self.assertFalse(observed['loaded_current'])
+
+    def test_remove_cannot_stop_job_using_another_registry(self):
+        self.apply(self.plan(activate=True))
+        self.loaded_settings['EnvironmentVariables']['AGENT_RESUME_STATE'] = str(self.base / 'other registry')
+        self.calls.clear()
+        with self.assertRaisesRegex(ValueError, 'Registre du service chargé'):
+            self.apply(self.plan(action='remove'))
+        self.assertTrue(self.plist.exists())
+        self.assertFalse(any(c[0] in ('bootout', 'bootstrap') for c in self.calls))
+
+    def test_registry_parser_ignores_default_and_inherited_environment(self):
+        prefix = 'default environment = {\n AGENT_RESUME_STATE => /wrong default\n}\ninherited environment = {\n AGENT_RESUME_STATE => /wrong inherited\n}\n'
+        explicit = 'environment = {\n AGENT_RESUME_STATE => /parent with spaces/state\n}\n'
+        def parsed(text):
+            return service.loaded_registry(subprocess.CompletedProcess([], 0, text, ''))
+        self.assertIsNone(parsed(prefix))
+        self.assertEqual(parsed(prefix + explicit), '/parent with spaces/state')
+        self.assertIsNone(parsed(explicit + explicit))
+        self.assertIsNone(parsed(explicit.rsplit('}', 1)[0]))
+        self.assertIsNone(parsed('environment = {\n AGENT_RESUME_STATE => /one\n AGENT_RESUME_STATE => /two\n}'))
 
     def test_update_uses_new_release_and_preserves_pause(self):
         first = self.plan(activate=True)

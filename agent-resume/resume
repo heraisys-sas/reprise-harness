@@ -130,7 +130,14 @@ def run_due(db, executable):
             except (OSError, subprocess.TimeoutExpired) as error:
                 status = 'needs_review'
                 run_status.save(db, task['id'], 'failed', 'Impossible de lancer le CLI : ' + type(error).__name__, ended_at=dt.datetime.now().timestamp())
-            db.execute('UPDATE tasks SET status=? WHERE id=?', (status, task['id'])); db.commit()
+            with db:
+                if automatic and selected == 'codex-server' and status == 'ready':
+                    # Adapter proves turn/start was never attempted; release only this reservation.
+                    db.execute('UPDATE automation_events SET consumed=0 WHERE task_id=?', (task['id'],))
+                    db.execute("UPDATE tasks SET status='ready', attempts=MAX(0,attempts-1),due=? WHERE id=?",
+                               (dt.datetime.now().timestamp() + scheduler.POLL, task['id']))
+                else:
+                    db.execute('UPDATE tasks SET status=? WHERE id=?', (status, task['id']))
 
 def main():
     os.umask(0o077)

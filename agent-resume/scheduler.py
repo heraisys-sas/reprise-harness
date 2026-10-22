@@ -8,7 +8,9 @@ import uuid
 
 RECENT = 86400
 POLL = 300
-PROMPT = ('Reprends la tâche interrompue par le quota à partir de son état actuel. '
+PROMPT = ('Ton travail a été interrompu par une limite d’usage. Vérifie où tu en étais dans les derniers échanges. '
+          'Vérifie aussi l’état de tes sous-agents et récupère leurs résultats disponibles ; '
+          'ne relance que les tâches encore nécessaires. Reprends le travail restant. '
           'Vérifie les changements et résultats déjà présents avant toute action pour éviter '
           'les doublons. Respecte les instructions, autorisations et limites de la session. '
           'Ne change pas de fournisseur et ne bascule pas vers une facturation API. '

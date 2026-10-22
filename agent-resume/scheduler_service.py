@@ -71,10 +71,33 @@ def loaded_arguments(observed):
     return None
 
 
+def loaded_registry(observed):
+    """Only the job's explicit environment proves its worker-lock namespace."""
+    if observed.returncode != 0:
+        return None
+    lines = observed.stdout.splitlines()
+    starts = [i for i, line in enumerate(lines) if line.strip() == 'environment = {']
+    if len(starts) != 1:
+        return None
+    values = []
+    for line in lines[starts[0] + 1:]:
+        if line.strip() == '}':
+            if len(values) == 1 and Path(values[0]).is_absolute():
+                return values[0]
+            return None
+        match = re.fullmatch(r'\s*AGENT_RESUME_STATE => (.+)', line)
+        if match:
+            values.append(match.group(1))
+        elif '{' in line or '}' in line:
+            return None
+    return None
+
+
 def loaded_matches(observed, settings):
     # launchd retains loaded arguments independently of the plist on disk.
     args = settings.get('ProgramArguments', [])
-    return bool(args) and loaded_arguments(observed) == args
+    expected_state = settings.get('EnvironmentVariables', {}).get('AGENT_RESUME_STATE')
+    return bool(args) and bool(expected_state) and loaded_arguments(observed) == args and loaded_registry(observed) == expected_state
 
 
 @contextmanager
@@ -110,6 +133,8 @@ def inspect(root, home=None, runner=launch):
               'last_exit': next((line.strip() for line in loaded.stdout.splitlines() if 'last exit code' in line), None),
               'loaded_evidence': loaded.stdout if loaded.returncode == 0 else loaded.stderr,
               'interval': settings.get('StartInterval'), 'arguments': settings.get('ProgramArguments'),
+              'configured_state': settings.get('EnvironmentVariables', {}).get('AGENT_RESUME_STATE'),
+              'effective_state': loaded_registry(loaded),
               'auto_enabled': None, 'last_tick': None, 'last_error': None, 'pending': None,
               'runtime_integrity': False, 'configured_release': None, 'effective_release': None,
               'message': 'Inspection sans écriture. Chargement, tick et quotas sont des preuves distinctes.'}
@@ -133,7 +158,10 @@ def inspect(root, home=None, runner=launch):
                 result['runtime_integrity'] = Path(args[0]) == release / 'Contents/Resources/runtime/bin/python3'
             except (OSError, ValueError, KeyError):
                 pass
-    result['configured_current'] = bool(result['expected_release']) and result['configured_release'] == result['expected_release']
+    result['configured_state_matches'] = result['configured_state'] == str(state)
+    result['loaded_state_matches'] = result['effective_state'] == str(state)
+    result['configured_current'] = (bool(result['expected_release']) and result['configured_release'] == result['expected_release']
+                                    and settings.get('EnvironmentVariables', {}).get('AGENT_RESUME_STATE') == str(state))
     result['loaded_current'] = result['configured_current'] and loaded_matches(loaded, settings)
     dbpath = state / 'tasks.sqlite'
     if dbpath.is_file():
@@ -274,6 +302,8 @@ def _apply_locked(root, value, runner):
         should_unload = changed or value['action'] == 'remove' or bool(value.get('repair_tree_sha256'))
         if stale_loaded or (should_unload and 'unloaded' not in journal['steps']):
             if observed.returncode == 0:
+                if loaded_registry(observed) != value['state']:
+                    raise ValueError('Registre du service chargé différent ou inconnu ; réconciliation requise avant déchargement.')
                 if re.search(r'(?m)^\s*state = running\s*$', observed.stdout):
                     raise ValueError('Un tick est en cours ; attendre sa fin avant réparation ou retrait.')
                 result = runner(['bootout', target() + '/' + LABEL])
