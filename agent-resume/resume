@@ -387,7 +387,7 @@ def main():
         print(json.dumps({'claude_desktop_auto_enabled': args.enabled == 'true'}))
     elif args.action == 'claude-quota-status':
         import claude_quota
-        print(json.dumps({'enabled': scheduler.get(db, 'claude_desktop_auto_enabled', False), 'events': claude_quota.status(db), 'observation': scheduler.get(db, 'claude_desktop_last_observation')}, ensure_ascii=False))
+        print(json.dumps({'enabled': scheduler.get(db, 'claude_desktop_auto_enabled', True), 'events': claude_quota.status(db), 'observation': scheduler.get(db, 'claude_desktop_last_observation')}, ensure_ascii=False))
     elif args.action == 'tick':
         from private_search import cleanup
         with db:

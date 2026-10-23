@@ -130,7 +130,7 @@ struct Integrations: View {
             GroupBox("Reprise après quota Claude Desktop") {
                 VStack(alignment: .leading, spacing: 8) {
                     Toggle("Continuer le chat après le reset gratuit", isOn: Binding(
-                        get: { app.claudeQuotaState["enabled"] as? Bool ?? false },
+                        get: { app.claudeQuotaState["enabled"] as? Bool ?? true },
                         set: { app.configureClaudeQuota($0) }))
                     Text("Requiert l’autorisation Accessibilité macOS. Reprise vérifie le dernier message du chat affiché et son bouton Continuer, sans saisir de prompt. La pause globale reste prioritaire.").font(.caption).foregroundStyle(.secondary)
                     if let events = app.claudeQuotaState["events"] as? [[String: Any]], let latest = events.first,

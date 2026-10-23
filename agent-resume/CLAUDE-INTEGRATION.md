@@ -46,7 +46,7 @@ La [cible multi-harness](HARNESS-SUPERVISION-ARCHITECTURE.md) regroupe dans le m
 
 Depuis 0.1.6, `ClaudeQuota` est livré dans le bundle macOS. L’option
 **Continuer le chat après le reset gratuit** dans Intégrations autorise ce canal
-seul ; elle est désactivée par défaut et reste subordonnée à la pause globale.
+seul ; elle est activée par défaut et reste subordonnée à la pause globale.
 CLI équivalente : `resume claude-quota-config --enabled true` ; inspection :
 `resume claude-quota-status`. Le scheduler installé doit pointer vers cette release.
 

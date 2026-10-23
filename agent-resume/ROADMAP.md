@@ -99,7 +99,7 @@ tests simulés. Contrat : [HARNESS-INTEGRATION.md](HARNESS-INTEGRATION.md).
 
 Helper natif Accessibilité et registre durable des pauses gratuites, date/fuseau
 vérifiés, clic Continuer après revalidation sur le même dernier message. Option
-installable depuis Intégrations, désactivée par défaut, subordonnée à la pause
+installable depuis Intégrations, activée par défaut, subordonnée à la pause
 globale. Aucune API privée ni facturation de repli. Contrat et limites dans
 [CLAUDE-INTEGRATION.md](CLAUDE-INTEGRATION.md). L’essai après échéance réelle et la
 permission Accessibilité restent à confirmer séparément des tests simulés.

@@ -108,11 +108,14 @@ class ClaudeQuotaTests(unittest.TestCase):
         self.tick()
         self.assertEqual({r['status'] for r in quota.status(self.db)}, {'superseded', 'waiting'})
 
-    def test_opt_in_required(self):
+    def test_default_enabled_and_explicit_disable(self):
         self.db.execute("DELETE FROM scheduler_meta WHERE key='claude_desktop_auto_enabled'")
         self.db.commit()
-        self.assertEqual(self.tick()['status'],'paused')
-        self.assertEqual(quota.status(self.db),[])
+        self.assertEqual(self.tick()['status'], 'observed')
+        self.assertEqual(len(quota.status(self.db)), 1)
+        with self.db:
+            self.db.execute("INSERT INTO scheduler_meta VALUES ('claude_desktop_auto_enabled','false')")
+        self.assertEqual(self.tick()['status'], 'paused')
 
     def test_failure_after_claim_and_restart_never_retry(self):
         self.tick()

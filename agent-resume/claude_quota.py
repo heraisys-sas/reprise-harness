@@ -95,7 +95,7 @@ def tick(db, observer, clicker, now, zone):
     """observer() and clicker(chat_id, fingerprint) must use the native helper."""
     import scheduler
     initialize(db)
-    if not scheduler.enabled(db) or scheduler.get(db, 'claude_desktop_auto_enabled', False) is not True:
+    if not scheduler.enabled(db) or scheduler.get(db, 'claude_desktop_auto_enabled', True) is not True:
         return {'status': 'paused', 'submitted': 0}
     # An interrupted dispatch cannot be replayed safely after process restart.
     with db:
@@ -134,7 +134,7 @@ def tick(db, observer, clicker, now, zone):
                 or current.get('continue_enabled') is not True
                 or current.get('composer_empty') is not True
                 or current.get('pause_text') != pause or not scheduler.enabled(db)
-                or scheduler.get(db, 'claude_desktop_auto_enabled', False) is not True):
+                or scheduler.get(db, 'claude_desktop_auto_enabled', True) is not True):
             continue
         with db:
             changed = db.execute("UPDATE claude_quota_resumes SET status='dispatching' WHERE event_key=? AND status='waiting'", (key,)).rowcount
@@ -179,7 +179,7 @@ def run_native(db, root, state, now=None):
     import fcntl
     import time
     import scheduler
-    if not scheduler.enabled(db) or scheduler.get(db, 'claude_desktop_auto_enabled', False) is not True:
+    if not scheduler.enabled(db) or scheduler.get(db, 'claude_desktop_auto_enabled', True) is not True:
         return {'status': 'paused', 'submitted': 0}
     root = Path(root)
     helper = root.parent.parent / 'MacOS/ClaudeQuota'
