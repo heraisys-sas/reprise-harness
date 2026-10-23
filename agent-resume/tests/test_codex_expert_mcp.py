@@ -190,6 +190,85 @@ class BridgeTests(RequestCalls, unittest.TestCase):
                 self.assertEqual(review.call_args.kwargs['model'],model)
                 self.call('codex_followup',{'thread_id':ID,'question':'Explain'})
                 self.assertEqual(review.call_args.kwargs['model'],model)
+                self.call('reprise_followup', {'backend':'codex','thread_id':ID,'question':'Continue'})
+                self.assertEqual(review.call_args.kwargs['model'], model)
+                self.assertEqual(review.call_args.kwargs['effort'], 'high' if level == 'deep' else 'medium')
+
+    def test_delegate_explicit_model_overrides_default(self):
+        self.bridge.claude_program = '/claude'
+        self.bridge.claude_subscription_only = True
+        for backend, models, target in [
+                ('codex', ('gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'), 'review'),
+                ('claude-code', ('sonnet', 'opus'), 'claude_review')]:
+            for model in models:
+                with self.subTest(backend=backend, model=model), patch(
+                        'codex_expert_mcp.' + target, return_value={'status':'finished'}) as review:
+                    result = self.call('reprise_delegate', {
+                        'backend':backend, 'kind':'review', 'question':'Review', 'model':model})
+                    self.assertEqual(review.call_args.kwargs['model'], model)
+                    self.assertEqual(review.call_args.kwargs['effort'], 'medium')
+                    self.assertFalse(result['automatic_fallback'])
+
+    def test_invalid_model_rejected_before_request_or_inference(self):
+        cases = [('codex', value) for value in ('unknown', 'sonnet', '', None, [], 1)]
+        cases += [('claude-code', 'gpt-6.1-sol'), ('ironclaw', 'gpt-6.1-sol'),
+                  ('claude-desktop', 'sonnet')]
+        with patch('codex_expert_mcp.review') as codex, patch('codex_expert_mcp.claude_review') as claude:
+            for backend, model in cases:
+                with self.subTest(backend=backend, model=model), self.assertRaisesRegex(
+                        ValueError, 'Unknown or unsupported model'):
+                    self.call('reprise_delegate', {
+                        'backend':backend, 'kind':'review', 'question':'Review', 'model':model})
+            codex.assert_not_called()
+            claude.assert_not_called()
+        self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0], 0)
+
+    def test_backends_exposes_supported_model_ids_and_schemas(self):
+        rows = {row['id']: row for row in self.call('reprise_backends', {})['backends']}
+        self.assertEqual(rows['codex']['models'], ['gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'])
+        self.assertEqual(rows['claude-code']['models'], ['sonnet', 'opus'])
+        for backend in ('ironclaw', 'claude-desktop', 'autoclaw'):
+            self.assertEqual(rows[backend]['models'], [])
+        tools = {tool['name']: tool for tool in self.bridge.dispatch({'method':'tools/list'})['tools']}
+        for name in ('reprise_delegate', 'reprise_followup'):
+            self.assertEqual(tools[name]['inputSchema']['properties']['model']['type'], 'string')
+            self.assertNotIn('model', tools[name]['inputSchema']['required'])
+
+    def test_followup_preserves_overrides_and_persists_model(self):
+        self.bridge.claude_program = '/claude'
+        self.bridge.claude_subscription_only = True
+        def result(*args, **kwargs):
+            return {'status':'finished', 'resumable':True, 'thread_id':ID, 'model':kwargs['model']}
+        for backend, target, first, second in [
+                ('codex', 'review', 'gpt-6-astra', 'gpt-6.1-sol'),
+                ('claude-code', 'claude_review', 'opus', 'sonnet')]:
+            with self.subTest(backend=backend), patch('codex_expert_mcp.' + target, side_effect=result) as review:
+                self.call('reprise_delegate', {
+                    'backend':backend, 'kind':'review', 'level':'deep', 'question':'Review'})
+                followup = {'backend':backend, 'thread_id':ID, 'question':'Continue'}
+                self.call('reprise_followup', followup)
+                self.assertEqual(review.call_args.kwargs['model'], first)
+                self.call('reprise_followup', dict(followup, model=second))
+                self.assertEqual(review.call_args.kwargs['model'], second)
+                self.assertEqual(review.call_args.kwargs['effort'], 'high')
+                self.call('reprise_followup', followup)
+                self.assertEqual(review.call_args.kwargs['model'], second)
+                before = review.call_count
+                with self.assertRaisesRegex(ValueError, 'Unknown or unsupported model'):
+                    self.call('reprise_followup', dict(followup, model='unknown'))
+                self.assertEqual(review.call_count, before)
+
+    def test_explicit_model_keeps_question_limits(self):
+        with patch('codex_expert_mcp.review') as review:
+            for name, extra, length in [
+                    ('reprise_delegate', {'kind':'review'}, 12000),
+                    ('reprise_delegate', {'kind':'review'}, 12001),
+                    ('reprise_followup', {'thread_id':ID}, 12001)]:
+                with self.subTest(name=name, length=length), self.assertRaises(ValueError):
+                    self.call(name, dict(extra, backend='codex', model='gpt-6.1-sol', question='x' * length))
+            review.assert_not_called()
+        self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0], 0)
+
     def test_backends_no_inference_or_budget_consumption(self):
         with patch('codex_expert_mcp.review') as review:
             result=self.call('reprise_backends',{})
