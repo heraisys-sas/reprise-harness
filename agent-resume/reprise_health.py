@@ -202,13 +202,56 @@ def _mark_historical(active_key):
         entry['historical'] = key != active_key
 
 
+def retained_anomalies(db):
+    """Lit les événements sans les acquitter."""
+    import scheduler
+    return scheduler.get(db, 'health_anomalies', []) if db is not None else []
+
+
+def retain_changes(events, source, previous, report):
+    """Conserve les anomalies liées à une transition de composants."""
+    result = {a['event_id']: a for a in events}
+    for anomaly in report['anomalies']:
+        if anomaly['kind'] != 'update_breakage':
+            continue
+        evidence = [source, previous, report['components'], anomaly]
+        identity = hashlib.sha256(json.dumps(evidence, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+        result[identity] = dict(anomaly, event_id=identity, source=source,
+                                previous_components=previous, components=report['components'],
+                                acknowledged=False)
+    return list(result.values())
+
+
+def merge_retained(current, events, source):
+    pending = [a for a in events if a['source'] == source and not a['acknowledged']]
+    signatures = {(a['component'], a['kind'], a['detail']) for a in pending}
+    return [a for a in current if (a['component'], a['kind'], a['detail']) not in signatures] + pending
+
+
+def reconcile_anomalies(db, event_ids):
+    """Acquitte explicitement les seuls événements réconciliés."""
+    import scheduler
+    if not isinstance(event_ids, list) or any(not isinstance(i, str) for i in event_ids):
+        raise ValueError('Liste d’identifiants d’événements requise')
+    with db:
+        events = retained_anomalies(db)
+        if set(event_ids) - {a['event_id'] for a in events}:
+            raise ValueError('Événement de santé inconnu')
+        scheduler.put(db, 'health_anomalies', [
+            dict(a, acknowledged=True) if a['event_id'] in event_ids else a for a in events])
+
+
 def summarize(bundle_root, log_dir=DEFAULT_LOG_DIR, binary=None, db=None, state=None):
     """Health + optional generative explanation, for the Reprise UI and MCP."""
     health = check(bundle_root, log_dir, db, state)
     health['quick_entry_features'] = quick_entry_features()
     features = codex_features(db, state, versions=health['versions'].get('codex'))
     health['codex_features'] = features
-    health['codex_anomalies'] = codex_anomalies(features=features)['anomalies']
+    events = retained_anomalies(db)
+    health['codex_anomalies'] = merge_retained(codex_anomalies(features=features)['anomalies'], events, 'codex')
+    claude = health['quick_entry_features']['anomalies']
+    claude['anomalies'] = merge_retained(claude['anomalies'], events, 'claude')
+    claude['clean'] = not claude['anomalies']
     # The generative explanation lives in local analysis; health stays deterministic.
     return health
 
@@ -241,10 +284,17 @@ def watch(db, bundle_root, log_dir=DEFAULT_LOG_DIR):
     report['codex_anomalies'] = codex_anomaly_report['anomalies']
     report['previous_versions'] = previous
     with db:
+        events = retained_anomalies(db)
+        events = retain_changes(events, 'claude', previous_claude, anomaly_report)
+        events = retain_changes(events, 'codex', previous_codex, codex_anomaly_report)
+        report['quick_entry_anomalies'] = merge_retained(anomaly_report['anomalies'], events, 'claude')
+        report['codex_anomalies'] = merge_retained(codex_anomaly_report['anomalies'], events, 'codex')
+        report['components_changed'] = previous_components != components
+        scheduler.put(db, 'health_anomalies', events)
         scheduler.put(db, 'health_report', report)
         scheduler.put(db, 'health_versions', current)
         scheduler.put(db, 'health_components', components)
-        if update_detected:
+        if update_detected or report['components_changed']:
             scheduler.put(db, 'health_update_at', __import__('time').time())
     return report
 
@@ -423,6 +473,9 @@ def codex_anomalies(previous=None, features=None):
         anomalies.append({'component': 'shared_mode', 'kind': 'missing',
                           'detail': 'Prérequis du mode partagé absents'})
 
+    if previous.get('codex_cli') is not None and current['codex_cli'] is not None and previous['codex_cli'] != current['codex_cli']:
+        anomalies.append({'component': 'codex_cli', 'kind': 'update_breakage',
+                          'detail': 'Exécutable Codex modifié ; interaction à revérifier'})
     if not checks['codex_cli']['present'] and updated:
         anomalies.append({'component': 'codex_cli', 'kind': 'update_breakage',
                           'detail': 'Composants modifiés après mise à jour ; exécutable Codex absent'})

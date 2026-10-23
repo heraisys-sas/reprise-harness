@@ -422,3 +422,91 @@ class CodexVersionDiscoveryTests(unittest.TestCase):
                 patch.object(engines, 'executable', return_value=None), patch('subprocess.run') as run:
             self.assertEqual(engines.codex_versions()['cli_status'], 'absent')
             run.assert_not_called()
+
+
+class PersistentHealthAnomalyTests(unittest.TestCase):
+    def setUp(self):
+        import contextlib
+        import sqlite3
+        import scheduler
+        self.db = sqlite3.connect(':memory:')
+        self.addCleanup(self.db.close)
+        scheduler.setup(self.db)
+        self.features = CodexHealthTests._features(self)
+        self.versions = {'codex': 'public-version-stable'}
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(patch.object(rh, 'read_versions', return_value=self.versions))
+        stack.enter_context(patch.object(rh, 'check', side_effect=lambda *a, **kw: {
+            'versions': self.versions, 'actions_for_human': [], 'needs_relaunch': [],
+            'stale_log_signatures': []}))
+        stack.enter_context(patch.object(rh, 'codex_features',
+            side_effect=lambda *a, **kw: json.loads(json.dumps(self.features))))
+        stack.enter_context(patch.object(rh, 'quick_entry_anomalies',
+            side_effect=lambda *a, **kw: {'components': {}, 'anomalies': []}))
+        stack.enter_context(patch.object(rh, 'quick_entry_features',
+            side_effect=lambda: {'checks': {}, 'anomalies': {'anomalies': [], 'clean': True}}))
+
+    def pending(self):
+        return rh.summarize('.', db=self.db)['codex_anomalies']
+
+    def assert_survives(self, component):
+        import scheduler
+        changed = rh.watch(self.db, '.')
+        self.assertFalse(changed['update_detected'])
+        self.assertTrue(changed['components_changed'])
+        event = next(a for a in changed['codex_anomalies'] if a['component'] == component)
+        identity = event['event_id']
+        self.assertTrue(any(a['event_id'] == identity for a in scheduler.get(self.db, 'health_anomalies')))
+        repeated = rh.watch(self.db, '.')
+        self.assertTrue(any(a.get('event_id') == identity for a in repeated['codex_anomalies']))
+        self.assertTrue(any(a.get('event_id') == identity for a in self.pending()))
+        rh.reconcile_anomalies(self.db, [identity])
+        rh.watch(self.db, '.')
+        self.assertFalse(any(a.get('event_id') == identity for a in self.pending()))
+
+    def test_build_change_survives_next_tick_and_read_until_reconciled(self):
+        rh.watch(self.db, '.')
+        self.features['checks']['shared_mode']['desktop_version'] = 'v2'
+        self.assert_survives('shared_mode')
+
+    def test_cli_metadata_change_survives_with_a_running_socket(self):
+        rh.watch(self.db, '.')
+        self.features['checks']['codex_cli']['meta'] = {'size': 2, 'mtime': 2}
+        self.assert_survives('codex_cli')
+
+    def test_reconciliation_is_selective_and_future_changes_reappear(self):
+        rh.watch(self.db, '.')
+        self.features['checks']['shared_mode']['desktop_version'] = 'v2'
+        self.features['checks']['codex_cli']['meta'] = {'size': 2, 'mtime': 2}
+        rh.watch(self.db, '.')
+        events = self.pending()
+        shared = next(a['event_id'] for a in events if a['component'] == 'shared_mode')
+        cli = next(a['event_id'] for a in events if a['component'] == 'codex_cli')
+        with self.assertRaises(ValueError):
+            rh.reconcile_anomalies(self.db, [shared, 'unknown'])
+        self.assertEqual(self.pending(), events)
+        rh.reconcile_anomalies(self.db, [shared])
+        self.assertEqual([a['event_id'] for a in self.pending()], [cli])
+        rh.reconcile_anomalies(self.db, [cli])
+        self.features['checks']['codex_cli']['meta'] = {'size': 3, 'mtime': 3}
+        rh.watch(self.db, '.')
+        self.assertTrue(any(a['component'] == 'codex_cli' and a['event_id'] != cli
+                            for a in self.pending()))
+
+    def test_event_report_and_checkpoint_roll_back_together(self):
+        import scheduler
+        rh.watch(self.db, '.')
+        before = self.db.execute('SELECT * FROM scheduler_meta ORDER BY key').fetchall()
+        self.features['checks']['codex_cli']['meta'] = {'size': 2, 'mtime': 2}
+        original = scheduler.put
+        def failing(db, key, value):
+            if key == 'health_components':
+                raise RuntimeError('write failed')
+            original(db, key, value)
+        with patch.object(scheduler, 'put', side_effect=failing):
+            with self.assertRaises(RuntimeError):
+                rh.watch(self.db, '.')
+        self.assertEqual(self.db.execute('SELECT * FROM scheduler_meta ORDER BY key').fetchall(), before)
+        rh.watch(self.db, '.')
+        self.assertTrue(any(a['component'] == 'codex_cli' for a in self.pending()))
