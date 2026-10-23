@@ -46,6 +46,7 @@ Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui s
 - **Pour les tâches complexes, ESCALADER vers un modèle plus compétent** plutôt que de forcer le modèle léger :
   - via **sous-agent** (`subagent`) avec un modèle plus capable (DeepSeek Pro / raisonnement élevé, ou un modèle Codex type Sol/Astra selon `reprise_backends`) ;
   - ou via **l'outil de délégation Reprise** (`reprise_delegate`) pour un expert externe (revue, expertise, batch).
+- **Poursuivre le même chat distant** : un même sujet/projet délégué à un harness distant se poursuit dans la session distante existante (`reprise_followup`, même `thread_id`, même niveau de compétence — Sol, Astra…) tant que ce niveau ne change pas ; l'expert garde son exploration du dépôt et les consignes stables, ce qui économise tours, coût et délai. Nouvelle session distante si le niveau change, le sujet diverge ou l'historique devient encombrant ; lignage durable via `parent_request_key` (parent en état enregistré).
 - Ne jamais laisser un sous-agent boucler indéfiniment sur une tâche hors de sa portée : le constater, l'interrompre, et **escalader ou faire soi-même**. Deux échecs sur un même volet = changer d'approche (modèle ou auteur).
 
 ## État et suivi
