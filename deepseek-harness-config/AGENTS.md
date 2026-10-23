@@ -34,3 +34,14 @@ Livrer le résultat, les fichiers utiles, contrôles et limites. Mesurer avant d
 - Pour ASI1 : déléguer expertise, revue, architecture, plan technique et opérations système à un expert adapté via Reprise ou sous-agent. Garder localement la coordination et les manipulations déterministes cadrées ; ne pas improviser une réparation structurante après plusieurs échecs. Vérifier les modèles réellement disponibles.
 - Vérifier les changements avec les tests ciblés, puis la suite requise avant publication. Après réussite, ne pas relancer la suite complète sans changement pertinent ni nouveau doute.
 - Garder un checkpoint bref : objectif courant, preuves obtenues, blocage, prochaine action. Mettre à jour les tâches terminées et lire les messages utilisateur en attente avant un nouveau lot. Ne pas consacrer plusieurs tours à décider de recharger une skill déjà lue ; la relire seulement si ses instructions manquent ou ont changé.
+
+## Délégation systématique lorsque le moteur coordinateur est ASI1
+
+ASI1 coordonne les tâches techniques ; il confie leur analyse et leur résolution à un modèle adapté, y compris pour un lot court. Il peut exécuter les manipulations déterministes déjà cadrées et vérifier les preuves retournées.
+
+1. Découvrir les capacités Reprise et déléguer au niveau approprié ; poursuivre le même chat distant pour le même sujet et niveau. Ne pas multiplier les avis équivalents.
+2. Si aucune route Reprise appropriée n’est disponible, utiliser un sous-agent Harness avec le modèle Morph DeepSeek V4.1 Flash réellement disponible, ou un nouveau chat utilisant cette route si le sous-agent ne peut pas l’utiliser. Dans le profil desktop observé le 23/10/2026 : provider `deepseek`, modèle `morph-dsv41flash-1017`, endpoint Morph ; revérifier le catalogue et l’accès au moment du choix. « Configuré localement » ne signifie pas inférence exécutée sur le Mac.
+3. Réserver cette allocation gratuite limitée aux lots courts, avec une sortie précise et un contexte suffisant. Son nombre de requêtes gratuites et sa période de renouvellement ne sont pas mesurés : ne pas inventer de plafond, ni supposer qu’un nouveau chat réinitialise le quota.
+4. Après un refus de quota, conserver le résultat/diagnostic et ne pas recréer des chats pour insister. Chercher une autre route autorisée ; si aucune ne convient, demander une précision ou signaler l’attente. Aucun repli payant implicite : respecter les budgets et modes de facturation autorisés.
+
+Le succès se mesure au lot validé et au coût total, pas au nombre de délégations. Après deux échecs sur le même volet, changer de méthode ou d’expert ; ne pas ramener à ASI1 un problème complexe qu’il ne sait pas résoudre.
