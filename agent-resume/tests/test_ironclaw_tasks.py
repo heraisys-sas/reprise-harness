@@ -7,6 +7,7 @@ import tempfile
 import threading
 from unittest.mock import patch
 import subprocess
+import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ironclaw_ssh import Endpoint, ProbeError, request
 from ironclaw_tasks import Tasks, TaskError
@@ -219,6 +220,59 @@ class TasksTests(unittest.TestCase):
         local = Tasks(self.db)
         with self.assertRaises(TaskError): local.list_requests(101)
         with self.assertRaises(TaskError): local.observe_event('key','gate',{})
+
+    def test_intermediate_finalized_before_later_run_activity_stays_pending(self):
+        self.submit()
+        self.pages = [{'messages': [
+            {'kind': 'assistant', 'status': 'finalized', 'content': 'draft', 'turn_run_id': 'run'},
+            {'kind': 'tool_use', 'status': 'completed', 'turn_run_id': 'run'}], 'next_cursor': None}]
+        self.assertEqual(self.tasks.poll('key')['state'], 'pending')
+        tasks = Tasks(self.db, self.endpoint, self.transport)
+        self.pages = [{'messages': [
+            {'kind': 'assistant', 'status': 'finalized', 'content': 'draft', 'turn_run_id': 'run'},
+            {'kind': 'tool_use', 'status': 'completed', 'turn_run_id': 'run'},
+            {'kind': 'assistant', 'status': 'finalized', 'content': 'done', 'turn_run_id': 'run'}], 'next_cursor': None}]
+        self.assertEqual(tasks.poll('key')['result'], 'done')
+
+    def test_activity_on_next_page_after_finalized_is_not_the_end(self):
+        self.submit()
+        self.pages = [
+            {'messages': [{'kind': 'assistant', 'status': 'finalized', 'content': 'partial', 'turn_run_id': 'run'}], 'next_cursor': 'older'},
+            {'messages': [{'kind': 'assistant', 'status': 'streaming', 'content': 'more', 'turn_run_id': 'run'}], 'next_cursor': None}]
+        self.assertEqual(self.tasks.poll('key')['state'], 'pending')
+
+    def test_unknown_run_outcomes_stay_pending_without_invented_status(self):
+        self.submit()
+        self.pages = [{'messages': [
+            {'kind': 'assistant', 'status': 'streaming', 'content': 'half', 'turn_run_id': 'run'},
+            {'kind': 'system', 'status': 'interrupted', 'content': 'quota', 'turn_run_id': 'run'}], 'next_cursor': None}]
+        self.assertEqual(self.tasks.poll('key')['state'], 'pending')
+        self.assertEqual(self.db.execute('SELECT state FROM ironclaw_tasks').fetchone(), ('pending',))
+
+    def test_expire_after_marks_pending_and_deferred_only(self):
+        self.submit()
+        tasks = Tasks(self.db, self.endpoint, self.transport, expire_after=50)
+        self.pages = [{'messages': [], 'next_cursor': None}] * 3
+        with self.db: self.db.execute('UPDATE ironclaw_tasks SET admitted_at=?', (time.time() - 100,))
+        self.assertEqual(tasks.poll('key')['state'], 'expired')
+        with self.db: self.db.execute("UPDATE ironclaw_tasks SET state='deferred',admitted_at=?", (time.time() - 100,))
+        self.assertEqual(tasks.poll('key')['state'], 'expired')
+        with self.db: self.db.execute("UPDATE ironclaw_tasks SET state='needs_operator',admitted_at=?", (time.time() - 100,))
+        self.assertEqual(tasks.poll('key')['state'], 'needs_operator')
+
+    def test_fail_is_local_only_and_bounded_to_gated_states(self):
+        self.submit()
+        for state in ('needs_operator', 'ambiguous', 'needs_review', 'blocked_busy'):
+            with self.db: self.db.execute("UPDATE ironclaw_tasks SET state=?", (state,))
+            result = Tasks(self.db).fail('key', 'quota exhausted')
+            self.assertEqual(result['state'], 'failed')
+            self.assertEqual(result['result'], {'operator': 'quota exhausted'})
+        with self.db: self.db.execute("UPDATE ironclaw_tasks SET state='pending'")
+        with self.assertRaises(TaskError): Tasks(self.db).fail('key', 'late')
+        with self.assertRaises(TaskError): Tasks(self.db).fail('missing', 'nowhere')
+        with self.db: self.db.execute("UPDATE ironclaw_tasks SET state='needs_operator'")
+        for reason in ('', '  ', None, 'x' * 513):
+            with self.assertRaises(TaskError): Tasks(self.db).fail('key', reason)
 
     def test_reconcile_lost_ack_get_only_then_final(self):
         self.submit()

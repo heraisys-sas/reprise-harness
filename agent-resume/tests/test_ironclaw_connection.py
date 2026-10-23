@@ -46,6 +46,20 @@ class IronClawConnectionTests(unittest.TestCase):
             cls.return_value.followup.assert_called_once_with('child', 'parent', 'continue', allow_submit=True)
             cls.return_value.submit.assert_not_called()
 
+    def test_fail_requires_reason_and_routes_to_local_operator_exit(self):
+        state_install.initialize(self.state)
+        with patch.object(connection, 'Tasks') as cls, patch.object(connection, 'probe') as probe:
+            connection.task_operation(self.base, 'ironclaw-fail',
+                                      {'request_key': 'key', 'reason': 'quota exhausted'})
+            cls.return_value.fail.assert_called_once_with('key', 'quota exhausted')
+            connection.task_operation(self.base, 'ironclaw-fail', {'request_key': 'key', 'reason': 'ok'})
+            probe.assert_not_called()
+        for value in ({'request_key': 'key'}, {'request_key': 'key', 'reason': '  '},
+                      {'request_key': 'key', 'reason': 'x' * 513},
+                      {'request_key': 'key', 'reason': 'ok', 'acknowledge': True}):
+            with self.assertRaises(ValueError):
+                connection.task_operation(self.base, 'ironclaw-fail', value)
+
     def test_invalid_or_symbolic_config_cannot_overwrite(self):
         state_install.initialize(self.state)
         connection.configure(self.base, self.value)
