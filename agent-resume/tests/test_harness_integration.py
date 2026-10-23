@@ -244,6 +244,9 @@ class HarnessIntegrationTests(unittest.TestCase):
         manifest = json.loads((self.managed / 'managed.json').read_text())
         self.assertEqual(manifest['tools'], list(integration.OBSERVE + integration.DELEGATE))
         self.assertIn('reprise_followup', (self.managed / 'skills/reprise-delegation/SKILL.md').read_text())
+        deployed = self.managed / 'skills/reprise-delegation/REPRISE-AGENTS.template.md'
+        self.assertEqual(deployed.read_bytes(), (SOURCE / 'REPRISE-AGENTS.template.md').read_bytes())
+        self.assertIn(str(deployed.relative_to(self.folder)), manifest['managed_files'])
 
     def test_existing_unmanaged_skill_is_not_adopted(self):
         skill = self.managed / 'skills/reprise-delegation/SKILL.md'

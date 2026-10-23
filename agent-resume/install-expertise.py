@@ -42,6 +42,7 @@ def install(home, project, profile='desktop'):
     updated = base.rstrip()+'\n'+block
     skill = home/'skills/reprise-delegation/SKILL.md'
     files = [(target, updated), (skill, (source/'reprise-delegation.md').read_text())]
+    files.append((skill.parent / 'REPRISE-AGENTS.template.md', (source / 'REPRISE-AGENTS.template.md').read_text()))
     if all(path.exists() and path.read_text() == text for path, text in files):
         return {'changed': False, 'project_root': str(project)}
     backup = home/'backups'/('reprise-expertise-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'))

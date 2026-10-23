@@ -18,7 +18,7 @@ from state_install import initialized, _sync_directory
 
 START = '# BEGIN REPRISE MANAGED INTEGRATION'
 END = '# END REPRISE MANAGED INTEGRATION'
-DOCS = ('DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'HARNESS-SUPERVISION-ARCHITECTURE.md', 'CLARIFICATION-CONTRACT.md')
+DOCS = ('REPRISE-AGENTS.template.md', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'HARNESS-SUPERVISION-ARCHITECTURE.md', 'CLARIFICATION-CONTRACT.md')
 OBSERVE = ('reprise_backends', 'reprise_requests', 'reprise_quotas')
 DELEGATE = ('reprise_delegate', 'reprise_followup')
 

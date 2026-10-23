@@ -3,6 +3,10 @@ name: reprise-delegation
 description: Use configured Reprise MCP tools for bounded expertise, independent review and batch generation, with explicit permissions, durable receipts and useful clarification.
 ---
 
+## Host-agent operating instructions
+
+Read [REPRISE-AGENTS.template.md](REPRISE-AGENTS.template.md) only when the operator explicitly assigns the host model a specialist orchestration role (for example ASI1), or when preparing that optional profile. Its presence does not activate it for other agents. Apply this profile within existing operator permissions. The template is distributed beside this skill; adapt it to the harness instruction mechanism without replacing personal instructions. Systematic delegation is conditional on the coordinator/operator policy, not required of every capable model. Free fallback routes must be discovered and authorized, never assumed.
+
 ## Discover the installed integration
 
 Managed installations expose this skill through a provider scoped to the selected Harness profile. Legacy installations may have a global copy; do not infer an active integration from that copy. Use the actual tools exposed by that profile. The names below describe the `reprise_codex` server convention, not a guarantee that every profile has loaded it. Configuration written, integration loaded, tools discovered and an exchange confirmed are distinct levels of evidence.

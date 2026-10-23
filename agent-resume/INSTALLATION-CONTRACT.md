@@ -167,3 +167,7 @@ Acceptation sur profil/compte d’essai : installation répétée sans effet, fi
 ### IronClaw distant — transport explicite
 
 Le payload embarque la configuration, la sonde SSH directe et un adaptateur expérimental submit/poll/reçus. Les fichiers de clé et d’URL privée sont référencés sur le poste, jamais copiés dans le bundle ou le dépôt. La configuration et la vérification sont disponibles dans Connexions ; elles ne créent aucun service ni tâche distante. Les commandes de soumission exigent une action distincte explicite et ne sont ni exposées automatiquement en MCP ni ajoutées au planificateur. Preuves et limites de retour/billing : [IRONCLAW-SSH.md](IRONCLAW-SSH.md).
+
+## Instructions d’agent distribuées
+
+Le payload embarque `REPRISE-AGENTS.template.md`, profil optionnel réservé aux modèles choisis par l’opérateur pour leur spécialisation en orchestration (ex. ASI1). Sa distribution ne vaut pas activation pour tous les agents. L’installation Harness gérée le copie à côté de `skills/reprise-delegation/SKILL.md`, le référence depuis la skill et le suit dans le manifeste (mise à jour, conflit de personnalisation et retrait sélectif). L’ancien installateur le copie aussi. Aucun `AGENTS.md`/`CLAUDE.md` personnel n’est écrasé. Pour les futurs harness, l’adaptateur devra exposer ces instructions par le mécanisme natif démontré (skill, plugin ou bloc fusionné avec ownership) et distinguer fichier distribué, instructions chargées et comportement observé. Les fournisseurs et budgets restent propres à l’installation.
