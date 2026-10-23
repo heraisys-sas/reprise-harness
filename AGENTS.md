@@ -8,6 +8,7 @@ Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui s
 ## Workflow Git
 - **Branche de travail : `dev`** — pas de commit direct sur `main`.
 - **MR `dev` → `main`** (une MR ouverte : #1). Chaque lot de travail = commit sur `dev`, puis fusion via MR.
+- **Prise en charge d’une issue par Codex** : ajouter le label `agent:codex` et utiliser `gh issue develop` pour créer une branche liée à l’issue, basée sur `dev` et nommée `codex/<numero>-<sujet>` ; exemple : `gh issue develop <numero> --base dev --name codex/<numero>-<sujet>`. Vérifier le lien avec `gh issue develop <numero> --list`. Cette branche temporaire doit être intégrée à `dev` avant le parcours habituel vers `main`. Préserver le travail concurrent ; ne pas changer la branche d’un workspace utilisé par un autre agent. Le label désigne l’agent responsable ; le lien GitHub désigne la branche, sans déclencher automatiquement un chat.
 - Tests : `python3 -m unittest discover -s agent-resume/tests -q` (~257 OK).
 - Compile Swift (sans relancer l'app) : `sh native-install` ; `--open` pour lancer l'app.
 - Check syntaxe Swift : `swiftc -parse -module-cache-path /private/tmp/agent-resume-swift-cache Native.swift Dashboard.swift` (dans `agent-resume/`).
