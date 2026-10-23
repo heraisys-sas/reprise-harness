@@ -19,6 +19,8 @@ from pathlib import Path
 from app_paths import native_binary
 import json
 import os
+import time
+from datetime import datetime
 
 import hashlib
 
@@ -54,17 +56,53 @@ def _read(path):
         return ''
 
 
-def log_signatures(log_dir=DEFAULT_LOG_DIR):
-    """Report which watched log signatures are still present after an update."""
-    text = ''
-    main = Path(log_dir) / 'main.log'
-    if main.is_file():
-        text += _read(main)
-    for extra in Path(log_dir).glob('mcp-server-*.log'):
-        text += _read(extra)
-    result = {}
-    for name, marker in LOG_SIGNATURES.items():
-        result[name] = {'present': marker in text, 'marker': marker}
+def _signature_epoch(db, versions):
+    """Borne d'observation propre aux composants Claude, persistée par watch."""
+    import scheduler
+    identity = {
+        'version': versions.get('claude-desktop'),
+        'components': {name: _component_meta(CLAUDE_APP / 'Contents' / relative)
+                       for name, (relative, _) in FEATURES.items()},
+    }
+    previous = scheduler.get(db, 'health_signature_epoch', None) if db is not None else None
+    if previous is not None and previous.get('identity') == identity:
+        return previous
+    return {'identity': identity, 'since': time.time()}
+
+
+def _log_timestamp(line):
+    try:
+        if len(line) > 10 and line[10] == 'T':
+            return datetime.fromisoformat(line.split()[0].replace('Z', '+00:00')).timestamp()
+        return datetime.strptime(line[:19], '%Y-%m-%d %H:%M:%S').timestamp()
+    except (ValueError, IndexError, OverflowError):
+        return None
+
+
+def log_signatures(log_dir=DEFAULT_LOG_DIR, since=None):
+    """Trois états : présent, absent après activité pertinente, non vérifié."""
+    result = {name: {'present': False, 'marker': marker, 'status': 'unverified'}
+              for name, marker in LOG_SIGNATURES.items()}
+    if since is None:
+        return result
+    paths = [Path(log_dir) / 'main.log']
+    paths.extend(Path(log_dir).glob('mcp-server-*.log'))
+    observed = set()
+    for path in paths:
+        for line in _read(path).splitlines():
+            timestamp = _log_timestamp(line)
+            if timestamp is None or timestamp <= since:
+                continue
+            group = ('mcp_interaction',) if path.name != 'main.log' else ('quick_entry_submitted', 'quick_entry_routing', 'quick_entry_guard')
+            relevant = 'Message from ' in line if path.name != 'main.log' else ('quick entry' in line.lower() or '[QuickEntry]' in line)
+            if not relevant:
+                continue
+            observed.update(group)
+            for name in group:
+                if LOG_SIGNATURES[name] in line:
+                    result[name]['present'] = True
+    for name, item in result.items():
+        item['status'] = 'present' if item['present'] else ('missing' if name in observed else 'unverified')
     return result
 
 
@@ -120,21 +158,26 @@ def read_versions(bundle_root):
             'codex': engines.codex_versions()}
 
 
-def check(bundle_root, log_dir=DEFAULT_LOG_DIR, db=None, state=None, versions=None):
+def check(bundle_root, log_dir=DEFAULT_LOG_DIR, db=None, state=None, versions=None, signature_since=None):
     """Post-update health: what must be relaunched and what is still parsed."""
     versions = read_versions(bundle_root) if versions is None else versions
-    signatures = log_signatures(log_dir)
+    if signature_since is None:
+        signature_since = _signature_epoch(db, versions)['since']
+    signatures = log_signatures(log_dir, since=signature_since)
     liveness = process_liveness(db, state)
-    stale = [name for name, s in signatures.items() if not s['present']]
+    stale = [name for name, s in signatures.items() if not s['present'] and s.get('status', 'missing') == 'missing']
     relaunch = [name for name, state in liveness.items() if state == 'stopped']
     return {
         'versions': versions,
         'log_signatures': signatures,
         'process_liveness': liveness,
         'stale_log_signatures': stale,
+        'unverified_log_signatures': [name for name, s in signatures.items() if s.get('status') == 'unverified'],
         'needs_relaunch': relaunch,
         'actions_for_human': ([f'Relancer {SUPERVISED[n]["label"]}' for n in relaunch]
-                              + [f'Adapter le parsing de la signature « {signatures[s]["marker"]} »' for s in stale]),
+                              + [f'Adapter le parsing de la signature « {signatures[s]["marker"]} »' for s in stale]
+                              + [f'Signature « {s["marker"]} » : non vérifié depuis la mise à jour ; effectuer une activité pertinente'
+                                 for s in signatures.values() if s.get('status') == 'unverified']),
         'note': 'Deterministic evidence only; generative explanation is a separate, optional layer.',
     }
 
@@ -245,6 +288,8 @@ def summarize(bundle_root, log_dir=DEFAULT_LOG_DIR, binary=None, db=None, state=
     """Health + optional generative explanation, for the Reprise UI and MCP."""
     health = check(bundle_root, log_dir, db, state)
     health['quick_entry_features'] = quick_entry_features()
+    health['quick_entry_features']['anomalies'] = quick_entry_anomalies(
+        log_dir, signatures=health.get('log_signatures'))
     features = codex_features(db, state, versions=health['versions'].get('codex'))
     health['codex_features'] = features
     events = retained_anomalies(db)
@@ -272,11 +317,12 @@ def watch(db, bundle_root, log_dir=DEFAULT_LOG_DIR):
     # Back-compat: an old flat component map has no 'codex' key yet.
     previous_claude = previous_components.get('claude') if isinstance(previous_components, dict) else previous_components
     previous_codex = previous_components.get('codex') if isinstance(previous_components, dict) else None
-    anomaly_report = quick_entry_anomalies(log_dir, previous_claude)
+    signature_epoch = _signature_epoch(db, current)
+    anomaly_report = quick_entry_anomalies(log_dir, previous_claude, since=signature_epoch['since'])
     features = codex_features(db, versions=current.get('codex'))
     codex_anomaly_report = codex_anomalies(previous_codex, features=features)
     components = {'claude': anomaly_report['components'], 'codex': codex_anomaly_report['components']}
-    report = check(bundle_root, log_dir, db, versions=current)
+    report = check(bundle_root, log_dir, db, versions=current, signature_since=signature_epoch['since'])
     update_detected = previous is None or current != previous
     report['update_detected'] = update_detected
     report['quick_entry_anomalies'] = anomaly_report['anomalies']
@@ -292,6 +338,7 @@ def watch(db, bundle_root, log_dir=DEFAULT_LOG_DIR):
         report['components_changed'] = previous_components != components
         scheduler.put(db, 'health_anomalies', events)
         scheduler.put(db, 'health_report', report)
+        scheduler.put(db, 'health_signature_epoch', signature_epoch)
         scheduler.put(db, 'health_versions', current)
         scheduler.put(db, 'health_components', components)
         if update_detected or report['components_changed']:
@@ -323,7 +370,7 @@ def _component_meta(path):
     return None
 
 
-def quick_entry_anomalies(log_dir=DEFAULT_LOG_DIR, previous=None):
+def quick_entry_anomalies(log_dir=DEFAULT_LOG_DIR, previous=None, since=None, signatures=None):
     """Detect update-induced breakage in Quick Entry's Claude Desktop support.
 
     Cross-checks two deterministic signals: (a) a component whose metadata
@@ -336,7 +383,7 @@ def quick_entry_anomalies(log_dir=DEFAULT_LOG_DIR, previous=None):
     current = {}
     for name, (rel, _label) in FEATURES.items():
         current[name] = _component_meta(CLAUDE_APP / 'Contents' / rel)
-    signatures = log_signatures(log_dir)
+    signatures = log_signatures(log_dir, since=since) if signatures is None else signatures
     anomalies = []
     for name, meta in current.items():
         if meta is None:
@@ -347,7 +394,9 @@ def quick_entry_anomalies(log_dir=DEFAULT_LOG_DIR, previous=None):
         # The log signature this component backs: app_asar -> routing, swift_addon -> submitted.
         sig_key = {'app_asar': 'quick_entry_routing', 'swift_addon': 'quick_entry_submitted',
                    'native_binding': 'quick_entry_guard'}.get(name)
-        sig_broken = sig_key is not None and not signatures.get(sig_key, {}).get('present')
+        signature = signatures.get(sig_key, {})
+        sig_broken = (sig_key is not None and not signature.get('present')
+                      and signature.get('status', 'missing') != 'unverified')
         if updated and sig_broken:
             anomalies.append({'component': name, 'kind': 'update_breakage',
                               'detail': 'Composant modifié par une mise à jour mais signature de log disparue'})

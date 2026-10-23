@@ -10,6 +10,104 @@ import reprise_health as rh
 
 
 class SignaturesTests(unittest.TestCase):
+    def signatures(self, main='', mcp='', since=100):
+        contents = {'main.log': main, 'mcp-server-test.log': mcp}
+        with patch.object(rh, '_read', side_effect=lambda p: contents.get(p.name, '')), \
+                patch.object(Path, 'glob', return_value=[Path('/logs/mcp-server-test.log')]):
+            return rh.log_signatures('/logs', since=since)
+
+    def line(self, timestamp, message):
+        stamp = rh.datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
+        return f'{stamp} [info] {message}\n'
+
+    def mcp_line(self, timestamp, message):
+        stamp = rh.datetime.fromtimestamp(timestamp).astimezone().isoformat()
+        return f'{stamp} [reprise] [info] {message}\n'
+
+    def test_historical_markers_do_not_validate_recent_activity(self):
+        old = ''.join(self.line(90, marker) for marker in rh.LOG_SIGNATURES.values())
+        main = old + self.line(110, '[QuickEntry] Processing quick entry payload')
+        mcp = self.mcp_line(90, 'Message from client: old')
+        mcp += self.mcp_line(110, 'Message from server: recent')
+        signatures = self.signatures(main, mcp)
+        for name in ('quick_entry_submitted', 'quick_entry_routing', 'mcp_interaction'):
+            with self.subTest(name=name):
+                self.assertFalse(signatures[name]['present'])
+                self.assertEqual(signatures[name]['status'], 'missing')
+        self.assertTrue(signatures['quick_entry_guard']['present'])
+
+    def test_historical_markers_and_unrelated_activity_remain_unverified(self):
+        main = ''.join(self.line(90, marker) for marker in rh.LOG_SIGNATURES.values())
+        main += self.line(110, 'Application idle')
+        mcp = self.mcp_line(90, 'Message from client: old')
+        mcp += self.mcp_line(110, 'Transport ready')
+        for signature in self.signatures(main, mcp).values():
+            self.assertFalse(signature['present'])
+            self.assertEqual(signature['status'], 'unverified')
+
+    def test_post_update_markers_validate_only_their_source(self):
+        main = ''.join(self.line(110, marker) for marker in rh.LOG_SIGNATURES.values())
+        signatures = self.signatures(main)
+        for name in ('quick_entry_submitted', 'quick_entry_routing', 'quick_entry_guard'):
+            self.assertEqual(signatures[name]['status'], 'present')
+        self.assertEqual(signatures['mcp_interaction']['status'], 'unverified')
+        signatures = self.signatures(mcp=self.mcp_line(110, 'Message from client: new'))
+        self.assertEqual(signatures['mcp_interaction']['status'], 'present')
+        self.assertEqual(signatures['quick_entry_guard']['status'], 'unverified')
+
+    def test_boundary_is_exclusive_and_baseline_is_required(self):
+        main = self.line(100, 'Quick entry submitted [QuickEntry] Submitting payload to chat')
+        self.assertTrue(all(s['status'] == 'unverified' for s in self.signatures(main).values()))
+        signatures = self.signatures(self.line(110, 'Quick entry submitted'), since=None)
+        self.assertTrue(all(s['status'] == 'unverified' for s in signatures.values()))
+
+    def test_unverified_is_not_stale_or_component_breakage(self):
+        signatures = self.signatures()
+        with patch.object(rh, 'log_signatures', return_value=signatures), \
+                patch.object(rh, 'process_liveness', return_value={}), \
+                patch.object(rh, '_component_meta', return_value={'size': 2, 'mtime': 2}):
+            report = rh.check('.', versions={}, signature_since=100)
+            anomalies = rh.quick_entry_anomalies(
+                previous={'swift_addon': {'size': 1, 'mtime': 1}}, signatures=signatures)
+        self.assertEqual(report['stale_log_signatures'], [])
+        self.assertEqual(set(report['unverified_log_signatures']), set(rh.LOG_SIGNATURES))
+        self.assertTrue(all('non vérifié depuis la mise à jour' in a
+                            for a in report['actions_for_human']))
+        self.assertEqual(anomalies['anomalies'], [])
+
+    def test_watch_persists_epoch_without_codex_reset_and_read_does_not_write(self):
+        import sqlite3
+        import scheduler
+        db = sqlite3.connect(':memory:')
+        self.addCleanup(db.close)
+        scheduler.setup(db)
+        versions = {'claude-desktop': '1', 'codex': '1'}
+        with patch.object(rh, 'read_versions', side_effect=lambda _: dict(versions)), \
+                patch.object(rh, '_component_meta', return_value={'size': 1, 'mtime': 1}) as meta, \
+                patch.object(rh, 'codex_features', return_value=CodexHealthTests._features(self)), \
+                patch.object(rh, 'process_liveness', return_value={}), \
+                patch.object(rh, '_read', return_value=''), \
+                patch.object(Path, 'glob', return_value=[]), \
+                patch.object(rh.time, 'time', return_value=100) as clock:
+            rh.watch(db, '.')
+            self.assertEqual(scheduler.get(db, 'health_signature_epoch')['since'], 100)
+            versions['codex'] = '2'
+            clock.return_value = 200
+            rh.watch(db, '.')
+            self.assertEqual(scheduler.get(db, 'health_signature_epoch')['since'], 100)
+            meta.return_value = {'size': 2, 'mtime': 2}
+            clock.return_value = 300
+            rh.watch(db, '.')
+            self.assertEqual(scheduler.get(db, 'health_signature_epoch')['since'], 300)
+            versions['claude-desktop'] = '2'
+            clock.return_value = 400
+            before = db.execute('SELECT * FROM scheduler_meta ORDER BY key').fetchall()
+            report = rh.check('.', db=db, versions=versions)
+            self.assertEqual(len(report['unverified_log_signatures']), len(rh.LOG_SIGNATURES))
+            self.assertEqual(db.execute('SELECT * FROM scheduler_meta ORDER BY key').fetchall(), before)
+            rh.watch(db, '.')
+            self.assertEqual(scheduler.get(db, 'health_signature_epoch')['since'], 400)
+
     def test_log_signatures_present_on_real_logs(self):
         sigs = rh.log_signatures()
         self.assertIn('quick_entry_submitted', sigs)

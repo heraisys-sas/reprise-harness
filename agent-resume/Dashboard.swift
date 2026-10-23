@@ -574,9 +574,23 @@ struct Dashboard: View {
             }
         }
     }
+    var healthReviewItems: [String] {
+        let features = app.health["quick_entry_features"] as? [String: Any] ?? [:]
+        let claude = (features["anomalies"] as? [String: Any])?["anomalies"] as? [[String: Any]] ?? []
+        let codex = app.health["codex_anomalies"] as? [[String: Any]] ?? []
+        var items = app.health["actions_for_human"] as? [String] ?? []
+        for (source, anomalies) in [("Claude Desktop", claude), ("Codex", codex)] {
+            for anomaly in anomalies {
+                let component = anomaly["component"] as? String ?? "Composant"
+                let detail = anomaly["detail"] as? String ?? "Anomalie à examiner"
+                items.append(source + " — " + component + " : " + detail)
+            }
+        }
+        return items
+    }
     var health: some View {
         let versions = app.health["versions"] as? [String: Any] ?? [:]
-        let actions = app.health["actions_for_human"] as? [String] ?? []
+        let actions = healthReviewItems
         let stale = app.health["stale_log_signatures"] as? [String] ?? []
         let relaunch = app.health["needs_relaunch"] as? [String] ?? []
         let features = app.health["quick_entry_features"] as? [String: Any] ?? [:]
@@ -584,12 +598,11 @@ struct Dashboard: View {
         let codexFeatures = app.health["codex_features"] as? [String: Any] ?? [:]
         let codexChecks = codexFeatures["checks"] as? [String: Any] ?? [:]
         let codexAnomalies = app.health["codex_anomalies"] as? [[String: Any]] ?? []
-        let claudeAnomalies = (features["anomalies"] as? [String: Any])?["anomalies"] as? [[String: Any]] ?? []
-        let actionCount = actions.count + claudeAnomalies.count + codexAnomalies.count
+        let actionCount = actions.count
         let verified = app.healthVerified
         let summary = !verified
             ? (app.healthCheckedAt == nil ? "Santé indisponible · contrôle requis" : "Santé périmée · nouveau contrôle requis")
-            : (actionCount == 0 ? "✓ Sain · aucune action requise" : "⚠ \(actionCount) action(s) requise(s)")
+            : (actionCount == 0 ? "✓ Sain · aucun élément à examiner" : "⚠ \(actionCount) élément(s) à examiner")
         return VStack(alignment: .leading, spacing: 18) {
             Surface {
                 HStack {
@@ -620,11 +633,11 @@ struct Dashboard: View {
             }
             Surface {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Actions requérant un humain").font(.headline)
+                    Text("Éléments à examiner").font(.headline)
                     if actions.isEmpty {
-                        Text(verified ? "Aucune action nécessaire pour l’instant." : "Aucune conclusion disponible sans contrôle vérifié.").font(.callout).foregroundStyle(.secondary)
+                        Text(verified ? "Aucun élément à examiner pour l’instant." : "Aucune conclusion disponible sans contrôle vérifié.").font(.callout).foregroundStyle(.secondary)
                     } else {
-                        ForEach(actions, id: \.self) { action in
+                        ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
                             Label(action, systemImage: "hand.point.right").font(.callout)
                         }
                     }
@@ -635,7 +648,7 @@ struct Dashboard: View {
             Surface {
                 VStack(alignment: .leading, spacing: 12) {
                     Label("Santé après mise à jour", systemImage: "heart.text.square").font(.headline)
-                    Text("Détecte les mises à jour de Claude Desktop, Claude Code, Codex et autres Harness, ce qu’il faut relancer, et si les signatures de logs surveillées sont toujours présentes.").font(.callout).foregroundStyle(.secondary)
+                    Text("Surveille les versions et composants de Claude Desktop et de Codex (Desktop et CLI), indique les relances nécessaires et vérifie les signatures des journaux Claude après une mise à jour et une activité pertinente.").font(.callout).foregroundStyle(.secondary)
                     ForEach(Array(versions.keys.sorted()), id: \.self) { key in
                         let item = versions[key] as? [String: Any] ?? [:]
                         let fields = key == "codex" ? ["desktop_version", "desktop_build", "cli_version"] : ["desktop_version", "desktop_build"]
@@ -753,7 +766,7 @@ struct Dashboard: View {
         switch section {
         case "sessions": return app.attention.count
         case "resumptions": return app.verdicts.count
-        case "health": return app.healthVerified ? (app.health["actions_for_human"] as? [String])?.count : nil
+        case "health": return app.healthVerified ? healthReviewItems.count : nil
         default: return nil
         }
     }
