@@ -69,6 +69,7 @@ Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui s
 ## Discipline d’exécution et arrêt des boucles
 
 - Privilégier les frontends, CLI et API existants. Après un refus sandbox, utiliser une route autorisée ou demander une permission ciblée ; ne pas répéter une commande inchangée.
+- Lorsqu'une validation est demandée avec une commande longue, la faire précéder d'un court commentaire qui en explique l'objet et l'effet attendu.
 - Regrouper les lectures indépendantes et les modifications d’un même fichier. Si l’outil invalide une lecture après édition, relire une fois puis appliquer les changements ensemble ; deux refus identiques imposent une autre méthode.
 - Déléguer un résultat vérifiable : périmètre et baseline exacts, fichiers autorisés, comportement attendu et vérifications. Permettre les lectures nécessaires plutôt qu’un petit nombre arbitraire. L’expert doit demander une précision si le contexte manque.
 - Pour un patch : demander un diff produit par Git depuis la baseline et vérifié par `git apply --check` sur une copie propre. Un patch rédigé comme du texte et non vérifié reste une proposition. Après deux échecs d’application (dont `--recount`), ne plus réparer les hunks par génération : demander un livrable corrigé dans le même chat expert ou appliquer des changements ciblés puis vérifier.
