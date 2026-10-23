@@ -9,7 +9,7 @@ import unittest
 import uuid
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from codex_expert_mcp import Bridge
+from codex_expert_mcp import Bridge, error_payload
 from test_codex_expert import ID
 
 class RequestCalls:
@@ -64,6 +64,23 @@ class BridgeTests(RequestCalls, unittest.TestCase):
     def test_arbitrary_parameters_refused(self):
         with self.assertRaises(ValueError):
             self.call('codex_review', {'question': 'review', 'cwd': '/'})
+
+    def test_delegate_rejects_quick_apply_parameters_outside_claude_desktop(self):
+        for backend in ('codex', 'claude-code', 'ironclaw'):
+            with self.subTest(backend=backend):
+                with patch('codex_expert_mcp.review') as review:
+                    with self.assertRaises(ValueError):
+                        self.call('reprise_delegate', {'question': 'review', 'kind': 'review', 'backend': backend, 'chatId': ID})
+                review.assert_not_called()
+        self.assertEqual(self.bridge.db.execute('SELECT COUNT(*) FROM delegation_requests').fetchone()[0], 0)
+
+    def test_error_payload_details_and_bounds_refusals(self):
+        payload = error_payload(ValueError('chatId and filePaths are only valid with backend claude-desktop'))
+        self.assertEqual(payload['code'], -32602)
+        self.assertEqual(payload['message'], 'Request refused or unavailable; no automatic retry.')
+        self.assertTrue(payload['data']['error'].startswith('ValueError: '))
+        self.assertIn('claude-desktop', payload['data']['error'])
+        self.assertLessEqual(len(error_payload(OSError('x' * 500))['data']['error']), 200)
 
     def test_padded_oversized_followup_rejected_before_budget(self):
         self.bridge.db.execute('INSERT INTO expert_threads VALUES (?,?)', (self.bridge.scope, ID))

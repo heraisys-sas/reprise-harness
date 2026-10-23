@@ -20,6 +20,12 @@ import reprise_health
 import shutil
 from engines import executable, options
 
+
+def error_payload(exc):
+    detail = f'{type(exc).__name__}: {exc}'[:200]
+    return {'code': -32602, 'message': 'Request refused or unavailable; no automatic retry.',
+            'data': {'error': detail}}
+
 SCHEMA = {'type': 'object', 'properties': {'question': {'type': 'string', 'maxLength': 12000}, 'request_key': {'type': 'string', 'maxLength': 128}, 'parent_request_key': {'type': 'string', 'maxLength': 128}},
           'required': ['question', 'request_key'], 'additionalProperties': False}
 TOOLS = [
@@ -250,6 +256,8 @@ class Bridge:
         backend = args.get('backend', 'codex')
         if backend not in ('codex', 'ironclaw', 'claude-code', 'claude-desktop'):
             raise ValueError('Unknown expertise backend')
+        if name == 'reprise_delegate' and backend != 'claude-desktop' and args.keys() & {'chatId', 'filePaths'}:
+            raise ValueError('chatId and filePaths are only valid with backend claude-desktop')
         question = args['question']
         if name == 'reprise_delegate':
             kind, level = args.get('kind'), args.get('level', 'standard')
@@ -389,10 +397,10 @@ def main():
                     continue
                 result = bridge.dispatch(message)
                 reply = {'jsonrpc': '2.0', 'id': ident, 'result': result}
-            except (ValueError, TypeError, KeyError, OSError, sqlite3.Error):
+            except (ValueError, TypeError, KeyError, OSError, sqlite3.Error) as exc:
                 if isinstance(message, dict) and compact_call(message) and len(json.dumps(ident, ensure_ascii=False)) > 256:
                     ident = None
-                reply = {'jsonrpc': '2.0', 'id': ident, 'error': {'code': -32602, 'message': 'Request refused or unavailable; no automatic retry.'}}
+                reply = {'jsonrpc': '2.0', 'id': ident, 'error': error_payload(exc)}
             print(json.dumps(reply, ensure_ascii=False), flush=True)
     finally:
         bridge.db.close()
