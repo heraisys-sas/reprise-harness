@@ -114,6 +114,23 @@ class ConnectionTests(unittest.TestCase):
         self.assertFalse(claude_desktop.probe(None, '/chosen.sock')['connected'])
         self.assertFalse(claude_desktop.probe('supervisor', 'relative.sock')['connected'])
 
+    def test_review_defaults_to_quick_apply_socket(self):
+        class Recorder(FakeClient):
+            init_args = ()
+            def __init__(self, *args, **kw):
+                super().__init__(*args, **kw)
+                Recorder.init_args = args
+            def call(self, method, params):
+                return {'status': 'finished', 'submission_id': 'sub-1'} if method == 'quick_entry/submit' else {}
+        for values in (None, {}):
+            with patch('claude_desktop_rpc.Client', Recorder):
+                result = claude_desktop.review('.', 'Explain the delegation contract', values=values)
+            self.assertEqual(result['status'], 'finished')
+            self.assertEqual(Recorder.init_args[1], {'socket': str(claude_desktop.DEFAULT_SOCKET)})
+        with patch('claude_desktop_rpc.Client', Recorder):
+            claude_desktop.review('.', 'Explain the delegation contract', values={'socket': '/chosen.sock'})
+        self.assertEqual(Recorder.init_args[1], {'socket': '/chosen.sock'})
+
 
 if __name__ == '__main__':
     unittest.main()

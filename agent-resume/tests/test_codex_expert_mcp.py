@@ -217,6 +217,18 @@ class ClaudeDesktopBridgeTests(RequestCalls, unittest.TestCase):
         with self.assertRaises(ValueError):
             self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise', 'backend': 'nope'})
 
+    def test_delegate_refuses_claude_desktop_without_desktop_socket(self):
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state-nosock', daily_limit=8)
+        self.addCleanup(self.bridge.db.close)
+        with patch('claude_desktop.review') as review:
+            result = self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise', 'backend': 'claude-desktop'})
+        self.assertEqual(result['status'], 'engine_unavailable')
+        self.assertEqual(result['backend'], 'claude-desktop')
+        self.assertFalse(result['automatic_fallback'])
+        review.assert_not_called()
+        self.assertEqual(self.bridge.db.execute(
+            "SELECT json_extract(result,'$.status') FROM delegation_requests").fetchone()[0], 'engine_unavailable')
+
     def test_delegate_rejects_arbitrary_fields(self):
         with self.assertRaises(ValueError):
             self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',

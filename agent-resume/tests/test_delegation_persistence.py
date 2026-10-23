@@ -235,8 +235,10 @@ class DurableTests(unittest.TestCase):
         self.assertIsNone(store.begin('new-root', {'question': 'new'}))
 
     def test_desktop_receipt_remains_admission_only_after_recovery(self):
+        bridge = Bridge(self.root, {}, self.state, daily_limit=0, desktop_socket='/private/tmp/quick.sock')
+        bridge.program = 'codex'
+        self.addCleanup(bridge.db.close)
         with patch('codex_expert_mcp.claude_desktop.review', return_value={'status': 'finished', 'response': None}):
-            bridge = self.bridge()
             bridge.call('reprise_delegate', self.args(backend='claude-desktop'))
             result = bridge.call('reprise_requests', {'request_key': 'one'})['result']
             self.assertTrue(result['admission_only'])

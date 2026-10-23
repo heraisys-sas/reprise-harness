@@ -180,6 +180,7 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
     client = None
     try:
         values = values or {}
+        values.setdefault('socket', str(DEFAULT_SOCKET))
         client = Client(program, values, timeout=timeout)
         client.call('initialize', {'clientInfo': {'name': 'reprise-delegation', 'version': '0.1.0'}})
         payload_args = {'prompt': prompt, 'request_key': request_key}

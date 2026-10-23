@@ -233,7 +233,7 @@ class Bridge:
                  'billing': 'Claude subscription; paid credits must be disabled by operator',
                  'quota_remaining': None, 'kinds': list(MODES), 'levels': ['standard', 'deep'],
                  'writes': False, 'context': 'Explicit question and file snapshots only; no tools'},
-                {'id': 'claude-desktop', 'configured': bool(self.desktop_program and self.desktop_values),
+                {'id': 'claude-desktop', 'configured': bool(self.desktop_values),
                  'billing': 'Claude Desktop session; quota not reported',
                  'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': False,
                  'dispatch': 'dispatchOnQuickEntrySubmit (full turn, not a prefill)',
@@ -294,6 +294,9 @@ class Bridge:
         if backend == 'ironclaw':
             return {'status': 'engine_unavailable', 'backend': backend,
                     'reason': 'Prototype CLI IronClaw désactivé : raccordement MCP au registre durable Tasks/Endpoint requis.', 'automatic_fallback': False}
+        if backend == 'claude-desktop' and not self.desktop_values:
+            return {'status': 'engine_unavailable', 'backend': backend,
+                    'reason': 'Quick Apply non configuré sur ce pont ; relancez-le avec --desktop-socket.', 'automatic_fallback': False}
         if backend != 'claude-desktop' and not (self.ironclaw_program if backend == 'ironclaw'
                                                 else (self.program if backend == 'codex' else self.claude_program)):
             return {'status': 'engine_unavailable', 'backend': backend, 'reason': 'Requested executable not configured', 'automatic_fallback': False}
