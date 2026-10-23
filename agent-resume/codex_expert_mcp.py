@@ -32,10 +32,13 @@ BACKEND_MODELS = {
     'ironclaw': (),
     'claude-desktop': (),
 }
+RETURN_MODES = {'type': 'string', 'enum': ['full', 'receipt'], 'default': 'full'}
+INFERENCE_TOOLS = ('reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup')
+
 MODEL_SCHEMA = {'type': 'string',
                 'description': 'Explicit model from reprise_backends.models; omitted preserves the default or thread route.'}
 
-SCHEMA = {'type': 'object', 'properties': {'question': {'type': 'string', 'maxLength': 12000}, 'request_key': {'type': 'string', 'maxLength': 128}, 'parent_request_key': {'type': 'string', 'maxLength': 128}},
+SCHEMA = {'type': 'object', 'properties': {'return_mode': RETURN_MODES, 'question': {'type': 'string', 'maxLength': 12000}, 'request_key': {'type': 'string', 'maxLength': 128}, 'parent_request_key': {'type': 'string', 'maxLength': 128}},
           'required': ['question', 'request_key'], 'additionalProperties': False}
 TOOLS = [
     {'name': 'reprise_quotas', 'description': 'Observe quota knowledge by explicit engine/route, account and pool. Cached by default; refresh reads native metadata only. Unknown is not zero. Never resumes/routes inference.',
@@ -89,7 +92,7 @@ def compact_call(message):
     args = params.get('arguments', {})
     return isinstance(args, dict) and (
         params.get('name') == 'reprise_requests' and args.get('view') in ('receipt', 'page')
-        or params.get('name') == 'reprise_delegate' and args.get('return_mode') == 'receipt')
+        or params.get('name') in INFERENCE_TOOLS and args.get('return_mode') == 'receipt')
 
 
 def tool_content(result):
@@ -171,11 +174,11 @@ class Bridge:
         if not isinstance(args, dict):
             raise ValueError('Object arguments required')
         return_mode = args.get('return_mode', 'full')
-        if name == 'reprise_delegate':
+        if name in INFERENCE_TOOLS:
             if return_mode not in ('full', 'receipt'):
                 raise ValueError('Invalid return_mode')
         elif 'return_mode' in args:
-            raise ValueError('return_mode requires reprise_delegate')
+            raise ValueError('return_mode requires an inference tool')
         with self.lock_path.open('a') as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -235,7 +238,9 @@ class Bridge:
         if name == 'reprise_backends':
             if args:
                 raise ValueError('No arguments expected')
-            return {'status': 'finished', 'project_root': str(self.root), 'backends': [
+            return {'status': 'finished', 'project_root': str(self.root), 'result_transport': {
+                    'receipt': True, 'pagination': True, 'followup_receipt': True,
+                    'format': 'receipt-json-v1', 'transport_limit': TRANSPORT_LIMIT}, 'backends': [
                 {'id': 'codex', 'configured': bool(self.program), 'billing': 'ChatGPT quota',
                  'models': list(BACKEND_MODELS['codex']),
                  'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': False},
@@ -360,7 +365,8 @@ class Bridge:
         method, params = message.get('method'), message.get('params') or {}
         if method == 'initialize':
             return {'protocolVersion': '2024-11-05', 'capabilities': {'tools': {}},
-                    'serverInfo': {'name': 'reprise-codex-expert', 'version': '0.1.0'}}
+                    'serverInfo': {'name': 'reprise-codex-expert', 'version': Path(__file__).with_name('VERSION').read_text().strip(),
+                                   'source_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}}
         if method == 'ping':
             return {}
         if method == 'tools/list':

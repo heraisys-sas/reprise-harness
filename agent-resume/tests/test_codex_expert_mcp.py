@@ -444,6 +444,47 @@ class CompactReceiptTests(unittest.TestCase):
                              'y' * 20000)
             run.assert_called_once()
 
+    def test_all_inference_routes_return_receipts_without_replay(self):
+        for name in ('reprise_delegate', 'codex_review', 'reprise_followup', 'codex_followup'):
+            with self.subTest(name=name):
+                key = 'route-' + name
+                args = {'request_key': key, 'question': name}
+                if name == 'reprise_delegate':
+                    args['kind'] = 'review'
+                if 'followup' in name:
+                    args['thread_id'] = ID
+                    self.bridge.db.execute('INSERT OR IGNORE INTO expert_threads VALUES (?,?)',
+                                           (self.bridge.scope, ID))
+                    self.bridge.db.commit()
+                    if name == 'reprise_followup':
+                        args['backend'] = 'codex'
+                with patch('codex_expert_mcp.review', return_value={
+                        'status': 'finished', 'response': 'é😀\\"' * 15000}) as run:
+                    receipt = self.dispatch(name, dict(args, return_mode='receipt'))
+                    self.assertTrue(receipt['available'])
+                    self.assertGreater(receipt['total_length'], 48000)
+                    self.assertEqual(receipt, self.dispatch(name, dict(args, return_mode='receipt')))
+                    full = self.bridge.call(name, dict(args, return_mode='full'))
+                    self.assertEqual(full['response'], 'é😀\\"' * 15000)
+                    run.assert_called_once()
+
+    def test_claude_continuation_compact_replay(self):
+        self.bridge.claude_program = '/claude'
+        self.bridge.claude_subscription_only = True
+        with patch('codex_expert_mcp.claude_review', return_value={
+                'status': 'finished', 'response': 'é😀' * 30000,
+                'thread_id': ID, 'model': 'sonnet', 'resumable': True}) as run:
+            first = self.dispatch('reprise_delegate', {
+                'request_key': 'claude-first', 'question': 'Inspect', 'kind': 'review',
+                'backend': 'claude-code', 'return_mode': 'receipt'})
+            args = {'request_key': 'claude-next', 'question': 'Continue',
+                    'thread_id': ID, 'backend': 'claude-code', 'return_mode': 'receipt'}
+            followup = self.dispatch('reprise_followup', args)
+            self.assertEqual(followup, self.dispatch('reprise_followup', args))
+            self.assertTrue(first['available'])
+            self.assertGreater(followup['total_length'], 48000)
+            self.assertEqual(run.call_count, 2)
+
     def test_complete_envelope_bound_and_stable_pages_with_id_reserve(self):
         key = '\x01' * 127 + 'k'
         sample = '"\\\n\r\t\x00\x01e\u0301é😀'
@@ -490,7 +531,7 @@ class CompactReceiptTests(unittest.TestCase):
             for mode in ('other', None, True, 1):
                 with self.subTest(mode=mode), self.assertRaises(ValueError):
                     self.bridge.call('reprise_delegate', dict(args, return_mode=mode))
-            for name in ('codex_review', 'codex_followup', 'reprise_followup',
+            for name in ('codex_followup', 'reprise_followup',
                          'reprise_requests', 'reprise_backends'):
                 with self.subTest(name=name), self.assertRaises(ValueError):
                     self.bridge.call(name, {'request_key': 'key', 'question': 'Inspect',

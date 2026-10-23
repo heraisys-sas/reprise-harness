@@ -38,7 +38,9 @@ Discover these optional parameters in the installed MCP schema before use.
 Historical calls default to `full`, including the recent-request list; their
 response format and explicit acknowledgement remain supported.
 
-Persist `request_key` before calling `reprise_delegate(..., return_mode="receipt")`.
+Persist `request_key` before calling any inference tool with `return_mode="receipt"`
+(`reprise_delegate`, `reprise_followup`, `codex_review`, `codex_followup`).
+Prefer compact receipts for delegation and continuations, then read only useful pages.
 The complete result is persisted before the compact manifest is returned,
 including on replay. `return_mode` defaults to `full` and is removed before
 backend prevalidation, payload construction, identity and signature. Switching
@@ -109,3 +111,24 @@ Explicit `backend: "claude-desktop"` uses the structured Quick Apply submission 
 ### Deliverable and timeout discipline
 
 Give the expert the exact baseline, scope, acceptance checks and enough reads to resolve uncertainty. Request a Git-generated diff checked against a clean baseline, and require an explicit statement of checks actually run. After two failed applications, return diagnostics to the same expert conversation or change implementation method; do not repeatedly regenerate hunk headers. A timed-out turn needs native-state reconciliation, not a direct database state rewrite. Preserve request identity and uncertainty until that reconciliation is evidenced.
+
+
+### Deterministic local collection
+
+For a complete patch or long answer, avoid manually copying model-visible pages.
+The installed helper `delegation_collect.py` reads the configured local state in
+read-only mode, checks every offset, total length and SHA-256, then creates a
+new private file without inference or acknowledgement:
+
+```sh
+python3 /path/to/helpers/delegation_collect.py --state /path/to/state \
+  --project-root /path/to/project --request-key saved-key \
+  --field response --output /path/to/new-answer.txt
+```
+
+Use the runtime Python and paths of the selected integration. `--field result`
+(the default) exports canonical JSON. A key does not grant access to another
+project scope. Existing output files are never overwritten. Incomplete backend
+captures are refused; pagination cannot reconstruct missing text. Native Harness
+file-reading tools can still shorten their own display: collect or inspect bounded
+ranges instead of treating that display as the full file.

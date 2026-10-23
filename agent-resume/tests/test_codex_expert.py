@@ -16,6 +16,7 @@ class Fake:
     approval = False
     phase = 'final_answer'
     mcp_status = 'disabled'
+    responses = ['Finding: unchecked input']
     def __init__(self, *args):
         self.calls = []
         Fake.last = self
@@ -36,7 +37,7 @@ class Fake:
                 self.notifications.append({'id': 12, 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': ID, 'turnId': 'own'}})
             else:
                 self.notifications.extend([
-                    {'method': 'item/completed', 'params': {'threadId': ID, 'turnId': 'own', 'item': {'type': 'agentMessage', 'phase':self.phase, 'text': 'Finding: unchecked input'}}},
+                    *[{'method': 'item/completed', 'params': {'threadId': ID, 'turnId': 'own', 'item': {'type': 'agentMessage', 'phase':self.phase, 'text': text}}} for text in self.responses],
                     {'method': 'turn/completed', 'params': {'threadId': ID, 'turn': {'id': 'own', 'status': 'completed'}}}])
             return {'turn': {'id': 'own'}}
         return {}
@@ -47,6 +48,7 @@ class ExpertTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         Fake.root, Fake.used, Fake.auth, Fake.active, Fake.approval = self.temp.name, 30, 'chatgpt', False, False
         Fake.phase, Fake.mcp_status = 'final_answer', 'disabled'
+        Fake.responses = ['Finding: unchecked input']
         (Path(self.temp.name)/'rollout.jsonl').touch()
         self.patch = patch('codex_expert.Client', Fake)
         self.patch.start(); self.addCleanup(self.patch.stop)
@@ -63,6 +65,36 @@ class ExpertTests(unittest.TestCase):
         self.assertFalse(config['features.apps'])
         self.assertFalse(config['features.plugins'])
         self.assertEqual(config['mcp_servers'], {'external':{'enabled':False}})
+    def test_long_unicode_response_is_preserved_for_initial_and_followup(self):
+        Fake.responses = ['é🙂\\"' * 20_000, 'second message']
+        expected = '\n'.join(Fake.responses)
+        for kwargs in ({}, {'thread_id': ID}):
+            with self.subTest(kwargs=kwargs):
+                result = self.run_review(**kwargs)
+                self.assertEqual(result['status'], 'finished')
+                self.assertEqual(result['response'], expected)
+                self.assertNotIn('output_truncated', result)
+
+    def test_capture_limit_reports_incomplete_without_replaying_turn(self):
+        Fake.responses = ['🙂' * expert.MAX_RESPONSE_CHARACTERS, 'overflow']
+        result = self.run_review()
+        self.assertEqual(result['status'], 'needs_review')
+        self.assertTrue(result['output_truncated'])
+        self.assertFalse(result['output_complete'])
+        self.assertIn('incomplete', result['reason'])
+        self.assertEqual(result['capture_limit_characters'], expert.MAX_RESPONSE_CHARACTERS)
+        self.assertEqual(result['response'], Fake.responses[0])
+        self.assertEqual(sum(m == 'turn/start' for m, _ in Fake.last.calls), 1)
+        self.assertNotIn('turn/interrupt', [m for m, _ in Fake.last.calls])
+
+    def test_capture_limit_includes_message_separators(self):
+        Fake.responses = ['first', 'second']
+        with patch.object(expert, 'MAX_RESPONSE_CHARACTERS', 8):
+            result = self.run_review()
+        self.assertEqual(result['response'], 'first\nse')
+        self.assertEqual(result['status'], 'needs_review')
+        self.assertFalse(result['output_complete'])
+
     def test_quota_reserve_prevents_thread_creation(self):
         for used in (95, 99, None, float('nan'), True):
             Fake.used = used

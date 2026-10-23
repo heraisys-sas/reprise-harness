@@ -327,6 +327,77 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)['profiles'], ['desktop', 'other'])
         self.assertFalse(absent.exists())
 
+    def bridge_probe(self, delegate=False, legacy=False):
+        self.install(delegate=delegate)
+        tools = []
+        for name in sorted(integration.OBSERVE + (integration.DELEGATE if delegate else ())):
+            properties = {}
+            if not legacy:
+                if name == 'reprise_requests':
+                    properties = {'view': {'enum': ['receipt', 'page']}}
+                elif name in integration.DELEGATE:
+                    properties = {'return_mode': {'enum': ['full', 'receipt']}}
+            tools.append({'name': name, 'inputSchema': {'properties': properties}})
+        stdout = '\n'.join(json.dumps(message) for message in [
+            {'id': 1, 'result': {'serverInfo': {'version': 'fixture-version'}}},
+            {'id': 2, 'result': {'tools': tools}},
+        ])
+        return subprocess.CompletedProcess([], 0, stdout=stdout, stderr='')
+
+    def test_capabilities_match_actual_bridge_schemas_with_oneof_const(self):
+        from codex_expert_mcp import TOOLS
+        result = integration.bridge_capabilities(TOOLS)
+        self.assertEqual(result['evidence'], 'direct_probe_tools_schema')
+        self.assertEqual(result['result_transport'], {
+            'receipt': True, 'pagination': True, 'delegate_receipt': True,
+            'followup_receipt': True,
+        })
+
+    def test_verify_reports_probed_capabilities_and_current_selected_bundle(self):
+        probe = self.bridge_probe(delegate=True)
+        before = self.snapshot(self.state)
+        with patch.object(integration.subprocess, 'run', return_value=probe) as run:
+            result = integration.verify(self.home, 'desktop', self.root)
+        self.assertEqual(result['bridge_version'], 'fixture-version')
+        self.assertEqual(result['selected_release']['status'], 'current')
+        self.assertFalse(result['update_required'])
+        self.assertTrue(all(result['bridge_capabilities']['result_transport'].values()))
+        self.assertEqual(result['levels']['integration_loaded'], 'unknown')
+        self.assertEqual(result['bridge_capabilities']['client_loaded'], 'unknown')
+        requests = [json.loads(line) for line in run.call_args.kwargs['input'].splitlines()]
+        self.assertEqual([item['method'] for item in requests],
+                         ['initialize', 'notifications/initialized', 'tools/list'])
+        self.assertEqual(self.snapshot(self.state), before)
+
+    def test_verify_detects_legacy_tools_even_with_matching_release_identity(self):
+        probe = self.bridge_probe(delegate=True, legacy=True)
+        with patch.object(integration.subprocess, 'run', return_value=probe):
+            result = integration.verify(self.home, 'desktop', self.root)
+        self.assertTrue(result['update_required'])
+        self.assertEqual(result['selected_release']['status'], 'current')
+        self.assertEqual(set(result['missing_result_capabilities']),
+                         {'receipt', 'pagination', 'delegate_receipt', 'followup_receipt'})
+
+    def test_verify_detects_different_selected_bundle_without_claiming_loaded_client(self):
+        probe = self.bridge_probe()
+        helpers, runtime, _ = integration.bundle_info(self.root)
+        with patch.object(integration.subprocess, 'run', return_value=probe), \
+                patch.object(integration, 'bundle_info', return_value=(helpers, runtime, 'f' * 64)):
+            result = integration.verify(self.home, 'desktop', self.root)
+        self.assertTrue(result['update_required'])
+        self.assertEqual(result['selected_release']['status'], 'outdated')
+        self.assertEqual(result['levels']['client_tools_discovered'], 'unknown')
+        self.assertIsNone(result['bridge_capabilities']['result_transport']['followup_receipt'])
+
+    def test_verify_without_selected_bundle_preserves_unknown_comparison(self):
+        probe = self.bridge_probe()
+        with patch.object(integration.subprocess, 'run', return_value=probe), \
+                patch.object(integration, 'bundle_info', side_effect=FileNotFoundError('fixture')):
+            result = integration.verify(self.home, 'desktop', self.root)
+        self.assertEqual(result['selected_release']['status'], 'unknown')
+        self.assertFalse(result['update_required'])
+        self.assertEqual(result['levels']['integration_loaded'], 'unknown')
+
     @unittest.skipUnless(os.environ.get('REPRISE_TEST_RUNTIME_ARCHIVE'), 'Pinned local runtime archive required')
     def test_real_relocated_runtime_bridge_discovery_without_inference(self):
         shutil.rmtree(self.root.parent / 'runtime')

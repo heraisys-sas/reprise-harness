@@ -407,6 +407,26 @@ def apply(root, public):
             'message': 'Configuration appliquée. Aucun client chargé ni service redémarré ; vérification séparée requise.'}
 
 
+def bridge_capabilities(tools):
+    """Report advertised input capabilities of the probed release, not the client."""
+    schemas = {tool['name']: tool.get('inputSchema', {}) for tool in tools}
+    def advertised(schema, field, value):
+        field_schema = schema.get('properties', {}).get(field, {})
+        if field_schema.get('const') == value or value in field_schema.get('enum', []):
+            return True
+        return any(advertised(branch, field, value)
+                   for operator in ('oneOf', 'anyOf', 'allOf')
+                   for branch in schema.get(operator, []))
+    def supports(name, field, value):
+        return advertised(schemas.get(name, {}), field, value)
+    return {'result_transport': {
+        'receipt': supports('reprise_requests', 'view', 'receipt'),
+        'pagination': supports('reprise_requests', 'view', 'page'),
+        'delegate_receipt': supports('reprise_delegate', 'return_mode', 'receipt') if 'reprise_delegate' in schemas else None,
+        'followup_receipt': supports('reprise_followup', 'return_mode', 'receipt') if 'reprise_followup' in schemas else None,
+    }, 'evidence': 'direct_probe_tools_schema', 'client_loaded': 'unknown'}
+
+
 def verify(home, profile, root=None):
     _, folder, managed = context(home, profile)
     if inspect(home, profile).get('pending_plan'):
@@ -445,9 +465,27 @@ def verify(home, profile, root=None):
     names = sorted(tool['name'] for tool in tools)
     if names != sorted(old['tools']):
         raise ValueError('Outils observés différents de la sélection installée.')
-    return {'status': 'verified', 'message': 'Bloc géré et consignes vérifiés ; pont sondé directement sans inférence. Chargement par Harness non observé.',
+    selected_release = {'status': 'unknown', 'reason': 'selected_bundle_not_available'}
+    try:
+        _, _, identity = bundle_info(root or Path(__file__).parent)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        selected_release['reason'] = 'selected_bundle_unavailable_or_invalid'
+    else:
+        selected_release = {'status': 'current' if identity == release.name else 'outdated',
+                            'configured_identity': release.name, 'selected_identity': identity}
+    capabilities = bridge_capabilities(tools)
+    transport = capabilities['result_transport']
+    missing = [name for name, available in transport.items() if available is False]
+    update_required = selected_release['status'] == 'outdated' or bool(missing)
+    message = 'Bloc géré et consignes vérifiés ; pont sondé directement sans inférence. Chargement par Harness non observé.'
+    if update_required:
+        message += ' Mise à jour de l’intégration requise ; rechargement du client à coordonner séparément.'
+    return {'status': 'verified', 'message': message,
+            'selected_release': selected_release, 'update_required': update_required,
+            'bridge_capabilities': capabilities, 'missing_result_capabilities': missing,
             'levels': {'configuration_written': True, 'integration_loaded': 'unknown', 'client_tools_discovered': 'unknown', 'exchange_confirmed': 'unknown'},
-            'full_profile_syntax': 'not_checked', 'bridge_tools': names, 'bridge_version': initialized_reply['serverInfo']['version']}
+            'full_profile_syntax': 'not_checked', 'bridge_tools': names, 'bridge_version': initialized_reply['serverInfo']['version'],
+            'bridge_source_sha256': initialized_reply['serverInfo'].get('source_sha256')}
 
 
 def main(root, argv=None):
