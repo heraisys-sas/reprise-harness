@@ -91,8 +91,10 @@ class UxReviewBridgeTests(unittest.TestCase):
         planned = json.loads(result.stdout)
         self.assertEqual(planned['state'], str(work / 'relative-state'))
         self.assertIn(str(work / 'relative-state'), planned['args'])
-        self.assertIn(str(work / 'code.swift'), planned['args'])
-        # Same entry planned from another cwd: identical, not a divergence.
+        # The entry never embeds the attachment: the manifest lives in the
+        # state, so the same install plans identically from any cwd.
+        self.assertIn('--recover-existing', planned['args'])
+        self.assertNotIn(str(work / 'code.swift'), planned['args'])
         elsewhere = self.home / 'elsewhere'
         elsewhere.mkdir()
         again = self.run_bridge('--check', '--state', str(work / 'relative-state'),
@@ -100,6 +102,14 @@ class UxReviewBridgeTests(unittest.TestCase):
         self.assertEqual(again.returncode, 0, again.stderr)
         replanned = json.loads(again.stdout)
         self.assertEqual(replanned['args'], planned['args'])
+        # Relative attachment resolution stays caller-cwd based: validated
+        # against the caller's cwd, refused (no traceback) where absent.
+        missing = self.run_bridge('--check', '--state', 'relative-state',
+                                  '--attachment', 'code.swift', cwd=elsewhere)
+        self.assertEqual(missing.returncode, 1, missing.stderr)
+        refused = json.loads(missing.stdout)
+        self.assertEqual(refused['status'], 'refused')
+        self.assertIn('Pièce jointe absente', refused['message'])
 
 
 if __name__ == '__main__':

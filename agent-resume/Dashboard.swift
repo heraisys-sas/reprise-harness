@@ -586,27 +586,35 @@ struct Dashboard: View {
         let codexAnomalies = app.health["codex_anomalies"] as? [[String: Any]] ?? []
         let claudeAnomalies = (features["anomalies"] as? [String: Any])?["anomalies"] as? [[String: Any]] ?? []
         let actionCount = actions.count + claudeAnomalies.count + codexAnomalies.count
+        let verified = app.healthVerified
+        let summary = !verified
+            ? (app.healthCheckedAt == nil ? "Santé indisponible · contrôle requis" : "Santé périmée · nouveau contrôle requis")
+            : (actionCount == 0 ? "✓ Sain · aucune action requise" : "⚠ \(actionCount) action(s) requise(s)")
         return VStack(alignment: .leading, spacing: 18) {
             Surface {
                 HStack {
-                    Label(actionCount == 0 ? "✓ Sain · aucune action requise" : "⚠ \(actionCount) action(s) requise(s)",
-                          systemImage: actionCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    Label(summary,
+                          systemImage: verified && actionCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                         .font(.headline)
-                        .foregroundStyle(actionCount == 0 ? .green : .orange)
-                        .accessibilityLabel(actionCount == 0 ? "Sain, aucune action requise" : "\(actionCount) action(s) requise(s)")
+                        .foregroundStyle(verified && actionCount == 0 ? .green : .orange)
+                        .accessibilityLabel(summary)
                     Spacer()
                 }
                 .accessibilityElement(children: .combine)
+                if let date = app.healthCheckedAt {
+                    Text("Dernier contrôle réussi : " + localDateTime(date)).font(.caption).foregroundStyle(.secondary)
+                }
             }
             Surface {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
                         Label("Redémarrer la chaîne de dépendances", systemImage: "arrow.clockwise.circle").font(.headline)
                         Spacer()
-                        Button("Tout redémarrer") { app.restartChain() }.disabled(app.chainBusy)
+                        Button("Tout redémarrer") { app.restartChain() }.disabled(app.chainBusy || !app.chainSupported)
                         if app.chainBusy { InlineStatus(busy: true, message: app.chainNote) }
                     }
                     Text("Relance Reprise, le service claude-desktopd et le service codexd, puis vérifie l’état. N’arrête jamais de force les applications liées.").font(.callout).foregroundStyle(.secondary)
+                    if !app.chainSupported { Text("Redémarrage groupé indisponible dans cette distribution.").font(.caption).foregroundStyle(.secondary) }
                     if !app.chainNote.isEmpty { Text(app.chainNote).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
                 }
             }
@@ -614,7 +622,7 @@ struct Dashboard: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Actions requérant un humain").font(.headline)
                     if actions.isEmpty {
-                        Text("Aucune action nécessaire pour l’instant.").font(.callout).foregroundStyle(.secondary)
+                        Text(verified ? "Aucune action nécessaire pour l’instant." : "Aucune conclusion disponible sans contrôle vérifié.").font(.callout).foregroundStyle(.secondary)
                     } else {
                         ForEach(actions, id: \.self) { action in
                             Label(action, systemImage: "hand.point.right").font(.callout)
@@ -730,7 +738,7 @@ struct Dashboard: View {
         switch section {
         case "sessions": return app.attention.count
         case "resumptions": return app.verdicts.count
-        case "health": return (app.health["actions_for_human"] as? [String])?.count
+        case "health": return app.healthVerified ? (app.health["actions_for_human"] as? [String])?.count : nil
         default: return nil
         }
     }

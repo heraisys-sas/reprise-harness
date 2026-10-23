@@ -73,6 +73,14 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var desktopConnectionVerified = false
     var desktopConnectionLoaded = false
     @Published var health: [String: Any] = [:]
+    @Published var healthState = "unavailable"
+    @Published var healthCheckedAt: Date?
+    var healthVerified: Bool {
+        healthState == "verified" && healthCheckedAt.map { Date().timeIntervalSince($0) <= 120 } == true
+    }
+    var chainSupported: Bool {
+        !usesBundledRuntime && FileManager.default.fileExists(atPath: root.appendingPathComponent("restart-chain").path)
+    }
     @Published var localSynthesis: [String: Any] = [:]
     var lastSynthesisAt: Date = .distantPast
     @Published var desktopBusy = false
@@ -198,7 +206,20 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                 self.scheduler = scheduler ?? [:]
                 self.connection = connection ?? [:]
                 self.desktopConnection = desktopConnection ?? [:]
-                self.health = health ?? [:]
+                if let health,
+                   health["versions"] is [String: Any],
+                   health["actions_for_human"] is [String],
+                   health["stale_log_signatures"] is [String],
+                   health["needs_relaunch"] is [String],
+                   health["quick_entry_features"] is [String: Any],
+                   health["codex_features"] is [String: Any],
+                   health["codex_anomalies"] is [[String: Any]] {
+                    self.health = health
+                    self.healthCheckedAt = Date()
+                    self.healthState = "verified"
+                } else {
+                    self.healthState = self.healthCheckedAt == nil ? "unavailable" : "stale"
+                }
                 self.quotaKnowledge = quotaKnowledge ?? [:]
                 if !self.connectionLoaded, let connection {
                     self.socketPath = connection["configured_socket"] as? String ?? (connection["candidates"] as? [[String: Any]])?.first?["path"] as? String ?? ""
@@ -211,7 +232,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                 if !self.startupAttempted {
                     self.startupAttempted = true
                     if self.sharedStartup && !self.running.contains("com.openai.codex") { self.sharedAction("launch", startup: true) }
-                    if self.desktopStartup { self.desktopAction("launch"); self.desktopAction("start") }
+                    if self.desktopStartup { self.desktopAction("launch-start") }
                 }
                 if let result { self.snapshot = result; self.lastRefresh = Date() }
                 else { self.snapshot["error"] = self.runtimeError ?? "Actualisation indisponible. Les dernières informations restent affichées." }
@@ -320,26 +341,40 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         guard !desktopBusy else { return }
         let command: String
         switch operation {
-        case "launch": command = "desktop-launch"
+        case "launch", "launch-start": command = "desktop-launch"
         case "start": command = "desktop-server-start"
         case "stop": command = "desktop-server-stop"
         default: command = "desktop-status"
         }
         desktopBusy = true
-        desktopNote = operation == "launch" ? "Ouverture de l’application liée…" : operation == "start" ? "Démarrage du service claude-desktopd…" : operation == "stop" ? "Arrêt du service…" : "Actualisation…"
+        desktopNote = ["launch", "launch-start"].contains(operation) ? "Ouverture de l’application liée…" : operation == "start" ? "Démarrage du service claude-desktopd…" : operation == "stop" ? "Arrêt du service…" : "Actualisation…"
         perform([command]) { result in
             self.desktopBusy = false
+            if operation == "launch-start", result?["ok"] as? Bool == true {
+                self.desktopAction("start")
+                return
+            }
             self.desktopNote = result?["reason"] as? String ?? "Opération non confirmée. Aucun nouvel essai automatique."
             self.refresh()
         }
     }
     func restartChain() {
         guard !chainBusy else { return }
+        guard chainSupported else {
+            chainNote = "Redémarrage groupé indisponible dans cette distribution ; aucun service modifié."
+            return
+        }
         chainBusy = true
         chainNote = "Redémarrage de la chaîne en cours…"
         perform(["restart-chain"]) { result in
             self.chainBusy = false
-            self.chainNote = result?["output"] as? String ?? (result?["error"] as? String ?? "Chaîne redémarrée.")
+            if result?["status"] as? String == "finished" {
+                let output = result?["output"] as? String ?? ""
+                self.chainNote = output.isEmpty ? "Chaîne redémarrée." : output
+            } else {
+                let error = result?["error"] as? String ?? ""
+                self.chainNote = error.isEmpty ? "Redémarrage non confirmé. Aucun nouvel essai automatique." : error
+            }
             self.refresh()
         }
     }

@@ -76,12 +76,14 @@ def server_args(*, state, attachment=None, task=None):
     Paths are resolved to absolutes: Claude Desktop starts the server with an
     arbitrary cwd, so a relative path would not point where validation looked.
     """
-    args = [str(SERVER), '--state', str(Path(state).expanduser().resolve())]
-    if attachment:
-        args += ['--attachment', str(Path(attachment).expanduser().resolve())]
-    if task:
-        args += ['--task', task]
-    return args
+    return [str(SERVER), '--state', str(Path(state).expanduser().resolve()), '--recover-existing']
+
+
+def prepare_manifest(state, attachment=None, task=None):
+    from ux_review_probe import DEFAULT_TASK, Probe
+    recovering = (Path(state) / 'ux_job.sqlite').exists() and attachment is None and task is None
+    probe = Probe(state, None if recovering else (DEFAULT_TASK if task is None else task), attachment)
+    probe.db.close()
 
 
 def _validate(home, state, attachment):
@@ -125,6 +127,8 @@ def install(*, home=None, state=None, attachment=None, task=None, force=False,
     servers = data.setdefault('mcpServers', {})
     entry = servers.get(NAME)
     if entry == requested:
+        if not dry_run:
+            prepare_manifest(state, attachment, task)
         running = app_running if app_running is not None else claude_running()
         return {
             'changed': False, 'config': str(target), 'name': NAME, 'state': str(state),
@@ -160,6 +164,7 @@ def install(*, home=None, state=None, attachment=None, task=None, force=False,
     }
     if dry_run:
         return planned
+    prepare_manifest(state, attachment, task)
     payload = json.dumps(data, indent=2, ensure_ascii=False).encode('utf-8')
     target.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=target.name + '.reprise-', dir=target.parent)

@@ -16,6 +16,7 @@ import uuid
 from delegation_store import digest, validate_key
 
 MAX_ANALYSIS = 24000
+DEFAULT_TASK = 'Analyze the attached SwiftUI/AppKit code for UX/UI: clarity, hierarchy, consistency, accessibility, and concrete improvements.'
 
 TOOLS = [
     {'name': 'get_result', 'description': 'Retrieve the durable result or attempt state, optionally acknowledge consumption. Does not dispatch work.',
@@ -135,7 +136,7 @@ def main():
     parser.add_argument('--recover-existing', action='store_true', help='Load persisted task and attachment without reading source files')
     parser.add_argument('--request-key', default='ux-review', help='Persist this key before triggering Claude')
     parser.add_argument('--attachment', help='Path to the Swift source to review')
-    parser.add_argument('--task', default='Analyze the attached SwiftUI/AppKit code for UX/UI: clarity, hierarchy, consistency, accessibility, and concrete improvements.')
+    parser.add_argument('--task', default=DEFAULT_TASK)
     args = parser.parse_args()
     probe = Probe(args.state, None if args.recover_existing else args.task, args.attachment, args.request_key)
     try:

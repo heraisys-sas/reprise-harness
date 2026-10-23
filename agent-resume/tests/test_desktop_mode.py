@@ -64,19 +64,21 @@ class QuickApplyDaemonTests(unittest.TestCase):
 
     def test_daemon_start_reports_failure_with_cause(self):
         # With an unremovable orphan socket, start() must report the failure.
-        result = dm.daemon_start(socket='/nonexistent-dir/x.sock', state=self.state)
+        with patch.object(dm, 'server_running', return_value=False), patch('subprocess.Popen'), patch('time.sleep'):
+            result = dm.daemon_start(socket='/nonexistent-dir/x.sock', state=self.state)
         self.assertIn('ok', result)
         self.assertIn('reason', result)
         if not result['ok']:
             self.assertIn('reason', result)
 
     def test_daemon_stop_without_daemon_is_noop(self):
-        result = dm.daemon_stop(self.state)
+        with patch.object(dm, 'socket_state', return_value='stopped'):
+            result = dm.daemon_stop(self.state)
         self.assertTrue(result['ok'])
         self.assertFalse(result['stopped'])
 
     def test_daemon_start_is_idempotent_when_running(self):
-        with patch.object(dm, 'daemon_pid', return_value=12345), patch.object(dm, '_pid_alive', return_value=True):
+        with patch.object(dm, 'server_running', return_value=True):
             result = dm.daemon_start(state=self.state)
         self.assertTrue(result['ok'])
         self.assertFalse(result['started'])

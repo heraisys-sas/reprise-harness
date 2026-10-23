@@ -83,15 +83,19 @@ class InstallUxReviewTests(unittest.TestCase):
         data = self.read_config()
         self.assertIn('reprise_ux_review', data['mcpServers'])
 
-    def test_attachment_and_task_in_args(self):
+    def test_attachment_and_task_persisted_before_recovery_launch(self):
         attach = self.home / 'code.swift'
         attach.write_text('struct V { }')
         result = self.install(attachment=attach, task='Analyse la clarté')
         entry = self.read_config()['mcpServers']['reprise_ux_review']
-        self.assertIn('--attachment', entry['args'])
-        self.assertIn(str(attach.resolve()), entry['args'])
-        self.assertIn('--task', entry['args'])
-        self.assertIn('Analyse la clarté', entry['args'])
+        self.assertIn('--recover-existing', entry['args'])
+        self.assertNotIn('--attachment', entry['args'])
+        self.assertNotIn('--task', entry['args'])
+        from ux_review_probe import Probe
+        recovered = Probe(self.state, None, None)
+        self.addCleanup(recovered.db.close)
+        self.assertEqual(recovered.task_prompt, 'Analyse la clarté')
+        self.assertEqual(recovered.attachment, 'struct V { }')
 
     def test_rejects_paths_outside_home(self):
         with self.assertRaises(ValueError):
@@ -191,7 +195,8 @@ class InstallUxReviewTests(unittest.TestCase):
         self.install(state='relative-state', attachment='code.swift')
         args = self.read_config()['mcpServers'][installer.NAME]['args']
         self.assertIn(str(work / 'relative-state'), args)
-        self.assertIn(str(attach), args)
+        self.assertNotIn(str(attach), args)
+        self.assertIn('--recover-existing', args)
         # The written entry must be recognized unchanged from another cwd.
         elsewhere = self.home / 'elsewhere'
         elsewhere.mkdir()
@@ -219,6 +224,40 @@ class InstallUxReviewTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.install()
                 self.assertEqual(self.config.read_bytes(), before)
+
+
+    def test_modified_or_deleted_source_does_not_block_result_recovery(self):
+        from ux_review_probe import Probe
+        source = self.home / 'code.swift'
+        source.write_text('original')
+        self.install(attachment=source, task='Review')
+        probe = Probe(self.state, None, None)
+        self.addCleanup(probe.db.close)
+        task = probe.call('get_task', {'claim_key': 'worker'})
+        probe.call('submit_result', {'job_id': task['job_id'],
+                   'attempt_id': task['attempt_id'], 'analysis': 'accepted review'})
+        receipt = probe.call('get_result', {'request_key': 'ux-review'})
+        for remove in (False, True):
+            if remove:
+                source.unlink()
+            else:
+                source.write_text('changed')
+            recovered = Probe(self.state, None, None)
+            try:
+                self.assertEqual(recovered.attachment, 'original')
+                self.assertEqual(recovered.call('get_result', {'request_key': 'ux-review'}), receipt)
+            finally:
+                recovered.db.close()
+
+    def test_new_task_requires_new_state_and_check_does_not_prepare(self):
+        self.install(task='A', dry_run=True)
+        self.assertFalse(self.state.exists())
+        self.install(task='A')
+        before = self.config.read_bytes()
+        with self.assertRaises(ValueError):
+            self.install(task='B')
+        self.assertEqual(self.config.read_bytes(), before)
+        self.install(state=self.home / 'new-state', task='B', force=True)
 
 
 if __name__ == '__main__':
