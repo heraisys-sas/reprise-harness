@@ -1,15 +1,19 @@
 import hashlib
+import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 import uuid
+from contextlib import redirect_stdout
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from codex_expert_mcp import Bridge, error_payload
+from codex_expert_mcp import Bridge, error_payload, main
 from test_codex_expert import ID
 
 class RequestCalls:
@@ -66,13 +70,64 @@ class BridgeTests(RequestCalls, unittest.TestCase):
             self.call('codex_review', {'question': 'review', 'cwd': '/'})
 
     def test_delegate_rejects_quick_apply_parameters_outside_claude_desktop(self):
-        for backend in ('codex', 'claude-code', 'ironclaw'):
-            with self.subTest(backend=backend):
+        cases = [('codex', {'chatId': ID}), ('claude-code', {'chatId': ID}), ('ironclaw', {'chatId': ID}),
+                 (None, {'chatId': ID}), ('codex', {'filePaths': ['x.py']}),
+                 ('codex', {'chatId': ID, 'filePaths': []}), ('codex', {'chatId': None}), ('codex', {'filePaths': ''})]
+        for backend, extra in cases:
+            args = {'question': 'review', 'kind': 'review', **extra}
+            if backend:
+                args['backend'] = backend
+            with self.subTest(backend=backend, extra=sorted(extra)):
                 with patch('codex_expert_mcp.review') as review:
                     with self.assertRaises(ValueError):
-                        self.call('reprise_delegate', {'question': 'review', 'kind': 'review', 'backend': backend, 'chatId': ID})
-                review.assert_not_called()
+                        self.call('reprise_delegate', args)
+                    review.assert_not_called()
+        with patch('codex_expert_mcp.review') as review:
+            with self.assertRaises(ValueError):
+                self.call('reprise_followup', {'backend': 'codex', 'thread_id': ID, 'question': 'continue', 'chatId': ID})
+            review.assert_not_called()
         self.assertEqual(self.bridge.db.execute('SELECT COUNT(*) FROM delegation_requests').fetchone()[0], 0)
+
+    def test_followup_refuses_claude_desktop_with_owned_thread(self):
+        self.bridge.db.execute('INSERT INTO expert_threads VALUES (?,?)', (self.bridge.scope, ID))
+        self.bridge.db.commit()
+        with patch('codex_expert_mcp.review') as codex, patch('codex_expert_mcp.claude_review') as claude:
+            with self.assertRaises(ValueError) as ctx:
+                self.call('reprise_followup', {'backend': 'claude-desktop', 'thread_id': ID, 'question': 'continue'})
+            self.assertIn('Quick Apply', str(ctx.exception))
+            codex.assert_not_called()
+            claude.assert_not_called()
+        self.assertEqual(self.bridge.db.execute('SELECT COUNT(*) FROM delegation_requests').fetchone()[0], 0)
+
+    def test_main_envelope_keeps_ids_details_and_continues_after_errors(self):
+        old_umask = os.umask(0o077)
+        self.addCleanup(os.umask, old_umask)
+        def line(ident, name, arguments):
+            return json.dumps({'jsonrpc': '2.0', 'id': ident, 'method': 'tools/call',
+                               'params': {'name': name, 'arguments': arguments}}, ensure_ascii=False) + '\n'
+        payload = io.BytesIO((line('req-1', 'reprise_delegate', {'request_key': 'k1', 'question': 'Q', 'kind': 'review'})
+                              + line('x' * 300, 'reprise_delegate', {'request_key': 'k2', 'return_mode': 'receipt'})
+                              + line('req-3', 'reprise_requests', {'request_key': 'k3', 'view': 'receipt'})).encode('utf-8'))
+        with patch('codex_expert_mcp.Bridge') as bridge_class, \
+             patch('sys.stdin', types.SimpleNamespace(buffer=payload)), \
+             patch('sys.argv', ['codex_expert_mcp.py', '--project-root', str(self.temp.name),
+                                '--state', str(Path(self.temp.name) / 'state')]), \
+             redirect_stdout(io.StringIO()) as out:
+            bridge_class.return_value.dispatch.side_effect = [
+                ValueError('Quick Apply « indisponible » : socket absent.'),
+                ValueError('chatId and filePaths are only valid with backend claude-desktop'),
+                {'content': [{'type': 'text', 'text': '{"status":"finished"}'}]}]
+            main()
+        replies = [json.loads(item) for item in out.getvalue().splitlines()]
+        self.assertEqual([reply['id'] for reply in replies], ['req-1', None, 'req-3'])
+        self.assertEqual(replies[0]['error']['code'], -32602)
+        self.assertTrue(replies[0]['error']['data']['error'].startswith('ValueError: '))
+        self.assertIn('« indisponible »', replies[0]['error']['data']['error'])
+        self.assertIn('« indisponible »', out.getvalue())
+        self.assertNotIn('\\u00ab', out.getvalue())
+        self.assertNotIn('error', replies[2])
+        self.assertEqual(replies[2]['result']['content'][0]['text'], '{"status":"finished"}')
+        self.assertEqual(bridge_class.return_value.dispatch.call_count, 3)
 
     def test_error_payload_details_and_bounds_refusals(self):
         payload = error_payload(ValueError('chatId and filePaths are only valid with backend claude-desktop'))

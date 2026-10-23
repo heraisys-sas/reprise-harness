@@ -275,6 +275,8 @@ class Bridge:
             raise ValueError('Explicit followup backend required')
         if name == 'reprise_followup' and backend == 'ironclaw':
             raise ValueError('Pas de session IronClaw suiveuse ; run -m est sans état.')
+        if name == 'reprise_followup' and backend == 'claude-desktop':
+            raise ValueError('Pas de session Quick Apply suiveuse ; la soumission est unidirectionnelle.')
         if name == 'reprise_followup' and backend == 'claude-code':
             if not isinstance(ident, str):
                 raise ValueError('Owned Claude session required')
