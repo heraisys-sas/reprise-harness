@@ -13,16 +13,30 @@ def inspect(path, now=None, details=None):
     rates = None
     measured_at = None
     last_stamp = None
+    recognized = unknown = malformed = 0
     with Path(path).open() as stream:
         for line in stream:
             try:
                 record = json.loads(line)
             except ValueError:
+                malformed += 1
+                continue
+            if not isinstance(record, dict):
+                malformed += 1
                 continue
             if record.get('type') != 'event_msg':
+                if record.get('type') not in ('session_meta', 'turn_context', 'response_item', 'compacted'):
+                    unknown += 1
                 continue
             payload = record.get('payload', {})
+            if not isinstance(payload, dict):
+                malformed += 1
+                continue
             kind = payload.get('type')
+            if kind in ('task_started', 'task_complete', 'turn_aborted', 'token_count'):
+                recognized += 1
+            else:
+                unknown += 1
             if kind in ('task_started', 'task_complete', 'turn_aborted'):
                 last = payload
                 last_stamp = record.get("timestamp")
@@ -30,6 +44,8 @@ def inspect(path, now=None, details=None):
                 rates = payload['rate_limits']
                 measured_at = record.get('timestamp')
     if details is not None:
+        details.update(coverage='unreadable' if malformed else 'unknown_format' if unknown or not recognized else 'recognized',
+                       unknown_events=unknown, parse_errors=malformed)
         details.update(active=bool(last and last['type'] == 'task_started' and now - Path(path).stat().st_mtime < 120), rates=rates, measured_at=measured_at)
     if last and last['type'] == 'task_complete' and isinstance(last.get('error'), dict):
         error = last['error']
@@ -88,9 +104,11 @@ def scan(home=None):
     result = []
     active = 0
     quota = None
+    coverage = {'total': 0, 'recognized': 0, 'unknown_format': 0, 'unreadable': 0}
     try:
         with closing(sqlite3.connect(state.as_uri() + '?mode=ro', uri=True, timeout=2)) as db:
             rows = db.execute('SELECT id,title,cwd,rollout_path,updated_at,source FROM threads WHERE archived=0 AND updated_at>? ORDER BY updated_at DESC LIMIT 100', (time.time() - 30 * 86400,)).fetchall()
+        coverage['total'] = len(rows)
         for ident, title, cwd, path, updated, source in rows:
             try:
                 details = {}
@@ -99,8 +117,10 @@ def scan(home=None):
                 stamp = details.get('measured_at')
                 if details.get('rates') and stamp and (quota is None or stamp > quota['measured_at']):
                     quota = {'rates': details['rates'], 'measured_at': stamp, 'source': 'codex_rollout.token_count.rate_limits', 'evidence_scope': 'session', 'account_key': None, 'freshness': 'unverified'}
-            except (OSError, ValueError, TypeError):
+            except (OSError, ValueError, TypeError, AttributeError, KeyError):
+                coverage['unreadable'] += 1
                 continue
+            coverage[details.get('coverage', 'unknown_format')] += 1
             if status:
                 metadata = codex_source(source)
                 if metadata['is_subagent'] and status['state'] == 'quota_confirmed':
@@ -108,7 +128,10 @@ def scan(home=None):
                 elif not metadata['automatic_resume_supported'] and status['state'] == 'quota_confirmed':
                     status['label'] = 'Quota atteint · mode de reprise à vérifier'
                 result.append(dict(id=ident, title=title, cwd=cwd, updated=updated, **status, **metadata))
-        return {'sessions': result, 'error': None, 'active': active, 'quota': quota}
+        degraded = coverage['unknown_format'] + coverage['unreadable']
+        coverage['degraded'] = degraded
+        return {'sessions': result, 'error': f'Couverture Codex dégradée : {degraded} journal(s) illisible(s) ou non reconnu(s).' if degraded else None,
+                'active': None if degraded and not active else active, 'quota': quota, 'coverage': coverage}
     except sqlite3.Error:
         return {'sessions': [], 'error': 'Le format des sessions Codex a changé ou est temporairement indisponible.'}
 
@@ -213,7 +236,7 @@ def scan_all():
     for row in codex['sessions']:
         row['provider'] = 'Codex'
     errors = [r['error'] for r in (codex, harness, claude, cowork, autoclaw) if r['error']]
-    return {'sessions': sorted(codex['sessions'] + harness['sessions'] + claude['sessions'] + autoclaw['sessions'], key=lambda r: r['updated'], reverse=True)[:20], 'error': ' '.join(errors) if errors else None, 'activity': {'Codex': codex.get('active'), 'Harness': harness.get('active'), 'Claude Code': claude.get('active'), 'Cowork': cowork.get('active'), 'AutoClaw': autoclaw.get('active')}, 'codex_quota': codex.get('quota'), 'analysis': analysis}
+    return {'sessions': sorted(codex['sessions'] + harness['sessions'] + claude['sessions'] + autoclaw['sessions'], key=lambda r: r['updated'], reverse=True)[:20], 'error': ' '.join(errors) if errors else None, 'activity': {'Codex': codex.get('active'), 'Harness': harness.get('active'), 'Claude Code': claude.get('active'), 'Cowork': cowork.get('active'), 'AutoClaw': autoclaw.get('active')}, 'coverage': {'Codex': codex.get('coverage')}, 'codex_quota': codex.get('quota'), 'analysis': analysis}
 
 
 def inspect_claude(path, now=None):

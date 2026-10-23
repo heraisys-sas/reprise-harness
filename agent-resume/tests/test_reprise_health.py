@@ -247,3 +247,110 @@ class CodexHealthTests(unittest.TestCase):
         report = rh.codex_anomalies(features=self._features())
         self.assertIn('components', report)
         self.assertIn('clean', report)
+
+
+class SocketAndWatchRegressionTests(unittest.TestCase):
+    def setUp(self):
+        import sqlite3
+        import engines
+        import scheduler
+        self.db = sqlite3.connect(':memory:')
+        self.addCleanup(self.db.close)
+        engines.setup(self.db)
+        scheduler.setup(self.db)
+
+    def test_orphan_socket_is_stopped_and_never_present(self):
+        import errno
+        with patch.object(Path, 'lstat'), patch('engines.socket_path', return_value=Path('/orphan')), \
+                patch('socket.socket') as factory:
+            factory.return_value.__enter__.return_value.connect.side_effect = ConnectionRefusedError(errno.ECONNREFUSED, 'orphan')
+            self.assertEqual(rh.socket_liveness('/orphan'), 'stopped')
+            factory.return_value.__enter__.return_value.connect.assert_called_once_with('/orphan')
+        with patch.object(rh, 'socket_liveness', return_value='stopped'), \
+                patch('engines.executable', return_value=None), \
+                patch.object(rh, '_component_meta', return_value=None), \
+                patch.object(Path, 'is_dir', return_value=False), \
+                patch.object(Path, 'read_bytes', side_effect=FileNotFoundError):
+            self.assertEqual(rh.process_liveness()['codex-server'], 'stopped')
+            control = rh.codex_features()['checks']['control_socket']
+            self.assertFalse(control['present'])
+            self.assertEqual(control['state'], 'stopped')
+
+    def test_permission_and_timeout_do_not_prove_stopped(self):
+        import errno
+        for error in (PermissionError(errno.EACCES, 'denied'), TimeoutError()):
+            with self.subTest(error=error), patch.object(Path, 'lstat'), \
+                    patch('engines.socket_path', return_value=Path('/private.sock')), \
+                    patch('socket.socket') as factory:
+                factory.return_value.__enter__.return_value.connect.side_effect = error
+                self.assertEqual(rh.socket_liveness('/private.sock'), 'indeterminate')
+
+    def test_health_follows_configured_socket_without_default_fallback(self):
+        import connection
+        self.db.execute('INSERT INTO engine_settings VALUES (?,?)',
+                        ('codex', json.dumps({'socket': '/configured.sock'})))
+        self.db.commit()
+        for selected_state in ('running', 'stopped'):
+            def observed(path):
+                return selected_state if str(path) == '/configured.sock' else 'running'
+            with self.subTest(state=selected_state), \
+                    patch('engines.socket_path', return_value=Path('/configured.sock')), \
+                    patch('shared_mode.state', return_value={}), \
+                    patch.object(rh, 'socket_liveness', side_effect=observed), \
+                    patch('engines.executable', return_value=None), \
+                    patch.object(rh, '_component_meta', return_value=None), \
+                    patch.object(Path, 'is_dir', return_value=False), \
+                    patch.object(Path, 'read_bytes', side_effect=FileNotFoundError):
+                info = connection.status(self.db, '/state')
+                self.assertIn('/configured.sock', [c['path'] for c in info['candidates']])
+                self.assertEqual(rh.process_liveness(self.db, '/state')['codex-server'], selected_state)
+                control = rh.codex_features(self.db, '/state')['checks']['control_socket']
+                self.assertEqual(control['path'], '/configured.sock')
+                self.assertEqual(control['present'], selected_state == 'running')
+
+    def test_failed_report_or_commit_does_not_advance_components(self):
+        import scheduler
+        features = CodexHealthTests._features(self)
+        def checked(*args, **kwargs):
+            return {'versions': {'codex': 'stable'}, 'actions_for_human': []}
+        with patch.object(rh, 'read_versions', return_value={'codex': 'stable'}), \
+                patch.object(rh, 'quick_entry_anomalies', return_value={'components': {}, 'anomalies': []}), \
+                patch.object(rh, 'codex_features', return_value=features), \
+                patch.object(rh, 'check', side_effect=checked) as check:
+            rh.watch(self.db, '.')
+            before = self.db.execute('SELECT * FROM scheduler_meta ORDER BY key').fetchall()
+            features['checks']['codex_cli']['meta'] = {'size': 9, 'mtime': 9}
+            check.side_effect = RuntimeError('report unavailable')
+            with self.assertRaises(RuntimeError):
+                rh.watch(self.db, '.')
+            self.assertEqual(self.db.execute('SELECT * FROM scheduler_meta ORDER BY key').fetchall(), before)
+            check.side_effect = checked
+            put = scheduler.put
+            def fail_commit(db, key, value):
+                if key == 'health_components':
+                    raise RuntimeError('persistence unavailable')
+                put(db, key, value)
+            with patch.object(scheduler, 'put', side_effect=fail_commit):
+                with self.assertRaises(RuntimeError):
+                    rh.watch(self.db, '.')
+            self.assertEqual(self.db.execute('SELECT * FROM scheduler_meta ORDER BY key').fetchall(), before)
+            report = rh.watch(self.db, '.')
+            self.assertEqual(scheduler.get(self.db, 'health_report'), report)
+            self.assertEqual(scheduler.get(self.db, 'health_components')['codex']['codex_cli'],
+                             {'size': 9, 'mtime': 9})
+
+    def test_tick_records_and_logs_watch_failure(self):
+        import ast
+        import contextlib
+        import io
+        import scheduler
+        tree = ast.parse((Path(__file__).parents[1] / 'resume').read_text())
+        statement = next(n for n in ast.walk(tree) if isinstance(n, ast.Try)
+                         and any(isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                                 and c.func.attr == 'watch' for b in n.body for c in ast.walk(b)))
+        namespace = {'db': self.db, 'ROOT': Path('/project'), 'scheduler': scheduler, 'sys': sys}
+        stderr = io.StringIO()
+        with patch.object(rh, 'watch', side_effect=RuntimeError('failed')), contextlib.redirect_stderr(stderr):
+            exec(compile(ast.Module(body=[statement], type_ignores=[]), 'tick-watch', 'exec'), namespace)
+        self.assertIn('Surveillance santé indisponible', scheduler.get(self.db, 'last_error'))
+        self.assertIn('RuntimeError', stderr.getvalue())

@@ -68,46 +68,49 @@ def log_signatures(log_dir=DEFAULT_LOG_DIR):
     return result
 
 
-def process_liveness():
-    """Liveness of supervised servers via their socket, not process listing.
-
-    The process listing is often denied to a sandboxed helper; the server
-    socket is the authoritative signal Reprise already trusts (engines.
-    socket_path). Falls back to 'unknown' rather than guessing.
-    """
+def socket_liveness(path):
+    """Distingue écoute confirmée, arrêt et état indéterminé."""
+    import errno
+    import socket
     import engines
-    probes = {
-        'quick-entry-server': Path.home() / '.claude-desktop/quick-entry.sock',
-        'codex-server': engines.SOCKET,
-    }
-    import socket as socket_mod
-    result = {}
-    for name, path in probes.items():
-        if not Path(path).exists():
-            result[name] = 'stopped'  # socket absent: the server is not listening
-            continue
+    try:
+        Path(path).lstat()
+    except FileNotFoundError:
+        return 'stopped'
+    except OSError:
+        return 'indeterminate'
+    try:
+        target = engines.socket_path({'socket': str(path)})
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(1)
+            probe.connect(str(target))
+        return 'running'
+    except OSError as error:
+        return 'stopped' if error.errno in (errno.ENOENT, errno.ECONNREFUSED) else 'indeterminate'
+    except engines.Unavailable:
+        return 'indeterminate'
+
+
+def health_socket(db=None, state=None):
+    """Suit le socket enregistré dans Connexions, sans repli silencieux."""
+    import engines
+    if db is not None:
+        import sqlite3
+        import connection
         try:
-            engines.socket_path({'socket': str(path)})
-        except engines.Unavailable:
-            # Socket exists but is rejected (not private, wrong owner, broken
-            # symlink): the listener state is unknown, not proven stopped.
-            result[name] = 'indeterminate'
-            continue
-        except Exception:
-            result[name] = 'indeterminate'
-            continue
-        # A valid socket file is not enough: an orphan with no listener must not
-        # be 'running'. Probe a real connection.
-        sock = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
-        sock.settimeout(1)
-        try:
-            sock.connect(str(path))
-            result[name] = 'running'
-        except OSError:
-            result[name] = 'stopped'  # orphan socket, nothing listening
-        finally:
-            sock.close()
-    return result
+            from app_paths import state_directory
+            configured = connection.status(db, state or state_directory(Path(__file__).parent))['configured_socket']
+        except sqlite3.Error:
+            configured = None  # schéma de configuration absent : sondes par défaut
+        if configured:
+            return Path(configured)
+    return engines.SOCKET
+
+
+def process_liveness(db=None, state=None):
+    """Sonde les sockets effectivement sélectionnés, sans lancer de service."""
+    return {'quick-entry-server': socket_liveness(Path.home() / '.claude-desktop/quick-entry.sock'),
+            'codex-server': socket_liveness(health_socket(db, state))}
 
 
 def read_versions(bundle_root):
@@ -131,11 +134,11 @@ def read_versions(bundle_root):
     return versions
 
 
-def check(bundle_root, log_dir=DEFAULT_LOG_DIR):
+def check(bundle_root, log_dir=DEFAULT_LOG_DIR, db=None, state=None):
     """Post-update health: what must be relaunched and what is still parsed."""
     versions = read_versions(bundle_root)
     signatures = log_signatures(log_dir)
-    liveness = process_liveness()
+    liveness = process_liveness(db, state)
     stale = [name for name, s in signatures.items() if not s['present']]
     relaunch = [name for name, state in liveness.items() if state == 'stopped']
     return {
@@ -213,11 +216,11 @@ def _mark_historical(active_key):
         entry['historical'] = key != active_key
 
 
-def summarize(bundle_root, log_dir=DEFAULT_LOG_DIR, binary=None):
+def summarize(bundle_root, log_dir=DEFAULT_LOG_DIR, binary=None, db=None, state=None):
     """Health + optional generative explanation, for the Reprise UI and MCP."""
-    health = check(bundle_root, log_dir)
+    health = check(bundle_root, log_dir, db, state)
     health['quick_entry_features'] = quick_entry_features()
-    features = codex_features()
+    features = codex_features(db, state)
     health['codex_features'] = features
     health['codex_anomalies'] = codex_anomalies(features=features)['anomalies']
     # The generative explanation lives in local analysis; health stays deterministic.
@@ -241,23 +244,21 @@ def watch(db, bundle_root, log_dir=DEFAULT_LOG_DIR):
     previous_claude = previous_components.get('claude') if isinstance(previous_components, dict) else previous_components
     previous_codex = previous_components.get('codex') if isinstance(previous_components, dict) else None
     anomaly_report = quick_entry_anomalies(log_dir, previous_claude)
-    codex_anomaly_report = codex_anomalies(previous_codex)
-    with db:
-        scheduler.put(db, 'health_components', {
-            'claude': anomaly_report['components'],
-            'codex': codex_anomaly_report['components'],
-        })
-    report = check(bundle_root, log_dir)
+    features = codex_features(db)
+    codex_anomaly_report = codex_anomalies(previous_codex, features=features)
+    components = {'claude': anomaly_report['components'], 'codex': codex_anomaly_report['components']}
+    report = check(bundle_root, log_dir, db)
     update_detected = previous is None or current != previous
     report['update_detected'] = update_detected
     report['quick_entry_anomalies'] = anomaly_report['anomalies']
-    report['codex_features'] = codex_features()
+    report['codex_features'] = features
     report['codex_anomalies'] = codex_anomaly_report['anomalies']
     report['previous_versions'] = previous
     with db:
+        scheduler.put(db, 'health_report', report)
         scheduler.put(db, 'health_versions', current)
+        scheduler.put(db, 'health_components', components)
         if update_detected:
-            scheduler.put(db, 'health_report', report)
             scheduler.put(db, 'health_update_at', __import__('time').time())
     return report
 
@@ -357,7 +358,7 @@ def quick_entry_features():
 CODEX_APPS = (Path('/Applications/ChatGPT.app'), Path('/Applications/Codex.app'))
 
 
-def codex_features():
+def codex_features(db=None, state=None):
     """Report deterministic presence and metadata for Codex interaction dependencies."""
     import engines
     import plistlib
@@ -372,12 +373,10 @@ def codex_features():
         }
     program = engines.executable('codex-cli')
     executable_meta = _component_meta(Path(program)) if program else None
-    try:
-        engines.socket_path({})
-        socket_usable = True
-    except (engines.Unavailable, OSError, ValueError):
-        socket_usable = False
-    socket_meta = _component_meta(engines.SOCKET)
+    socket_path = health_socket(db, state)
+    socket_state = socket_liveness(socket_path)
+    socket_usable = socket_state == 'running'
+    socket_meta = _component_meta(socket_path)
 
     desktop_version = None
     for app in CODEX_APPS:
@@ -396,13 +395,13 @@ def codex_features():
         'codex_cli': {'label': 'Exécutable Codex CLI', 'present': program is not None,
                       'path': program, 'meta': executable_meta},
         'control_socket': {'label': 'Socket de contrôle local', 'present': socket_usable,
-                           'path': str(engines.SOCKET), 'meta': socket_meta},
+                           'path': str(socket_path), 'state': socket_state, 'meta': socket_meta},
         'shared_mode': {'label': 'Prérequis du mode partagé', 'present': bool(desktop_version and program),
                         'desktop_version': desktop_version, 'codex_cli': program is not None},
     }
     missing = [name for name, item in checks.items() if not item['present']]
     return {'checks': checks, 'missing': missing, 'ready': not missing,
-            'note': 'Présence déterministe seulement ; aucun processus ni connexion n’est lancé.'}
+            'note': 'Présence des composants et écoute du socket vérifiées ; aucune inférence ni lancement de service.'}
 
 
 def codex_anomalies(previous=None, features=None):

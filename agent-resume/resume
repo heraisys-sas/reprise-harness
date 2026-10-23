@@ -293,7 +293,7 @@ def main():
                           'output': result.stdout[-2000:], 'error': result.stderr[-500:]}, ensure_ascii=False))
     elif args.action == 'reprise-health':
         import reprise_health
-        print(json.dumps(reprise_health.summarize('.'), ensure_ascii=False))
+        print(json.dumps(reprise_health.summarize(ROOT, db=db, state=STATE), ensure_ascii=False))
     elif args.action == 'reprise-resume':
         import reprise_logs
         print(json.dumps({'resumable': reprise_logs.resumable()}, ensure_ascii=False))
@@ -397,9 +397,12 @@ def main():
             pass
         try:
             import reprise_health
-            reprise_health.watch(db, '.')
-        except Exception:
-            pass
+            reprise_health.watch(db, ROOT)
+        except Exception as error:
+            message = 'Surveillance santé indisponible : ' + type(error).__name__
+            with db:
+                scheduler.put(db, 'last_error', message)
+            print(message, file=sys.stderr)
     elif args.action == 'backup':
         from task_archive import backup
         backup(db, args.archive)
