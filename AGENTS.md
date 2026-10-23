@@ -65,3 +65,14 @@ Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui s
 - Registre durable des résultats non réclamés ; contrôle des dépendances, budgets et cycles ; aucun verrou de retour conservé pendant une inférence.
 
 - Décision quota : le plafond quotidien local Codex est supprimé. Fiabiliser d’abord la connaissance des quotas par compte/pool ; concevoir ensuite la reprise fondée sur ces quotas. Ne pas étendre entre-temps l’automatisation existante.
+
+## Discipline d’exécution et arrêt des boucles
+
+- Privilégier les frontends, CLI et API existants. Après un refus sandbox, utiliser une route autorisée ou demander une permission ciblée ; ne pas répéter une commande inchangée.
+- Regrouper les lectures indépendantes et les modifications d’un même fichier. Si l’outil invalide une lecture après édition, relire une fois puis appliquer les changements ensemble ; deux refus identiques imposent une autre méthode.
+- Déléguer un résultat vérifiable : périmètre et baseline exacts, fichiers autorisés, comportement attendu et vérifications. Permettre les lectures nécessaires plutôt qu’un petit nombre arbitraire. L’expert doit demander une précision si le contexte manque.
+- Pour un patch : demander un diff produit par Git depuis la baseline et vérifié par `git apply --check` sur une copie propre. Un patch rédigé comme du texte et non vérifié reste une proposition. Après deux échecs d’application (dont `--recount`), ne plus réparer les hunks par génération : demander un livrable corrigé dans le même chat expert ou appliquer des changements ciblés puis vérifier.
+- Un timeout ne prouve ni arrêt ni achèvement distant. Lire le reçu et l’état natif du tour avant continuation. Ne jamais modifier directement SQLite (`indeterminate` → `recorded`) pour franchir une protection ; passer par une réconciliation documentée avec preuve d’état et résultat explicites. À défaut, conserver l’incertitude et demander clarification.
+- Pour ASI1 : déléguer expertise, revue, architecture, plan technique et opérations système à un expert adapté via Reprise ou sous-agent. Garder localement la coordination et les manipulations déterministes cadrées ; ne pas improviser une réparation structurante après plusieurs échecs. Vérifier les modèles réellement disponibles.
+- Vérifier les changements avec les tests ciblés, puis la suite requise avant publication. Après réussite, ne pas relancer la suite complète sans changement pertinent ni nouveau doute.
+- Garder un checkpoint bref : objectif courant, preuves obtenues, blocage, prochaine action. Mettre à jour les tâches terminées et lire les messages utilisateur en attente avant un nouveau lot. Ne pas consacrer plusieurs tours à décider de recharger une skill déjà lue ; la relire seulement si ses instructions manquent ou ont changé.

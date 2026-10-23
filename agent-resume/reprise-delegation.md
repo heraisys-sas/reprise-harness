@@ -101,3 +101,7 @@ Explicit `backend: "claude-desktop"` uses the structured Quick Apply submission 
 ## Target service — not implemented
 
 [HARNESS-SUPERVISION-ARCHITECTURE.md](HARNESS-SUPERVISION-ARCHITECTURE.md) targets one logical service for task receipt, result submission/retrieval and outward delegation. Existing expertise and task-return probes remain separate. The Claude Desktop MCP probe requires the client to invoke `get_task` and `submit_result`; only an accepted final `submit_result` is its result. Quick Apply admission does not prove this return path. Child requests retain lineage and bounded depth/concurrency/budget; no result channel or database transaction should remain held while awaiting inference. Restricted CLI expertise remains restricted. Preserve existing uncertainty barriers; do not present the target protocol as a delivered capability.
+
+### Deliverable and timeout discipline
+
+Give the expert the exact baseline, scope, acceptance checks and enough reads to resolve uncertainty. Request a Git-generated diff checked against a clean baseline, and require an explicit statement of checks actually run. After two failed applications, return diagnostics to the same expert conversation or change implementation method; do not repeatedly regenerate hunk headers. A timed-out turn needs native-state reconciliation, not a direct database state rewrite. Preserve request identity and uncertainty until that reconciliation is evidenced.
