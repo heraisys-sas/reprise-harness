@@ -12,8 +12,15 @@ import time
 from engines import Unavailable, socket_path
 from runtime import codex_environment, terminate
 
-class Closed(OSError):
-    """Le serveur propriétaire a fermé la connexion ; la fin du tour n'est pas prouvée."""
+class Closed(Unavailable):
+    """Le serveur propriétaire a fermé la connexion ; la fin du tour n'est pas prouvée.
+
+    Sous-classe d'`Unavailable` : pour tout appelant qui ignore si un tour a été envoyé, une
+    fermeture reste une indisponibilité. Seul `execute()` sait la distinguer d'une incertitude.
+    """
+
+    def __init__(self, reason):
+        super().__init__('needs_review', reason)
 
 
 class Client:
@@ -221,13 +228,13 @@ def execute(db, task, program, values, log, automatic=False, timeout=7200):
                     break
             else:
                 raise TimeoutError('Délai maximal du tour atteint')
-    except Unavailable as error:
-        state, reason = error.state, error.reason
     except Closed:
         if dispatch_attempted:
             state, reason = 'needs_review', 'Connexion fermée après envoi du tour ; résultat inconnu, aucune relance automatique.'
         else:
             state, reason = 'engine_unavailable', 'Connexion fermée avant tout envoi ; aucun tour n’a été lancé.'
+    except Unavailable as error:
+        state, reason = error.state, error.reason
     except TimeoutError:
         state, reason = 'timed_out', 'Délai du serveur dépassé ; résultat à vérifier, aucune tentative de remplacement.'
     except (OSError, ValueError, subprocess.SubprocessError):
