@@ -5,7 +5,7 @@ description: Use configured Reprise MCP tools for bounded expertise, independent
 
 ## Host-agent operating instructions
 
-Read [REPRISE-AGENTS.template.md](REPRISE-AGENTS.template.md) only when the operator explicitly assigns the host model a specialist orchestration role (for example ASI1), or when preparing that optional profile. Its presence does not activate it for other agents. Apply this profile within existing operator permissions. The template is distributed beside this skill; adapt it to the harness instruction mechanism without replacing personal instructions. Systematic delegation is conditional on the coordinator/operator policy, not required of every capable model. Free fallback routes must be discovered and authorized, never assumed.
+Read [REPRISE-AGENTS.template.md](REPRISE-AGENTS.template.md) only when the operator explicitly selects `agent_role: coordinator` for the host model (for example to evaluate ASI1 in that role), or when preparing that optional profile. Its presence does not activate it for other agents. Apply this profile within existing operator permissions. The template is distributed beside this skill; adapt it to the harness instruction mechanism without replacing personal instructions. Systematic delegation is conditional on the coordinator/operator policy, not required of every capable model. Free fallback routes must be discovered and authorized, never assumed.
 
 ## Discover the installed integration
 

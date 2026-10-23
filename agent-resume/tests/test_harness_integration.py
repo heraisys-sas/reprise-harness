@@ -233,6 +233,29 @@ class HarnessIntegrationTests(unittest.TestCase):
             self.plan()
         self.assertEqual(list(outside.iterdir()), [])
 
+    def test_coordinator_role_is_explicit_persisted_and_does_not_enable_tools(self):
+        proposed = integration.plan(self.root, self.home, 'desktop', self.project, agent_role='coordinator')
+        self.assertEqual(proposed['agent_role'], 'coordinator')
+        integration.apply(self.root, proposed)
+        saved = json.loads((self.managed / 'managed.json').read_text())
+        self.assertEqual(saved['agent_role'], 'coordinator')
+        self.assertEqual(saved['tools'], list(integration.OBSERVE))
+        skill = (self.managed / 'skills/reprise-delegation/SKILL.md').read_text()
+        self.assertIn('Active operator-selected role: coordinator', skill)
+        self.assertEqual(integration.plan(self.root, self.home, 'desktop', self.project,
+                                         agent_role='coordinator')['changes'], [])
+        normal = integration.plan(self.root, self.home, 'desktop', self.project)
+        integration.apply(self.root, normal)
+        self.assertNotIn('Active operator-selected role: coordinator',
+                         (self.managed / 'skills/reprise-delegation/SKILL.md').read_text())
+        self.assertNotIn('agent_role', json.loads((self.managed / 'managed.json').read_text()))
+
+    def test_unknown_role_is_rejected_before_any_profile_write(self):
+        before = self.snapshot()
+        with self.assertRaises(ValueError):
+            integration.plan(self.root, self.home, 'desktop', self.project, agent_role='asi1')
+        self.assertEqual(self.snapshot(), before)
+
     def test_invalid_profile_refused(self):
         for name in ('../other', '', 'desktop/child', 'name with spaces'):
             with self.subTest(name=name), self.assertRaises(ValueError):

@@ -37,6 +37,7 @@ extension App {
         guard stateReady, !setupBusy else { return }
         var args = ["integration-plan", "--home", integrationHome, "--profile", integrationProfile, "--project", integrationProject, "--action", action]
         if integrationDelegate { args.append("--delegate") }
+        args += ["--agent-role", integrationAgentRole]
         setupCommand(args) { result in
             self.integrationPlan = result["plan"] as? [String: Any]
             self.integrationAcknowledged = false
@@ -95,6 +96,11 @@ struct Integrations: View {
                     }
                     HStack { path("Projet du pont", app.integrationProject); Spacer(); Button("Choisir le projet…") { app.chooseIntegrationDirectory(project: true) } }
                     Toggle("Exposer aussi les outils de délégation", isOn: $app.integrationDelegate)
+                    Picker("Rôle de l’agent", selection: $app.integrationAgentRole) {
+                        Text("Standard").tag("standard")
+                        Text("Coordinateur").tag("coordinator")
+                    }
+                    Text("Coordinateur : rôle attribué par vos soins, indépendant du modèle. N’accorde aucun droit de délégation supplémentaire.").font(.caption).foregroundStyle(.secondary)
                     Text("Par défaut : outils d’observation et reçus. Activer la délégation autorise leur exposition au client ; la délégation peut consommer du quota. Activer la configuration ne vaut pas autorisation d’inférence.").font(.caption).foregroundStyle(.secondary)
                     Button("Inspecter") { app.inspectIntegration() }
                 }.padding(6)
@@ -113,6 +119,7 @@ struct Integrations: View {
                         path("Dossier Harness du plan", plan["home"] as? String ?? "")
                         path("Profil du plan", plan["profile"] as? String ?? "")
                         path("Projet du plan", plan["project"] as? String ?? "")
+                        Text("Rôle : " + ((plan["agent_role"] as? String == "coordinator") ? "Coordinateur" : "Standard"))
                         Text("Délégation : " + ((plan["delegate"] as? Bool == true) ? "exposée" : "non exposée"))
                         ForEach(Array((plan["changes"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, change in
                             VStack(alignment: .leading, spacing: 3) {
@@ -152,6 +159,7 @@ struct Integrations: View {
         }
         .disabled(app.setupBusy || !app.stateReady)
         .onChange(of: app.integrationProfile) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.integrationAgentRole) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationDelegate) { _, _ in app.invalidateIntegrationPlan() }
     }
 }

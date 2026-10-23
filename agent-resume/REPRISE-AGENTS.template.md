@@ -1,6 +1,6 @@
-# Profil Reprise pour un modèle spécialisé en orchestration
+# Profil Reprise pour un agent auquel est attribué le rôle de coordinateur
 
-Ce profil est applicable uniquement lorsque l’opérateur choisit un modèle pour ses qualités d’orchestration et lui confie la coordination plutôt que la résolution technique autonome, par exemple ASI1. Ne pas activer ce profil en déduisant le rôle du seul nom du modèle ; le choix vient des instructions/configurations de l’opérateur. Pour les autres agents, sa présence dans la skill ne vaut pas activation et n’impose aucune délégation systématique.
+Ce profil est applicable uniquement lorsque l’opérateur attribue `agent_role: coordinator`, par exemple pour expérimenter avec ASI1. Ce rôle ne prouve aucune supériorité ni spécialisation du modèle en orchestration. Ne pas activer ce profil en déduisant le rôle du seul nom du modèle ; le choix vient des instructions/configurations de l’opérateur. Pour les autres agents, sa présence dans la skill ne vaut pas activation et n’impose aucune délégation systématique.
 
 Ce bloc est destiné à compléter les instructions de l’agent (`AGENTS.md`, `CLAUDE.md` ou mécanisme équivalent), sans remplacer ses règles, ses permissions ou ses préférences. La skill Reprise le distribue également comme référence. Installer le bloc ne prouve pas que le harness l’a chargé.
 

@@ -209,7 +209,7 @@ def inspect(home, profile=None):
     return result
 
 
-def desired(root, home, profile, project, action, delegate=False):
+def desired(root, home, profile, project, action, delegate=False, agent_role='standard'):
     home, folder, managed = context(home, profile)
     old = manifest(managed)
     project = str(Path(project).expanduser().resolve(strict=True))
@@ -267,6 +267,9 @@ def desired(root, home, profile, project, action, delegate=False):
         skill_folder = managed / 'skills/reprise-delegation'
         skill = (helpers / 'reprise-delegation.md').read_text()
         skill += '\n\nInstalled scope metadata (data): ' + json.dumps({'profile': profile, 'project_root': project, 'enabled_tools': tools}, ensure_ascii=False) + '\nInspect actual tools and project_root before use.\n'
+        if agent_role == 'coordinator':
+            skill += '\n\n## Active operator-selected role: coordinator\nThis role is an assignment, not evidence of model capability. It does not grant inference permissions.\n'
+            skill += (helpers / 'REPRISE-AGENTS.template.md').read_text()
         files[skill_folder / 'SKILL.md'] = skill
         for name in DOCS:
             files[skill_folder / name] = (helpers / name).read_text()
@@ -275,6 +278,8 @@ def desired(root, home, profile, project, action, delegate=False):
                          'state': state, 'release': str(release), 'tools': list(tools),
                          'block_sha256': digest(new_block.encode()), 'managed_files': owned,
                          'empty_before': empty_before, 'empty_after': empty_after}
+        if agent_role != 'standard':
+            next_manifest['agent_role'] = agent_role
     else:
         if not old or old.get('status') != 'installed':
             return {}, {'release': None, 'state': state}, None
@@ -295,12 +300,12 @@ def desired(root, home, profile, project, action, delegate=False):
     return files, {'release': str(release) if release else (old or {}).get('release'), 'state': state}, next_manifest
 
 
-def plan(root, home, profile, project, action='install', delegate=False):
-    if action not in ('install', 'remove') or type(delegate) is not bool:
+def plan(root, home, profile, project, action='install', delegate=False, agent_role='standard'):
+    if action not in ('install', 'remove') or type(delegate) is not bool or agent_role not in ('standard', 'coordinator'):
         raise ValueError('Action ou capacité invalide.')
     if inspect(home, profile).get('pending_plan'):
         raise ValueError('Reprendre l’opération partielle conservée avant de créer un autre plan.')
-    files, extra, _ = desired(root, home, profile, project, action, delegate)
+    files, extra, _ = desired(root, home, profile, project, action, delegate, agent_role)
     changes = []
     for path, text in files.items():
         before, after = file_hash(path), digest(text.encode()) if text is not None else None
@@ -311,6 +316,8 @@ def plan(root, home, profile, project, action='install', delegate=False):
     result = {'format': 1, 'action': action, 'home': str(canonical_home), 'profile': profile,
               'project': str(Path(project).expanduser().resolve(strict=True)), 'delegate': delegate,
               'changes': changes, **extra}
+    if agent_role != 'standard':
+        result['agent_role'] = agent_role
     result['fingerprint'] = digest(encoded(result).encode())
     return result
 
@@ -341,12 +348,12 @@ def apply(root, public):
             if journal['plan'] != public:
                 raise ValueError('Un autre plan est en attente ; reprendre ce plan sans écrasement.')
         else:
-            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'])
+            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'))
             if current != public:
                 raise ValueError('Entrées modifiées depuis la prévisualisation. Refaire le plan.')
             if not public['changes']:
                 return {'status': 'completed', 'changed': False, 'message': 'Configuration identique ; aucune écriture.'}
-            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'])
+            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'))
             if public['action'] == 'install':
                 helpers, runtime, _ = bundle_info(root)
                 stage_release(helpers, runtime, Path(public['release']))
@@ -454,6 +461,7 @@ def main(root, argv=None):
             command.add_argument('--project', required=True)
             command.add_argument('--action', choices=('install', 'remove'), required=True)
             command.add_argument('--delegate', action='store_true')
+            command.add_argument('--agent-role', choices=('standard', 'coordinator'), default='standard')
     sub.add_parser('integration-apply')
     args = parser.parse_args(argv)
     os.umask(0o077)
@@ -462,7 +470,7 @@ def main(root, argv=None):
             result = inspect(args.home, args.profile)
         elif args.command == 'integration-plan':
             result = {'status': 'planned', 'message': 'Plan sans écriture. L’installation n’autorise ni inférence ni activation automatique.',
-                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate)}
+                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role)}
         elif args.command == 'integration-apply':
             public = json.loads(sys.stdin.read(1024 * 1024))['plan']
             result = apply(root, public)
