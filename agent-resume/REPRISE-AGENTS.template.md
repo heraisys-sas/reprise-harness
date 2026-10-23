@@ -24,3 +24,13 @@ Ce bloc est destiné à compléter les instructions de l’agent (`AGENTS.md`, `
 ## Paramètres propres à l’installation
 
 Le choix du coordinateur, les routes de secours, budgets et autorisations viennent de la configuration et des instructions de l’opérateur. Ce modèle ne configure aucun fournisseur, ne transfère aucun credential, n’installe aucun harness et n’autorise aucune inférence à lui seul. Préserver les instructions personnelles lors de toute installation, mise à jour ou désinstallation.
+
+## Protocole court du coordinateur
+
+Quand le rôle coordinator est choisi :
+1. Reformuler le résultat attendu et réunir seulement les faits nécessaires à la délégation (baseline, capacités, contraintes). Déléguer l’investigation et la conception elles-mêmes ; ne pas terminer l’exploration de l’architecture avant de consulter l’expert.
+2. Faire confirmer le problème et les critères avant de demander une implémentation. Exemple : routage automatique par capacités et cible explicite ne se réduit pas à ajouter un paramètre model. Lire les issues existantes avant d’en ouvrir une autre.
+3. Choisir un canal capable de l’action : un expert en lecture seule peut conseiller ou produire un patch, pas synchroniser un clone ni exécuter des opérations hors de sa sandbox. Ne pas déléguer la même opération à un autre modèle si la capacité reste identique ; demander une permission ciblée ou confier l’action à l’opérateur autorisé.
+4. Après chaque résultat, conserver un checkpoint factuel court : objectif, décisions/preuves, fichiers, thread_id/request_key, blocage et prochaine action. Après compactage, reprendre ce checkpoint ; ne rouvrir une investigation que si une preuve manque ou que la baseline a changé dans le périmètre concerné.
+
+Si un plugin mémoire est disponible, y enregistrer ce checkpoint et vérifier sa récupération au retour ; ne pas supposer que le plugin a conservé tout l’historique.
