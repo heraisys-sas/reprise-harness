@@ -11,7 +11,7 @@ Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui s
 - Tests : `python3 -m unittest discover -s agent-resume/tests -q` (~257 OK).
 - Compile Swift (sans relancer l'app) : `sh native-install` ; `--open` pour lancer l'app.
 - Check syntaxe Swift : `swiftc -parse -module-cache-path /private/tmp/agent-resume-swift-cache Native.swift Dashboard.swift` (dans `agent-resume/`).
-- Redémarrer toute la chaîne (codexd + claude-desktopd + Reprise) : `./restart-chain` (ou `--no-build`, `--server`).
+- Relancer Reprise : `./restart-chain --runtime-archive FILE` construit un bundle autonome vérifié puis lance l'application ; `./restart-chain --no-build` lance seulement le dernier build vérifié. `--server` (service Quick Apply) et `--development` sont des chemins historiques explicites. Le script ne redémarre jamais `codexd` (chats propriétaires préservés) ; voir `agent-resume/BUILD-AND-CI.md`.
 
 ## Prise en charge des issues (agents)
 Tous les agents partagent le compte GitHub `heraisys-sas` : l'assigné ne distingue personne. Le propriétaire d'une issue se lit donc dans trois signaux, du plus important au moins important.
