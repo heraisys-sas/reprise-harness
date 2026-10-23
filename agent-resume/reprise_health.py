@@ -114,29 +114,15 @@ def process_liveness(db=None, state=None):
 
 
 def read_versions(bundle_root):
-    """Read installed versions of known harness bundles (evidence, not guess)."""
-    versions = {}
-    candidates = {
-        'claude-desktop': Path('/Applications/Claude.app/Contents/Info.plist'),
-        'codex': Path('/Applications/Codex.app/Contents/Info.plist'),
-    }
-    for name, plist in candidates.items():
-        if not plist.is_file():
-            versions[name] = None
-            continue
-        try:
-            import subprocess
-            out = subprocess.run(['defaults', 'read', str(plist), 'CFBundleShortVersionString'],
-                                 capture_output=True, text=True, timeout=5).stdout.strip()
-            versions[name] = out or None
-        except Exception:
-            versions[name] = None
-    return versions
+    """Versions de Claude Desktop et des composants Codex détectés."""
+    import engines
+    return {'claude-desktop': engines.bundle_version(CLAUDE_APP),
+            'codex': engines.codex_versions()}
 
 
-def check(bundle_root, log_dir=DEFAULT_LOG_DIR, db=None, state=None):
+def check(bundle_root, log_dir=DEFAULT_LOG_DIR, db=None, state=None, versions=None):
     """Post-update health: what must be relaunched and what is still parsed."""
-    versions = read_versions(bundle_root)
+    versions = read_versions(bundle_root) if versions is None else versions
     signatures = log_signatures(log_dir)
     liveness = process_liveness(db, state)
     stale = [name for name, s in signatures.items() if not s['present']]
@@ -220,7 +206,7 @@ def summarize(bundle_root, log_dir=DEFAULT_LOG_DIR, binary=None, db=None, state=
     """Health + optional generative explanation, for the Reprise UI and MCP."""
     health = check(bundle_root, log_dir, db, state)
     health['quick_entry_features'] = quick_entry_features()
-    features = codex_features(db, state)
+    features = codex_features(db, state, versions=health['versions'].get('codex'))
     health['codex_features'] = features
     health['codex_anomalies'] = codex_anomalies(features=features)['anomalies']
     # The generative explanation lives in local analysis; health stays deterministic.
@@ -244,10 +230,10 @@ def watch(db, bundle_root, log_dir=DEFAULT_LOG_DIR):
     previous_claude = previous_components.get('claude') if isinstance(previous_components, dict) else previous_components
     previous_codex = previous_components.get('codex') if isinstance(previous_components, dict) else None
     anomaly_report = quick_entry_anomalies(log_dir, previous_claude)
-    features = codex_features(db)
+    features = codex_features(db, versions=current.get('codex'))
     codex_anomaly_report = codex_anomalies(previous_codex, features=features)
     components = {'claude': anomaly_report['components'], 'codex': codex_anomaly_report['components']}
-    report = check(bundle_root, log_dir, db)
+    report = check(bundle_root, log_dir, db, versions=current)
     update_detected = previous is None or current != previous
     report['update_detected'] = update_detected
     report['quick_entry_anomalies'] = anomaly_report['anomalies']
@@ -358,36 +344,24 @@ def quick_entry_features():
 CODEX_APPS = (Path('/Applications/ChatGPT.app'), Path('/Applications/Codex.app'))
 
 
-def codex_features(db=None, state=None):
+def codex_features(db=None, state=None, versions=None):
     """Report deterministic presence and metadata for Codex interaction dependencies."""
     import engines
-    import plistlib
 
-    bundles = {}
-    for app in CODEX_APPS:
-        bundles[app.name] = {
-            'label': app.name.removesuffix('.app'),
-            'present': app.is_dir(),
-            'path': str(app),
-            'meta': _component_meta(app),
-        }
-    program = engines.executable('codex-cli')
+    versions = engines.codex_versions() if versions is None else versions
+    bundles = {Path(a['path']).name: {
+        'label': Path(a['path']).stem, 'present': a['status'] != 'absent',
+        'path': a['path'], 'status': a['status'], 'meta': _component_meta(Path(a['path'])),
+    } for a in versions['apps']}
+    program = versions['cli_path']
     executable_meta = _component_meta(Path(program)) if program else None
     socket_path = health_socket(db, state)
     socket_state = socket_liveness(socket_path)
     socket_usable = socket_state == 'running'
     socket_meta = _component_meta(socket_path)
 
-    desktop_version = None
-    for app in CODEX_APPS:
-        plist = app / 'Contents' / 'Info.plist'
-        try:
-            data = plistlib.loads(plist.read_bytes())
-            desktop_version = data.get('CFBundleVersion') or data.get('CFBundleShortVersionString')
-            if desktop_version:
-                break
-        except (OSError, ValueError):
-            continue
+    # Compatibilité du curseur existant : ce champ contenait le build.
+    desktop_version = versions['desktop_build'] or versions['desktop_version']
 
     checks = {
         'bundles': {'label': 'Applications Codex Desktop', 'present': any(v['present'] for v in bundles.values()),
@@ -400,8 +374,8 @@ def codex_features(db=None, state=None):
                         'desktop_version': desktop_version, 'codex_cli': program is not None},
     }
     missing = [name for name, item in checks.items() if not item['present']]
-    return {'checks': checks, 'missing': missing, 'ready': not missing,
-            'note': 'Présence des composants et écoute du socket vérifiées ; aucune inférence ni lancement de service.'}
+    return {'checks': checks, 'missing': missing, 'ready': not missing, 'versions': versions,
+            'note': 'Inventaire local, version CLI et écoute du socket ; aucune inférence.'}
 
 
 def codex_anomalies(previous=None, features=None):

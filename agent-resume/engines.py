@@ -78,6 +78,54 @@ def executable(engine):
     return next((str(Path(p).resolve()) for p in candidates if p and Path(p).is_file() and os.access(p, os.X_OK)), None)
 
 
+CODEX_APPS = (Path('/Applications/ChatGPT.app'), Path('/Applications/Codex.app'))
+
+
+def bundle_version(app):
+    """Distingue bundle absent et métadonnées illisibles."""
+    import plistlib
+    app = Path(app)
+    result = {'path': str(app), 'plist_path': str(app / 'Contents/Info.plist'),
+              'desktop_version': None, 'desktop_build': None, 'status': 'absent'}
+    try:
+        app.stat()
+    except FileNotFoundError:
+        return result
+    except OSError:
+        return dict(result, status='unreadable')
+    try:
+        data = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+        version, build = data.get('CFBundleShortVersionString'), data.get('CFBundleVersion')
+        result.update(desktop_version=version if isinstance(version, str) else None,
+                      desktop_build=str(build) if type(build) in (str, int) else None)
+        result['status'] = 'available' if result['desktop_version'] or result['desktop_build'] else 'unreadable'
+    except (OSError, ValueError, AttributeError):
+        result['status'] = 'unreadable'
+    return result
+
+
+def codex_versions():
+    """Publie les versions et les chemins effectivement sélectionnés."""
+    import subprocess
+    program = executable('codex-cli')
+    apps = [bundle_version(app) for app in CODEX_APPS]
+    selected = next((a for a in apps if program and Path(program).is_relative_to(a['path'])), None)
+    selected = selected or next((a for a in apps if a['status'] == 'available'), None)
+    selected = selected or next((a for a in apps if a['status'] != 'absent'), apps[0])
+    result = {'desktop_version': selected['desktop_version'], 'desktop_build': selected['desktop_build'],
+              'desktop_path': selected['path'], 'desktop_plist': selected['plist_path'],
+              'desktop_status': selected['status'], 'cli_path': program, 'cli_version': None,
+              'cli_status': 'absent' if program is None else 'unreadable', 'apps': apps}
+    if program:
+        try:
+            reply = subprocess.run([program, '--version'], capture_output=True, text=True, timeout=3)
+            if reply.returncode == 0 and reply.stdout.strip():
+                result.update(cli_version=reply.stdout.strip(), cli_status='available')
+        except (OSError, UnicodeError, subprocess.TimeoutExpired):
+            pass
+    return result
+
+
 def socket_path(values):
     path = Path(values.get('socket', SOCKET))
     try:

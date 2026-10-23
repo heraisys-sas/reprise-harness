@@ -637,7 +637,22 @@ struct Dashboard: View {
                     Label("Santé après mise à jour", systemImage: "heart.text.square").font(.headline)
                     Text("Détecte les mises à jour de Claude Desktop, Claude Code, Codex et autres Harness, ce qu’il faut relancer, et si les signatures de logs surveillées sont toujours présentes.").font(.callout).foregroundStyle(.secondary)
                     ForEach(Array(versions.keys.sorted()), id: \.self) { key in
-                        HStack { Text(key).font(.callout.weight(.semibold)); Spacer(); Text(versions[key] as? String ?? "absent").font(.callout.monospaced()).foregroundStyle(.secondary) }
+                        let item = versions[key] as? [String: Any] ?? [:]
+                        let fields = key == "codex" ? ["desktop_version", "desktop_build", "cli_version"] : ["desktop_version", "desktop_build"]
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(key).font(.callout.weight(.semibold))
+                            ForEach(fields, id: \.self) { field in
+                                let status = item[field == "cli_version" ? "cli_status" : (key == "codex" ? "desktop_status" : "status")] as? String
+                                let fallback = status == "absent" ? "Non installé" : (status == "unreadable" ? "Lecture impossible" : "Non renseigné")
+                                let legacy = field == "desktop_version" ? versions[key] as? String : nil
+                                let label = field == "cli_version" ? "CLI" : (field == "desktop_build" ? "Build Desktop" : "Desktop")
+                                Text(label + " : " + (item[field] as? String ?? legacy ?? fallback))
+                            }
+                            if let path = item["desktop_plist"] as? String ?? item["plist_path"] as? String {
+                                Text(path).font(.caption).textSelection(.enabled)
+                            }
+                            if let path = item["cli_path"] as? String { Text(path).font(.caption).textSelection(.enabled) }
+                        }.font(.callout.monospaced()).foregroundStyle(.secondary)
                     }
                 }
             }

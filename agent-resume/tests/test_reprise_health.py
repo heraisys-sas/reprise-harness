@@ -354,3 +354,71 @@ class SocketAndWatchRegressionTests(unittest.TestCase):
             exec(compile(ast.Module(body=[statement], type_ignores=[]), 'tick-watch', 'exec'), namespace)
         self.assertIn('Surveillance santé indisponible', scheduler.get(self.db, 'last_error'))
         self.assertIn('RuntimeError', stderr.getvalue())
+
+
+class CodexVersionDiscoveryTests(unittest.TestCase):
+    def test_chatgpt_bundle_and_selected_cli_are_reported_together(self):
+        import engines
+        import plistlib
+        from types import SimpleNamespace
+        app = Path('/Applications/ChatGPT.app')
+        program = str(app / 'Contents/Resources/codex')
+        plist = plistlib.dumps({'CFBundleShortVersionString': '26.1016.51333',
+                               'CFBundleVersion': '21161', 'CFBundleIdentifier': 'com.openai.codex'})
+        def stat(path, *args, **kwargs):
+            if path == app:
+                return SimpleNamespace()
+            raise FileNotFoundError(str(path))
+        def read(path):
+            if path == app / 'Contents/Info.plist':
+                return plist
+            raise FileNotFoundError(str(path))
+        with patch.object(engines, 'executable', return_value=program), \
+                patch.object(Path, 'stat', autospec=True, side_effect=stat), \
+                patch.object(Path, 'read_bytes', autospec=True, side_effect=read), \
+                patch('subprocess.run', return_value=SimpleNamespace(
+                    returncode=0, stdout='codex-cli 0.163.0-alpha.11\n')) as run, \
+                patch.object(rh, '_component_meta', return_value=None), \
+                patch.object(rh, 'socket_liveness', return_value='stopped'):
+            info = rh.read_versions('.')['codex']
+            features = rh.codex_features(versions=info)
+        self.assertEqual(info['desktop_version'], '26.1016.51333')
+        self.assertEqual(info['desktop_build'], '21161')
+        self.assertEqual(info['cli_version'], 'codex-cli 0.163.0-alpha.11')
+        self.assertEqual(info['desktop_path'], str(app))
+        self.assertEqual(info['desktop_plist'], str(app / 'Contents/Info.plist'))
+        self.assertEqual(info['cli_path'], program)
+        self.assertEqual(info['desktop_status'], 'available')
+        self.assertEqual(features['versions'], info)
+        self.assertTrue(features['checks']['bundles']['apps']['ChatGPT.app']['present'])
+        self.assertFalse(features['checks']['bundles']['apps']['Codex.app']['present'])
+        self.assertEqual(features['checks']['shared_mode']['desktop_version'], '21161')
+        run.assert_called_once_with([program, '--version'], capture_output=True, text=True, timeout=3)
+
+    def test_missing_bundle_and_unreadable_metadata_are_distinct(self):
+        import engines
+        for error, expected in ((FileNotFoundError(), 'absent'), (PermissionError(), 'unreadable')):
+            with self.subTest(expected=expected), patch.object(Path, 'stat', side_effect=error):
+                self.assertEqual(engines.bundle_version(Path('/app'))['status'], expected)
+        with patch.object(Path, 'stat'), patch.object(Path, 'read_bytes', return_value=b'not a plist'):
+            self.assertEqual(engines.bundle_version(Path('/app'))['status'], 'unreadable')
+        with patch.object(Path, 'stat'), patch.object(Path, 'read_bytes', side_effect=FileNotFoundError):
+            self.assertEqual(engines.bundle_version(Path('/app'))['status'], 'unreadable')
+
+    def test_failed_cli_version_preserves_the_selected_path(self):
+        import engines
+        from types import SimpleNamespace
+        def absent(app):
+            return {'path': str(app), 'plist_path': str(app / 'Contents/Info.plist'),
+                    'desktop_version': None, 'desktop_build': None, 'status': 'absent'}
+        with patch.object(engines, 'bundle_version', side_effect=absent), \
+                patch.object(engines, 'executable', return_value='/selected/codex'), \
+                patch('subprocess.run', return_value=SimpleNamespace(returncode=1, stdout='')):
+            result = engines.codex_versions()
+        self.assertEqual(result['cli_path'], '/selected/codex')
+        self.assertEqual(result['cli_status'], 'unreadable')
+        self.assertIsNone(result['cli_version'])
+        with patch.object(engines, 'bundle_version', side_effect=absent), \
+                patch.object(engines, 'executable', return_value=None), patch('subprocess.run') as run:
+            self.assertEqual(engines.codex_versions()['cli_status'], 'absent')
+            run.assert_not_called()
