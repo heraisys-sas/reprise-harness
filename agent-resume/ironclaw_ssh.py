@@ -136,7 +136,8 @@ def request(endpoint, method, path, payload=None, *, allow_submit=False):
     endpoint.validate()
     base = '/api/webchat/v2'
     identifier = r'[A-Za-z0-9_-]{1,128}'
-    valid_get = path == base + '/session' or re.fullmatch(
+    # GET /threads lists sessions (ids and metadata) but never message content.
+    valid_get = path == base + '/session' or path == base + '/threads' or re.fullmatch(
         base + '/threads/' + identifier + r'/timeline\?limit=100(?:&cursor=[A-Za-z0-9%._~-]{1,2048})?', path)
     valid_post = path == base + '/threads' or re.fullmatch(
         base + '/channels/' + identifier + '/messages', path)

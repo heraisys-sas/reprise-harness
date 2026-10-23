@@ -90,6 +90,25 @@ class IronclawSshTests(unittest.TestCase):
         self.assertNotIn('private-test-value', repr(args))
 
     @patch('ironclaw_ssh.subprocess.run')
+    def test_threads_list_get_is_allowed_without_payload(self, run):
+        run.return_value = self.response({'threads': []})
+        value = request(self.endpoint, 'GET', '/api/webchat/v2/threads')
+        self.assertEqual(value, {'threads': []})
+        config = run.call_args.kwargs['input']
+        self.assertEqual(config.splitlines()[0], 'url = "http://127.0.0.1:3000/api/webchat/v2/threads"')
+        self.assertNotIn('data =', config)
+        self.assertNotIn('private-test-value', repr(run.call_args.args))
+
+    @patch('ironclaw_ssh.subprocess.run')
+    def test_get_route_neighbors_stay_refused(self, run):
+        for path in ('/api/webchat/v2/threads?limit=100', '/api/webchat/v2/threads/abc',
+                     '/api/webchat/v2/threads/abc/timeline', '/api/webchat/v2/channels',
+                     '/api/webchat/v2/threads/abc/timeline?limit=50'):
+            with self.assertRaises(ProbeError):
+                request(self.endpoint, 'GET', path)
+        run.assert_not_called()
+
+    @patch('ironclaw_ssh.subprocess.run')
     def test_post_request_sends_headers_and_escapes_payload(self, run):
         run.return_value = self.response({'state': 'recorded'})
         payload = {'client_action_id': 'action-1', 'thread_id': 'thread-1', 'content': 'hello'}
