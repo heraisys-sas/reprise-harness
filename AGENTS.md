@@ -13,6 +13,16 @@ Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui s
 - Check syntaxe Swift : `swiftc -parse -module-cache-path /private/tmp/agent-resume-swift-cache Native.swift Dashboard.swift` (dans `agent-resume/`).
 - Redémarrer toute la chaîne (codexd + claude-desktopd + Reprise) : `./restart-chain` (ou `--no-build`, `--server`).
 
+## Prise en charge des issues (agents)
+Tous les agents partagent le compte GitHub `heraisys-sas` : l'assigné ne distingue personne. Le propriétaire d'une issue se lit donc dans trois signaux, du plus important au moins important.
+1. **Label `agent:<nom>`** (un seul par issue) : `agent:codex`, `agent:claude`, etc. Créer le label s'il n'existe pas (couleur `1D76DB`, description « Travail réservé à <nom> ; ne déclenche pas automatiquement une session »). Un filtre `label:agent:<nom>` donne la file de travail de l'agent.
+2. **Branche liée** : créer la branche avec `gh issue develop <n> --base dev` avant de commiter, ce qui la rattache à la colonne « Development » de l'issue. Si la branche existe déjà, la nommer dans le commentaire de réservation. Pas de MR avant le go de l'utilisateur (les MR vont uniquement vers `main`).
+3. **Commentaire de réservation lisible par machine**, premier commentaire du travail :
+   `<!-- agent-claim: <nom> <AAAA-MM-JJTHH:MMZ> branch=<branche> -->` suivi d'une phrase (branche, commit, état des tests).
+- Avant de prendre une issue, lire son dernier marqueur `agent-claim` : une réservation de moins de 24 h, ou avec une branche qui a reçu un commit depuis, appartient à son auteur ; sinon elle est périmée et peut être reprise.
+- Pour abandonner : retirer le label et poster `<!-- agent-release: <nom> <date> -->` avec le motif et l'état (branche, ce qui reste). Pour terminer : la fermeture de l'issue vaut libération.
+- Ne jamais fermer ni retirer le label d'une issue réservée par un autre agent sans son marqueur de libération ou une réservation périmée.
+
 ## Architecture — canaux de délégation et leurs limites
 | Canal | Sens | Limite |
 |---|---|---|
