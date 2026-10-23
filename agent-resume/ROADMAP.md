@@ -85,3 +85,12 @@ Instructions d’orchestration déployables : profil optionnel pour modèles sp�
 Courtier d’opérations Git/GitHub (#29, lié #24) : contrat LOCAL-EXECUTION-CONTRACT.md, avis Astra et revue indépendante, premier évaluateur pur git.fast_forward sans IO ni exécution. Étapes suivantes : collecteur fiable/isolation, autorisation opérateur, exécuteur/récupération, façade MCP/CLI et recettes distantes distinctes.
 
 Façade Reprise cliente Codex CLI/Desktop (#30) : exposer aussi la délégation vers Claude/autres harness, leurs clarifications, suivis et résultats durables, comme pour Harness ; pas seulement les recettes Git. Installation gérée du client MCP, CODEX_HOME/host/projet vérifiés, chargement et round-trip réels distincts, retour Claude Desktop MCP corrélé requis. Aucune réactivation implicite des outils de redélégation dans les experts isolés.
+
+### #35 — limite de tokens de sortie Harness
+
+Continuation native dans la même session après `max-tokens`, distincte des quotas
+fournisseur : plugin optionnel installé depuis Intégrations, pause globale,
+réservation durable par événement et protection contre continuations consécutives.
+Lecture de toutes les trames Zstandard des journaux. Vérification réelle de son
+chargement dans un client Desktop après rechargement coordonné à distinguer des
+tests simulés. Contrat : [HARNESS-INTEGRATION.md](HARNESS-INTEGRATION.md).

@@ -52,3 +52,40 @@ La validation sur profil synthétique, même avec runtime réel et bundle dépla
 ## Validation enregistrée
 
 Suite complète **379 tests OK, 1 ignoré**, avec copie temporaire du CPython embarqué ; **22 tests ciblés Harness** avec archive officielle réelle rejoués après les derniers ajustements. Les tests de profils utilisent uniquement des dossiers synthétiques, aucun `~/.dsh` réel. Le pont reste joignable après déplacement/suppression du bundle source ; seules initialisation et liste d’outils sont envoyées. Registre fixture (identité, résultat non réclamé, tentative incertaine) inchangé après installation/vérification/retrait. Compilation sans lancement, parse/typecheck Swift, py_compile et diff-check réussis. L’interface n’a pas été lancée et le chargement dans Harness reste inconnu.
+
+## Continuation après limite de sortie (issue #35)
+
+L’option d’intégration **Continuer après une limite de tokens de sortie** installe
+le plugin natif `harness-output-resume.cjs` dans le profil sélectionné. CLI :
+`integration-plan --home … --profile desktop --project … --action install --output-resume`
+(en conservant les autres options voulues), puis application du plan vérifié.
+Si la session utilise un clone différent du projet du pont, renseigner son chemin
+dans « Projet de continuation » (`--output-resume-project`) : les deux périmètres
+restent explicites et indépendants.
+Son activation autorise explicitement les continuations, contrairement à la simple
+exposition d’outils MCP. Le composant fait partie du bundle Reprise ; aucun
+paquet distant ni credential supplémentaire n’est nécessaire.
+
+Le plugin observe les événements natifs du propriétaire de la session. Après
+`turn/end` avec `reason.kind=max-tokens`, il attend l’état libre, revérifie le
+dernier événement, l’absence de message concurrent et l’identité du projet, puis
+envoie « Continue » dans le même agent. Il conserve le profil, le modèle et les
+permissions ; il n’utilise ni CLI concurrent, ni clic dans l’interface, ni repli
+vers une API payante. Une limite de sortie n’est pas un quota de compte : aucun
+reset fournisseur n’est attendu pour ce cas.
+
+L’automatisation globale de Reprise en pause bloque la continuation. Deux reprises
+consécutives automatiques maximum protègent contre une succession sans fin ; un
+message opérateur réarme une nouvelle séquence. Les reçus privés sont conservés
+dans `state/harness-output-resume/`. Une réservation est durable avant envoi :
+un résultat incertain ne provoque jamais un second envoi du même événement.
+L’option est désactivée par défaut, limitée au projet choisi et aux événements
+observés après chargement. Une ancienne interruption déjà suivie d’un autre tour
+ne doit pas être rejouée au prochain chargement.
+
+Le client Harness doit recharger son profil pour charger une nouvelle version du
+plugin. Le plan, la release installée et une sonde MCP directe ne prouvent pas ce
+chargement. Coordonner ce rechargement après le travail actif et vérifier les
+reçus de continuation. Retirer l’option du plan retire le plugin de la configuration
+sans effacer les reçus. Les journaux Zstandard peuvent contenir plusieurs trames :
+le lecteur Reprise les parcourt toutes et refuse une trame corrompue ou tronquée.

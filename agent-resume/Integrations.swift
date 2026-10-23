@@ -25,6 +25,10 @@ extension App {
         if !integrationProfile.isEmpty { args += ["--profile", integrationProfile] }
         setupCommand(args) { result in
             self.integrationProfiles = result["profiles"] as? [String] ?? []
+            if let project = result["output_resume_project"] as? String { self.integrationOutputResumeProject = project }
+            if let enabled = result["output_resume"] as? Bool { self.integrationOutputResume = enabled }
+            if let enabled = result["delegate"] as? Bool { self.integrationDelegate = enabled }
+            if let role = result["agent_role"] as? String { self.integrationAgentRole = role }
             if self.integrationProject.isEmpty, let project = result["project"] as? String { self.integrationProject = project }
             self.integrationResult = result
             self.integrationPlan = result["pending_plan"] as? [String: Any]
@@ -37,6 +41,10 @@ extension App {
         guard stateReady, !setupBusy else { return }
         var args = ["integration-plan", "--home", integrationHome, "--profile", integrationProfile, "--project", integrationProject, "--action", action]
         if integrationDelegate { args.append("--delegate") }
+        if integrationOutputResume {
+            args.append("--output-resume")
+            if !integrationOutputResumeProject.isEmpty { args += ["--output-resume-project", integrationOutputResumeProject] }
+        }
         args += ["--agent-role", integrationAgentRole]
         setupCommand(args) { result in
             self.integrationPlan = result["plan"] as? [String: Any]
@@ -96,6 +104,9 @@ struct Integrations: View {
                     }
                     HStack { path("Projet du pont", app.integrationProject); Spacer(); Button("Choisir le projet…") { app.chooseIntegrationDirectory(project: true) } }
                     Toggle("Exposer aussi les outils de délégation", isOn: $app.integrationDelegate)
+                    Toggle("Continuer après une limite de tokens de sortie", isOn: $app.integrationOutputResume)
+                    if app.integrationOutputResume { TextField("Projet de continuation (vide : projet du pont)", text: $app.integrationOutputResumeProject) }
+                    Text("Autorise une continuation dans le même chat Harness, après max-tokens confirmé ; deux continuations consécutives maximum. La pause automatique de Reprise reste prioritaire.").font(.caption).foregroundStyle(.secondary)
                     Picker("Rôle de l’agent", selection: $app.integrationAgentRole) {
                         Text("Standard").tag("standard")
                         Text("Coordinateur").tag("coordinator")
@@ -120,6 +131,8 @@ struct Integrations: View {
                         path("Profil du plan", plan["profile"] as? String ?? "")
                         path("Projet du plan", plan["project"] as? String ?? "")
                         Text("Rôle : " + ((plan["agent_role"] as? String == "coordinator") ? "Coordinateur" : "Standard"))
+                        if let project = plan["output_resume_project"] as? String { path("Projet de continuation", project) }
+                        Text("Continuation après limite de sortie : " + ((plan["output_resume"] as? Bool == true) ? "autorisée" : "désactivée"))
                         Text("Délégation : " + ((plan["delegate"] as? Bool == true) ? "exposée" : "non exposée"))
                         ForEach(Array((plan["changes"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, change in
                             VStack(alignment: .leading, spacing: 3) {
@@ -159,6 +172,8 @@ struct Integrations: View {
         }
         .disabled(app.setupBusy || !app.stateReady)
         .onChange(of: app.integrationProfile) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.integrationOutputResumeProject) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.integrationOutputResume) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationAgentRole) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationDelegate) { _, _ in app.invalidateIntegrationPlan() }
     }

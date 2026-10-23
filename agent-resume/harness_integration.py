@@ -18,7 +18,7 @@ from state_install import initialized, _sync_directory
 
 START = '# BEGIN REPRISE MANAGED INTEGRATION'
 END = '# END REPRISE MANAGED INTEGRATION'
-DOCS = ('REPRISE-AGENTS.template.md', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'HARNESS-SUPERVISION-ARCHITECTURE.md', 'CLARIFICATION-CONTRACT.md')
+DOCS = ('REPRISE-AGENTS.template.md', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'HARNESS-SUPERVISION-ARCHITECTURE.md', 'HARNESS-INTEGRATION.md', 'CLARIFICATION-CONTRACT.md')
 OBSERVE = ('reprise_backends', 'reprise_requests', 'reprise_quotas')
 DELEGATE = ('reprise_delegate', 'reprise_followup')
 
@@ -199,6 +199,10 @@ def inspect(home, profile=None):
         old = manifest(managed)
         if old:
             result['project'] = old.get('project')
+            result['output_resume'] = old.get('output_resume', False)
+            result['output_resume_project'] = old.get('output_resume_project', old.get('project'))
+            result['delegate'] = 'reprise_delegate' in old.get('tools', [])
+            result['agent_role'] = old.get('agent_role', 'standard')
         journal = managed / 'operation.json'
         if journal.exists() or journal.is_symlink():
             data = read_journal(journal)
@@ -209,7 +213,7 @@ def inspect(home, profile=None):
     return result
 
 
-def desired(root, home, profile, project, action, delegate=False, agent_role='standard'):
+def desired(root, home, profile, project, action, delegate=False, agent_role='standard', output_resume=False, output_resume_project=None):
     home, folder, managed = context(home, profile)
     old = manifest(managed)
     project = str(Path(project).expanduser().resolve(strict=True))
@@ -236,6 +240,9 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
     empty_array = len(meaningful) == 1 and re.fullmatch(r'\[\]\s*(?:#.*)?', meaningful[0].strip()) is not None
     if not empty_array and any(not line[0].isspace() and not (line.startswith('- ') or line == '-') for line in meaningful):
         raise ValueError('Forme du patch non prise en charge : liste YAML de patches ou [] attendue. Aucun changement.')
+    resume_project = str(Path(output_resume_project or project).expanduser().resolve(strict=True))
+    if not Path(resume_project).is_dir():
+        raise ValueError('Projet de continuation : dossier existant requis.')
     files = {}
     release = None
     state = str(state_location(root).absolute())
@@ -256,6 +263,11 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
             {'id': 'reprise-skill-filesystem', 'name': '@deepseek-ai/dsh-skill-filesystem', 'config': {
                 'providerName': 'reprise-' + profile, 'includeDefaultRoots': False,
                 'customSkillDirs': [str(managed / 'skills')], 'watch': False}}]
+        if output_resume:
+            entries.append({'id': 'reprise-output-resume', 'name': str(release / 'Contents/Resources/helpers/harness-output-resume.cjs'),
+                            'config': {'enabled': True, 'projectRoot': resume_project,
+                                       'stateDirectory': str(Path(state) / 'harness-output-resume'),
+                                       'maxConsecutive': 2}})
         new_block = START + '\n- insert: ' + json.dumps(entries, ensure_ascii=False) + '\n' + END + '\n'
         empty_before = (old or {}).get('empty_before')
         empty_after = (old or {}).get('empty_after')
@@ -278,6 +290,9 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
                          'state': state, 'release': str(release), 'tools': list(tools),
                          'block_sha256': digest(new_block.encode()), 'managed_files': owned,
                          'empty_before': empty_before, 'empty_after': empty_after}
+        if output_resume:
+            next_manifest['output_resume'] = True
+            next_manifest['output_resume_project'] = resume_project
         if agent_role != 'standard':
             next_manifest['agent_role'] = agent_role
     else:
@@ -300,12 +315,12 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
     return files, {'release': str(release) if release else (old or {}).get('release'), 'state': state}, next_manifest
 
 
-def plan(root, home, profile, project, action='install', delegate=False, agent_role='standard'):
-    if action not in ('install', 'remove') or type(delegate) is not bool or agent_role not in ('standard', 'coordinator'):
+def plan(root, home, profile, project, action='install', delegate=False, agent_role='standard', output_resume=False, output_resume_project=None):
+    if action not in ('install', 'remove') or type(delegate) is not bool or agent_role not in ('standard', 'coordinator') or type(output_resume) is not bool:
         raise ValueError('Action ou capacité invalide.')
     if inspect(home, profile).get('pending_plan'):
         raise ValueError('Reprendre l’opération partielle conservée avant de créer un autre plan.')
-    files, extra, _ = desired(root, home, profile, project, action, delegate, agent_role)
+    files, extra, _ = desired(root, home, profile, project, action, delegate, agent_role, output_resume, output_resume_project)
     changes = []
     for path, text in files.items():
         before, after = file_hash(path), digest(text.encode()) if text is not None else None
@@ -318,6 +333,9 @@ def plan(root, home, profile, project, action='install', delegate=False, agent_r
               'changes': changes, **extra}
     if agent_role != 'standard':
         result['agent_role'] = agent_role
+    if output_resume:
+        result['output_resume'] = True
+        result['output_resume_project'] = str(Path(output_resume_project or project).expanduser().resolve(strict=True))
     result['fingerprint'] = digest(encoded(result).encode())
     return result
 
@@ -348,12 +366,12 @@ def apply(root, public):
             if journal['plan'] != public:
                 raise ValueError('Un autre plan est en attente ; reprendre ce plan sans écrasement.')
         else:
-            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'))
+            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'))
             if current != public:
                 raise ValueError('Entrées modifiées depuis la prévisualisation. Refaire le plan.')
             if not public['changes']:
                 return {'status': 'completed', 'changed': False, 'message': 'Configuration identique ; aucune écriture.'}
-            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'))
+            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'))
             if public['action'] == 'install':
                 helpers, runtime, _ = bundle_info(root)
                 stage_release(helpers, runtime, Path(public['release']))
@@ -483,6 +501,7 @@ def verify(home, profile, root=None):
     return {'status': 'verified', 'message': message,
             'selected_release': selected_release, 'update_required': update_required,
             'bridge_capabilities': capabilities, 'missing_result_capabilities': missing,
+            'output_resume': {'configured': old.get('output_resume', False), 'client_loaded': 'unknown'},
             'levels': {'configuration_written': True, 'integration_loaded': 'unknown', 'client_tools_discovered': 'unknown', 'exchange_confirmed': 'unknown'},
             'full_profile_syntax': 'not_checked', 'bridge_tools': names, 'bridge_version': initialized_reply['serverInfo']['version'],
             'bridge_source_sha256': initialized_reply['serverInfo'].get('source_sha256')}
@@ -499,6 +518,8 @@ def main(root, argv=None):
             command.add_argument('--project', required=True)
             command.add_argument('--action', choices=('install', 'remove'), required=True)
             command.add_argument('--delegate', action='store_true')
+            command.add_argument('--output-resume-project', help='Explicit project for native continuation; defaults to bridge project')
+            command.add_argument('--output-resume', action='store_true', help='Explicitly authorize same-session continuation after output-token limit')
             command.add_argument('--agent-role', choices=('standard', 'coordinator'), default='standard')
     sub.add_parser('integration-apply')
     args = parser.parse_args(argv)
@@ -508,7 +529,7 @@ def main(root, argv=None):
             result = inspect(args.home, args.profile)
         elif args.command == 'integration-plan':
             result = {'status': 'planned', 'message': 'Plan sans écriture. L’installation n’autorise ni inférence ni activation automatique.',
-                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role)}
+                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role, args.output_resume, args.output_resume_project)}
         elif args.command == 'integration-apply':
             public = json.loads(sys.stdin.read(1024 * 1024))['plan']
             result = apply(root, public)

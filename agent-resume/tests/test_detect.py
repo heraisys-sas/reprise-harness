@@ -54,6 +54,16 @@ class QuotaCompletionTests(unittest.TestCase):
             'error': {'codex_error_info': 'other'}}])['state'], 'failed')
 
 class HarnessDetectionTests(unittest.TestCase):
+    def test_output_limit_is_distinct_from_provider_quota(self):
+        result = module.harness_status({}, {'kind': 'max-tokens', 'seq': 6598,
+                                           'time': 1792784525560, 'turn': 21})
+        self.assertEqual(result['state'], 'output_limited')
+        self.assertEqual(result['interruption_seq'], 6598)
+        self.assertEqual(result['interrupted_at'], 1792784525.560)
+        self.assertIsNone(result['retry_at'])
+        self.assertIsNone(module.harness_status({}, {'kind': 'pending_input'}))
+        self.assertIsNone(module.harness_status({}, {'kind': 'completed'}))
+
     def test_errors_and_abort(self):
         for code, expected in [('QUOTA', 'quota_candidate'), ('ACCOUNT_QUOTA', 'quota_candidate'), ('RATE_LIMIT', 'rate_limited'), ('AUTH', 'failed')]:
             self.assertEqual(module.harness_status({}, {'kind': 'error', 'code': code})['state'], expected)
