@@ -46,6 +46,35 @@ class IronClawConnectionTests(unittest.TestCase):
             cls.return_value.followup.assert_called_once_with('child', 'parent', 'continue', allow_submit=True)
             cls.return_value.submit.assert_not_called()
 
+    def test_fail_requires_reason_and_routes_to_local_operator_exit(self):
+        state_install.initialize(self.state)
+        with patch.object(connection, 'Tasks') as cls, patch.object(connection, 'endpoint') as endpoint:
+            connection.task_operation(self.base, 'ironclaw-fail',
+                                      {'request_key': 'key', 'reason': 'quota exhausted'})
+            cls.return_value.fail.assert_called_once_with('key', 'quota exhausted')
+            connection.task_operation(self.base, 'ironclaw-fail', {'request_key': 'key', 'reason': 'ok'})
+            self.assertEqual(cls.return_value.fail.call_count, 2)
+            endpoint.assert_not_called()
+        for value in ({'request_key': 'key'}, {'request_key': 'key', 'reason': '  '},
+                      {'request_key': 'key', 'reason': 'x' * 513},
+                      {'request_key': 'key', 'reason': 'ok', 'acknowledge': True}):
+            with self.assertRaises(ValueError):
+                connection.task_operation(self.base, 'ironclaw-fail', value)
+
+    def test_reason_is_reserved_to_operator_fail(self):
+        values = (('ironclaw-submit', {'request_key': 'key', 'content': 'q', 'allow_submit': True, 'reason': 'x'}),
+                  ('ironclaw-poll', {'request_key': 'key', 'reason': 'x'}),
+                  ('ironclaw-result', {'request_key': 'key', 'reason': 'x'}),
+                  ('ironclaw-reconcile', {'request_key': 'key', 'reason': 'x'}),
+                  ('ironclaw-requests', {'reason': 'x'}),
+                  ('ironclaw-followup', {'request_key': 'key', 'parent_request_key': 'p', 'content': 'c', 'allow_submit': True, 'reason': 'x'}))
+        with patch.object(connection, 'Tasks') as cls:
+            for command, value in values:
+                with self.assertRaises(ValueError):
+                    connection.task_operation(self.base, command, value)
+            cls.assert_not_called()
+        self.assertFalse(self.state.exists())
+
     def test_invalid_or_symbolic_config_cannot_overwrite(self):
         state_install.initialize(self.state)
         connection.configure(self.base, self.value)
@@ -86,6 +115,16 @@ class IronClawConnectionTests(unittest.TestCase):
         message = json.loads(output.call_args.args[0])['message']
         self.assertIn('reçu durable', message)
         self.assertNotIn('Aucune tâche soumise', message)
+
+    def test_fail_triage_error_reports_local_decision(self):
+        from io import StringIO
+        state_install.initialize(self.state)
+        with patch.object(sys, 'stdin', StringIO('{"request_key":"key","reason":"  "}')), patch('builtins.print') as output:
+            self.assertEqual(connection.main(self.base, ['ironclaw-fail']), 1)
+        message = json.loads(output.call_args.args[0])['message']
+        self.assertIn('Décision opérateur', message)
+        self.assertNotIn('reçu durable', message)
+        self.assertNotIn('tâche incertaine', message)
 
     def test_inspect_missing_config_has_no_side_effect_or_network(self):
         with patch.object(connection, 'probe') as probe, patch('builtins.print') as output:
