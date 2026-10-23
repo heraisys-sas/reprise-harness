@@ -50,6 +50,8 @@ def task_operation(root, command, value):
         raise ValueError('Motif d’échec explicite requis.')
     if command != 'ironclaw-followup' and 'parent_request_key' in value:
         raise ValueError('Parent réservé à une continuation explicite.')
+    if command != 'ironclaw-fail' and 'reason' in value:
+        raise ValueError('Motif réservé à la décision opérateur.')
     for key in ('allow_submit', 'acknowledge'):
         if key in value and type(value[key]) is not bool:
             raise ValueError('Autorisation booléenne explicite requise.')
@@ -110,6 +112,11 @@ def main(root, argv):
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except (OSError, ValueError, TypeError, sqlite3.Error, ProbeError, TaskError):
-        message = 'Opération IronClaw non confirmée. Consultez le reçu durable avec la même request_key ; ne renvoyez pas une tâche incertaine.' if argv and argv[0] in ('ironclaw-submit', 'ironclaw-poll', 'ironclaw-result', 'ironclaw-requests', 'ironclaw-reconcile', 'ironclaw-followup', 'ironclaw-fail') else 'Connexion IronClaw non confirmée. Vérifiez les paramètres, les permissions des fichiers et l’hôte SSH approuvé. Aucune tâche soumise.'
+        if argv and argv[0] == 'ironclaw-fail':
+            message = 'Décision opérateur non enregistrée : modification purement locale, aucune tâche n’a été soumise. Renvoyez ironclaw-fail avec la même request_key et un motif valide.'
+        elif argv and argv[0] in ('ironclaw-submit', 'ironclaw-poll', 'ironclaw-result', 'ironclaw-requests', 'ironclaw-reconcile', 'ironclaw-followup'):
+            message = 'Opération IronClaw non confirmée. Consultez le reçu durable avec la même request_key ; ne renvoyez pas une tâche incertaine.'
+        else:
+            message = 'Connexion IronClaw non confirmée. Vérifiez les paramètres, les permissions des fichiers et l’hôte SSH approuvé. Aucune tâche soumise.'
         print(json.dumps({'status': 'error', 'message': message}, ensure_ascii=False))
         return 1
