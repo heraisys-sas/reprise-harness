@@ -6,6 +6,12 @@ import uuid
 from urllib.parse import quote
 from ironclaw_ssh import request
 
+# Schéma des identités de tâche. Toute évolution de `_identity()` doit incrémenter ce
+# numéro : `_ensure_binding()` compare l'identité recalculée à celle stockée, et sans
+# version un simple changement d'algorithme serait pris pour un changement d'endpoint
+# (« Task belongs to a different endpoint configuration »), rendant les tâches illisibles.
+IDENTITY_SCHEME = 'v1'
+
 
 class TaskError(Exception):
     pass
@@ -31,6 +37,8 @@ class Tasks:
                 db.execute('ALTER TABLE ironclaw_tasks ADD COLUMN ack_json TEXT')
             if 'parent_request_key' not in columns:
                 db.execute('ALTER TABLE ironclaw_tasks ADD COLUMN parent_request_key TEXT')
+            if 'last_error' not in columns:
+                db.execute('ALTER TABLE ironclaw_tasks ADD COLUMN last_error TEXT')
 
     def get(self, key, *, acknowledge=False):
         if not isinstance(key, str) or not key.strip() or len(key) > 128:
@@ -55,8 +63,19 @@ class Tasks:
     def _ensure_binding(self, key):
         self._require_endpoint()
         saved = self.db.execute('SELECT identity,content,parent_request_key FROM ironclaw_tasks WHERE request_key=?', (key,)).fetchone()
-        if saved and saved[0] != self._identity(saved[1], saved[2]):
-            raise TaskError('Task belongs to a different endpoint configuration')
+        if not saved:
+            return
+        stored, content, parent_key = saved
+        expected = self._identity(content, parent_key)
+        if stored == expected:
+            return
+        # Ligne écrite avant la version des identités : on migre au lieu de crier à un
+        # changement d'endpoint, qui serait un faux diagnostic.
+        if ':' not in stored and stored == self._identity_legacy(content, parent_key):
+            with self.db:
+                self.db.execute('UPDATE ironclaw_tasks SET identity=? WHERE request_key=?', (expected, key))
+            return
+        raise TaskError('Task belongs to a different endpoint configuration')
 
     def list_requests(self, limit=100):
         if type(limit) is not int or not 1 <= limit <= 100:
@@ -65,6 +84,17 @@ class Tasks:
         return [{'request_key': row[0], 'state': row[1], 'acknowledged': bool(row[2])} for row in rows]
 
     def _identity(self, content, parent_key=None):
+        self._require_endpoint()
+        base = hashlib.sha256(json.dumps({'content': content, 'scheme': IDENTITY_SCHEME, 'endpoint': [
+            self.endpoint.host, self.endpoint.user, self.endpoint.port, self.endpoint.http_port,
+            self.endpoint.identity_file, self.endpoint.token_url_file]}, sort_keys=True).encode()).hexdigest()
+        if parent_key is None:
+            return f'{IDENTITY_SCHEME}:{base}'
+        linked = hashlib.sha256(json.dumps({'base': base, 'parent': parent_key}, sort_keys=True).encode()).hexdigest()
+        return f'{IDENTITY_SCHEME}:{linked}'
+
+    def _identity_legacy(self, content, parent_key=None):
+        """Identité pré-versionnée, conservée uniquement pour migrer les lignes existantes."""
         self._require_endpoint()
         base = hashlib.sha256(json.dumps({'content': content, 'endpoint': [
             self.endpoint.host, self.endpoint.user, self.endpoint.port, self.endpoint.http_port,
@@ -165,10 +195,12 @@ class Tasks:
                     run = None
             with self.db:
                 self.db.execute('UPDATE ironclaw_tasks SET state=?,run_id=? WHERE request_key=?', (state, run, key))
-        except Exception:
+        except (TaskError, OSError, TimeoutError, ValueError) as exc:
+            state = 'ambiguous' if post_attempted else 'prepared'
+            detail = f'{type(exc).__name__}: {exc}'[:500]
             with self.db:
-                self.db.execute('UPDATE ironclaw_tasks SET state=? WHERE request_key=?', ('ambiguous' if post_attempted else 'prepared', key))
-            raise TaskError('Dispatch uncertain; inspect remotely before any new request') from None
+                self.db.execute('UPDATE ironclaw_tasks SET state=?,last_error=? WHERE request_key=?', (state, detail, key))
+            raise TaskError('Dispatch uncertain; inspect remotely before any new request') from exc
         return self.get(key)
 
     def poll(self, key):
