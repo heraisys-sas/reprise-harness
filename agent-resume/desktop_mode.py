@@ -7,6 +7,8 @@ therefore exposes: launch (open the linked app if needed), start/stop (the
 Quick Entry server) and status. It never force-quits a running app and never
 starts anything implicitly; each action is explicit.
 """
+from app_paths import state_directory, state_location
+import errno
 import plistlib
 from pathlib import Path
 import subprocess
@@ -34,21 +36,22 @@ def app_running():
         return False
 
 
-def server_running():
-    """True only when the Quick Entry socket is present and accepted.
-
-    A missing socket means stopped; a present-but-rejected socket is
-    indeterminate and reported as False with an explicit status rather than
-    being assumed stopped.
-    """
-    import engines
-    if not DEFAULT_SOCKET.exists():
-        return False
+def socket_state():
+    """A successful connection proves liveness; only absence/refusal proves stopped."""
+    import socket
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(1)
     try:
-        engines.socket_path({'socket': str(DEFAULT_SOCKET)})
-        return True
-    except engines.Unavailable:
-        return False
+        sock.connect(str(DEFAULT_SOCKET))
+        return 'running'
+    except OSError as error:
+        return 'stopped' if error.errno in (errno.ENOENT, errno.ECONNREFUSED) else 'unknown'
+    finally:
+        sock.close()
+
+
+def server_running():
+    return socket_state() == 'running'
 
 
 def status():
@@ -68,39 +71,93 @@ def launch():
 
 
 def start(socket=None, state=None, daily_limit=8):
-    """Start the Quick Entry server (opt-in). The linked app is not required
-    for the server itself but is needed for a real submission."""
-    if server_running():
-        return {'ok': True, 'started': False, 'reason': 'Serveur Quick Entry déjà actif.'}
-    socket = socket or str(DEFAULT_SOCKET)
-    state = state or str(Path(__file__).parent / 'quick-state')
-    import tempfile
-    import time
-    err = Path(tempfile.gettempdir()) / 'reprise-quick-entry-error.log'
+    """Use the managed daemon launcher for the app's Connections start action."""
     try:
-        with err.open('w') as sink:
-            subprocess.Popen([sys.executable, str(SERVER), '--socket', socket, '--state', str(state),
-                              '--daily-limit', str(daily_limit)],
-                             start_new_session=True, stdout=subprocess.DEVNULL, stderr=sink)
-        time.sleep(0.5)
-        if server_running():
-            return {'ok': True, 'started': True, 'reason': 'Serveur Quick Entry démarré.',
-                    'needs_app': not app_running()}
-        detail = ''
-        if err.is_file():
-            lines = err.read_text().strip().splitlines()
-            detail = lines[-1] if lines else ''
-        return {'ok': False, 'started': False,
-                'reason': f'Serveur non démarré : {detail or "cause inconnue"}'}
+        return daemon_start(socket=socket, state=state, daily_limit=daily_limit)
     except OSError as error:
         return {'ok': False, 'started': False, 'reason': f'Démarrage impossible : {error}'}
 
 
 def stop():
-    """Stop the Quick Entry server by closing its socket listener.
+    return daemon_stop()
 
-    A graceful stop is the operator's job via launchctl; here we only report.
-    Never kills the linked app.
+
+# --- Quick Apply daemon (mirrors the Codex app-server daemon) --------------
+DAEMON_NAME = 'reprise-quick-apply'
+DEFAULT_STATE = state_location(Path(__file__).parent, 'quick-state')
+
+
+def _pid_file(state):
+    return Path(state) / 'quick-apply.pid'
+
+
+def _log_file(state):
+    return Path(state) / 'quick-apply.log'
+
+
+def daemon_pid(state=None):
+    """A PID file cannot authenticate ownership; no verified PID is available."""
+    return None
+
+
+def daemon_start(socket=None, state=None, daily_limit=8, project_root=None):
+    """Start the Quick Apply daemon (detached), independent of Desktop being ready.
+
+    The server binds its socket without needing Claude Desktop, so it may start
+    first; submissions are delivered whenever Desktop is available.
     """
-    return {'ok': True, 'stopped': False,
-            'reason': 'Arrêt du serveur via launchctl (unload) ; l’application liée n’est pas fermée.'}
+    state = state or str(DEFAULT_STATE)
+    if server_running():
+        return {'ok': True, 'started': False, 'reason': 'Daemon Quick Apply déjà actif.'}
+    socket = socket or str(DEFAULT_SOCKET)
+    Path(state).mkdir(parents=True, exist_ok=True, mode=0o700)
+    if project_root is None:
+        try:
+            import claude_integration
+            installed = claude_integration.inspect(Path(__file__).parent)
+            if installed.get('managed'):
+                project_root = installed.get('project')
+        except (OSError, ValueError, KeyError):
+            pass
+    try:
+        log = open(_log_file(state), 'ab')
+        proc = subprocess.Popen([sys.executable, str(SERVER), '--socket', socket,
+                                 '--state', str(state)] + (['--project-root', str(project_root)] if project_root else []),
+                                stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                                start_new_session=True)
+        _pid_file(state).write_text(str(proc.pid))
+        import time
+        time.sleep(1.0)  # let a fast failure (e.g. orphan socket) surface
+        if server_running():
+            return {'ok': True, 'started': True, 'daemon': DAEMON_NAME, 'pid': proc.pid,
+                    'needs_app': not app_running(),
+                    'reason': 'Daemon Quick Apply démarré. Admission disponible ; émission native non raccordée.'}
+        detail = ''
+        log = _log_file(state)
+        if log.is_file():
+            lines = log.read_text(errors='replace').strip().splitlines()
+            detail = lines[-1] if lines else ''
+        return {'ok': False, 'started': False, 'reason': f'Daemon Quick Apply non démarré : {detail or "voir le journal"}'}
+    except OSError as error:
+        return {'ok': False, 'started': False, 'reason': f'Démarrage impossible : {error}'}
+
+
+def daemon_stop(state=None):
+    """Never signal an unauthenticated PID or claim an unconfirmed stop."""
+    observed = socket_state()
+    if observed == 'stopped':
+        return {'ok': True, 'stopped': False, 'status': 'stopped',
+                'reason': 'Socket claude-desktopd absent ou sans écoute ; aucun arrêt effectué.'}
+    return {'ok': False, 'stopped': False,
+            'status': 'unsupported' if observed == 'running' else 'indeterminate',
+            'reason': 'Arrêt non confirmé : aucun contrôle d’arrêt authentifié disponible. '
+                      'Arrêter claude-desktopd depuis le terminal ou le gestionnaire qui l’a lancé, '
+                      'puis vérifier que la connexion au socket est refusée. '
+                      'L’application liée reste ouverte.'}
+
+
+def daemon_status(state=None):
+    observed = socket_state()
+    return {'daemon': DAEMON_NAME, 'running': observed == 'running', 'pid': None,
+            'state': observed, 'app_running': app_running(), 'app_version': app_version(),
+            'socket': str(DEFAULT_SOCKET), 'listening': observed == 'running'}

@@ -232,3 +232,32 @@ def history(log_dir=DEFAULT_LOG_DIR, limit=20):
     return {'submissions': submissions[-limit:], 'interactions': interactions[-limit:],
             'timeline': timeline[-limit:],
             'note': 'Log-derived; a submission state is not proof a model turn completed.'}
+
+
+# --- Active conversations (pense-bête multi-sujets) -------------------------
+def active_conversations(log_dir=DEFAULT_LOG_DIR, limit=10):
+    """Aggregate distinct active conversations across rotated main*.log files.
+
+    Returns one entry per chatId with its first/last seen timestamps and an
+    activity count, so the local synthesis can act as a multi-subject recap.
+    Evidence-based: only conversations actually present in the logs.
+    """
+    from collections import OrderedDict
+    import glob
+    per_chat = {}
+    for path in sorted(glob.glob(str(Path(log_dir) / 'main*.log'))):
+        try:
+            text = Path(path).read_text(errors='replace')
+        except OSError:
+            continue
+        for e in parse_quick_entry(text):
+            chat = (e.get('chatId') or '').strip()
+            if e['kind'] == 'submitted' and chat:
+                rec = per_chat.setdefault(chat, {'chatId': chat, 'first': e['ts'], 'last': e['ts'],
+                                                 'submissions': 0, 'states': []})
+                rec['last'] = max(rec['last'], e['ts'])
+                rec['first'] = min(rec['first'], e['ts'])
+                rec['submissions'] += 1
+                rec['states'].append(e.get('complete'))
+    ordered = sorted(per_chat.values(), key=lambda r: r['last'], reverse=True)
+    return ordered[:limit]

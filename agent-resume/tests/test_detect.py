@@ -54,6 +54,16 @@ class QuotaCompletionTests(unittest.TestCase):
             'error': {'codex_error_info': 'other'}}])['state'], 'failed')
 
 class HarnessDetectionTests(unittest.TestCase):
+    def test_output_limit_is_distinct_from_provider_quota(self):
+        result = module.harness_status({}, {'kind': 'max-tokens', 'seq': 6598,
+                                           'time': 1792784525560, 'turn': 21})
+        self.assertEqual(result['state'], 'output_limited')
+        self.assertEqual(result['interruption_seq'], 6598)
+        self.assertEqual(result['interrupted_at'], 1792784525.560)
+        self.assertIsNone(result['retry_at'])
+        self.assertIsNone(module.harness_status({}, {'kind': 'pending_input'}))
+        self.assertIsNone(module.harness_status({}, {'kind': 'completed'}))
+
     def test_errors_and_abort(self):
         for code, expected in [('QUOTA', 'quota_candidate'), ('ACCOUNT_QUOTA', 'quota_candidate'), ('RATE_LIMIT', 'rate_limited'), ('AUTH', 'failed')]:
             self.assertEqual(module.harness_status({}, {'kind': 'error', 'code': code})['state'], expected)
@@ -146,3 +156,55 @@ class AutoClawTests(unittest.TestCase):
         self.assertIsNone(module.autoclaw_session({'updatedAt': 'invalid'}, now=2000))
         self.assertIsNone(module.autoclaw_session({'updatedAt': 1}, now=40*86400))
         self.assertIsNone(module.autoclaw_session({'updatedAt': 3000000}, now=2000))
+
+
+class CodexCoverageRegressionTests(unittest.TestCase):
+    def test_recognized_unknown_and_unreadable_are_distinct(self):
+        import io
+        from unittest.mock import patch
+        cases = [
+            ('{"type":"event_msg","payload":{"type":"task_complete"}}', 'recognized'),
+            ('{"type":"event_msg","payload":{"type":"new_event"}}', 'unknown_format'),
+            ('{broken', 'unreadable'),
+            ('[]', 'unreadable'),
+        ]
+        for text, expected in cases:
+            with self.subTest(expected=expected), patch.object(Path, 'open', return_value=io.StringIO(text)):
+                details = {}
+                self.assertIsNone(module.inspect('/rollout', now=2000, details=details))
+                self.assertEqual(details['coverage'], expected)
+
+    def test_scan_counts_degraded_coverage_without_claiming_idle(self):
+        from unittest.mock import Mock, patch
+        rows = [(name, name, '/project', name, 2000, 'cli')
+                for name in ('recognized', 'unknown_format', 'unreadable', 'denied')]
+        db = Mock()
+        db.execute.return_value.fetchall.return_value = rows
+        def inspected(path, details):
+            if path == 'denied':
+                raise PermissionError('unreadable')
+            details.update(coverage=path, active=False)
+        with patch.object(Path, 'exists', return_value=True), \
+                patch.object(module.sqlite3, 'connect', return_value=db), \
+                patch.object(module, 'inspect', side_effect=inspected):
+            result = module.scan('/codex')
+        self.assertEqual(result['coverage'], {'total': 4, 'recognized': 1,
+                         'unknown_format': 1, 'unreadable': 2, 'degraded': 3})
+        self.assertIsNotNone(result['error'])
+        self.assertIsNone(result['active'])
+        self.assertEqual(result['sessions'], [])
+        db.close.assert_called_once()
+
+    def test_recognized_completed_session_can_be_idle(self):
+        from unittest.mock import Mock, patch
+        db = Mock()
+        db.execute.return_value.fetchall.return_value = [('one', 'one', '/project', 'one', 2000, 'cli')]
+        def inspected(path, details):
+            details.update(coverage='recognized', active=False)
+        with patch.object(Path, 'exists', return_value=True), \
+                patch.object(module.sqlite3, 'connect', return_value=db), \
+                patch.object(module, 'inspect', side_effect=inspected):
+            result = module.scan('/codex')
+        self.assertEqual(result['active'], 0)
+        self.assertIsNone(result['error'])
+        self.assertEqual(result['coverage']['degraded'], 0)

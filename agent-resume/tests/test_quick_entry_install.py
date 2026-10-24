@@ -42,7 +42,7 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(args[1], str(installer.SERVER))
         self.assertIn(str(self.socket), args)
         self.assertIn(str(self.state), args)
-        self.assertIn('--daily-limit', args)
+        self.assertNotIn('--daily-limit', args)
         self.assertNotIn('RunAtLoad', settings)
         self.assertNotIn('KeepAlive', settings)
         self.assertEqual(result['plist'],
@@ -58,8 +58,8 @@ class InstallTests(unittest.TestCase):
         self.install()
         self.install(force=True, daily_limit=3)
         settings = self.read_plist()
-        self.assertIn('--daily-limit', settings['ProgramArguments'])
-        self.assertIn('3', settings['ProgramArguments'])
+        self.assertNotIn('--daily-limit', settings['ProgramArguments'])
+        self.assertNotIn('3', settings['ProgramArguments'])
 
     def test_paths_outside_home_refused(self):
         with self.assertRaises(ValueError):

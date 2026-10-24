@@ -1,0 +1,6 @@
+{
+  "host": "baremetal06.agents.near.ai",
+  "port": "29403",
+  "user": "agent",
+  "key": "~/.ssh/id_ed25519"
+}

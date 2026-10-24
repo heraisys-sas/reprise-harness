@@ -9,6 +9,7 @@
 **/.credentials*
 **/state/
 **/quick-state/
+**/ux-state/
 **/backups/
 **/*.app/
 *.zip
@@ -23,3 +24,8 @@
 /routing/plugin/native/RouteEmbedding
 
 /routing/plugin/native/sentence-prototypes.plist
+
+/role-routing/plugin/lib/
+
+# Immutable local standalone builds and publication staging
+/agent-resume/builds/

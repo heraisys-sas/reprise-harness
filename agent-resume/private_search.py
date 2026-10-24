@@ -10,6 +10,7 @@ import time
 import contextlib
 import fcntl
 from vault import load, save
+from app_paths import native_binary
 
 
 def words(text):
@@ -25,7 +26,7 @@ def cosine(a, b):
 
 
 def embeddings(root, texts):
-    binary = root / 'Reprise.app/Contents/MacOS/Embedding'
+    binary = native_binary(root, 'Embedding')
     try:
         p = subprocess.run([str(binary)], input=json.dumps(texts), text=True, capture_output=True, timeout=20)
         values = json.loads(p.stdout)

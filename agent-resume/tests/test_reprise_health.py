@@ -1,4 +1,5 @@
 import json
+import tempfile
 import sys
 import unittest
 from pathlib import Path
@@ -9,6 +10,104 @@ import reprise_health as rh
 
 
 class SignaturesTests(unittest.TestCase):
+    def signatures(self, main='', mcp='', since=100):
+        contents = {'main.log': main, 'mcp-server-test.log': mcp}
+        with patch.object(rh, '_read', side_effect=lambda p: contents.get(p.name, '')), \
+                patch.object(Path, 'glob', return_value=[Path('/logs/mcp-server-test.log')]):
+            return rh.log_signatures('/logs', since=since)
+
+    def line(self, timestamp, message):
+        stamp = rh.datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
+        return f'{stamp} [info] {message}\n'
+
+    def mcp_line(self, timestamp, message):
+        stamp = rh.datetime.fromtimestamp(timestamp).astimezone().isoformat()
+        return f'{stamp} [reprise] [info] {message}\n'
+
+    def test_historical_markers_do_not_validate_recent_activity(self):
+        old = ''.join(self.line(90, marker) for marker in rh.LOG_SIGNATURES.values())
+        main = old + self.line(110, '[QuickEntry] Processing quick entry payload')
+        mcp = self.mcp_line(90, 'Message from client: old')
+        mcp += self.mcp_line(110, 'Message from server: recent')
+        signatures = self.signatures(main, mcp)
+        for name in ('quick_entry_submitted', 'quick_entry_routing', 'mcp_interaction'):
+            with self.subTest(name=name):
+                self.assertFalse(signatures[name]['present'])
+                self.assertEqual(signatures[name]['status'], 'missing')
+        self.assertTrue(signatures['quick_entry_guard']['present'])
+
+    def test_historical_markers_and_unrelated_activity_remain_unverified(self):
+        main = ''.join(self.line(90, marker) for marker in rh.LOG_SIGNATURES.values())
+        main += self.line(110, 'Application idle')
+        mcp = self.mcp_line(90, 'Message from client: old')
+        mcp += self.mcp_line(110, 'Transport ready')
+        for signature in self.signatures(main, mcp).values():
+            self.assertFalse(signature['present'])
+            self.assertEqual(signature['status'], 'unverified')
+
+    def test_post_update_markers_validate_only_their_source(self):
+        main = ''.join(self.line(110, marker) for marker in rh.LOG_SIGNATURES.values())
+        signatures = self.signatures(main)
+        for name in ('quick_entry_submitted', 'quick_entry_routing', 'quick_entry_guard'):
+            self.assertEqual(signatures[name]['status'], 'present')
+        self.assertEqual(signatures['mcp_interaction']['status'], 'unverified')
+        signatures = self.signatures(mcp=self.mcp_line(110, 'Message from client: new'))
+        self.assertEqual(signatures['mcp_interaction']['status'], 'present')
+        self.assertEqual(signatures['quick_entry_guard']['status'], 'unverified')
+
+    def test_boundary_is_exclusive_and_baseline_is_required(self):
+        main = self.line(100, 'Quick entry submitted [QuickEntry] Submitting payload to chat')
+        self.assertTrue(all(s['status'] == 'unverified' for s in self.signatures(main).values()))
+        signatures = self.signatures(self.line(110, 'Quick entry submitted'), since=None)
+        self.assertTrue(all(s['status'] == 'unverified' for s in signatures.values()))
+
+    def test_unverified_is_not_stale_or_component_breakage(self):
+        signatures = self.signatures()
+        with patch.object(rh, 'log_signatures', return_value=signatures), \
+                patch.object(rh, 'process_liveness', return_value={}), \
+                patch.object(rh, '_component_meta', return_value={'size': 2, 'mtime': 2}):
+            report = rh.check('.', versions={}, signature_since=100)
+            anomalies = rh.quick_entry_anomalies(
+                previous={'swift_addon': {'size': 1, 'mtime': 1}}, signatures=signatures)
+        self.assertEqual(report['stale_log_signatures'], [])
+        self.assertEqual(set(report['unverified_log_signatures']), set(rh.LOG_SIGNATURES))
+        self.assertTrue(all('non vérifié depuis la mise à jour' in a
+                            for a in report['actions_for_human']))
+        self.assertEqual(anomalies['anomalies'], [])
+
+    def test_watch_persists_epoch_without_codex_reset_and_read_does_not_write(self):
+        import sqlite3
+        import scheduler
+        db = sqlite3.connect(':memory:')
+        self.addCleanup(db.close)
+        scheduler.setup(db)
+        versions = {'claude-desktop': '1', 'codex': '1'}
+        with patch.object(rh, 'read_versions', side_effect=lambda _: dict(versions)), \
+                patch.object(rh, '_component_meta', return_value={'size': 1, 'mtime': 1}) as meta, \
+                patch.object(rh, 'codex_features', return_value=CodexHealthTests._features(self)), \
+                patch.object(rh, 'process_liveness', return_value={}), \
+                patch.object(rh, '_read', return_value=''), \
+                patch.object(Path, 'glob', return_value=[]), \
+                patch.object(rh.time, 'time', return_value=100) as clock:
+            rh.watch(db, '.')
+            self.assertEqual(scheduler.get(db, 'health_signature_epoch')['since'], 100)
+            versions['codex'] = '2'
+            clock.return_value = 200
+            rh.watch(db, '.')
+            self.assertEqual(scheduler.get(db, 'health_signature_epoch')['since'], 100)
+            meta.return_value = {'size': 2, 'mtime': 2}
+            clock.return_value = 300
+            rh.watch(db, '.')
+            self.assertEqual(scheduler.get(db, 'health_signature_epoch')['since'], 300)
+            versions['claude-desktop'] = '2'
+            clock.return_value = 400
+            before = db.execute('SELECT * FROM scheduler_meta ORDER BY key').fetchall()
+            report = rh.check('.', db=db, versions=versions)
+            self.assertEqual(len(report['unverified_log_signatures']), len(rh.LOG_SIGNATURES))
+            self.assertEqual(db.execute('SELECT * FROM scheduler_meta ORDER BY key').fetchall(), before)
+            rh.watch(db, '.')
+            self.assertEqual(scheduler.get(db, 'health_signature_epoch')['since'], 400)
+
     def test_log_signatures_present_on_real_logs(self):
         sigs = rh.log_signatures()
         self.assertIn('quick_entry_submitted', sigs)
@@ -51,6 +150,23 @@ class ExplainTests(unittest.TestCase):
             result = rh.explain('faits', binary='/usr/bin/true')
         self.assertTrue(result['available'])
         self.assertEqual(result['answer'], 'explication')
+
+    def test_failed_or_malformed_helper_preserves_deterministic_fallback(self):
+        for code, payload in ((1, ''), (0, '[]'), (0, '{}'), (0, '{"available":"yes"}')):
+            with self.subTest(code=code, payload=payload), patch('subprocess.run') as run:
+                run.return_value.stdout = payload
+                run.return_value.returncode = code
+                result = rh.explain('faits', binary='/usr/bin/true')
+                self.assertFalse(result['available'])
+                self.assertIsNone(result['answer'])
+                self.assertIn('reason_code', result)
+
+    def test_model_unavailability_reason_is_preserved(self):
+        with patch('subprocess.run') as run:
+            run.return_value.stdout = json.dumps({'available': False, 'answer': None,
+                'reason_code': 'model_not_ready', 'reason': 'Modèle en préparation.'})
+            run.return_value.returncode = 0
+            self.assertEqual(rh.explain('faits', binary='/usr/bin/true')['reason_code'], 'model_not_ready')
 
     def test_summarize_is_deterministic_with_features(self):
         result = rh.summarize('.')
@@ -147,6 +263,19 @@ class CodexReviewRound2Tests(unittest.TestCase):
 
 
 class QuickEntryAnomalyTests(unittest.TestCase):
+    def setUp(self):
+        # Diagnostics must see synthetic components, never an installed Claude app.
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        app = Path(self.temporary.name) / 'Claude.app'
+        for relative, _ in rh.FEATURES.values():
+            component = app / 'Contents' / relative
+            component.parent.mkdir(parents=True, exist_ok=True)
+            component.write_text('fixture component')
+        replacement = patch.object(rh, 'CLAUDE_APP', app)
+        replacement.start()
+        self.addCleanup(replacement.stop)
+
     def test_clean_when_no_update_and_signatures_present(self):
         with patch.object(rh, 'log_signatures', return_value={
                 'quick_entry_submitted': {'present': True}, 'quick_entry_routing': {'present': True},
@@ -178,3 +307,304 @@ class QuickEntryAnomalyTests(unittest.TestCase):
              patch.object(rh, 'log_signatures', return_value={}):
             rep = rh.quick_entry_anomalies(previous=None)
         self.assertTrue(any(a['kind'] == 'missing' for a in rep['anomalies']))
+
+
+class CodexHealthTests(unittest.TestCase):
+    """Verifies the Codex-side health check (patch from Codex, reviewed)."""
+
+    def _features(self, socket_present=True):
+        return {'checks': {
+            'bundles': {'apps': {'ChatGPT.app': {'meta': {'size': 1, 'mtime': 1}}, 'Codex.app': {'meta': None}}},
+            'codex_cli': {'present': True, 'meta': {'size': 1, 'mtime': 1}},
+            'control_socket': {'present': socket_present, 'meta': None},
+            'shared_mode': {'present': True, 'desktop_version': 'v1'},
+        }}
+
+    def test_present_socket_without_file_metadata_is_not_missing(self):
+        # A socket has no regular-file metadata; it must not be 'missing' when present.
+        report = rh.codex_anomalies(features=self._features(socket_present=True))
+        self.assertEqual(report['anomalies'], [])
+        self.assertTrue(report['clean'])
+
+    def test_absent_socket_is_missing(self):
+        report = rh.codex_anomalies(features=self._features(socket_present=False))
+        kinds = {a['kind'] for a in report['anomalies']}
+        self.assertIn('missing', kinds)
+        self.assertTrue(any(a['component'] == 'control_socket' for a in report['anomalies']))
+
+    def test_update_breakage_when_version_changed_and_socket_gone(self):
+        features = self._features(socket_present=False)
+        features['checks']['shared_mode']['desktop_version'] = 'v2'
+        prev = {'chatgpt_app': {'size': 0, 'mtime': 0}, 'desktop_version': 'v1'}
+        report = rh.codex_anomalies(previous=prev, features=features)
+        kinds = {a['kind'] for a in report['anomalies']}
+        self.assertIn('update_breakage', kinds)
+
+    def test_codex_anomalies_accepts_injected_features(self):
+        # No re-reading: injected features are used as-is.
+        report = rh.codex_anomalies(features=self._features())
+        self.assertIn('components', report)
+        self.assertIn('clean', report)
+
+
+class SocketAndWatchRegressionTests(unittest.TestCase):
+    def setUp(self):
+        import sqlite3
+        import engines
+        import scheduler
+        self.db = sqlite3.connect(':memory:')
+        self.addCleanup(self.db.close)
+        engines.setup(self.db)
+        scheduler.setup(self.db)
+
+    def test_orphan_socket_is_stopped_and_never_present(self):
+        import errno
+        with patch.object(Path, 'lstat'), patch('engines.socket_path', return_value=Path('/orphan')), \
+                patch('socket.socket') as factory:
+            factory.return_value.__enter__.return_value.connect.side_effect = ConnectionRefusedError(errno.ECONNREFUSED, 'orphan')
+            self.assertEqual(rh.socket_liveness('/orphan'), 'stopped')
+            factory.return_value.__enter__.return_value.connect.assert_called_once_with('/orphan')
+        with patch.object(rh, 'socket_liveness', return_value='stopped'), \
+                patch('engines.executable', return_value=None), \
+                patch.object(rh, '_component_meta', return_value=None), \
+                patch.object(Path, 'is_dir', return_value=False), \
+                patch.object(Path, 'read_bytes', side_effect=FileNotFoundError):
+            self.assertEqual(rh.process_liveness()['codex-server'], 'stopped')
+            control = rh.codex_features()['checks']['control_socket']
+            self.assertFalse(control['present'])
+            self.assertEqual(control['state'], 'stopped')
+
+    def test_permission_and_timeout_do_not_prove_stopped(self):
+        import errno
+        for error in (PermissionError(errno.EACCES, 'denied'), TimeoutError()):
+            with self.subTest(error=error), patch.object(Path, 'lstat'), \
+                    patch('engines.socket_path', return_value=Path('/private.sock')), \
+                    patch('socket.socket') as factory:
+                factory.return_value.__enter__.return_value.connect.side_effect = error
+                self.assertEqual(rh.socket_liveness('/private.sock'), 'indeterminate')
+
+    def test_health_follows_configured_socket_without_default_fallback(self):
+        import connection
+        self.db.execute('INSERT INTO engine_settings VALUES (?,?)',
+                        ('codex', json.dumps({'socket': '/configured.sock'})))
+        self.db.commit()
+        for selected_state in ('running', 'stopped'):
+            def observed(path):
+                return selected_state if str(path) == '/configured.sock' else 'running'
+            with self.subTest(state=selected_state), \
+                    patch('engines.socket_path', return_value=Path('/configured.sock')), \
+                    patch('shared_mode.state', return_value={}), \
+                    patch.object(rh, 'socket_liveness', side_effect=observed), \
+                    patch('engines.executable', return_value=None), \
+                    patch.object(rh, '_component_meta', return_value=None), \
+                    patch.object(Path, 'is_dir', return_value=False), \
+                    patch.object(Path, 'read_bytes', side_effect=FileNotFoundError):
+                info = connection.status(self.db, '/state')
+                self.assertIn('/configured.sock', [c['path'] for c in info['candidates']])
+                self.assertEqual(rh.process_liveness(self.db, '/state')['codex-server'], selected_state)
+                control = rh.codex_features(self.db, '/state')['checks']['control_socket']
+                self.assertEqual(control['path'], '/configured.sock')
+                self.assertEqual(control['present'], selected_state == 'running')
+
+    def test_failed_report_or_commit_does_not_advance_components(self):
+        import scheduler
+        features = CodexHealthTests._features(self)
+        def checked(*args, **kwargs):
+            return {'versions': {'codex': 'stable'}, 'actions_for_human': []}
+        with patch.object(rh, 'read_versions', return_value={'codex': 'stable'}), \
+                patch.object(rh, 'quick_entry_anomalies', return_value={'components': {}, 'anomalies': []}), \
+                patch.object(rh, 'codex_features', return_value=features), \
+                patch.object(rh, 'check', side_effect=checked) as check:
+            rh.watch(self.db, '.')
+            before = self.db.execute('SELECT * FROM scheduler_meta ORDER BY key').fetchall()
+            features['checks']['codex_cli']['meta'] = {'size': 9, 'mtime': 9}
+            check.side_effect = RuntimeError('report unavailable')
+            with self.assertRaises(RuntimeError):
+                rh.watch(self.db, '.')
+            self.assertEqual(self.db.execute('SELECT * FROM scheduler_meta ORDER BY key').fetchall(), before)
+            check.side_effect = checked
+            put = scheduler.put
+            def fail_commit(db, key, value):
+                if key == 'health_components':
+                    raise RuntimeError('persistence unavailable')
+                put(db, key, value)
+            with patch.object(scheduler, 'put', side_effect=fail_commit):
+                with self.assertRaises(RuntimeError):
+                    rh.watch(self.db, '.')
+            self.assertEqual(self.db.execute('SELECT * FROM scheduler_meta ORDER BY key').fetchall(), before)
+            report = rh.watch(self.db, '.')
+            self.assertEqual(scheduler.get(self.db, 'health_report'), report)
+            self.assertEqual(scheduler.get(self.db, 'health_components')['codex']['codex_cli'],
+                             {'size': 9, 'mtime': 9})
+
+    def test_tick_records_and_logs_watch_failure(self):
+        import ast
+        import contextlib
+        import io
+        import scheduler
+        tree = ast.parse((Path(__file__).parents[1] / 'resume').read_text())
+        statement = next(n for n in ast.walk(tree) if isinstance(n, ast.Try)
+                         and any(isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                                 and c.func.attr == 'watch' for b in n.body for c in ast.walk(b)))
+        namespace = {'db': self.db, 'ROOT': Path('/project'), 'scheduler': scheduler, 'sys': sys}
+        stderr = io.StringIO()
+        with patch.object(rh, 'watch', side_effect=RuntimeError('failed')), contextlib.redirect_stderr(stderr):
+            exec(compile(ast.Module(body=[statement], type_ignores=[]), 'tick-watch', 'exec'), namespace)
+        self.assertIn('Surveillance santé indisponible', scheduler.get(self.db, 'last_error'))
+        self.assertIn('RuntimeError', stderr.getvalue())
+
+
+class CodexVersionDiscoveryTests(unittest.TestCase):
+    def test_chatgpt_bundle_and_selected_cli_are_reported_together(self):
+        import engines
+        import plistlib
+        from types import SimpleNamespace
+        app = Path('/Applications/ChatGPT.app')
+        program = str(app / 'Contents/Resources/codex')
+        plist = plistlib.dumps({'CFBundleShortVersionString': '26.1016.51333',
+                               'CFBundleVersion': '21161', 'CFBundleIdentifier': 'com.openai.codex'})
+        def stat(path, *args, **kwargs):
+            if path == app:
+                return SimpleNamespace()
+            raise FileNotFoundError(str(path))
+        def read(path):
+            if path == app / 'Contents/Info.plist':
+                return plist
+            raise FileNotFoundError(str(path))
+        with patch.object(engines, 'executable', return_value=program), \
+                patch.object(Path, 'stat', autospec=True, side_effect=stat), \
+                patch.object(Path, 'read_bytes', autospec=True, side_effect=read), \
+                patch('subprocess.run', return_value=SimpleNamespace(
+                    returncode=0, stdout='codex-cli 0.163.0-alpha.11\n')) as run, \
+                patch.object(rh, '_component_meta', return_value=None), \
+                patch.object(rh, 'socket_liveness', return_value='stopped'):
+            info = rh.read_versions('.')['codex']
+            features = rh.codex_features(versions=info)
+        self.assertEqual(info['desktop_version'], '26.1016.51333')
+        self.assertEqual(info['desktop_build'], '21161')
+        self.assertEqual(info['cli_version'], 'codex-cli 0.163.0-alpha.11')
+        self.assertEqual(info['desktop_path'], str(app))
+        self.assertEqual(info['desktop_plist'], str(app / 'Contents/Info.plist'))
+        self.assertEqual(info['cli_path'], program)
+        self.assertEqual(info['desktop_status'], 'available')
+        self.assertEqual(features['versions'], info)
+        self.assertTrue(features['checks']['bundles']['apps']['ChatGPT.app']['present'])
+        self.assertFalse(features['checks']['bundles']['apps']['Codex.app']['present'])
+        self.assertEqual(features['checks']['shared_mode']['desktop_version'], '21161')
+        run.assert_called_once_with([program, '--version'], capture_output=True, text=True, timeout=3)
+
+    def test_missing_bundle_and_unreadable_metadata_are_distinct(self):
+        import engines
+        for error, expected in ((FileNotFoundError(), 'absent'), (PermissionError(), 'unreadable')):
+            with self.subTest(expected=expected), patch.object(Path, 'stat', side_effect=error):
+                self.assertEqual(engines.bundle_version(Path('/app'))['status'], expected)
+        with patch.object(Path, 'stat'), patch.object(Path, 'read_bytes', return_value=b'not a plist'):
+            self.assertEqual(engines.bundle_version(Path('/app'))['status'], 'unreadable')
+        with patch.object(Path, 'stat'), patch.object(Path, 'read_bytes', side_effect=FileNotFoundError):
+            self.assertEqual(engines.bundle_version(Path('/app'))['status'], 'unreadable')
+
+    def test_failed_cli_version_preserves_the_selected_path(self):
+        import engines
+        from types import SimpleNamespace
+        def absent(app):
+            return {'path': str(app), 'plist_path': str(app / 'Contents/Info.plist'),
+                    'desktop_version': None, 'desktop_build': None, 'status': 'absent'}
+        with patch.object(engines, 'bundle_version', side_effect=absent), \
+                patch.object(engines, 'executable', return_value='/selected/codex'), \
+                patch('subprocess.run', return_value=SimpleNamespace(returncode=1, stdout='')):
+            result = engines.codex_versions()
+        self.assertEqual(result['cli_path'], '/selected/codex')
+        self.assertEqual(result['cli_status'], 'unreadable')
+        self.assertIsNone(result['cli_version'])
+        with patch.object(engines, 'bundle_version', side_effect=absent), \
+                patch.object(engines, 'executable', return_value=None), patch('subprocess.run') as run:
+            self.assertEqual(engines.codex_versions()['cli_status'], 'absent')
+            run.assert_not_called()
+
+
+class PersistentHealthAnomalyTests(unittest.TestCase):
+    def setUp(self):
+        import contextlib
+        import sqlite3
+        import scheduler
+        self.db = sqlite3.connect(':memory:')
+        self.addCleanup(self.db.close)
+        scheduler.setup(self.db)
+        self.features = CodexHealthTests._features(self)
+        self.versions = {'codex': 'public-version-stable'}
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(patch.object(rh, 'read_versions', return_value=self.versions))
+        stack.enter_context(patch.object(rh, 'check', side_effect=lambda *a, **kw: {
+            'versions': self.versions, 'actions_for_human': [], 'needs_relaunch': [],
+            'stale_log_signatures': []}))
+        stack.enter_context(patch.object(rh, 'codex_features',
+            side_effect=lambda *a, **kw: json.loads(json.dumps(self.features))))
+        stack.enter_context(patch.object(rh, 'quick_entry_anomalies',
+            side_effect=lambda *a, **kw: {'components': {}, 'anomalies': []}))
+        stack.enter_context(patch.object(rh, 'quick_entry_features',
+            side_effect=lambda: {'checks': {}, 'anomalies': {'anomalies': [], 'clean': True}}))
+
+    def pending(self):
+        return rh.summarize('.', db=self.db)['codex_anomalies']
+
+    def assert_survives(self, component):
+        import scheduler
+        changed = rh.watch(self.db, '.')
+        self.assertFalse(changed['update_detected'])
+        self.assertTrue(changed['components_changed'])
+        event = next(a for a in changed['codex_anomalies'] if a['component'] == component)
+        identity = event['event_id']
+        self.assertTrue(any(a['event_id'] == identity for a in scheduler.get(self.db, 'health_anomalies')))
+        repeated = rh.watch(self.db, '.')
+        self.assertTrue(any(a.get('event_id') == identity for a in repeated['codex_anomalies']))
+        self.assertTrue(any(a.get('event_id') == identity for a in self.pending()))
+        rh.reconcile_anomalies(self.db, [identity])
+        rh.watch(self.db, '.')
+        self.assertFalse(any(a.get('event_id') == identity for a in self.pending()))
+
+    def test_build_change_survives_next_tick_and_read_until_reconciled(self):
+        rh.watch(self.db, '.')
+        self.features['checks']['shared_mode']['desktop_version'] = 'v2'
+        self.assert_survives('shared_mode')
+
+    def test_cli_metadata_change_survives_with_a_running_socket(self):
+        rh.watch(self.db, '.')
+        self.features['checks']['codex_cli']['meta'] = {'size': 2, 'mtime': 2}
+        self.assert_survives('codex_cli')
+
+    def test_reconciliation_is_selective_and_future_changes_reappear(self):
+        rh.watch(self.db, '.')
+        self.features['checks']['shared_mode']['desktop_version'] = 'v2'
+        self.features['checks']['codex_cli']['meta'] = {'size': 2, 'mtime': 2}
+        rh.watch(self.db, '.')
+        events = self.pending()
+        shared = next(a['event_id'] for a in events if a['component'] == 'shared_mode')
+        cli = next(a['event_id'] for a in events if a['component'] == 'codex_cli')
+        with self.assertRaises(ValueError):
+            rh.reconcile_anomalies(self.db, [shared, 'unknown'])
+        self.assertEqual(self.pending(), events)
+        rh.reconcile_anomalies(self.db, [shared])
+        self.assertEqual([a['event_id'] for a in self.pending()], [cli])
+        rh.reconcile_anomalies(self.db, [cli])
+        self.features['checks']['codex_cli']['meta'] = {'size': 3, 'mtime': 3}
+        rh.watch(self.db, '.')
+        self.assertTrue(any(a['component'] == 'codex_cli' and a['event_id'] != cli
+                            for a in self.pending()))
+
+    def test_event_report_and_checkpoint_roll_back_together(self):
+        import scheduler
+        rh.watch(self.db, '.')
+        before = self.db.execute('SELECT * FROM scheduler_meta ORDER BY key').fetchall()
+        self.features['checks']['codex_cli']['meta'] = {'size': 2, 'mtime': 2}
+        original = scheduler.put
+        def failing(db, key, value):
+            if key == 'health_components':
+                raise RuntimeError('write failed')
+            original(db, key, value)
+        with patch.object(scheduler, 'put', side_effect=failing):
+            with self.assertRaises(RuntimeError):
+                rh.watch(self.db, '.')
+        self.assertEqual(self.db.execute('SELECT * FROM scheduler_meta ORDER BY key').fetchall(), before)
+        rh.watch(self.db, '.')
+        self.assertTrue(any(a['component'] == 'codex_cli' for a in self.pending()))

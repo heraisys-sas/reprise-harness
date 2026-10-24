@@ -1,0 +1,78 @@
+#!/bin/sh
+# Restart the Reprise dependency chain: GUI + Quick Entry server (+ optional
+# relaunch of the linked app). Explicit and reversible: it only stops/starts
+# what it owns, and reports the resulting state. Never force-quits a linked app.
+#
+# Usage:
+#   ./restart-chain --runtime-archive FILE  isolated build + standalone GUI only
+#   ./restart-chain --no-build   launch current verified standalone build
+#   ./restart-chain --server     explicit legacy Quick Apply service operation
+#   ./restart-chain --development explicit legacy development chain
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+APP="$ROOT/Reprise.app"
+PYTHON=$(command -v python3)
+
+# Standalone launch is the default. Legacy development and Quick Apply service
+# operations require explicit flags; never restart codexd.
+legacy=0
+for arg in "$@"; do
+    case "$arg" in --development|--server) legacy=1 ;; esac
+done
+if [ "$legacy" = 0 ]; then
+    rebuild=1
+    archive=${REPRISE_RUNTIME_ARCHIVE:-}
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --no-build) rebuild=0; shift ;;
+            --runtime-archive)
+                [ "$#" -ge 2 ] || { echo "--runtime-archive exige un fichier" >&2; exit 2; }
+                archive=$2; shift 2 ;;
+            *) echo "Option inconnue : $1" >&2; exit 2 ;;
+        esac
+    done
+    if [ "$rebuild" = 1 ]; then
+        [ -n "$archive" ] || { echo "Fournir --runtime-archive FILE (ou REPRISE_RUNTIME_ARCHIVE). Aucun service modifié." >&2; exit 2; }
+        "$PYTHON" "$ROOT/release_build.py" build --runtime-archive "$archive"
+    fi
+    exec /bin/sh "$ROOT/relaunch"
+fi
+# Explicit legacy service/dev path. Default service state follows the imported
+# standalone registry; opt into AGENT_RESUME_STATE only for a deliberate override.
+export AGENT_RESUME_STATE="${AGENT_RESUME_STATE:-$HOME/Library/Application Support/Reprise/state}"
+build=1
+gui=1
+for arg in "$@"; do
+    case "$arg" in
+        --development) : ;;
+        --no-build) build=0 ;;
+        --server)   gui=0 ;;
+        *) echo "Option inconnue : $arg" >&2; exit 2 ;;
+    esac
+done
+
+echo "1/6 · Conservation des sockets existants (aucune suppression aveugle)"
+echo "2/6 · Arrêt ciblé du daemon Quick Apply géré par Reprise"
+"$PYTHON" "$ROOT/resume" quick-apply-daemon-stop || echo "   (arrêt non confirmé — aucun processus tué par son nom)"
+
+if [ "$build" = "1" ]; then
+    echo "3/6 · Recompilation de Reprise"
+    sh "$ROOT/native-install"
+else
+    echo "3/6 · Recompilation ignorée (--no-build)"
+fi
+
+echo "4/6 · Démarrage du daemon Quick Apply"
+"$PYTHON" "$ROOT/resume" quick-apply-daemon-start >/dev/null 2>&1 || echo "   (daemon Quick Apply non démarré ici — voir quick-apply-daemon-status)"
+
+echo "5/6 · Daemon Codex conservé : aucune interruption des chats propriétaires"
+
+if [ "$gui" = "1" ]; then
+    echo "6/6 · Relance de l'application Reprise"
+    open -n -a "$APP" --args "$ROOT" "$PYTHON"
+else
+    echo "6/6 · Application non relancée (--server)"
+fi
+
+echo "État :"
+"$PYTHON" "$ROOT/resume" desktop-status 2>/dev/null || true

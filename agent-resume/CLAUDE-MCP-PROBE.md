@@ -157,4 +157,18 @@ Independent local SQLite evidence:
 
 Conclusion: supervised **Quick Entry → one Return → existing chat → MCP result** worked on this installation. Opening Quick Entry required user assistance, tool approval UI appeared, and the menu step remains an optimization question. This is not proof of unattended operation, reliability when another chat is active, or operation with a locked/sleeping Mac.
 
+### Autonomous opening follow-up — 19 October 2026
+
+The driver temporarily selected the built-in **Option+Space** shortcut and verified that Claude saved it. Neither `alt+space` nor `Alt_L+space` produced a visible Quick Entry dialog through the current automation driver. The original double-Option setting was restored and verified. This observation does not establish whether the cause is event delivery, shortcut registration, or window observation; it is not evidence that the shortcut fails with a physical keyboard.
+
+On resumption, the **View** and **Go** menus exposed no Quick Entry command. The command palette opened the conversation search interface; this did not establish an alternative trigger. The existing composer draft was preserved and no new inference was sent. Autonomous opening remains unresolved; do not silently replay a completed job to test it.
+
+The six targeted job/App probe tests were rerun successfully, including interrupted-claim handling, late-result acceptance and persistent single dispatch. These tests validate local state handling, not unattended Desktop operation.
+
+Full regression on resumption: `python3 -W error::ResourceWarning -m unittest discover -s agent-resume/tests -v` completed with **168 tests, OK, 2 skipped** in the current environment.
+
+Further trigger inspection: the **Window** menu also contained no Quick Entry entry. A fresh screenshot request succeeded, but returned a transformed view of the application window without the macOS status bar; it therefore supplied no usable target for the Claude status icon. The app accessibility tree likewise exposed no status-icon action. The draft `i ` remained unchanged, no shortcut was changed during this inspection, and no message was sent.
+
+Exact current blocker: the available driver rejects modifier-only input, the tested combined shortcut did not visibly open the dialog, and the inspected application UI exposes no alternative opener. This bounds the current driver experiment, not the feasibility of a native macOS trigger. The next safe experiment is an explicitly authorized native global-event mechanism, testing opening only (no prompt, Return or inference), with before/after observation and restoration of any temporary shortcut. Native event synthesis has not been executed under the current computer-use tool restriction.
+
 Cleanup: the original Desktop config was restored byte-for-byte and the unrelated connector/search selections restored in the test conversation. The two matching local stdio test processes were stopped without further UI interaction; their reason for multiplicity was not investigated. Claude was left open while the user was typing. No keyboard shortcut, startup setting, profile, credential or subscription was changed.

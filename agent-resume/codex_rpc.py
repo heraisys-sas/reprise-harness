@@ -12,6 +12,16 @@ import time
 from engines import Unavailable, socket_path
 from runtime import codex_environment, terminate
 
+class Closed(Unavailable):
+    """Le serveur propriétaire a fermé la connexion ; la fin du tour n'est pas prouvée.
+
+    Sous-classe d'`Unavailable` : pour tout appelant qui ignore si un tour a été envoyé, une
+    fermeture reste une indisponibilité. Seul `execute()` sait la distinguer d'une incertitude.
+    """
+
+    def __init__(self, reason):
+        super().__init__('needs_review', reason)
+
 
 class Client:
     """Bounded RFC 6455 transport over the official local proxy."""
@@ -65,7 +75,7 @@ class Client:
             if ready:
                 chunk = os.read(ready[0][0].fileobj.fileno(), 65536)
                 if not chunk:
-                    raise Unavailable('needs_review', 'Connexion au moteur interrompue ; résultat inconnu, aucune relance automatique.')
+                    raise Closed('Le serveur propriétaire a fermé la connexion.')
                 self.buffer.extend(chunk)
                 return
 
@@ -106,7 +116,7 @@ class Client:
                 raise ValueError('Oversized WebSocket response')
             part = self._take(size, deadline)
             if opcode == 8:
-                raise Unavailable('needs_review', 'Connexion au moteur interrompue ; résultat inconnu, aucune relance automatique.')
+                raise Closed('Le serveur propriétaire a fermé la connexion.')
             if opcode == 9:
                 self._frame(part, 10)
                 continue
@@ -141,15 +151,22 @@ class Client:
         raise TimeoutError('Réponse du serveur Codex non reçue')
 
 
-def checked_thread(client, task, resume=False):
+# States a thread may have BEFORE thread/resume: idle, not loaded by the server, or left in
+# error by an interrupted turn (e.g. quota). thread/resume only attaches the session; the
+# state is re-checked and must be idle before any input is sent.
+PRE_RESUME_STATES = ('idle', 'notLoaded', 'systemError')
+
+
+def checked_thread(client, task, resume=False, before_resume=False):
     method = 'thread/resume' if resume else 'thread/read'
     params = {'threadId': task['session'], 'excludeTurns': True} if resume else {'threadId': task['session'], 'includeTurns': False}
     thread = client.call(method, params).get('thread', {})
     if thread.get('id') != task['session'] or not thread.get('cwd') or Path(thread['cwd']).resolve() != Path(task['cwd']).resolve():
         raise Unavailable('blocked_session', 'Identité ou dossier de la session non confirmé par le serveur.')
     state = (thread.get('status') or {}).get('type')
-    if state != 'idle':
-        raise Unavailable('blocked_owner', 'Le serveur ne détient pas une session au repos ; aucune entrée envoyée.')
+    allowed = PRE_RESUME_STATES if before_resume and not resume else ('idle',)
+    if state not in allowed:
+        raise Unavailable('blocked_owner', f'État propriétaire : {state!r} ; session non disponible, aucune entrée envoyée.')
     return thread
 
 
@@ -157,12 +174,13 @@ def execute(db, task, program, values, log, automatic=False, timeout=7200):
     import run_status
     ident = task['id']
     client, turn_id, terminal = None, None, False
+    dispatch_attempted = False
     run_status.save(db, ident, 'launching', 'Connexion au serveur propriétaire', started_at=time.time())
     try:
         client = Client(program, values)
         client.call('initialize', {'clientInfo': {'name': 'reprise', 'version': '0.1.0'}, 'capabilities': None})
         client.send({'method': 'initialized'})
-        thread = checked_thread(client, task)
+        thread = checked_thread(client, task, before_resume=True)
         if automatic:
             account = client.call('account/read', {'refreshToken': False}).get('account') or {}
             limits = client.call('account/rateLimits/read')
@@ -173,6 +191,8 @@ def execute(db, task, program, values, log, automatic=False, timeout=7200):
         checked_thread(client, task, resume=True)
         checked_thread(client, task)
         # Do not change model, permissions, instructions or provider of the loaded session.
+        # From this point an absent ACK cannot prove that no input was delivered.
+        dispatch_attempted = True
         result = client.call('turn/start', {'threadId': task['session'], 'clientUserMessageId': ident,
                              'input': [{'type': 'text', 'text': task['prompt'], 'text_elements': []}]})
         turn_id = (result.get('turn') or {}).get('id')
@@ -208,6 +228,11 @@ def execute(db, task, program, values, log, automatic=False, timeout=7200):
                     break
             else:
                 raise TimeoutError('Délai maximal du tour atteint')
+    except Closed:
+        if dispatch_attempted:
+            state, reason = 'needs_review', 'Connexion fermée après envoi du tour ; résultat inconnu, aucune relance automatique.'
+        else:
+            state, reason = 'engine_unavailable', 'Connexion fermée avant tout envoi ; aucun tour n’a été lancé.'
     except Unavailable as error:
         state, reason = error.state, error.reason
     except TimeoutError:
@@ -226,4 +251,6 @@ def execute(db, task, program, values, log, automatic=False, timeout=7200):
             except (OSError, ValueError, subprocess.SubprocessError):
                 pass
     run_status.save(db, ident, state, reason, ended_at=time.time())
+    if automatic and not dispatch_attempted and state in ('blocked_owner', 'quota_blocked', 'engine_unavailable', 'timed_out'):
+        return 'ready'
     return 'finished' if state == 'finished' else 'needs_review'

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the project-bound Reprise MCP bridge into a DSH profile with backup."""
+"""Legacy development installer. Managed bundle installations use harness_integration.py."""
 import argparse
 import datetime
 import json
@@ -42,6 +42,8 @@ def install(home, project, profile='desktop'):
     updated = base.rstrip()+'\n'+block
     skill = home/'skills/reprise-delegation/SKILL.md'
     files = [(target, updated), (skill, (source/'reprise-delegation.md').read_text())]
+    files.append((skill.parent / 'REPRISE-AGENTS.template.md', (source / 'REPRISE-AGENTS.template.md').read_text()))
+    files.append((skill.parent / 'HANDOFF-CONTRACT.md', (source / 'HANDOFF-CONTRACT.md').read_text()))
     if all(path.exists() and path.read_text() == text for path, text in files):
         return {'changed': False, 'project_root': str(project)}
     backup = home/'backups'/('reprise-expertise-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
@@ -64,4 +66,5 @@ if __name__ == '__main__':
     parser.add_argument('--home', default=str(Path.home()/'.dsh'))
     parser.add_argument('--profile', default='desktop')
     args = parser.parse_args()
+    print('Legacy development installer: use the Reprise Integrations screen for managed bundle installation.', file=sys.stderr)
     print(json.dumps(install(args.home, args.project_root, args.profile), ensure_ascii=False))

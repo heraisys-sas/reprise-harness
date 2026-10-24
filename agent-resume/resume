@@ -12,14 +12,64 @@ import subprocess
 import sys
 import uuid
 import zipfile
+if len(sys.argv) > 1 and sys.argv[1] in ('ironclaw-inspect', 'ironclaw-configure', 'ironclaw-probe', 'ironclaw-submit', 'ironclaw-poll', 'ironclaw-result', 'ironclaw-requests', 'ironclaw-reconcile', 'ironclaw-followup'):
+    import ironclaw_connection
+    sys.exit(ironclaw_connection.main(Path(__file__).resolve().parent, sys.argv[1:]))
+
+if len(sys.argv) > 1 and sys.argv[1] == 'vault-authorize':
+    if len(sys.argv) != 2:
+        sys.exit('Usage: resume vault-authorize')
+    from vault import authorize
+    try:
+        authorize()
+        print(json.dumps({'authorized': True, 'message': 'Accès au cache autorisé. Les accès automatiques restent sans dialogue.'}, ensure_ascii=False))
+    except ValueError as error:
+        print(json.dumps({'authorized': False, 'message': str(error)}, ensure_ascii=False))
+        sys.exit(1)
+    sys.exit(0)
+
+if len(sys.argv) > 1 and sys.argv[1].startswith('claude-integration-'):
+    import claude_integration
+    sys.exit(claude_integration.main(Path(__file__).resolve().parent, sys.argv[1:]))
+
+if len(sys.argv) > 1 and sys.argv[1].startswith('scheduler-service-'):
+    import scheduler_service
+    sys.exit(scheduler_service.main(Path(__file__).resolve().parent, sys.argv[1:]))
+
+if len(sys.argv) > 1 and sys.argv[1] in ('integration-inspect', 'integration-plan', 'integration-apply', 'integration-verify'):
+    import harness_integration
+    sys.exit(harness_integration.main(Path(__file__).resolve().parent, sys.argv[1:]))
+
+if len(sys.argv) > 1 and sys.argv[1] in ('state-status', 'state-plan', 'state-apply'):
+    import state_setup
+    sys.exit(state_setup.main(Path(__file__).resolve().parent, sys.argv[1:]))
+
+if len(sys.argv) > 1 and sys.argv[1] in ('state-init', 'state-import'):
+    import state_install
+    state_install.main(sys.argv[1:])
+    sys.exit(0)
+
+if len(sys.argv) > 1 and sys.argv[1] == 'ux-review-config':
+    import ux_review_setup
+    sys.exit(ux_review_setup.main(Path(__file__).resolve().parent, sys.argv[1:]))
+
 import scheduler
 import run_status
 import engines
 from runtime import codex_environment
 
 ROOT = Path(__file__).resolve().parent
-STATE = Path(os.environ.get('AGENT_RESUME_STATE', ROOT / 'state'))
+from app_paths import state_directory, bundled
+STATE = state_directory(ROOT)
 LABEL = 'local.agent-resume'
+
+
+def share_files():
+    from package_helpers import ASSETS
+    extra = ('app_paths.py', 'package_helpers.py', 'resume', 'VERSION', 'scheduler.py', 'presentation.py', 'connection.py', 'shared_mode.py', 'ROADMAP.md', 'quota.py', 'quota_knowledge.py', 'delegation_store.py', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'run_status.py', 'runtime.py', 'engines.py', 'engine_events.py', 'codex_rpc.py', 'owner_route.py', 'task_archive.py', 'codex_expert.py', 'claude_expert.py', 'claude_quota.py', 'claude_mcp.py', 'desktop_task_store.py', 'claude_integration.py', 'codex_expert_mcp.py', 'install-expertise.py', 'reprise-delegation.md', 'CODEX-INTEGRATION.md', 'CLAUDE-INTEGRATION.md', 'CACHE-POLICY.md', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'restart-chain', 'claude_desktop.py', 'claude_desktop_quick.py', 'claude_desktop_rpc.py', 'claude_desktop_cli.py', 'desktop_mode.py', 'reprise_logs.py', 'reprise_health.py', 'FoundationExplain.swift', 'install-quick-entry.py', 'ux_review_probe.py', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'ClaudeQuota.swift', 'vault.py')
+    build = ('native_contract.py', 'package_runtime.py', 'StateSetup.swift',
+             'Integrations.swift', 'SchedulerService.swift', 'IronClawConnection.swift')
+    return tuple(dict.fromkeys(ASSETS + extra + build))
 
 def database():
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -96,7 +146,14 @@ def run_due(db, executable):
             except (OSError, subprocess.TimeoutExpired) as error:
                 status = 'needs_review'
                 run_status.save(db, task['id'], 'failed', 'Impossible de lancer le CLI : ' + type(error).__name__, ended_at=dt.datetime.now().timestamp())
-            db.execute('UPDATE tasks SET status=? WHERE id=?', (status, task['id'])); db.commit()
+            with db:
+                if automatic and selected == 'codex-server' and status == 'ready':
+                    # Adapter proves turn/start was never attempted; release only this reservation.
+                    db.execute('UPDATE automation_events SET consumed=0 WHERE task_id=?', (task['id'],))
+                    db.execute("UPDATE tasks SET status='ready', attempts=MAX(0,attempts-1),due=? WHERE id=?",
+                               (dt.datetime.now().timestamp() + scheduler.POLL, task['id']))
+                else:
+                    db.execute('UPDATE tasks SET status=? WHERE id=?', (status, task['id']))
 
 def main():
     os.umask(0o077)
@@ -130,7 +187,20 @@ def main():
     desktop_check.add_argument('--socket')
     desktop_check.add_argument('--session')
     sub.add_parser('desktop-connection-status')
+    sub.add_parser('claude-quota-status')
+    claude_auto = sub.add_parser('claude-quota-config')
+    claude_auto.add_argument('--transport', choices=('quick-apply', 'accessibility'))
+    claude_auto.add_argument('--enabled', choices=('true', 'false'), required=True)
+    quota_status = sub.add_parser('quota-status')
+    quota_status.add_argument('--engine', choices=[e for e in engines.ENGINES if e != 'codex'], default='codex-server')
+    quota_status.add_argument('--refresh', action='store_true', help='Read native quota metadata; never starts a turn')
+    quota_status.add_argument('--profile')
+    quota_status.add_argument('--socket')
     sub.add_parser('reprise-health')
+    sub.add_parser('restart-chain')
+    sub.add_parser('quick-apply-daemon-start')
+    sub.add_parser('quick-apply-daemon-stop')
+    sub.add_parser('quick-apply-daemon-status')
     sub.add_parser('local-synthesis')
     sub.add_parser('health-watch')
     sub.add_parser('desktop-status')
@@ -159,7 +229,14 @@ def main():
     args = parser.parse_args()
     db = database()
     executable = codex_executable()
-    if args.action == 'add':
+    if args.action == 'quota-status':
+        import quota_knowledge
+        row = db.execute('SELECT options FROM engine_settings WHERE engine=?', (args.engine,)).fetchone()
+        if row is None and args.engine in ('codex-server', 'codex-parent'):
+            row = db.execute("SELECT options FROM engine_settings WHERE engine='codex'").fetchone()
+        settings = (json.loads(row[0]) if row else {}) | {key: getattr(args, key) for key in ('profile', 'socket') if getattr(args, key) is not None}
+        print(json.dumps(quota_knowledge.status(db, args.engine, settings, refresh=args.refresh), ensure_ascii=False))
+    elif args.action == 'add':
         args.session = engines.validate_session(args.engine, args.session)
         settings = engines.options(args.engine, {k: getattr(args, k) for k in ('profile', 'socket', 'parent') if getattr(args, k) is not None})
         when = dt.datetime.fromisoformat(args.at)
@@ -204,9 +281,27 @@ def main():
     elif args.action == 'local-synthesis':
         import reprise_health
         print(json.dumps(reprise_health.local_synthesis(), ensure_ascii=False))
+    elif args.action == 'quick-apply-daemon-start':
+        import desktop_mode
+        print(json.dumps(desktop_mode.daemon_start(), ensure_ascii=False))
+    elif args.action == 'quick-apply-daemon-stop':
+        import desktop_mode
+        print(json.dumps(desktop_mode.daemon_stop(), ensure_ascii=False))
+    elif args.action == 'quick-apply-daemon-status':
+        import desktop_mode
+        print(json.dumps(desktop_mode.daemon_status(), ensure_ascii=False))
+    elif args.action == 'restart-chain':
+        import subprocess
+        if bundled(ROOT):
+            print(json.dumps({'status': 'unsupported', 'error': 'Redémarrage groupé indisponible dans le prototype distribué ; aucun service modifié.'}, ensure_ascii=False))
+            return
+        script = ROOT / 'restart-chain'
+        result = subprocess.run(['/bin/sh', str(script)], capture_output=True, text=True, timeout=120)
+        print(json.dumps({'status': 'finished' if result.returncode == 0 else 'failed',
+                          'output': result.stdout[-2000:], 'error': result.stderr[-500:]}, ensure_ascii=False))
     elif args.action == 'reprise-health':
         import reprise_health
-        print(json.dumps(reprise_health.summarize('.'), ensure_ascii=False))
+        print(json.dumps(reprise_health.summarize(ROOT, db=db, state=STATE), ensure_ascii=False))
     elif args.action == 'reprise-resume':
         import reprise_logs
         print(json.dumps({'resumable': reprise_logs.resumable()}, ensure_ascii=False))
@@ -291,6 +386,15 @@ def main():
     elif args.action == 'dashboard':
         from dashboard import serve
         serve(database, ROOT)
+    elif args.action == 'claude-quota-config':
+        with db:
+            scheduler.put(db, 'claude_desktop_auto_enabled', args.enabled == 'true')
+            if args.transport:
+                scheduler.put(db, 'claude_desktop_transport', args.transport)
+        print(json.dumps({'claude_desktop_auto_enabled': args.enabled == 'true'}))
+    elif args.action == 'claude-quota-status':
+        import claude_quota
+        print(json.dumps({'enabled': scheduler.get(db, 'claude_desktop_auto_enabled', True), 'events': claude_quota.status(db), 'transport': scheduler.get(db, 'claude_desktop_transport', 'quick-apply'), 'observation': scheduler.get(db, 'claude_desktop_last_observation')}, ensure_ascii=False))
     elif args.action == 'tick':
         from private_search import cleanup
         with db:
@@ -303,6 +407,14 @@ def main():
             except Exception as error:
                 with db:
                     scheduler.put(db, 'last_error', 'Détection automatique indisponible : ' + type(error).__name__)
+        try:
+            import claude_quota
+            claude_result = claude_quota.run_native(db, ROOT, STATE)
+            with db:
+                scheduler.put(db, 'claude_desktop_last_observation', dict(claude_result, checked_at=dt.datetime.now().timestamp()))
+        except (ValueError, KeyError, OSError, sqlite3.Error, subprocess.SubprocessError):
+            with db:
+                scheduler.put(db, 'claude_desktop_last_observation', {'status': 'unavailable', 'checked_at': dt.datetime.now().timestamp()})
         run_due(db, executable)
         try:
             cleanup(STATE)
@@ -310,9 +422,12 @@ def main():
             pass
         try:
             import reprise_health
-            reprise_health.watch(db, '.')
-        except Exception:
-            pass
+            reprise_health.watch(db, ROOT)
+        except Exception as error:
+            message = 'Surveillance santé indisponible : ' + type(error).__name__
+            with db:
+                scheduler.put(db, 'last_error', message)
+            print(message, file=sys.stderr)
     elif args.action == 'backup':
         from task_archive import backup
         backup(db, args.archive)
@@ -322,12 +437,19 @@ def main():
         restore(db, args.archive)
         print('Tâches importées en pause ; les identifiants déjà présents restent inchangés.')
     elif args.action == 'share':
+        if bundled(ROOT):
+            parser.error('Export des sources indisponible dans le prototype embarqué')
+        missing = [name for name in share_files() if not (ROOT / name).is_file()]
+        if missing:
+            parser.error('Export incomplet : ' + ', '.join(missing))
         dest = Path.cwd() / 'agent-resume-share.zip'
         with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as archive:
-            for name in ('resume', 'VERSION', 'scheduler.py', 'presentation.py', 'connection.py', 'shared_mode.py', 'ROADMAP.md', 'quota.py', 'run_status.py', 'runtime.py', 'engines.py', 'engine_events.py', 'codex_rpc.py', 'owner_route.py', 'task_archive.py', 'codex_expert.py', 'claude_expert.py', 'codex_expert_mcp.py', 'install-expertise.py', 'reprise-delegation.md', 'CODEX-INTEGRATION.md', 'CLAUDE-INTEGRATION.md', 'CACHE-POLICY.md', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py'):
+            for name in share_files():
                 archive.write(ROOT / name, 'agent-resume/' + name)
         print(dest)
     elif args.action in ('install', 'uninstall'):
+        if bundled(ROOT):
+            parser.error('Installation du service indisponible avant stabilisation du chemin distribué')
         if sys.platform != 'darwin':
             parser.error('Installation du service disponible sur macOS seulement')
         plist = Path.home() / 'Library/LaunchAgents' / (LABEL + '.plist')

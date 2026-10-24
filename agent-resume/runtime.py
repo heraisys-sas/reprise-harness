@@ -14,7 +14,10 @@ def terminate(process, grace=0):
     def send(sig):
         try:
             os.killpg(process.pid, sig)
-        except ProcessLookupError:
+        except OSError:
+            # A refused or vanished kill must never propagate: terminate() runs
+            # in a finally block and its exception would swallow the caller's
+            # return value (e.g. quota.read_limits results).
             pass
     try:
         if grace:
@@ -25,10 +28,16 @@ def terminate(process, grace=0):
                 pass
     finally:
         send(signal.SIGKILL)
-        process.wait()
+        try:
+            process.wait(timeout=5)
+        except Exception:
+            pass
         for stream in (process.stdin, process.stdout):
             if stream and not stream.closed:
-                stream.close()
+                try:
+                    stream.close()
+                except OSError:
+                    pass
 
 
 class JsonLines:

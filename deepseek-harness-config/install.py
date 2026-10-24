@@ -9,7 +9,8 @@ home = pathlib.Path(os.environ.get('DSH_HOME', pathlib.Path.home() / '.dsh'))
 stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
 backup = home / 'backups' / ('code-devops-' + stamp)
 files = [(source / 'AGENTS.md', home / 'AGENTS.md'),
-         (source / 'cordis.patch.yml', home / 'profiles/desktop/cordis.patch.yml')]
+         (source / 'cordis.patch.yml', home / 'profiles/desktop/cordis.patch.yml'),
+         (source.parent / 'harness-tools/verify.py', home / 'tools/verify.py')]
 files += [(p, home / p.relative_to(source)) for p in (source / 'skills').rglob('*')
           if p.is_file() and '__pycache__' not in p.parts]
 patch = home / 'profiles/desktop/cordis.patch.yml'

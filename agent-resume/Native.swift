@@ -4,9 +4,63 @@ import SwiftUI
 final class App: NSObject, NSApplicationDelegate, ObservableObject {
     var item: NSStatusItem!
     var window: NSWindow!
-    let root = CommandLine.arguments.count > 1 ? URL(fileURLWithPath: CommandLine.arguments[1]) : Bundle.main.bundleURL.deletingLastPathComponent()
-    let python = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : (["/Library/Frameworks/Python.framework/Versions/Current/bin/python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"].first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/env")
+    let root = CommandLine.arguments.count > 1 ? URL(fileURLWithPath: CommandLine.arguments[1]) : Bundle.main.resourceURL!.appendingPathComponent("helpers")
+    let usesBundledRuntime = CommandLine.arguments.count <= 1
+    let python: String = {
+        if CommandLine.arguments.count <= 1 {
+            return Bundle.main.resourceURL!.appendingPathComponent("runtime/bin/python3").path
+        }
+        return CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : (["/Library/Frameworks/Python.framework/Versions/Current/bin/python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"].first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/env")
+    }()
+    var runtimeError: String? {
+        usesBundledRuntime && !FileManager.default.isExecutableFile(atPath: python)
+            ? "Runtime Python embarqué absent ou non exécutable. Réinstallez Reprise."
+            : nil
+    }
+    @Published var stateReady = CommandLine.arguments.count > 1
+    @Published var setupBusy = false
+    @Published var setupStatus: [String: Any] = [:]
+    @Published var setupPlan: [String: Any]? = nil
+    @Published var setupReceipt: [String: Any]? = nil
+    @Published var setupMessage = "Vérification de l’état local…"
+    @Published var setupSource = ""
+    @Published var setupOperation = "import"
+    @Published var setupConfirmNew = false
+    @Published var setupSourceStopped = false
+    var setupProcess: Process?
+    @Published var integrationHome = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".dsh").path
+    @Published var integrationProfile = ""
+    @Published var integrationProject = ""
+    @Published var integrationDelegate = false
+    @Published var claudeIntegrationPlan: [String: Any]?
+    @Published var claudeIntegrationResult: [String: Any] = [:]
+    @Published var claudeIntegrationAcknowledged = false
+    @Published var claudeReplaceProbe = false
+    @Published var claudeQuotaState: [String: Any] = [:]
+    @Published var integrationOutputResume = false
+    @Published var integrationOutputResumeProject = ""
+    @Published var integrationAgentRole = "standard"
+    @Published var integrationAcknowledged = false
+    @Published var integrationProfiles: [String] = []
+    @Published var integrationPlan: [String: Any]? = nil
+    @Published var integrationResult: [String: Any]? = nil
+    @Published var integrationVerification: [String: Any]? = nil
+    @Published var integrationMessage = "Inspectez le dossier Harness choisi avant de préparer une modification."
+    @Published var ironclawHost = ""
+    @Published var ironclawUser = ""
+    @Published var ironclawPort = "22"
+    @Published var ironclawHTTPPort = "3000"
+    @Published var ironclawIdentity = ""
+    @Published var ironclawTokenFile = ""
+    @Published var ironclawNote = "Configurez un accès SSH explicite ; aucune clé ni aucun jeton n’est copié."
+    @Published var schedulerService: [String: Any] = [:]
+    @Published var schedulerServicePlan: [String: Any]? = nil
+    @Published var schedulerServiceMessage = "Inspectez le planificateur avant de préparer une modification."
+    @Published var schedulerServiceActivate = false
+    @Published var schedulerServiceAcknowledged = false
     @Published var scheduler: [String: Any] = [:]
+    @Published var quotaKnowledge: [String: Any] = [:]
+    @Published var quotaBusy = false
     @Published var snapshot: [String: Any] = [:]
     @Published var navigationNote = ""
     @Published var page = "overview"
@@ -27,9 +81,21 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var desktopConnectionVerified = false
     var desktopConnectionLoaded = false
     @Published var health: [String: Any] = [:]
+    @Published var healthState = "unavailable"
+    @Published var healthCheckedAt: Date?
+    var healthVerified: Bool {
+        healthState == "verified" && healthCheckedAt.map { Date().timeIntervalSince($0) <= 120 } == true
+    }
+    var chainSupported: Bool {
+        !usesBundledRuntime && FileManager.default.fileExists(atPath: root.appendingPathComponent("restart-chain").path)
+    }
     @Published var localSynthesis: [String: Any] = [:]
+    var lastSynthesisAt: Date = .distantPast
     @Published var desktopBusy = false
     @Published var desktopStartup = UserDefaults.standard.bool(forKey: "DesktopLinkedStartup")
+    @Published var chainBusy = false
+    @Published var chainNote = ""
+    @Published var connectionTab = "codex"  // codex | quickapply
     @Published var desktopNote = ""
     @Published var sharedBusy = false
     @Published var sharedNote = ""
@@ -38,6 +104,8 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     var startupAttempted = false
     var refreshPending = false
     @Published var busy = false
+    @Published var vaultBusy = false
+    @Published var vaultNote = "Les accès automatiques au cache ne demandent aucune autorisation à l’écran."
     @Published var analysisBusy = false
     @Published var searching = false
     @Published var query = ""
@@ -101,26 +169,37 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         window.center()
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(reload), name: NSWorkspace.didLaunchApplicationNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(reload), name: NSWorkspace.didTerminateApplicationNotification, object: nil)
-        refresh(); show(); analyzeLocal()
-        Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in self.refresh(); self.analyzeLocal() }
+        show()
+        if usesBundledRuntime { checkState() } else { refresh(); analyzeLocal() }
+        Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in self.refresh() }
+        // The generative synthesis is a slow-changing recap: run it far less
+        // often than the lightweight refresh (and it is digest-cached anyway).
+        Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { _ in self.analyzeLocal() }
     }
     @objc func show() { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
     @objc func quit() { NSApp.terminate(nil) }
     @objc func reload() { refresh() }
     func execute(_ args: [String]) -> [String: Any]? {
+        guard runtimeError == nil, stateReady || ["state-status", "state-plan", "state-apply"].contains(args.first ?? "") else { return nil }
         let process = Process(); let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: python)
-        process.arguments = (python == "/usr/bin/env" ? ["python3"] : []) + [root.appendingPathComponent("resume").path] + args
+        process.arguments = (python == "/usr/bin/env" ? ["python3"] : []) + (usesBundledRuntime ? ["-E", "-s", "-B"] : []) + [root.appendingPathComponent("resume").path] + args
+        var environment = ProcessInfo.processInfo.environment
+        for name in ["PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE", "PYTHONSTARTUP"] { environment.removeValue(forKey: name) }
+        environment["PYTHONNOUSERSITE"] = "1"
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        process.environment = environment
         process.standardOutput = pipe; process.standardError = FileHandle.nullDevice
         do {
             try process.run()
-            DispatchQueue.global().asyncAfter(deadline: .now() + (["analyze", "search", "shared-mode"].contains(args.first ?? "") ? 45 : 15)) { if process.isRunning { process.terminate() } }
+            DispatchQueue.global().asyncAfter(deadline: .now() + (args.first == "vault-authorize" ? 100 : (["analyze", "search", "shared-mode"].contains(args.first ?? "") ? 45 : 15))) { if process.isRunning { process.terminate() } }
             let data = pipe.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
             guard process.terminationStatus == 0 else { return nil }
             return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         } catch { return nil }
     }
     func refresh() {
+        guard stateReady else { return }
         running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
         if busy { refreshPending = true; return }; busy = true
         DispatchQueue.global(qos: .utility).async {
@@ -129,12 +208,27 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             let connection = self.execute(["connection-status"])
             let desktopConnection = self.execute(["desktop-connection-status"])
             let health = self.execute(["reprise-health"])
+            let quotaKnowledge = self.execute(["quota-status"])
             DispatchQueue.main.async {
                 self.busy = false
                 self.scheduler = scheduler ?? [:]
                 self.connection = connection ?? [:]
                 self.desktopConnection = desktopConnection ?? [:]
-                self.health = health ?? [:]
+                if let health,
+                   health["versions"] is [String: Any],
+                   health["actions_for_human"] is [String],
+                   health["stale_log_signatures"] is [String],
+                   health["needs_relaunch"] is [String],
+                   health["quick_entry_features"] is [String: Any],
+                   health["codex_features"] is [String: Any],
+                   health["codex_anomalies"] is [[String: Any]] {
+                    self.health = health
+                    self.healthCheckedAt = Date()
+                    self.healthState = "verified"
+                } else {
+                    self.healthState = self.healthCheckedAt == nil ? "unavailable" : "stale"
+                }
+                self.quotaKnowledge = quotaKnowledge ?? [:]
                 if !self.connectionLoaded, let connection {
                     self.socketPath = connection["configured_socket"] as? String ?? (connection["candidates"] as? [[String: Any]])?.first?["path"] as? String ?? ""
                     self.connectionLoaded = true
@@ -146,12 +240,23 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                 if !self.startupAttempted {
                     self.startupAttempted = true
                     if self.sharedStartup && !self.running.contains("com.openai.codex") { self.sharedAction("launch", startup: true) }
-                    if self.desktopStartup { self.desktopAction("launch"); self.desktopAction("start") }
+                    if self.desktopStartup { self.desktopAction("launch-start") }
                 }
                 if let result { self.snapshot = result; self.lastRefresh = Date() }
-                else { self.snapshot["error"] = "Actualisation indisponible. Les dernières informations restent affichées." }
+                else { self.snapshot["error"] = self.runtimeError ?? "Actualisation indisponible. Les dernières informations restent affichées." }
                 self.item.button?.title = self.counters.map { "\($0.1) \($0.3.map(String.init) ?? "—")" }.joined(separator: " · ")
                 if self.refreshPending { self.refreshPending = false; self.refresh() }
+            }
+        }
+    }
+    func refreshQuotas() {
+        guard !quotaBusy else { return }
+        quotaBusy = true
+        DispatchQueue.global(qos: .utility).async {
+            let result = self.execute(["quota-status", "--refresh"])
+            DispatchQueue.main.async {
+                self.quotaBusy = false
+                self.quotaKnowledge = result ?? [:]
             }
         }
     }
@@ -196,7 +301,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         let path = socketPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty, !connectionBusy else { return }
         connectionBusy = true
-        connectionNote = save ? "Vérification et enregistrement…" : "Vérification du serveur…"
+        connectionNote = save ? "Vérification et enregistrement…" : "Vérification du service…"
         perform([save ? "connection-config" : "server-check", "--socket", path]) { result in
             self.connectionBusy = false
             self.testedSocket = path
@@ -220,7 +325,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         let path = desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty, !desktopConnectionBusy else { return }
         desktopConnectionBusy = true
-        desktopConnectionNote = save ? "Vérification et enregistrement…" : "Vérification du serveur Quick Entry…"
+        desktopConnectionNote = save ? "Vérification et enregistrement…" : "Vérification du service claude-desktopd…"
         perform([save ? "desktop-connection-config" : "desktop-server-check", "--socket", path]) { result in
             self.desktopConnectionBusy = false
             self.desktopTestedSocket = path
@@ -244,16 +349,40 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         guard !desktopBusy else { return }
         let command: String
         switch operation {
-        case "launch": command = "desktop-launch"
+        case "launch", "launch-start": command = "desktop-launch"
         case "start": command = "desktop-server-start"
         case "stop": command = "desktop-server-stop"
         default: command = "desktop-status"
         }
         desktopBusy = true
-        desktopNote = operation == "launch" ? "Ouverture de l’application liée…" : operation == "start" ? "Démarrage du serveur Quick Entry…" : operation == "stop" ? "Arrêt du serveur…" : "Actualisation…"
+        desktopNote = ["launch", "launch-start"].contains(operation) ? "Ouverture de l’application liée…" : operation == "start" ? "Démarrage du service claude-desktopd…" : operation == "stop" ? "Arrêt du service…" : "Actualisation…"
         perform([command]) { result in
             self.desktopBusy = false
+            if operation == "launch-start", result?["ok"] as? Bool == true {
+                self.desktopAction("start")
+                return
+            }
             self.desktopNote = result?["reason"] as? String ?? "Opération non confirmée. Aucun nouvel essai automatique."
+            self.refresh()
+        }
+    }
+    func restartChain() {
+        guard !chainBusy else { return }
+        guard chainSupported else {
+            chainNote = "Redémarrage groupé indisponible dans cette distribution ; aucun service modifié."
+            return
+        }
+        chainBusy = true
+        chainNote = "Redémarrage de la chaîne en cours…"
+        perform(["restart-chain"]) { result in
+            self.chainBusy = false
+            if result?["status"] as? String == "finished" {
+                let output = result?["output"] as? String ?? ""
+                self.chainNote = output.isEmpty ? "Chaîne redémarrée." : output
+            } else {
+                let error = result?["error"] as? String ?? ""
+                self.chainNote = error.isEmpty ? "Redémarrage non confirmé. Aucun nouvel essai automatique." : error
+            }
             self.refresh()
         }
     }
@@ -272,7 +401,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             args += ["--session", uuid.uuidString.lowercased()]
         }
         sharedBusy = true
-        sharedNote = operation == "prepare" ? "Préparation du serveur…" : operation == "launch" ? "Lancement de Desktop…" : operation == "stop" ? "Arrêt du serveur…" : "Vérification du chat…"
+        sharedNote = operation == "prepare" ? "Préparation du service codexd…" : operation == "launch" ? "Lancement de Desktop…" : operation == "stop" ? "Arrêt du service…" : "Vérification du chat…"
         perform(args) { result in
             self.sharedBusy = false
             self.sharedNote = result?["reason"] as? String ?? "Opération non confirmée. Aucun nouvel essai automatique."
@@ -290,8 +419,21 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         sharedStartup = enabled
         UserDefaults.standard.set(enabled, forKey: "SharedCodexStartup")
     }
+    func authorizeVault() {
+        guard stateReady, !vaultBusy else { return }
+        vaultBusy = true
+        vaultNote = "Autorisation du cache demandée explicitement…"
+        perform(["vault-authorize"]) { result in
+            self.vaultBusy = false
+            self.vaultNote = result?["message"] as? String ?? "Autorisation non confirmée. Réessayez uniquement depuis ce bouton."
+            self.refresh()
+        }
+    }
     func analyzeLocal() {
-        guard !analysisBusy else { return }
+        guard stateReady, !analysisBusy else { return }
+        // Throttle: never re-run the generative synthesis more than once / 10 min.
+        if Date().timeIntervalSince(lastSynthesisAt) < 600 { return }
+        lastSynthesisAt = Date()
         analysisBusy = true
         perform(["analyze"]) { _ in
             self.analysisBusy = false
@@ -308,7 +450,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         searchNote = "Recherche locale en cours…"
         perform(["search", String(value.prefix(500))]) { result in
             self.searching = false
-            guard let result else { self.searchNote = "Recherche indisponible. Vérifiez que le Trousseau est déverrouillé."; return }
+            guard let result else { self.searchNote = "Recherche indisponible. Autorisez le cache dans Confidentialité si le Trousseau bloque son accès."; return }
             self.searchHasRun = true
             self.searchResults = result["results"] as? [[String: Any]] ?? []
             self.searchNote = result["semantic_available"] as? Bool == true ? "Mots-clés et recherche sémantique Apple · index chiffré" : "Mots-clés · modèle sémantique indisponible"

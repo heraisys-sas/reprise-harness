@@ -1,3 +1,4 @@
+from app_paths import state_directory
 from contextlib import closing
 import datetime as dt
 import json
@@ -12,16 +13,30 @@ def inspect(path, now=None, details=None):
     rates = None
     measured_at = None
     last_stamp = None
+    recognized = unknown = malformed = 0
     with Path(path).open() as stream:
         for line in stream:
             try:
                 record = json.loads(line)
             except ValueError:
+                malformed += 1
+                continue
+            if not isinstance(record, dict):
+                malformed += 1
                 continue
             if record.get('type') != 'event_msg':
+                if record.get('type') not in ('session_meta', 'turn_context', 'response_item', 'compacted'):
+                    unknown += 1
                 continue
             payload = record.get('payload', {})
+            if not isinstance(payload, dict):
+                malformed += 1
+                continue
             kind = payload.get('type')
+            if kind in ('task_started', 'task_complete', 'turn_aborted', 'token_count'):
+                recognized += 1
+            else:
+                unknown += 1
             if kind in ('task_started', 'task_complete', 'turn_aborted'):
                 last = payload
                 last_stamp = record.get("timestamp")
@@ -29,6 +44,8 @@ def inspect(path, now=None, details=None):
                 rates = payload['rate_limits']
                 measured_at = record.get('timestamp')
     if details is not None:
+        details.update(coverage='unreadable' if malformed else 'unknown_format' if unknown or not recognized else 'recognized',
+                       unknown_events=unknown, parse_errors=malformed)
         details.update(active=bool(last and last['type'] == 'task_started' and now - Path(path).stat().st_mtime < 120), rates=rates, measured_at=measured_at)
     if last and last['type'] == 'task_complete' and isinstance(last.get('error'), dict):
         error = last['error']
@@ -87,9 +104,11 @@ def scan(home=None):
     result = []
     active = 0
     quota = None
+    coverage = {'total': 0, 'recognized': 0, 'unknown_format': 0, 'unreadable': 0}
     try:
         with closing(sqlite3.connect(state.as_uri() + '?mode=ro', uri=True, timeout=2)) as db:
             rows = db.execute('SELECT id,title,cwd,rollout_path,updated_at,source FROM threads WHERE archived=0 AND updated_at>? ORDER BY updated_at DESC LIMIT 100', (time.time() - 30 * 86400,)).fetchall()
+        coverage['total'] = len(rows)
         for ident, title, cwd, path, updated, source in rows:
             try:
                 details = {}
@@ -97,9 +116,11 @@ def scan(home=None):
                 active += int(details.get('active', False))
                 stamp = details.get('measured_at')
                 if details.get('rates') and stamp and (quota is None or stamp > quota['measured_at']):
-                    quota = {'rates': details['rates'], 'measured_at': stamp}
-            except (OSError, ValueError, TypeError):
+                    quota = {'rates': details['rates'], 'measured_at': stamp, 'source': 'codex_rollout.token_count.rate_limits', 'evidence_scope': 'session', 'account_key': None, 'freshness': 'unverified'}
+            except (OSError, ValueError, TypeError, AttributeError, KeyError):
+                coverage['unreadable'] += 1
                 continue
+            coverage[details.get('coverage', 'unknown_format')] += 1
             if status:
                 metadata = codex_source(source)
                 if metadata['is_subagent'] and status['state'] == 'quota_confirmed':
@@ -107,13 +128,20 @@ def scan(home=None):
                 elif not metadata['automatic_resume_supported'] and status['state'] == 'quota_confirmed':
                     status['label'] = 'Quota atteint · mode de reprise à vérifier'
                 result.append(dict(id=ident, title=title, cwd=cwd, updated=updated, **status, **metadata))
-        return {'sessions': result, 'error': None, 'active': active, 'quota': quota}
+        degraded = coverage['unknown_format'] + coverage['unreadable']
+        coverage['degraded'] = degraded
+        return {'sessions': result, 'error': f'Couverture Codex dégradée : {degraded} journal(s) illisible(s) ou non reconnu(s).' if degraded else None,
+                'active': None if degraded and not active else active, 'quota': quota, 'coverage': coverage}
     except sqlite3.Error:
         return {'sessions': [], 'error': 'Le format des sessions Codex a changé ou est temporairement indisponible.'}
 
 
 def harness_status(record, last=None, modified=None, now=None):
     now = now or time.time()
+    if last and last.get('kind') == 'max-tokens':
+        return {'state': 'output_limited', 'label': 'Limite de tokens de sortie · continuation Harness requise',
+                'retry_at': None, 'interrupted_at': last.get('time', 0) / 1000 if isinstance(last.get('time'), (int, float)) else None,
+                'interruption_seq': last.get('seq'), 'interruption_kind': 'max-tokens'}
     if last and last.get('kind') == 'aborted':
         return {'state': 'stopped', 'label': 'Session interrompue', 'retry_at': None}
     if last and last.get('kind') == 'error':
@@ -149,7 +177,11 @@ def scan_harness(home=None):
     for path in (home / 'sessions').glob('*/*/session*.jsonl*'):
         if path.name.endswith(('.jsonl', '.jsonl.zstd')):
             previous = logs.get(path.parent.name)
-            if not previous or path.stat().st_mtime > previous.stat().st_mtime:
+            try:
+                newer = (not previous) or path.stat().st_mtime > previous.stat().st_mtime
+            except OSError:
+                continue  # unreadable: skip, never re-probe
+            if newer:
                 logs[path.parent.name] = path
     archived = set()
     try:
@@ -160,8 +192,17 @@ def scan_harness(home=None):
     result = []
     unreadable = 0
     active = 0
-    for path in sorted(cache.glob('session-*.json'), key=lambda p: p.stat().st_mtime, reverse=True)[:100]:
-        if path.stem in archived or time.time() - path.stat().st_mtime > 30 * 86400:
+    def _mtime(p):
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+    for path in sorted(cache.glob('session-*.json'), key=_mtime, reverse=True)[:100]:
+        try:
+            if path.stem in archived or time.time() - path.stat().st_mtime > 30 * 86400:
+                continue
+        except OSError:
+            unreadable += 1
             continue
         try:
             obj = json.loads(path.read_text())
@@ -190,7 +231,7 @@ def scan_harness(home=None):
 def scan_all():
     import os
     from local_analysis import read_cache
-    analysis = read_cache(Path(os.environ.get('AGENT_RESUME_STATE', Path(__file__).parent / 'state')))
+    analysis = read_cache(state_directory(Path(__file__).parent))
     codex = scan()
     harness = scan_harness()
     claude = scan_claude()
@@ -199,7 +240,7 @@ def scan_all():
     for row in codex['sessions']:
         row['provider'] = 'Codex'
     errors = [r['error'] for r in (codex, harness, claude, cowork, autoclaw) if r['error']]
-    return {'sessions': sorted(codex['sessions'] + harness['sessions'] + claude['sessions'] + autoclaw['sessions'], key=lambda r: r['updated'], reverse=True)[:20], 'error': ' '.join(errors) if errors else None, 'activity': {'Codex': codex.get('active'), 'Harness': harness.get('active'), 'Claude Code': claude.get('active'), 'Cowork': cowork.get('active'), 'AutoClaw': autoclaw.get('active')}, 'codex_quota': codex.get('quota'), 'analysis': analysis}
+    return {'sessions': sorted(codex['sessions'] + harness['sessions'] + claude['sessions'] + autoclaw['sessions'], key=lambda r: r['updated'], reverse=True)[:20], 'error': ' '.join(errors) if errors else None, 'activity': {'Codex': codex.get('active'), 'Harness': harness.get('active'), 'Claude Code': claude.get('active'), 'Cowork': cowork.get('active'), 'AutoClaw': autoclaw.get('active')}, 'coverage': {'Codex': codex.get('coverage')}, 'codex_quota': codex.get('quota'), 'analysis': analysis}
 
 
 def inspect_claude(path, now=None):
@@ -246,8 +287,17 @@ def scan_claude(home=None):
     rows = []
     active = 0
     failed = 0
-    for path in sorted(projects.glob('*/*.jsonl'), key=lambda p: p.stat().st_mtime, reverse=True)[:100]:
-        if time.time() - path.stat().st_mtime > 30 * 86400:
+    def _mtime(p):
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0  # a protected/unreadable file sorts last and is skipped below
+    for path in sorted(projects.glob('*/*.jsonl'), key=_mtime, reverse=True)[:100]:
+        try:
+            if time.time() - path.stat().st_mtime > 30 * 86400:
+                continue
+        except OSError:
+            failed += 1  # unreadable (e.g. TCC-protected): skip, never re-probe
             continue
         try:
             if path.stat().st_size > 64 * 1024 * 1024:
