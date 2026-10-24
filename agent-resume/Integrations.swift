@@ -2,6 +2,50 @@ import Cocoa
 import SwiftUI
 
 extension App {
+    func inspectClaudeIntegration() {
+        guard stateReady, !setupBusy else { return }
+        setupCommand(["claude-integration-inspect"]) { result in
+            self.claudeIntegrationResult = result
+            if self.integrationProject.isEmpty, let project = result["project"] as? String { self.integrationProject = project }
+        }
+    }
+    func previewClaudeIntegration(_ action: String) {
+        guard stateReady, !setupBusy else { return }
+        var args = ["claude-integration-plan", "--project", integrationProject, "--action", action]
+        if claudeReplaceProbe { args.append("--replace-probe") }
+        setupCommand(args) { result in
+            self.claudeIntegrationResult = result
+            self.claudeIntegrationPlan = result["plan"] as? [String: Any]
+            self.claudeIntegrationAcknowledged = false
+        }
+    }
+    func applyClaudeIntegration() {
+        guard stateReady, !setupBusy, claudeIntegrationAcknowledged, let plan = claudeIntegrationPlan else { return }
+        setupCommand(["claude-integration-apply"], input: ["plan": plan]) { result in
+            self.claudeIntegrationResult = result
+            self.claudeIntegrationAcknowledged = false
+            if result["status"] as? String == "completed" { self.claudeIntegrationPlan = nil }
+        }
+    }
+    func verifyClaudeIntegration() {
+        guard stateReady, !setupBusy else { return }
+        setupCommand(["claude-integration-verify"]) { self.claudeIntegrationResult = $0 }
+    }
+
+    func refreshClaudeQuota() {
+        guard stateReady, !setupBusy else { return }
+        setupCommand(["claude-quota-status"]) { self.claudeQuotaState = $0 }
+    }
+    func configureClaudeQuota(_ enabled: Bool, transport: String? = nil) {
+        guard stateReady, !setupBusy else { return }
+        var args = ["claude-quota-config", "--enabled", enabled ? "true" : "false"]
+        if let transport { args += ["--transport", transport] }
+        setupCommand(args) { result in
+            if let transport { self.claudeQuotaState["transport"] = transport }
+            self.claudeQuotaState["enabled"] = result["claude_desktop_auto_enabled"] as? Bool ?? false
+        }
+    }
+
     func invalidateIntegrationPlan() {
         integrationPlan = nil
         integrationAcknowledged = false
@@ -25,6 +69,10 @@ extension App {
         if !integrationProfile.isEmpty { args += ["--profile", integrationProfile] }
         setupCommand(args) { result in
             self.integrationProfiles = result["profiles"] as? [String] ?? []
+            if let project = result["output_resume_project"] as? String { self.integrationOutputResumeProject = project }
+            if let enabled = result["output_resume"] as? Bool { self.integrationOutputResume = enabled }
+            if let enabled = result["delegate"] as? Bool { self.integrationDelegate = enabled }
+            if let role = result["agent_role"] as? String { self.integrationAgentRole = role }
             if self.integrationProject.isEmpty, let project = result["project"] as? String { self.integrationProject = project }
             self.integrationResult = result
             self.integrationPlan = result["pending_plan"] as? [String: Any]
@@ -37,6 +85,10 @@ extension App {
         guard stateReady, !setupBusy else { return }
         var args = ["integration-plan", "--home", integrationHome, "--profile", integrationProfile, "--project", integrationProject, "--action", action]
         if integrationDelegate { args.append("--delegate") }
+        if integrationOutputResume {
+            args.append("--output-resume")
+            if !integrationOutputResumeProject.isEmpty { args += ["--output-resume-project", integrationOutputResumeProject] }
+        }
         args += ["--agent-role", integrationAgentRole]
         setupCommand(args) { result in
             self.integrationPlan = result["plan"] as? [String: Any]
@@ -96,6 +148,9 @@ struct Integrations: View {
                     }
                     HStack { path("Projet du pont", app.integrationProject); Spacer(); Button("Choisir le projet…") { app.chooseIntegrationDirectory(project: true) } }
                     Toggle("Exposer aussi les outils de délégation", isOn: $app.integrationDelegate)
+                    Toggle("Continuer après une limite de tokens de sortie", isOn: $app.integrationOutputResume)
+                    if app.integrationOutputResume { TextField("Projet de continuation (vide : projet du pont)", text: $app.integrationOutputResumeProject) }
+                    Text("Autorise une continuation dans le même chat Harness, après max-tokens confirmé ; deux continuations consécutives maximum. La pause automatique de Reprise reste prioritaire.").font(.caption).foregroundStyle(.secondary)
                     Picker("Rôle de l’agent", selection: $app.integrationAgentRole) {
                         Text("Standard").tag("standard")
                         Text("Coordinateur").tag("coordinator")
@@ -105,6 +160,50 @@ struct Integrations: View {
                     Button("Inspecter") { app.inspectIntegration() }
                 }.padding(6)
             }
+            GroupBox("Connecteur reprise-harness · Claude Desktop") {
+                VStack(alignment: .leading, spacing: 8) {
+                    path("Projet autorisé", app.integrationProject)
+                    Button("Choisir le projet Claude…") { app.chooseIntegrationDirectory(project: true) }
+                    Text("Un seul connecteur : recevoir les tâches, rendre les résultats et demander une expertise aux autres harness configurés. Runtime inclus ; aucun Python système requis.").font(.caption).foregroundStyle(.secondary)
+                    Toggle("Remplacer l’ancien probe Reprise reconnu (sauvegardé)", isOn: $app.claudeReplaceProbe)
+                    HStack {
+                        Button("Inspecter") { app.inspectClaudeIntegration() }
+                        Button("Installer / mettre à jour…") { app.previewClaudeIntegration("install") }.disabled(app.integrationProject.isEmpty)
+                        Button("Retirer…") { app.previewClaudeIntegration("remove") }.disabled(app.integrationProject.isEmpty)
+                        Button("Vérifier") { app.verifyClaudeIntegration() }
+                    }
+                    if let plan = app.claudeIntegrationPlan {
+                        Text(planDetail(plan)).font(.caption.monospaced()).textSelection(.enabled)
+                        Toggle("J’ai vérifié le projet et les changements du connecteur Claude", isOn: $app.claudeIntegrationAcknowledged)
+                        Button("Appliquer le plan Claude") { app.applyClaudeIntegration() }.disabled(!app.claudeIntegrationAcknowledged)
+                    }
+                    if !app.claudeIntegrationResult.isEmpty { Text(planDetail(app.claudeIntegrationResult)).font(.caption).textSelection(.enabled) }
+                    Text("Dans Claude, autorisez les outils du connecteur reprise-harness pour recevoir les tâches, rendre les résultats et déléguer. Reprise ne peut pas accorder ces autorisations à votre place. Claude devra recharger sa configuration. Reprise ne l’arrête pas automatiquement. Une sonde de release ne prouve pas le chargement dans Claude ; le déclenchement Quick Apply reste une capacité distincte.").font(.caption).foregroundStyle(.secondary)
+                }.padding(6)
+            }.disabled(app.setupBusy)
+            GroupBox("Reprise après quota Claude Desktop") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Continuer le chat après le reset gratuit", isOn: Binding(
+                        get: { app.claudeQuotaState["enabled"] as? Bool ?? true },
+                        set: { app.configureClaudeQuota($0) }))
+                    Picker("Canal de continuation", selection: Binding(
+                        get: { app.claudeQuotaState["transport"] as? String ?? "quick-apply" },
+                        set: { app.configureClaudeQuota(app.claudeQuotaState["enabled"] as? Bool ?? true, transport: $0) })) {
+                        Text("Quick Apply · claude-desktopd").tag("quick-apply")
+                        Text("Accessibilité macOS · option explicite").tag("accessibility")
+                    }
+                    Text("Quick Apply utilise le même démon que les autres harness et exige une capacité d’émission vérifiée. L’autre canal requiert l’autorisation Accessibilité macOS. Reprise vérifie le dernier message du chat affiché et son bouton Continuer, sans saisir de prompt. La pause globale reste prioritaire.").font(.caption).foregroundStyle(.secondary)
+                    if let events = app.claudeQuotaState["events"] as? [[String: Any]], let latest = events.first,
+                       let due = latest["due"] as? Double {
+                        Text("Échéance : " + Date(timeIntervalSince1970: due).formatted(date: .abbreviated, time: .shortened))
+                        Text("État : " + (latest["status"] as? String ?? "inconnu"))
+                    }
+                    if let observation = app.claudeQuotaState["observation"] as? [String: Any], let state = observation["status"] as? String {
+                        Text("Observation : " + state).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button("Actualiser le suivi Claude") { app.refreshClaudeQuota() }
+                }.padding(6)
+            }.disabled(app.setupBusy).onAppear { app.refreshClaudeQuota() }
             Text(app.integrationMessage).textSelection(.enabled)
             if app.setupBusy { ProgressView("Opération en cours…") }
             HStack {
@@ -120,6 +219,8 @@ struct Integrations: View {
                         path("Profil du plan", plan["profile"] as? String ?? "")
                         path("Projet du plan", plan["project"] as? String ?? "")
                         Text("Rôle : " + ((plan["agent_role"] as? String == "coordinator") ? "Coordinateur" : "Standard"))
+                        if let project = plan["output_resume_project"] as? String { path("Projet de continuation", project) }
+                        Text("Continuation après limite de sortie : " + ((plan["output_resume"] as? Bool == true) ? "autorisée" : "désactivée"))
                         Text("Délégation : " + ((plan["delegate"] as? Bool == true) ? "exposée" : "non exposée"))
                         ForEach(Array((plan["changes"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, change in
                             VStack(alignment: .leading, spacing: 3) {
@@ -159,6 +260,8 @@ struct Integrations: View {
         }
         .disabled(app.setupBusy || !app.stateReady)
         .onChange(of: app.integrationProfile) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.integrationOutputResumeProject) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.integrationOutputResume) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationAgentRole) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationDelegate) { _, _ in app.invalidateIntegrationPlan() }
     }

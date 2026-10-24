@@ -250,6 +250,39 @@ class HarnessIntegrationTests(unittest.TestCase):
                          (self.managed / 'skills/reprise-delegation/SKILL.md').read_text())
         self.assertNotIn('agent_role', json.loads((self.managed / 'managed.json').read_text()))
 
+    def test_output_continuation_is_explicit_scoped_and_removable(self):
+        proposed = integration.plan(self.root, self.home, 'desktop', self.project,
+                                    output_resume=True)
+        self.assertTrue(proposed['output_resume'])
+        integration.apply(self.root, proposed)
+        saved = json.loads((self.managed / 'managed.json').read_text())
+        self.assertTrue(saved['output_resume'])
+        block = integration.split_block(self.config.read_text())[1]
+        entries = json.loads(block.split('- insert: ', 1)[1].split(integration.END)[0])
+        plugin = next(e for e in entries if e['id'] == 'reprise-output-resume')
+        self.assertTrue(plugin['config']['enabled'])
+        self.assertEqual(plugin['config']['projectRoot'], str(self.project))
+        self.assertEqual(plugin['config']['maxConsecutive'], 2)
+        self.assertTrue(Path(plugin['name']).is_file())
+        self.assertTrue(integration.inspect(self.home, 'desktop')['output_resume'])
+        self.assertEqual(integration.plan(self.root, self.home, 'desktop', self.project,
+                                         output_resume=True)['changes'], [])
+        integration.apply(self.root, self.plan())
+        self.assertNotIn('reprise-output-resume', self.config.read_text())
+        self.assertFalse(integration.inspect(self.home, 'desktop')['output_resume'])
+
+    def test_output_continuation_project_is_independent_of_bridge(self):
+        other = self.base / 'other-project'
+        other.mkdir()
+        proposed = integration.plan(self.root, self.home, 'desktop', self.project,
+                                    output_resume=True, output_resume_project=other)
+        self.assertEqual(proposed['output_resume_project'], str(other))
+        integration.apply(self.root, proposed)
+        saved = json.loads((self.managed / 'managed.json').read_text())
+        self.assertEqual(saved['project'], str(self.project))
+        self.assertEqual(saved['output_resume_project'], str(other))
+        self.assertEqual(integration.inspect(self.home, 'desktop')['output_resume_project'], str(other))
+
     def test_unknown_role_is_rejected_before_any_profile_write(self):
         before = self.snapshot()
         with self.assertRaises(ValueError):

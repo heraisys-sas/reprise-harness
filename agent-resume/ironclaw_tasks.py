@@ -2,9 +2,18 @@
 import hashlib
 import json
 import re
+import sqlite3
+import time
 import uuid
+from contextlib import contextmanager
 from urllib.parse import quote
 from ironclaw_ssh import request
+
+# Schéma des identités de tâche. Toute évolution de `_identity()` doit incrémenter ce
+# numéro : `_ensure_binding()` compare l'identité recalculée à celle stockée, et sans
+# version un simple changement d'algorithme serait pris pour un changement d'endpoint
+# (« Task belongs to a different endpoint configuration »), rendant les tâches illisibles.
+IDENTITY_SCHEME = 'v1'
 
 
 class TaskError(Exception):
@@ -18,8 +27,9 @@ def _id(value):
 
 
 class Tasks:
-    def __init__(self, db, endpoint=None, transport=request):
+    def __init__(self, db, endpoint=None, transport=request, expire_after=None):
         self.db, self.endpoint, self.transport = db, endpoint, transport
+        self.expire_after = expire_after
         with db:
             db.execute('''CREATE TABLE IF NOT EXISTS ironclaw_tasks(
               request_key TEXT PRIMARY KEY, identity TEXT NOT NULL, content TEXT NOT NULL,
@@ -31,6 +41,10 @@ class Tasks:
                 db.execute('ALTER TABLE ironclaw_tasks ADD COLUMN ack_json TEXT')
             if 'parent_request_key' not in columns:
                 db.execute('ALTER TABLE ironclaw_tasks ADD COLUMN parent_request_key TEXT')
+            if 'admitted_at' not in columns:
+                db.execute('ALTER TABLE ironclaw_tasks ADD COLUMN admitted_at REAL')
+            if 'last_error' not in columns:
+                db.execute('ALTER TABLE ironclaw_tasks ADD COLUMN last_error TEXT')
 
     def get(self, key, *, acknowledge=False):
         if not isinstance(key, str) or not key.strip() or len(key) > 128:
@@ -52,11 +66,26 @@ class Tasks:
             raise TaskError('Endpoint configuration required')
         self.endpoint.validate()
 
-    def _ensure_binding(self, key):
+    def _ensure_binding(self, key, connection=None):
         self._require_endpoint()
-        saved = self.db.execute('SELECT identity,content,parent_request_key FROM ironclaw_tasks WHERE request_key=?', (key,)).fetchone()
-        if saved and saved[0] != self._identity(saved[1], saved[2]):
-            raise TaskError('Task belongs to a different endpoint configuration')
+        connection = self.db if connection is None else connection
+        saved = connection.execute('SELECT identity,content,parent_request_key FROM ironclaw_tasks WHERE request_key=?', (key,)).fetchone()
+        if not saved:
+            return
+        stored, content, parent_key = saved
+        expected = self._identity(content, parent_key)
+        if stored == expected:
+            return
+        # Ligne écrite avant la version des identités : on migre au lieu de crier à un
+        # changement d'endpoint, qui serait un faux diagnostic.
+        if ':' not in stored and stored == self._identity_legacy(content, parent_key):
+            if connection is self.db:
+                with self.db:
+                    connection.execute('UPDATE ironclaw_tasks SET identity=? WHERE request_key=?', (expected, key))
+            else:
+                connection.execute('UPDATE ironclaw_tasks SET identity=? WHERE request_key=?', (expected, key))
+            return
+        raise TaskError('Task belongs to a different endpoint configuration')
 
     def list_requests(self, limit=100):
         if type(limit) is not int or not 1 <= limit <= 100:
@@ -66,12 +95,46 @@ class Tasks:
 
     def _identity(self, content, parent_key=None):
         self._require_endpoint()
+        base = hashlib.sha256(json.dumps({'content': content, 'scheme': IDENTITY_SCHEME, 'endpoint': [
+            self.endpoint.host, self.endpoint.user, self.endpoint.port, self.endpoint.http_port,
+            self.endpoint.identity_file, self.endpoint.token_url_file]}, sort_keys=True).encode()).hexdigest()
+        if parent_key is None:
+            return f'{IDENTITY_SCHEME}:{base}'
+        linked = hashlib.sha256(json.dumps({'base': base, 'parent': parent_key}, sort_keys=True).encode()).hexdigest()
+        return f'{IDENTITY_SCHEME}:{linked}'
+
+    def _identity_legacy(self, content, parent_key=None):
+        """Identité pré-versionnée, conservée uniquement pour migrer les lignes existantes."""
+        self._require_endpoint()
         base = hashlib.sha256(json.dumps({'content': content, 'endpoint': [
             self.endpoint.host, self.endpoint.user, self.endpoint.port, self.endpoint.http_port,
             self.endpoint.identity_file, self.endpoint.token_url_file]}, sort_keys=True).encode()).hexdigest()
         if parent_key is None:
             return base
         return hashlib.sha256(json.dumps({'base': base, 'parent': parent_key}, sort_keys=True).encode()).hexdigest()
+
+    @contextmanager
+    def _admission(self):
+        # On a file database the admission section runs on a dedicated connection so the
+        # write lock is committed and released before the network phase; a shared
+        # in-memory connection cannot host a second one, so it keeps the direct path.
+        info = self.db.execute('PRAGMA database_list').fetchall()
+        filename = next((row[2] for row in info if row[1] == 'main'), '')
+        if not filename:
+            with self.db:
+                self.db.execute('BEGIN IMMEDIATE')
+                yield self.db
+            return
+        conn = sqlite3.connect(filename, isolation_level=None)
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            yield conn
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def submit(self, key, content, *, allow_submit=False):
         return self._submit(key, content, allow_submit=allow_submit)
@@ -93,10 +156,10 @@ class Tasks:
             raise TaskError('Encoded submission too large')
         identity = self._identity(content, parent_key)
         thread = None
-        with self.db:
-            self.db.execute('BEGIN IMMEDIATE')
+        with self._admission() as admission:
+            self._ensure_binding(key, admission)
             if parent_key is not None:
-                self._ensure_binding(parent_key)
+                self._ensure_binding(parent_key, admission)
                 parent = self.get(parent_key)
                 if parent['state'] != 'finished' or not parent['thread_id']:
                     raise TaskError('Followup requires a finished parent with an owned thread')
@@ -106,18 +169,18 @@ class Tasks:
                     if ancestor in visited or len(visited) >= 8:
                         raise TaskError('Followup lineage exceeds eight ancestors or contains a cycle')
                     visited.add(ancestor)
-                    link = self.db.execute('SELECT parent_request_key FROM ironclaw_tasks WHERE request_key=?', (ancestor,)).fetchone()
+                    link = admission.execute('SELECT parent_request_key FROM ironclaw_tasks WHERE request_key=?', (ancestor,)).fetchone()
                     if link is None:
                         raise TaskError('Missing parent lineage')
                     ancestor = link[0]
-                active = self.db.execute("SELECT request_key FROM ironclaw_tasks WHERE thread_id=? AND request_key<>? AND state<>'finished' LIMIT 1", (thread, key)).fetchone()
+                active = admission.execute("SELECT request_key FROM ironclaw_tasks WHERE thread_id=? AND request_key<>? AND state<>'finished' LIMIT 1", (thread, key)).fetchone()
                 if active:
                     raise TaskError('Another unfinished task owns this thread')
-            duplicate = self.db.execute("SELECT request_key FROM ironclaw_tasks WHERE identity=? AND request_key<>? AND state IN ('prepared','dispatching','ambiguous','pending','needs_operator','needs_review','deferred','blocked_busy') LIMIT 1", (identity, key)).fetchone()
+            duplicate = admission.execute("SELECT request_key FROM ironclaw_tasks WHERE identity IN (?,?) AND request_key<>? AND state IN ('prepared','dispatching','ambiguous','pending','needs_operator','needs_review','deferred','blocked_busy') LIMIT 1", (identity, self._identity_legacy(content, parent_key), key)).fetchone()
             if duplicate:
                 raise TaskError('Equivalent task already admitted; use its existing request key')
-            self.db.execute('INSERT OR IGNORE INTO ironclaw_tasks(request_key,identity,content,thread_action,message_action,state,thread_id,run_id,result,acknowledged,parent_request_key) VALUES(?,?,?,?,?,?,?,NULL,NULL,0,?)',
-                            (key, identity, content, uuid.uuid4().hex, uuid.uuid4().hex, 'prepared', thread, parent_key))
+            admission.execute('INSERT OR IGNORE INTO ironclaw_tasks(request_key,identity,content,thread_action,message_action,state,thread_id,run_id,result,acknowledged,parent_request_key,admitted_at) VALUES(?,?,?,?,?,?,?,NULL,NULL,0,?,?)',
+                              (key, identity, content, uuid.uuid4().hex, uuid.uuid4().hex, 'prepared', thread, parent_key, time.time()))
         row = self.db.execute('SELECT identity,thread_action,message_action,state FROM ironclaw_tasks WHERE request_key=?', (key,)).fetchone()
         if row[0] != identity:
             raise TaskError('Request key reused with different identity')
@@ -165,10 +228,12 @@ class Tasks:
                     run = None
             with self.db:
                 self.db.execute('UPDATE ironclaw_tasks SET state=?,run_id=? WHERE request_key=?', (state, run, key))
-        except Exception:
+        except (TaskError, OSError, TimeoutError, ValueError) as exc:
+            state = 'ambiguous' if post_attempted else 'prepared'
+            detail = f'{type(exc).__name__}: {exc}'[:500]
             with self.db:
-                self.db.execute('UPDATE ironclaw_tasks SET state=? WHERE request_key=?', ('ambiguous' if post_attempted else 'prepared', key))
-            raise TaskError('Dispatch uncertain; inspect remotely before any new request') from None
+                self.db.execute('UPDATE ironclaw_tasks SET state=?,last_error=? WHERE request_key=?', (state, detail, key))
+            raise TaskError('Dispatch uncertain; inspect remotely before any new request') from exc
         return self.get(key)
 
     def poll(self, key):
@@ -177,7 +242,7 @@ class Tasks:
         if task['state'] not in ('pending', 'needs_operator', 'deferred') or not task['run_id']:
             return task
         thread, run = _id(task['thread_id']), _id(task['run_id'])
-        final = None
+        final, activity_after = None, False
         for messages in self._timeline(thread):
             for message in messages:
                 if not isinstance(message, dict) or message.get('turn_run_id') != run:
@@ -185,12 +250,38 @@ class Tasks:
                 if message.get('kind') in ('assistant', 'assistant_message') and message.get('status') == 'finalized':
                     if not isinstance(message.get('content'), str):
                         raise TaskError('Invalid final content')
-                    final = message['content']
+                    final, activity_after = message['content'], False
+                elif final is not None:
+                    # A finalized message followed by later run activity (tools,
+                    # streaming, user turn) was intermediate, not the end of the run.
+                    activity_after = True
+        if activity_after:
+            final = None
+        if final is None and self._expired(key):
+            with self.db:
+                self.db.execute("UPDATE ironclaw_tasks SET state='expired' WHERE request_key=? AND state IN ('pending','deferred')", (key,))
+            return self.get(key)
         with self.db:
             if final is not None:
                 self.db.execute("UPDATE ironclaw_tasks SET state='finished',result=? WHERE request_key=? AND state IN ('pending','needs_operator','deferred')", (json.dumps(final), key))
 
         return self.get(key)
+
+    def fail(self, key, reason):
+        """Operator exit for gated, ambiguous, review or busy tasks. Local-only; no replay."""
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 512:
+            raise TaskError('Invalid failure reason')
+        with self.db:
+            changed = self.db.execute("UPDATE ironclaw_tasks SET state='failed',result=? WHERE request_key=? AND state IN ('needs_operator','ambiguous','needs_review','blocked_busy')", (json.dumps({'operator': reason}, ensure_ascii=False), key)).rowcount
+        if not changed:
+            raise TaskError('Only gated, ambiguous, review or busy tasks can be marked failed')
+        return self.get(key)
+
+    def _expired(self, key):
+        if self.expire_after is None:
+            return False
+        row = self.db.execute('SELECT admitted_at,state FROM ironclaw_tasks WHERE request_key=?', (key,)).fetchone()
+        return bool(row and row[0] is not None and row[1] in ('pending', 'deferred') and time.time() - row[0] > self.expire_after)
 
     def _timeline(self, thread):
         cursor, seen = None, set()
