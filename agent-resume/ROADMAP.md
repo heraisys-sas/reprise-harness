@@ -17,7 +17,7 @@
 
 ## Ordre de travail quotas actualisé
 
-Le plafond local quotidien des sollicitations Codex est supprimé. Priorité à une observation fiable et sourcée des quotas par compte/pool, avec portée, fraîcheur et inconnus explicites. Le comportement de reprise dépendant des quotas sera conçu ensuite ; ne pas étendre l’automatisation actuelle avant cette validation. Les contrôles fournisseur et protections de concurrence existants sont conservés.
+Décision actualisée du 24/10 : enregistrer l’échéance lors du refus puis tenter la reprise à cette échéance, sans mesure de quota préalable obligatoire ; diagnostiquer/mesurer après un nouvel échec si utile. Les contrôles de propriété, concurrence, permissions et actions incertaines restent requis. Voir [le contrat de rôles et continuité](HARNESS-ROLES-CONTRACT.md#reprise-après-quota). Les quotas par compte/pool restent des observations utiles, pas un préalable universel.
 
 ## Lot planifié — remplacer les plafonds arbitraires restants
 
@@ -58,7 +58,7 @@ Exigence D2/D3 du 21/10 : installer également dans Codex et chaque client suppo
 
 La reprise fonctionnelle passe avant les extensions d’installation. Corriger le chargement d’une session propriétaire `notLoaded` avant la vérification `idle`, conserver les refus sur session active/erreur/identité divergente et interdire le repli CLI en présence d’un lien de socket cassé. `restart-chain` doit préserver codexd et les sockets/processus non identifiés ; aucun arrêt systématique du moteur partagé.
 
-Diagnostic local : automatisation en pause et anciennes tentatives en examen ; ne pas réenfiler automatiquement ces dernières. Réactivation et validation de bout en bout doivent distinguer détection, quota actuel confirmé, chargement, démarrage et fin du tour. Ne pas présenter un test de chargement sans inférence comme une reprise métier réussie.
+Diagnostic local : automatisation en pause et anciennes tentatives en examen ; ne pas réenfiler automatiquement ces dernières. Réactivation et validation de bout en bout doivent distinguer détection, échéance enregistrée, chargement, démarrage et fin du tour. Ne pas présenter un test de chargement sans inférence comme une reprise métier réussie.
 
 Correctif [issue #7](https://github.com/heraisys-sas/reprise-harness/issues/7) : implémenté et vérifié par **386 tests OK, 4 ignorés** ; chargement réel `notLoaded` → `idle` confirmé sans lancement de tour. Le parcours simulé complet consomme une interruption une seule fois. Avertissements de ressources préexistants conservés. Réactivation explicitement autorisée par l’utilisateur ; anciennes tentatives en examen préservées. Le succès métier d’une reprise réelle reste distinct de ces preuves.
 
@@ -121,3 +121,7 @@ Convention immédiate GitHub `agent:*` + `work:active|available|blocked`, branch
 ### #62 — déléguer une implémentation native à Codex
 
 [Contrat](CODEX-EXECUTION-CONTRACT.md) : grant explicite par projet, mode implementation distinct des expertises, session durable et followup de même mode, installation DSH gérée et contrôles de fichiers adaptés. Le canal ne crée pas de permission implicite GitHub/système et n’est pas le courtier de commandes #29. Vérifier séparément présence/classification Desktop et approbations interactives #24.
+
+### Rôles, reprise et archivage — décision du 24/10
+
+[Contrat commun](HARNESS-ROLES-CONTRACT.md), #58 : hyperviseur configurable, référent technique principal, worker distant permanent ; #57 pour leur configuration. Programmer depuis le refus et tenter la reprise à l’échéance sans mesure préalable obligatoire ; sessions de remplacement sans boucle ni plafond arbitraire. Proposer dans Sessions l’archivage confirmé des sessions vides en échec, sans suppression automatique. Implémentations et validation réelle restent à réaliser.
