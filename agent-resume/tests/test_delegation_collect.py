@@ -90,6 +90,18 @@ class CollectionTests(unittest.TestCase):
             write_output(link, 'replacement')
         self.assertEqual(output.read_text(), 'secret')
 
+    def test_failed_write_leaves_no_partial_file_and_allows_retry(self):
+        output = self.root / 'out.txt'
+        with patch('delegation_collect.os.fsync', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                write_output(output, 'content')
+        self.assertFalse(output.exists())
+        self.assertEqual([item.name for item in self.root.iterdir() if item.name.endswith('.part')], [])
+        write_output(output, 'content')
+        self.assertEqual(output.read_text(), 'content')
+        self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
+        self.assertEqual([item.name for item in self.root.iterdir() if item.name.endswith('.part')], [])
+
     def test_missing_database_not_created(self):
         with self.assertRaises(FileNotFoundError):
             collect(self.root, self.project, 'test')
