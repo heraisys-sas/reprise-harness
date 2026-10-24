@@ -64,6 +64,27 @@ class DurableTests(unittest.TestCase):
             self.assertEqual(bridge.call('reprise_delegate', self.args('two'))['status'], 'indeterminate')
             self.assertEqual(run.call_count, 1)
 
+    def test_failure_proven_before_dispatch_does_not_lock_equivalent_requests(self):
+        for status in ('blocked_owner', 'blocked_session'):
+            with self.subTest(status=status), patch('codex_expert_mcp.review', return_value={'status': status}) as run:
+                bridge = self.bridge()
+                key = 'one-' + status
+                self.assertEqual(bridge.call('reprise_delegate', self.args(key))['status'], status)
+                self.assertEqual(bridge.call('reprise_requests', {'request_key': key})['state'], 'recorded')
+                self.assertEqual(bridge.call('reprise_delegate', self.args(key))['status'], status)
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(bridge.call('reprise_delegate', self.args('again-' + status))['status'], status)
+                self.assertEqual(run.call_count, 2)
+
+    def test_status_that_may_follow_dispatch_still_locks_equivalent_requests(self):
+        for status in ('blocked_permission', 'needs_review'):
+            with self.subTest(status=status), patch('codex_expert_mcp.review', return_value={'status': status}) as run:
+                bridge = self.bridge()
+                bridge.call('reprise_delegate', self.args('first-' + status, question='Question ' + status))
+                self.assertEqual(bridge.call('reprise_requests', {'request_key': 'first-' + status})['state'], 'indeterminate')
+                self.assertEqual(bridge.call('reprise_delegate', self.args('second-' + status, question='Question ' + status))['status'], 'indeterminate')
+                self.assertEqual(run.call_count, 1)
+
     def test_same_key_different_content_or_parent_refused(self):
         with patch('codex_expert_mcp.review', return_value={'status': 'finished'}):
             bridge = self.bridge()

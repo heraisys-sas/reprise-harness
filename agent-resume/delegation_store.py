@@ -43,6 +43,12 @@ def validate_key(key):
         raise ValueError('Persist a nonempty request_key (at most 128 characters) before sending')
 
 
+# Statuses that prove no input was delivered (or that a result exists), so an equivalent
+# delegation may be requested again under a new key. blocked_owner and blocked_session are only
+# emitted before the turn is submitted ("no turn submitted"); blocked_permission is not listed
+# because it also covers a human approval requested mid-turn. Anything else stays uncertain.
+RECORDED_STATUSES = ('finished', 'quota_blocked', 'blocked_auth', 'billing_unverified',
+                     'engine_unavailable', 'busy', 'blocked_owner', 'blocked_session')
 RECEIPT_FORMAT = 'receipt-json-v1'
 LOOKUP_PROPERTIES = {
     'request_key': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': r'\S'},
@@ -218,7 +224,7 @@ class Store:
 
     def finish(self, key, result):
         result = dict(result, request_key=key)
-        state = 'recorded' if result.get('status') in ('finished', 'quota_blocked', 'blocked_auth', 'billing_unverified', 'engine_unavailable', 'busy') else 'indeterminate'
+        state = 'recorded' if result.get('status') in RECORDED_STATUSES else 'indeterminate'
         with self.db:
             self.db.execute('UPDATE delegation_requests SET state=?,result=? WHERE scope=? AND request_key=?', (state, json.dumps(result, ensure_ascii=False), self.scope, key))
         return result
