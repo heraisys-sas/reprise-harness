@@ -30,7 +30,7 @@ Ce bloc est destiné à compléter les instructions de l’agent (`AGENTS.md`, `
 
 ## Paramètres propres à l’installation
 
-Le choix du coordinateur, les routes de secours, budgets et autorisations viennent de la configuration et des instructions de l’opérateur. Ce modèle ne configure aucun fournisseur, ne transfère aucun credential, n’installe aucun harness et n’autorise aucune inférence à lui seul. Préserver les instructions personnelles lors de toute installation, mise à jour ou désinstallation.
+Le choix du coordinateur, les routes de secours, budgets et autorisations viennent de la configuration et des instructions de l’opérateur. Ce modèle ne configure aucun fournisseur, ne transfère aucun credential, n’installe aucun harness et n’autorise aucune inférence à lui seul. Préserver les instructions personnelles lors de toute installation, mise à jour ou désinstallation. Pour les sessions dont le moteur est ASI1, l’opérateur peut activer le complément orchestrateur [ASI1-ORCHESTRATOR.template.md](ASI1-ORCHESTRATOR.template.md) ; sa présence ne l’active pas.
 
 ## Protocole court du coordinateur
 
