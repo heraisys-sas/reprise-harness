@@ -103,6 +103,16 @@ ASI1 coordonne les tâches techniques ; il confie leur analyse et leur résoluti
 
 Le succès se mesure au lot validé et au coût total, pas au nombre de délégations. Après deux échecs sur le même volet, changer de méthode ou d’expert ; ne pas ramener à ASI1 un problème complexe qu’il ne sait pas résoudre.
 
+## Procédure standard d'une demande de correction (opérateur, 24/10/2026)
+
+Appliquée par défaut à toute demande technique de l'opérateur, avec traçabilité complète dans le dépôt :
+
+1. **Cadrage** : le coordinateur reformule le résultat attendu, fixe la baseline (SHA), les fichiers autorisés et les critères d'acceptation ; il ne fait pas l'exploration lui-même.
+2. **Planification déléguée** : premier tour en lecture seule à un expert — sous-agent Flash pour un lot court ou cadré, Reprise (Codex, niveau adapté) pour un lot complexe. Le plan attendu : conception, fichiers à modifier, tests, risques et questions ouvertes.
+3. **Discussion jusqu'à accord** : le coordinateur relit le plan, tranche les arbitrages de son ressort, pose ses questions, et poursuit avec le même expert dans le même fil (`send_message` pour un sous-agent, `reprise_followup` sur le même `thread_id` pour Reprise) jusqu'à un accord explicite. Désaccords et décisions sont consignés, pas seulement échangés.
+4. **Resoumission par le bon canal d'écriture** : après accord, le même expert implémente — sous-agent (écriture dans la sandbox du workspace, sans commit), ou Reprise pour un diff produit par Git et vérifié (`git apply --check`) avant application locale. Le coordinateur garde Git : réservation d'issue (label `agent:*` + branche liée + `agent-claim`), commit, push vers `dev`.
+5. **Vérification et traçabilité** : tests ciblés puis suite requise avant publication ; chaque étape (plan retenu, arbitrages, accord, implémentation, contrôles) est tracée dans le dépôt — commentaires de l'issue, fichier md de travail ou message de commit — jamais uniquement dans la conversation de travail.
+
 ## Protocole court du coordinateur
 
 Quand le rôle coordinator est choisi :
