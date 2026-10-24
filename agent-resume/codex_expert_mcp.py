@@ -242,7 +242,7 @@ class Bridge:
                 if return_mode == 'receipt':
                     manifest = self.requests.lookup({'request_key': pointer, 'view': 'receipt'})
                     # The lookup status only says the receipt was found, not how the delegation ended.
-                    manifest['status'] = existing['status']
+                    self._tag(manifest, existing)
                     return manifest
                 return self._bounded_full(pointer, existing)
             # Exceptions or process exit leave a durable uncertain attempt.
@@ -257,8 +257,14 @@ class Bridge:
                 result = dict(result, status='needs_review', reason='Input files changed during delegation; result requires reconciliation.', input_changed=True)
             result = self.requests.finish(key, result)
             if return_mode == 'receipt':
-                return dict(self.requests.lookup({'request_key': key, 'view': 'receipt'}), status=result['status'])
+                return self._tag(self.requests.lookup({'request_key': key, 'view': 'receipt'}), result)
             return self._bounded_full(key, result)
+
+    @staticmethod
+    def _tag(manifest, result):
+        """A receipt manifest reports the delegation status, not the lookup status."""
+        manifest['status'] = result['status']
+        return manifest
 
     def _bounded_full(self, key, result):
         """Deliver a full-mode result unchanged up to FULL_RESULT_LIMIT, else its durable manifest."""
@@ -267,7 +273,7 @@ class Bridge:
         manifest = self.requests.lookup({'request_key': key, 'view': 'receipt'})
         if not manifest['available']:
             return result
-        return dict(manifest, status=result['status'], return_mode_effective='receipt',
+        return dict(self._tag(manifest, result), return_mode_effective='receipt',
                     reason='Result exceeds the full-mode delivery limit; read it with reprise_requests view=page or delegation_collect.py.')
 
     def _call(self, name, args, *, preflight=False):

@@ -145,6 +145,20 @@ class DurableTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 file_evidence(link, [bad])
 
+    def test_oversized_implementation_result_is_bounded_like_any_full_result(self):
+        bridge = Bridge(self.root, {}, self.state, daily_limit=0, codex_workspace_write=True)
+        bridge.program = 'codex'
+        self.addCleanup(bridge.db.close)
+        reply = {'status': 'finished', 'response': 'é' * 60000, 'thread_id': 'impl-thread'}
+        with patch('codex_expert_mcp.review', return_value=reply):
+            full = bridge.call('reprise_delegate', self.args(kind='batch', mode='implementation'))
+            receipt = bridge.call('reprise_delegate', self.args(kind='batch', mode='implementation', return_mode='receipt'))
+        for manifest in (full, receipt):
+            self.assertEqual((manifest['status'], manifest['available']), ('finished', True))
+            self.assertNotIn('response', manifest)
+        self.assertEqual(full['return_mode_effective'], 'receipt')
+        self.assertEqual(bridge.call('reprise_requests', {'request_key': 'one'})['result']['mode'], 'implementation')
+
     def test_same_key_different_content_or_parent_refused(self):
         with patch('codex_expert_mcp.review', return_value={'status': 'finished'}):
             bridge = self.bridge()
