@@ -64,6 +64,87 @@ class DurableTests(unittest.TestCase):
             self.assertEqual(bridge.call('reprise_delegate', self.args('two'))['status'], 'indeterminate')
             self.assertEqual(run.call_count, 1)
 
+    def test_failure_proven_before_dispatch_does_not_lock_equivalent_requests(self):
+        for status in ('blocked_owner', 'blocked_session'):
+            with self.subTest(status=status), patch('codex_expert_mcp.review', return_value={'status': status}) as run:
+                bridge = self.bridge()
+                key = 'one-' + status
+                self.assertEqual(bridge.call('reprise_delegate', self.args(key))['status'], status)
+                self.assertEqual(bridge.call('reprise_requests', {'request_key': key})['state'], 'recorded')
+                self.assertEqual(bridge.call('reprise_delegate', self.args(key))['status'], status)
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(bridge.call('reprise_delegate', self.args('again-' + status))['status'], status)
+                self.assertEqual(run.call_count, 2)
+
+    def test_status_that_may_follow_dispatch_still_locks_equivalent_requests(self):
+        for status in ('blocked_permission', 'needs_review'):
+            with self.subTest(status=status), patch('codex_expert_mcp.review', return_value={'status': status}) as run:
+                bridge = self.bridge()
+                bridge.call('reprise_delegate', self.args('first-' + status, question='Question ' + status))
+                self.assertEqual(bridge.call('reprise_requests', {'request_key': 'first-' + status})['state'], 'indeterminate')
+                self.assertEqual(bridge.call('reprise_delegate', self.args('second-' + status, question='Question ' + status))['status'], 'indeterminate')
+                self.assertEqual(run.call_count, 1)
+
+    def test_full_mode_result_within_limit_is_delivered_unchanged(self):
+        reply = {'status': 'finished', 'response': 'é' * 20000}
+        with patch('codex_expert_mcp.review', return_value=reply):
+            result = self.bridge().call('reprise_delegate', self.args())
+        self.assertEqual(result['response'], reply['response'])
+        self.assertNotIn('return_mode_effective', result)
+
+    def test_full_mode_oversized_result_becomes_manifest_and_pages_recover_it(self):
+        text = ('é𝄞\\" ligne\n' * 8000)
+        with patch('codex_expert_mcp.review', return_value={'status': 'finished', 'response': text}) as run:
+            bridge = self.bridge()
+            first = bridge.call('reprise_delegate', self.args())
+            replay = self.bridge().call('reprise_delegate', self.args())
+            explicit = bridge.call('reprise_delegate', self.args(return_mode='receipt'))
+        self.assertEqual(run.call_count, 1)
+        for answer in (first, replay):
+            self.assertEqual((answer['status'], answer['available'], answer['return_mode_effective']), ('finished', True, 'receipt'))
+            self.assertNotIn('response', answer)
+            self.assertLess(len(json.dumps(answer, ensure_ascii=False)), 1500)
+            self.assertEqual((answer['total_length'], answer['result_sha256']), (explicit['total_length'], explicit['result_sha256']))
+        pages, offset = [], 0
+        while offset is not None:
+            page = bridge.call('reprise_requests', {'request_key': 'one', 'view': 'page', 'offset': offset, 'max_chars': 6000, 'result_sha256': first['result_sha256']})
+            pages.append(page['text'])
+            offset = page['next_offset']
+        recovered = ''.join(pages)
+        self.assertEqual(len(recovered), first['total_length'])
+        self.assertEqual(hashlib.sha256(recovered.encode('utf-8')).hexdigest(), first['result_sha256'])
+        self.assertEqual(json.loads(recovered)['response'], text)
+
+    def test_full_mode_oversized_uncertain_result_is_also_bounded(self):
+        with patch('codex_expert_mcp.review', return_value={'status': 'needs_review', 'response': 'x' * 60000, 'output_complete': False}):
+            result = self.bridge().call('reprise_delegate', self.args())
+        self.assertEqual((result['status'], result['state'], result['return_mode_effective']), ('needs_review', 'indeterminate', 'receipt'))
+        self.assertNotIn('response', result)
+
+    def test_receipt_reports_the_delegation_status_not_the_lookup_status(self):
+        with patch('codex_expert_mcp.review', return_value={'status': 'needs_review', 'response': 'x' * 60000, 'output_complete': False}):
+            bridge = self.bridge()
+            fresh = bridge.call('reprise_delegate', self.args(return_mode='receipt'))
+            replay = bridge.call('reprise_delegate', self.args(return_mode='receipt'))
+        for manifest in (fresh, replay):
+            self.assertEqual((manifest['status'], manifest['state'], manifest['available']), ('needs_review', 'indeterminate', True))
+        from codex_expert_mcp import tool_content
+        self.assertTrue(tool_content(fresh)['isError'])
+
+    def test_project_files_accepted_through_a_symlinked_root_and_outside_paths_refused(self):
+        real = self.root / 'real'
+        real.mkdir()
+        (real / 'a.txt').write_text('a')
+        (self.root / 'outside.txt').write_text('x')
+        link = self.root / 'link'
+        link.symlink_to(real, target_is_directory=True)
+        from delegation_store import file_evidence
+        evidence = file_evidence(link, ['a.txt'])
+        self.assertEqual(Path(evidence[0]['path']), (real / 'a.txt').resolve())
+        for bad in ('../outside.txt', str(self.root / 'outside.txt')):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                file_evidence(link, [bad])
+
     def test_same_key_different_content_or_parent_refused(self):
         with patch('codex_expert_mcp.review', return_value={'status': 'finished'}):
             bridge = self.bridge()
