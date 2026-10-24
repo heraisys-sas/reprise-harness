@@ -103,3 +103,17 @@ installable depuis Intégrations, activée par défaut, subordonnée à la pause
 globale. Aucune API privée ni facturation de repli. Contrat et limites dans
 [CLAUDE-INTEGRATION.md](CLAUDE-INTEGRATION.md). L’essai après échéance réelle et la
 permission Accessibilité restent à confirmer séparément des tests simulés.
+
+
+### #31 — connecteur Claude unifié et déploiement autonome
+
+Façade MCP unique pour tâches entrantes/résultats et délégation sortante, registre
+partagé avec claude-desktopd, isolation projet, retours paginés, cycle Desktop
+immédiat bloqué. Installation/inspection/retrait/vérification depuis Intégrations,
+runtime embarqué, sauvegardes et conflits préservés. Contrat :
+[CLAUDE-CONNECTOR.md](CLAUDE-CONNECTOR.md). Chargement dans Claude à confirmer après
+rechargement consenti ; ce lot ne prétend pas livrer le pilote natif Quick Apply.
+
+### Passation explicite entre harness
+
+Convention immédiate GitHub `agent:*` + `work:active|available|blocked`, branche liée à l’issue et checkpoint de reprise : [contrat](HANDOFF-CONTRACT.md). À implémenter dans Reprise : réservation atomique avec génération, renouvellement, réconciliation des actions en vol et projection des labels ; distribution de la règle avec chaque intégration. Ne pas assimiler expiration, quota, pause volontaire et achèvement.

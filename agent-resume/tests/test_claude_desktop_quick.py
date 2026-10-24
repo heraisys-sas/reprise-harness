@@ -42,6 +42,70 @@ class EndpointTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.submit({'prompt': 'Un message valide', 'hack': 'x'})
 
+    def test_scoped_daemon_and_mcp_share_task_result(self):
+        from desktop_task_store import TaskStore
+        with tempfile.TemporaryDirectory() as directory:
+            endpoint = Endpoint(directory, project_root=directory)
+            self.addCleanup(endpoint.close)
+            key = 'shared-job'
+            admitted = endpoint.submit({'request_key': key, 'prompt': 'Analyze this task'})
+            self.assertFalse(admitted['dispatch_attempted'])
+            self.assertTrue(admitted['task_available'])
+            store = TaskStore(directory, directory)
+            self.addCleanup(store.close)
+            claimed = store.claim(key, 'saved-claim')
+            store.submit(key, claimed['attempt_id'], 'Verified result')
+            result = endpoint.call('quick_entry/get_result', {'request_key': key, 'view': 'full'})
+            self.assertEqual(result['answer'], 'Verified result')
+            self.assertFalse(endpoint.call('quick_entry/capabilities', {})['dispatch_supported'])
+
+    def test_changed_project_cannot_replay_other_project_admission(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / 'shared'
+            projects = [Path(directory) / 'a', Path(directory) / 'b']
+            for project in projects:
+                project.mkdir()
+                endpoint = Endpoint(state, project_root=project)
+                try:
+                    receipt = endpoint.submit({'request_key': 'same', 'prompt': 'Scoped task'})
+                    self.assertTrue(receipt['task_available'])
+                    self.assertEqual(endpoint.tasks.claim('same', 'claim')['prompt'], 'Scoped task')
+                finally:
+                    endpoint.close()
+            endpoint = Endpoint(state, project_root=projects[0])
+            endpoint.close()
+
+    def test_first_launch_from_bundle_without_preexisting_quick_state(self):
+        import subprocess
+        import time
+        from unittest.mock import patch
+        from package_helpers import package
+        from claude_desktop_rpc import Client
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            helpers = package(Path(__file__).parents[1], base / 'Reprise.app')
+            state, socket = base / 'new-state', base / 'quick.sock'
+            env = dict(os.environ, HOME=str(base))
+            env.pop('AGENT_RESUME_STATE', None)
+            process = subprocess.Popen([sys.executable, str(helpers / 'claude_desktop_quick.py'),
+                '--state', str(state), '--socket', str(socket), '--project-root', str(base)],
+                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            client = None
+            try:
+                deadline = time.monotonic() + 5
+                while not socket.exists() and process.poll() is None and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertIsNone(process.poll(), 'First-launch daemon exited')
+                client = Client(None, {'socket': str(socket)}, timeout=2)
+                capability = client.call('quick_entry/capabilities', {})
+                self.assertEqual(capability['project_root'], str(base))
+                self.assertTrue(capability['task_return_supported'])
+                self.assertFalse(capability['dispatch_supported'])
+            finally:
+                if client: client.close()
+                process.terminate()
+                process.wait(timeout=5)
+
     def test_initialize_and_ping(self):
         info = self.endpoint.call('initialize', {})
         self.assertEqual(info['serverInfo']['name'], 'reprise-claude-desktop-quick')
