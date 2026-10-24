@@ -1,16 +1,20 @@
 name: Apply last_error patch (jetable)
 
-# Workflow jetable : il n'existe que sur la branche chore/patch-last-error, jamais sur dev.
-# Il calcule le patch cote runner (Python disponible), echoue si la cible a change, et pousse
-# le resultat sur fix/37-expose-last-error. Rien n'est merge depuis cette branche.
+# Workflow jetable, present uniquement sur chore/patch-last-error et sa PR.
+# Il calcule le patch cote runner (Python disponible la ou le sandbox de l'agent
+# n'en a pas), echoue si la cible ne correspond plus exactement, verifie qu'un
+# seul fichier bouge, puis pousse le resultat sur fix/37-expose-last-error.
+# Rien de ceci n'est destine a etre merge : seule la branche fix/ porte la correction.
 on:
-  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize]
 
 permissions:
   contents: write
 
 jobs:
   patch:
+    if: github.head_ref == 'chore/patch-last-error'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
