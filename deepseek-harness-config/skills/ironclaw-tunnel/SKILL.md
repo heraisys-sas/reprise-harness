@@ -7,7 +7,7 @@ description: Diagnostiquer, soumettre des tâches et exposer un agent IronClaw/O
 
 ## Chemin actuel (23/10/2026)
 
-Utiliser les commandes Reprise durables `ironclaw-submit`, `ironclaw-poll`, `ironclaw-reconcile`, `ironclaw-followup`, `ironclaw-result` et `ironclaw-requests` décrites dans `agent-resume/IRONCLAW-SSH.md`. Soumission uniquement après autorisation explicite ; conserver `request_key`. Une réconciliation ne fait que des GET. La configuration gérée référence les fichiers SSH/token existants, sans coffre obligatoire.
+Utiliser les commandes Reprise durables `ironclaw-submit`, `ironclaw-poll`, `ironclaw-reconcile`, `ironclaw-followup`, `ironclaw-result`, `ironclaw-requests` et `ironclaw-fail` décrites dans `agent-resume/IRONCLAW-SSH.md`. Soumission uniquement après autorisation explicite ; conserver `request_key`. Une réconciliation ne fait que des GET. La configuration gérée référence les fichiers SSH/token existants, sans coffre obligatoire.
 
 Le prototype MCP `ironclaw run -m` ci-dessous est historique et **désactivé dans le pont** : stdout n'est pas une preuve de résultat structuré, ni de restriction des outils distants. Ne pas le réactiver ni installer une autre configuration en contournement. Son raccordement à `Tasks`/`Endpoint` reste à réaliser. Les anciennes recommandations de coffre ci-dessous sont remplacées par le choix SSH direct ci-dessus.
 
