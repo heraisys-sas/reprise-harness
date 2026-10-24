@@ -131,6 +131,20 @@ class DurableTests(unittest.TestCase):
         from codex_expert_mcp import tool_content
         self.assertTrue(tool_content(fresh)['isError'])
 
+    def test_project_files_accepted_through_a_symlinked_root_and_outside_paths_refused(self):
+        real = self.root / 'real'
+        real.mkdir()
+        (real / 'a.txt').write_text('a')
+        (self.root / 'outside.txt').write_text('x')
+        link = self.root / 'link'
+        link.symlink_to(real, target_is_directory=True)
+        from delegation_store import file_evidence
+        evidence = file_evidence(link, ['a.txt'])
+        self.assertEqual(Path(evidence[0]['path']), (real / 'a.txt').resolve())
+        for bad in ('../outside.txt', str(self.root / 'outside.txt')):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                file_evidence(link, [bad])
+
     def test_same_key_different_content_or_parent_refused(self):
         with patch('codex_expert_mcp.review', return_value={'status': 'finished'}):
             bridge = self.bridge()

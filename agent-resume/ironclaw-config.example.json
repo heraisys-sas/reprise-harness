@@ -1,6 +1,6 @@
 {
-  "host": "baremetal06.agents.near.ai",
-  "port": "29403",
+  "host": "ironclaw.example.org",
+  "port": "22",
   "user": "agent",
-  "key": "~/.ssh/id_ed25519"
+  "key": "~/.ssh/reprise_ironclaw_ed25519"
 }
