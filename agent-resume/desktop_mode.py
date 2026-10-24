@@ -121,7 +121,7 @@ def daemon_start(socket=None, state=None, daily_limit=8, project_root=None):
             pass
     try:
         log = open(_log_file(state), 'ab')
-        proc = subprocess.Popen([sys.executable, str(SERVER), '--socket', socket,
+        proc = subprocess.Popen([sys.executable, '-E', '-s', '-B', str(SERVER), '--socket', socket,
                                  '--state', str(state)] + (['--project-root', str(project_root)] if project_root else []),
                                 stdout=log, stderr=log, stdin=subprocess.DEVNULL,
                                 start_new_session=True)

@@ -65,6 +65,9 @@ class QuickApplyDaemonTests(unittest.TestCase):
         self.assertTrue(result['ok'])
         argv = popen.call_args.args[0]
         self.assertEqual(argv[argv.index('--project-root') + 1], self.state)
+        # A packaged daemon must not create bytecode in the immutable release,
+        # or the next integration verification rejects its integrity.
+        self.assertEqual(argv[1:4], ['-E', '-s', '-B'])
 
     def test_daemon_status_shape(self):
         s = dm.daemon_status(self.state)
