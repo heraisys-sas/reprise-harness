@@ -5,7 +5,7 @@ collector, not authenticated here. validated_plain represents an allowlisted Git
 profile (hooks, filters, fsmonitor and other executable configuration excluded).
 No observation proves atomicity: a future executor needs demonstrated isolation and concurrency control.
 """
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 import hashlib
 import json
 import math
@@ -74,9 +74,51 @@ def fingerprint(value):
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _require_well_typed(request, authorization, observation, now):
+    """Reject ill-typed input with ValueError, the same exception as non-finite numbers."""
+    problems = []
+    if not (isinstance(request, Request) and isinstance(authorization, Authorization)
+            and isinstance(observation, Observation)):
+        raise ValueError('malformed input: Request, Authorization and Observation required')
+    if not _number(now):
+        problems.append('now')
+    for name in (field.name for field in fields(Request)):
+        if not isinstance(getattr(request, name), str):
+            problems.append('request.' + name)
+    for name in ('decision', 'provenance', 'request_fingerprint', 'evidence_ref'):
+        if not isinstance(getattr(authorization, name), str):
+            problems.append('authorization.' + name)
+    for name in ('valid_from', 'valid_until'):
+        if not _number(getattr(authorization, name)):
+            problems.append('authorization.' + name)
+    for name in ('source_repository', 'destination_repository', 'destination_ref', 'expected_oid',
+                 'target_oid', 'source_common_dir', 'destination_common_dir', 'ancestry',
+                 'configuration', 'provenance', 'evidence_ref', 'previous_attempt'):
+        if not isinstance(getattr(observation, name), str):
+            problems.append('observation.' + name)
+    for name in ('observed_at', 'valid_until'):
+        if not _number(getattr(observation, name)):
+            problems.append('observation.' + name)
+    for name in ('complete', 'objects_available', 'index_clean', 'worktree_clean',
+                 'untracked_clean', 'ignored_clean', 'no_ongoing_operation'):
+        if getattr(observation, name) not in (True, False, None) or \
+                isinstance(getattr(observation, name), (int, float)) and not isinstance(getattr(observation, name), bool):
+            problems.append('observation.' + name)
+    if problems:
+        raise ValueError('malformed input: ' + ', '.join(problems))
+
+
 def evaluate(request: Request, authorization: Authorization,
              observation: Observation, *, now: float) -> Plan:
-    """Assess a synthetic snapshot, failing closed on unsupported/unknown facts."""
+    """Assess a synthetic snapshot, failing closed on unsupported/unknown facts.
+
+    Malformed input (wrong types, non-finite numbers) raises ValueError; it never yields a plan.
+    """
+    _require_well_typed(request, authorization, observation, now)
     blocked, missing = [], []
     request_hash = fingerprint(request)
     digest = fingerprint({'request': asdict(request),

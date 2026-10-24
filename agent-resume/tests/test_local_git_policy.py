@@ -125,6 +125,25 @@ class LocalGitPolicyTests(unittest.TestCase):
             evaluate(self.request, replace(self.authorization, valid_until=float('inf')),
                      self.observation, now=20)
 
+    def test_ill_typed_inputs_raise_value_error_never_other_exceptions(self):
+        cases = [
+            (None, self.authorization, self.observation, 20),
+            (self.request, None, self.observation, 20),
+            (self.request, self.authorization, None, 20),
+            (replace(self.request, destination_ref=None), self.authorization, self.observation, 20),
+            (self.request, replace(self.authorization, valid_from=None), self.observation, 20),
+            (self.request, replace(self.authorization, valid_until=True), self.observation, 20),
+            (self.request, self.authorization, replace(self.observation, evidence_ref=7), 20),
+            (self.request, self.authorization, replace(self.observation, complete='yes'), 20),
+            (self.request, self.authorization, replace(self.observation, index_clean=1), 20),
+            (self.request, self.authorization, self.observation, '20'),
+            (self.request, self.authorization, self.observation, None),
+        ]
+        for request, authorization, observation, now in cases:
+            with self.subTest(now=now, request=request):
+                with self.assertRaises(ValueError):
+                    evaluate(request, authorization, observation, now=now)
+
     def test_unsupported_operation(self):
         request = replace(self.request, operation='shell')
         plan = evaluate(request, self.authorization, self.observation, now=20)
