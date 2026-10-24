@@ -25,7 +25,8 @@ def inspect(path, now=None, details=None):
                 malformed += 1
                 continue
             if record.get('type') != 'event_msg':
-                if record.get('type') not in ('session_meta', 'turn_context', 'response_item', 'compacted'):
+                if record.get('type') not in ('session_meta', 'turn_context', 'response_item', 'compacted',
+                                              'token_usage_record', 'inter_agent_communication_metadata', 'world_state'):
                     unknown += 1
                 continue
             payload = record.get('payload', {})
@@ -33,7 +34,8 @@ def inspect(path, now=None, details=None):
                 malformed += 1
                 continue
             kind = payload.get('type')
-            if kind in ('task_started', 'task_complete', 'turn_aborted', 'token_count'):
+            if kind in ('task_started', 'task_complete', 'turn_aborted', 'token_count',
+                        'item_completed', 'thread_settings_applied'):
                 recognized += 1
             else:
                 unknown += 1
@@ -104,6 +106,7 @@ def scan(home=None):
     result = []
     active = 0
     quota = None
+    session_coverage = {}
     coverage = {'total': 0, 'recognized': 0, 'unknown_format': 0, 'unreadable': 0}
     try:
         with closing(sqlite3.connect(state.as_uri() + '?mode=ro', uri=True, timeout=2)) as db:
@@ -119,8 +122,10 @@ def scan(home=None):
                     quota = {'rates': details['rates'], 'measured_at': stamp, 'source': 'codex_rollout.token_count.rate_limits', 'evidence_scope': 'session', 'account_key': None, 'freshness': 'unverified'}
             except (OSError, ValueError, TypeError, AttributeError, KeyError):
                 coverage['unreadable'] += 1
+                session_coverage[ident] = 'unreadable'
                 continue
-            coverage[details.get('coverage', 'unknown_format')] += 1
+            session_coverage[ident] = details.get('coverage', 'unknown_format')
+            coverage[session_coverage[ident]] += 1
             if status:
                 metadata = codex_source(source)
                 if metadata['is_subagent'] and status['state'] == 'quota_confirmed':
@@ -131,7 +136,8 @@ def scan(home=None):
         degraded = coverage['unknown_format'] + coverage['unreadable']
         coverage['degraded'] = degraded
         return {'sessions': result, 'error': f'Couverture Codex dégradée : {degraded} journal(s) illisible(s) ou non reconnu(s).' if degraded else None,
-                'active': None if degraded and not active else active, 'quota': quota, 'coverage': coverage}
+                'active': None if degraded and not active else active, 'quota': quota, 'coverage': coverage,
+                'session_coverage': session_coverage, 'scan_complete': True}
     except sqlite3.Error:
         return {'sessions': [], 'error': 'Le format des sessions Codex a changé ou est temporairement indisponible.'}
 
