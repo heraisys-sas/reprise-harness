@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import codex_expert as expert
+from support_clock import FakeClock, ScriptedFactory, review_replies
 
 ID = '12345678-1234-1234-1234-123456789abc'
 
@@ -107,11 +108,12 @@ class ExpertTests(unittest.TestCase):
         Fake.active = True
         self.assertEqual(self.run_review(thread_id=ID)['status'], 'blocked_owner')
         self.assertNotIn('turn/start', [m for m,p in Fake.last.calls])
-    def test_permission_blocks_and_interrupts_own_turn(self):
+    def test_permission_records_awaiting_approval_without_interrupt(self):
         Fake.approval = True
         result = self.run_review()
-        self.assertEqual(result['status'], 'blocked_permission')
-        self.assertIn(('turn/interrupt', {'threadId': ID, 'turnId': 'own'}), Fake.last.calls)
+        self.assertEqual((result['status'], result['phase']), ('awaiting_approval', 'awaiting_approval'))
+        self.assertEqual(result['pending_request']['method'], 'item/commandExecution/requestApproval')
+        self.assertNotIn('turn/interrupt', [m for m,p in Fake.last.calls])
     def test_commentary_is_not_a_completed_answer(self):
         Fake.phase='commentary'
         result=self.run_review()
@@ -127,17 +129,14 @@ class ExpertTests(unittest.TestCase):
         self.assertEqual((params['model'],params['effort']),('gpt-6-astra','high'))
         self.assertEqual(self.run_review(model='unknown',effort='high')['status'],'engine_unavailable')
         self.assertNotIn('turn/start',[m for m,p in Fake.last.calls])
-    def test_interrupt_rejection_preserves_result_and_closes_client(self):
+    def test_awaiting_approval_closes_client_without_interrupt(self):
         Fake.approval=True
-        original=Fake.call
-        def call(client,method,params=None):
-            if method=='turn/interrupt':raise expert.Unavailable('needs_review','Transport closed')
-            return original(client,method,params)
-        with patch.object(Fake,'call',call),patch.object(Fake,'close') as close:
+        with patch.object(Fake,'close') as close:
             result=self.run_review()
-            self.assertEqual(result['status'],'blocked_permission')
-            self.assertEqual(result['thread_id'],ID)
-            close.assert_called_once()
+        self.assertEqual(result['status'],'awaiting_approval')
+        self.assertEqual(result['thread_id'],ID)
+        self.assertNotIn('turn/interrupt',[m for m,p in Fake.last.calls])
+        close.assert_called_once()
     def test_empty_failed_start_is_deleted(self):
         (Path(self.temp.name)/'rollout.jsonl').unlink()
         Fake.mcp_status = 'ready'
@@ -155,7 +154,7 @@ class ExpertTests(unittest.TestCase):
             return original(client, method, params)
         with patch.object(Fake, 'call', call):
             result = self.run_review()
-        self.assertEqual(result['status'], 'timed_out')
+        self.assertEqual(result['status'], 'needs_review')
         self.assertFalse(result['resumable'])
         self.assertNotIn('thread/delete', [m for m,p in Fake.last.calls])
     def test_cleanup_failure_preserves_original_error(self):
@@ -193,6 +192,61 @@ class ExpertTests(unittest.TestCase):
         result = self.run_review()
         self.assertTrue(result['resumable'])
         self.assertNotIn('thread/delete', [m for m,p in Fake.last.calls])
+    def test_wait_expiry_detaches_without_interrupt(self):
+        (Path(self.temp.name)/'rollout.jsonl').touch()
+        clock = FakeClock()
+        factory = ScriptedFactory(clock, replies=review_replies(self.temp.name, ID))
+        with patch('codex_expert.Client', factory):
+            result = expert.review('codex', {}, self.temp.name, 'Review', clock=clock, wait_timeout=30)
+        self.assertEqual((result['status'], result['phase'], result['wait_expired']),
+                         ('running', 'active', True))
+        self.assertTrue(result['resumable'])
+        self.assertEqual(factory.last.methods().count('turn/start'), 1)
+        self.assertNotIn('turn/interrupt', factory.last.methods())
+    def test_transport_timeout_before_wait_expiry_stays_uncertain(self):
+        (Path(self.temp.name)/'rollout.jsonl').touch()
+        clock = FakeClock()
+        factory = ScriptedFactory(clock, replies=review_replies(self.temp.name, ID), idle_step=5)
+        with patch('codex_expert.Client', factory):
+            result = expert.review('codex', {}, self.temp.name, 'Review', clock=clock, wait_timeout=30)
+        self.assertEqual(result['status'], 'needs_review')
+        self.assertIn('uncertain', result['reason'])
+        self.assertNotIn('turn/interrupt', factory.last.methods())
+    def test_inactivity_is_diagnostic_without_interrupt(self):
+        (Path(self.temp.name)/'rollout.jsonl').touch()
+        clock = FakeClock()
+        factory = ScriptedFactory(clock, replies=review_replies(self.temp.name, ID), idle_step=12)
+        with patch('codex_expert.Client', factory):
+            result = expert.review('codex', {}, self.temp.name, 'Review', clock=clock,
+                                   wait_timeout=600, inactivity=10)
+        self.assertEqual((result['status'], result['phase']), ('running', 'active'))
+        self.assertTrue(result['inactivity_observed'])
+        self.assertFalse(result['wait_expired'])
+        self.assertEqual(result['idle_seconds'], 10.0)
+        self.assertNotIn('turn/interrupt', factory.last.methods())
+    def test_authorized_execution_deadline_interrupts_once(self):
+        (Path(self.temp.name)/'rollout.jsonl').touch()
+        clock = FakeClock()
+        factory = ScriptedFactory(clock, replies=review_replies(self.temp.name, ID), idle_step=7)
+        with patch('codex_expert.Client', factory):
+            result = expert.review('codex', {}, self.temp.name, 'Review', clock=clock,
+                                   wait_timeout=600, execution_deadline=5, stop_on_deadline=True)
+        self.assertEqual((result['status'], result['phase'], result['work_completed']),
+                         ('interrupted', 'interrupted', False))
+        self.assertEqual(result['interrupt']['reason'], 'execution_deadline')
+        self.assertEqual(factory.last.methods().count('turn/interrupt'), 1)
+    def test_native_identity_is_persisted_before_client_wait(self):
+        (Path(self.temp.name)/'rollout.jsonl').touch()
+        clock, events = FakeClock(), []
+        factory = ScriptedFactory(clock, replies=review_replies(self.temp.name, ID))
+        with patch('codex_expert.Client', factory):
+            result = expert.review('codex', {}, self.temp.name, 'Review', clock=clock,
+                                   wait_timeout=30, execution_deadline=60, on_turn=events.append)
+        self.assertEqual([event['phase'] for event in events], ['starting', 'active'])
+        self.assertEqual((events[0]['thread_id'], events[0]['turn_id']), (ID, None))
+        self.assertEqual((events[1]['thread_id'], events[1]['turn_id']), (ID, 'own'))
+        self.assertIsNotNone(events[1]['deadline_at'])
+        self.assertEqual(result['status'], 'running')
     def test_scope_cannot_escape(self):
         for paths in [['../'], ['/etc/passwd']]:
             with self.assertRaises(ValueError): self.run_review(paths=paths)

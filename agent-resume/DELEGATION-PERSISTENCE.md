@@ -71,3 +71,44 @@ longueur avant création exclusive d’un fichier privé. Il ne fait aucune inf�
 ni acquittement et refuse une capture déclarée incomplète. Voir les instructions
 de la skill pour son invocation. Les pages ne résolvent pas l’élagage des sorties
 des outils natifs d’un autre harness.
+
+## Attente client, tour natif détaché et réconciliation (issue #65)
+
+Depuis 0.1.10, l’attente du client, l’exécution native, l’inactivité et les limites autorisées
+sont quatre notions distinctes. `wait_seconds` (défaut 30) borne uniquement l’attente de
+l’appel MCP : à son expiration, `turn/interrupt` n’est **pas** envoyé, le tour natif continue
+et le reçu reste `state="running"` avec `phase="active"`. `execution_seconds` et
+`inactivity_seconds` sont optionnels ; l’inactivité ne produit qu’un diagnostic
+(`inactivity_observed`, `idle_seconds`, `events_observed`) et n’arrête rien.
+`stop_on_deadline=true` n’interrompt que si l’appelant a fourni `execution_seconds`.
+
+La table `delegation_turns` (même base, créée par `Store`, aucune migration manuelle)
+conserve `attempt`, `thread_id`, `turn_id`, `owner`, `started_at`, `deadline_at`,
+`last_event_at`, `event_count` et un journal d’événements borné. L’identité native est
+écrite par `on_turn` immédiatement après `thread/start` puis `turn/start`, donc avant toute
+attente et avant la réponse MCP.
+
+Phases de réconciliation, exposées par `reprise_requests view="receipt"`
+(`phase`, `work_completed`, `terminal_evidence`, `next_action`) :
+
+| phase | sens | `work_completed` | action |
+|---|---|---|---|
+| `starting` | fil créé, tour non confirmé | non | `reprise_reconcile` |
+| `active` | tour natif en cours | non | `reprise_reconcile` |
+| `awaiting_approval` | approbation humaine demandée (`pending_method`) | non | approbation humaine ou `action="stop"` |
+| `finished` | tour terminé et livrable capté | oui | `delegation_collect.py` |
+| `interrupted` | arrêt confirmé, travail non achevé | non | aucune relance implicite |
+| `owner_unavailable` | natif ou texte final non restituable | non | `next_action="collect"`, incertitude conservée |
+
+`reprise_reconcile(request_key, action="observe"|"stop")` ne fait jamais de `turn/start`.
+Il lit le tour (`thread/read includeTurns`, avec `thread/resume` sans tour uniquement pour
+charger l’historique) et capture un résultat tardif. `action="stop"` exige un motif fermé
+(`user_stop`, `execution_deadline`, `budget`) et journalise l’interruption. Une clé en état
+`running` n’est pas acquittable, bloque une délégation équivalente et reste consultable
+après redémarrage ; `delegation_collect.py --observe` imprime le même manifeste en lecture
+seule. L’appropriation concurrente est enregistrée (`claim` : `owned`, `held`, `taken_over`)
+sans nouveau tour. Aucun état SQLite n’est forcé.
+
+Limite documentée : si la version native ne restitue pas le texte des items d’un tour
+terminé, le reçu reste `owner_unavailable` avec `next_action="collect"` ; Reprise ne crée pas
+un second tour pour récupérer ce texte.
