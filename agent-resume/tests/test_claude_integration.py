@@ -1,4 +1,5 @@
 from contextlib import closing
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -110,6 +111,52 @@ class ClaudeIntegrationTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.plan()
         with self.assertRaises(ValueError): self.plan(action='remove')
 
+    def legacy_entry(self, modified=False):
+        self.install()
+        value = json.loads(self.config.read_text())
+        entry = value['mcpServers'].pop('reprise-harness')
+        if modified:
+            entry['args'].append('--custom')
+        value['mcpServers']['reprise'] = entry
+        self.config_write(value)
+
+    def test_manifest_name_drift_migrates_only_hash_matched_legacy(self):
+        self.legacy_entry()
+        inspected = integration.inspect(self.root, self.home)
+        self.assertTrue(inspected['managed'])
+        self.assertEqual(inspected['connector_name'], 'reprise')
+        self.assertEqual(inspected['manifest_connector_name'], 'reprise-harness')
+        self.assertFalse(inspected['connector_name_matches'])
+        self.assertTrue(self.install()['changed'])
+        servers = json.loads(self.config.read_text())['mcpServers']
+        self.assertEqual(set(servers), {'reprise-harness'})
+        self.assertTrue(integration.inspect(self.root, self.home)['connector_name_matches'])
+        self.assertFalse(self.install()['changed'])
+
+    def test_manifest_name_drift_modified_legacy_refuses_install_and_remove(self):
+        self.legacy_entry(modified=True)
+        before = harness_integration.tree_files(self.home)
+        inspected = integration.inspect(self.root, self.home)
+        self.assertFalse(inspected['managed'])
+        self.assertFalse(inspected['connector_name_matches'])
+        for action in ('install', 'remove'):
+            with self.subTest(action=action), self.assertRaisesRegex(ValueError, 'réconciliation explicite'):
+                self.plan(action=action)
+        self.assertEqual(harness_integration.tree_files(self.home), before)
+
+    def test_manifest_name_drift_remove_only_hash_matched_legacy(self):
+        self.legacy_entry()
+        integration.apply(self.root, self.plan(action='remove'))
+        self.assertEqual(json.loads(self.config.read_text())['mcpServers'], {})
+        self.assertFalse(integration.apply(self.root, self.plan(action='remove'))['changed'])
+
+    def test_manifest_name_drift_verify_requires_migration_before_probe(self):
+        self.legacy_entry()
+        with patch.object(integration.subprocess, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'migration gérée'):
+                integration.verify(self.root, self.home)
+        run.assert_not_called()
+
     def test_concurrent_configuration_and_tampered_plan_refused(self):
         proposed = self.plan()
         self.config_write({'custom': True})
@@ -186,19 +233,54 @@ class ClaudeIntegrationTests(unittest.TestCase):
             integration.apply(self.root, proposed)
         self.assertEqual(json.loads(self.config.read_text()), {'concurrent': True})
 
-    def test_verify_is_no_inference_temporary_state_probe(self):
-        self.install()
+    def bridge_response(self):
         names = ['get_task', 'get_result', 'submit_result', 'reprise_backends', 'reprise_requests', 'reprise_delegate', 'reprise_followup']
-        result = subprocess.CompletedProcess([], 0, stdout='\n'.join(json.dumps(m) for m in [
+        return subprocess.CompletedProcess([], 0, stdout='\n'.join(json.dumps(m) for m in [
             {'id': 1, 'result': {'serverInfo': {'version': 'fixture'}}},
             {'id': 2, 'result': {'tools': [{'name': name} for name in names]}}]), stderr='')
-        with patch.object(integration.subprocess, 'run', return_value=result) as run:
+
+    def test_verify_is_no_inference_temporary_state_probe(self):
+        self.install()
+        with patch.object(integration.subprocess, 'run', return_value=self.bridge_response()) as run:
             verified = integration.verify(self.root, self.home)
         self.assertFalse(verified['inference_executed'])
         self.assertEqual(verified['client_loaded'], 'unknown')
         command = run.call_args.args[0]
         self.assertNotEqual(command[command.index('--expert-state')+1], str(self.state))
         self.assertNotIn('tools/call', run.call_args.kwargs['input'])
+
+    def test_verify_keeps_daemon_version_when_capabilities_fail(self):
+        from engines import Unavailable
+        self.install()
+        with patch.object(integration.subprocess, 'run', return_value=self.bridge_response()), \
+                patch('claude_desktop_rpc.Client') as client:
+            client.return_value.call.side_effect = [
+                {'serverInfo': {'version': '0.1.0'}},
+                Unavailable('blocked_permission', 'Unsupported method')]
+            verified = integration.verify(self.root, self.home)
+        self.assertEqual(verified['daemon'], {'version': '0.1.0', 'binding': 'unknown',
+                         'dispatch_supported': 'unknown', 'capabilities_observed': False})
+        self.assertFalse(verified['inference_executed'])
+        client.return_value.close.assert_called_once_with()
+        self.assertEqual([call.args[0] for call in client.return_value.call.call_args_list],
+                         ['initialize', 'quick_entry/capabilities'])
+
+    def test_verify_reports_observed_daemon_binding(self):
+        self.install()
+        for matched in (True, False):
+            with self.subTest(matched=matched), \
+                    patch.object(integration.subprocess, 'run', return_value=self.bridge_response()), \
+                    patch('claude_desktop_rpc.Client') as client:
+                client.return_value.call.side_effect = [
+                    {'serverInfo': {'version': 'fixture-daemon'}},
+                    {'project_root': str(self.project), 'dispatch_supported': False,
+                     'state_sha256': hashlib.sha256(str(self.state / 'quick-state').encode()).hexdigest()
+                     if matched else 'wrong-state'}]
+                verified = integration.verify(self.root, self.home)
+            self.assertEqual(verified['daemon'], {'version': 'fixture-daemon',
+                             'binding': 'matched' if matched else 'mismatch',
+                             'dispatch_supported': False, 'capabilities_observed': True})
+            client.return_value.close.assert_called_once_with()
 
 
 if __name__ == '__main__': unittest.main()

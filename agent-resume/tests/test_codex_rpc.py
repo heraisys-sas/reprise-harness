@@ -60,6 +60,8 @@ class FakeClient:
     cwd = '/tmp'
     notifications_template = None
     limits = True
+    account = 'chatgpt'
+    provider = 'openai'
     closed = False
 
     def __init__(self, *args):
@@ -76,9 +78,9 @@ class FakeClient:
         if method == 'thread/resume' and self.after_resume is not None:
             self.status = self.after_resume
         if method.startswith('thread/'):
-            return {'thread': {'id': 'session', 'cwd': self.cwd, 'status': {'type': self.status}, 'modelProvider': 'openai'}}
+            return {'thread': {'id': 'session', 'cwd': self.cwd, 'status': {'type': self.status}, 'modelProvider': self.provider}}
         if method == 'account/read':
-            return {'account': {'type': 'chatgpt'}}
+            return {'account': {'type': self.account}}
         if method == 'account/rateLimits/read':
             return {'ordinaryUsageAllowed': self.limits}
         if method == 'turn/start':
@@ -100,6 +102,7 @@ class Execution(unittest.TestCase):
     def setUp(self):
         FakeClient.status, FakeClient.cwd, FakeClient.limits = 'idle', '/tmp', True
         FakeClient.after_resume = None
+        FakeClient.account, FakeClient.provider = 'chatgpt', 'openai'
         FakeClient.notifications_template = [event()]
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -139,11 +142,12 @@ class Execution(unittest.TestCase):
             self.assertIn('thread/resume', [m for m, _ in FakeClient.last.calls])
             self.assertNotIn('turn/start', [m for m, _ in FakeClient.last.calls])
 
-    def test_system_error_quota_unknown_never_resumes(self):
+    def test_system_error_quota_unknown_still_resumes_once(self):
         FakeClient.status, FakeClient.after_resume, FakeClient.limits = 'systemError', 'idle', None
-        self.execute(automatic=True)
-        self.assertEqual(self.states[-1], 'quota_blocked')
-        self.assertNotIn('thread/resume', [m for m, _ in FakeClient.last.calls])
+        self.assertEqual(self.execute(automatic=True), 'finished')
+        methods = [m for m, _ in FakeClient.last.calls]
+        self.assertEqual(methods.count('turn/start'), 1)
+        self.assertNotIn('account/rateLimits/read', methods)
 
     def test_unloaded_quota_session_is_loaded_before_start(self):
         FakeClient.status, FakeClient.after_resume = 'notLoaded', 'idle'
@@ -158,11 +162,12 @@ class Execution(unittest.TestCase):
             self.assertEqual(self.execute(), 'needs_review')
             self.assertNotIn('turn/start', [m for m, _ in FakeClient.last.calls])
 
-    def test_unloaded_quota_unknown_never_resumes(self):
+    def test_unloaded_quota_unknown_still_resumes_once(self):
         FakeClient.status, FakeClient.after_resume, FakeClient.limits = 'notLoaded', 'idle', None
-        self.execute(automatic=True)
-        self.assertEqual(self.states[-1], 'quota_blocked')
-        self.assertNotIn('thread/resume', [m for m, _ in FakeClient.last.calls])
+        self.assertEqual(self.execute(automatic=True), 'finished')
+        methods = [m for m, _ in FakeClient.last.calls]
+        self.assertEqual(methods.count('turn/start'), 1)
+        self.assertNotIn('account/rateLimits/read', methods)
 
     def test_automatic_owner_unavailable_is_retryable_without_input(self):
         FakeClient.status = 'active'
@@ -179,11 +184,25 @@ class Execution(unittest.TestCase):
         self.execute()
         self.assertEqual(self.states[-1], 'blocked_session')
 
-    def test_quota_unconfirmed_never_starts(self):
-        FakeClient.limits = None
-        self.execute(automatic=True)
-        self.assertEqual(self.states[-1], 'quota_blocked')
-        self.assertNotIn('turn/start', [m for m, _ in FakeClient.last.calls])
+    def test_automatic_does_not_require_quota_measurement(self):
+        for quota in (None, False):
+            with self.subTest(quota=quota):
+                FakeClient.limits = quota
+                self.assertEqual(self.execute(automatic=True), 'finished')
+                methods = [m for m, _ in FakeClient.last.calls]
+                self.assertEqual(methods.count('turn/start'), 1)
+                self.assertNotIn('account/rateLimits/read', methods)
+
+
+    def test_automatic_preserves_subscription_and_provider_guards(self):
+        for account, provider in (('apikey', 'openai'), ('chatgpt', 'other')):
+            with self.subTest(account=account, provider=provider):
+                FakeClient.account, FakeClient.provider = account, provider
+                self.assertEqual(self.execute(automatic=True), 'needs_review')
+                self.assertEqual(self.states[-1], 'blocked_auth')
+                methods = [m for m, _ in FakeClient.last.calls]
+                self.assertNotIn('turn/start', methods)
+                self.assertNotIn('thread/resume', methods)
 
     def test_approval_interrupts_only_own_turn(self):
         FakeClient.notifications_template = [{'id': 42, 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': 'session', 'turnId': 'own'}}]

@@ -74,21 +74,49 @@ def manual_conflict(db, session):
                       (session,)).fetchone() is not None
 
 
+def coverage_proof(data):
+    """A bounded successful DB scan can isolate individual rollout failures."""
+    evidence = data.get('session_coverage')
+    counts = data.get('coverage')
+    if (data.get('scan_complete') is not True or not isinstance(evidence, dict)
+            or not isinstance(counts, dict) or len(evidence) > 100
+            or counts.get('total') != len(evidence)
+            or any(not isinstance(key, str) or value not in
+                   ('recognized', 'unknown_format', 'unreadable')
+                   for key, value in evidence.items())):
+        return None
+    return evidence
+
+
+def session_uncertain(data, session):
+    evidence = coverage_proof(data)
+    return ((bool(data.get('error')) and evidence is None)
+            or (evidence is not None and evidence.get(session) != 'recognized'))
+
+
 def reconcile(db, data, now=None):
     now = time.time() if now is None else now
-    if data.get('error'):
+    if data.get('error') and coverage_proof(data) is None:
         raise ValueError('Lecture des sessions Codex indisponible ; reprise différée')
     rows = {row['id']: row for row in data.get('sessions', [])}
     with db:
         db.execute('BEGIN IMMEDIATE')
         for event in db.execute("SELECT e.* FROM automation_events e JOIN tasks t ON t.id=e.task_id "
                                 "WHERE t.status IN ('ready','waiting_quota')").fetchall():
+            if session_uncertain(data, event['session']):
+                continue
             if not same(event, rows.get(event['session']), now) or manual_conflict(db, event['session']):
                 db.execute("UPDATE tasks SET status='cancelled' WHERE id=?", (event['task_id'],))
+            elif enabled(db) and rows[event['session']].get('retry_at') is not None:
+                # Recover waits postponed by the former mandatory quota probe. Never
+                # touch consumed attempts or adapter deferrals already marked ready.
+                db.execute("UPDATE tasks SET status='ready',due=? WHERE id=? "
+                           "AND status='waiting_quota' AND attempts=0 AND ?=0",
+                           (rows[event['session']]['retry_at'], event['task_id'], event['consumed']))
         if not enabled(db):
             return
         for row in rows.values():
-            if not confirmed(row, now) or manual_conflict(db, row['id']):
+            if session_uncertain(data, row['id']) or not confirmed(row, now) or manual_conflict(db, row['id']):
                 continue
             key = str(uuid.uuid5(uuid.NAMESPACE_URL, f"reprise:quota:{row['id']}:{float(row['interrupted_at'])}"))
             if db.execute('SELECT 1 FROM automation_events WHERE event_key=?', (key,)).fetchone():
@@ -132,7 +160,7 @@ def quota_state(db, executable, now=None, probe=None, deadline=None, force=False
 def refresh_waiting(db, executable, now=None):
     now = time.time() if now is None else now
     if not enabled(db) or not db.execute("SELECT 1 FROM automation_events e JOIN tasks t ON t.id=e.task_id "
-                                        "WHERE t.status IN ('ready','waiting_quota') LIMIT 1").fetchone():
+                                        "WHERE t.status='waiting_quota' LIMIT 1").fetchone():
         return
     allowed, retry = quota_state(db, executable, now)
     with db:
@@ -141,14 +169,14 @@ def refresh_waiting(db, executable, now=None):
                        "AND id IN (SELECT task_id FROM automation_events)",
                        (max(now, retry or now),))
         else:
-            db.execute("UPDATE tasks SET status='waiting_quota',due=? WHERE status IN ('ready','waiting_quota') "
+            db.execute("UPDATE tasks SET status='waiting_quota',due=? WHERE status='waiting_quota' "
                        "AND id IN (SELECT task_id FROM automation_events)",
                        (max(now + POLL, retry or now),))
 
 
 def session_unchanged(db, event, now, read):
     data = read()
-    if data.get('error'):
+    if session_uncertain(data, event['session']):
         return False
     row = next((r for r in data.get('sessions', []) if r['id'] == event['session']), None)
     if not same(event, row, now) or manual_conflict(db, event['session']):
@@ -164,13 +192,26 @@ def preflight(db, task, executable, now=None, read=None):
     if event is None:
         return True
     now = time.time() if now is None else now
-    if not enabled(db) or event['consumed'] or task['attempts']:
+    if not enabled(db) or event['consumed'] or task['attempts'] or task['due'] > now:
         return False
     read = read or snapshot
     if not session_unchanged(db, event, now, read):
         return False
+    # An announced deadline authorizes a single attempt, not a claim that
+    # quota has recovered. Measure only when the interruption had no deadline.
+    data = read()
+    if session_uncertain(data, event['session']):
+        return False
+    row = next((r for r in data.get('sessions', []) if r['id'] == event['session']), None)
+    if not same(event, row, now) or manual_conflict(db, event['session']):
+        with db:
+            db.execute("UPDATE tasks SET status='cancelled' WHERE id=?", (task['id'],))
+        return False
+    due = row.get('retry_at')
+    if due is not None:
+        return due <= now
     allowed, retry = quota_state(db, executable, now, force=True)
-    # Recheck after the potentially slow quota read.
+    # A useful quota measurement may be slow; recheck session ownership after it.
     if not session_unchanged(db, event, now, read):
         return False
     if not allowed:

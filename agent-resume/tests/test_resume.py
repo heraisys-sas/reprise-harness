@@ -93,6 +93,64 @@ class AutomaticSchedulerTests(unittest.TestCase):
     def enqueue(self, row=None):
         scheduler.reconcile(self.db, self.data(row), self.now)
 
+    def degraded(self, sessions, evidence):
+        return {'sessions': sessions, 'error': 'one rollout unavailable',
+                'scan_complete': True, 'session_coverage': evidence,
+                'coverage': {'total': len(evidence)}}
+
+    def test_degraded_other_session_does_not_block_proven_recovery(self):
+        data = self.degraded([self.row], {self.row['id']: 'recognized', 'other': 'unreadable'})
+        scheduler.reconcile(self.db, data, self.now)
+        self.assertEqual(self.task()['status'], 'ready')
+        with patch.object(scheduler, 'quota_state', side_effect=AssertionError('no quota probe')):
+            self.assertTrue(scheduler.preflight(self.db, self.task(), str(self.fake),
+                                              now=self.now, read=lambda: data))
+
+    def test_uncertain_or_unscanned_session_never_runs_or_cancels(self):
+        self.enqueue()
+        for evidence in ({self.row['id']: 'unknown_format'},
+                         {self.row['id']: 'unreadable'}, {'other': 'recognized'}):
+            data = self.degraded([], evidence)
+            scheduler.reconcile(self.db, data, self.now)
+            self.assertEqual(self.task()['status'], 'ready')
+            self.assertFalse(scheduler.preflight(self.db, self.task(), str(self.fake),
+                                                now=self.now, read=lambda: data))
+            self.assertEqual(self.task()['status'], 'ready')
+        # Even an apparent quota in an unknown journal cannot authorize recovery.
+        data = self.degraded([self.row], {self.row['id']: 'unknown_format'})
+        self.assertFalse(scheduler.preflight(self.db, self.task(), str(self.fake),
+                                            now=self.now, read=lambda: data))
+
+    def test_uncertainty_on_second_preflight_read_keeps_task_pending(self):
+        self.enqueue()
+        unknown = self.degraded([], {self.row['id']: 'unreadable'})
+        reads = iter([self.data(), unknown])
+        self.assertFalse(scheduler.preflight(self.db, self.task(), str(self.fake),
+                                            now=self.now, read=lambda: next(reads)))
+        self.assertEqual(self.task()['status'], 'ready')
+
+    def test_unknown_journal_never_admits_a_new_event(self):
+        data = self.degraded([self.row], {self.row['id']: 'unknown_format'})
+        scheduler.reconcile(self.db, data, self.now)
+        self.assertIsNone(self.task())
+
+    def test_recognized_completed_session_can_cancel_during_degraded_scan(self):
+        self.enqueue()
+        data = self.degraded([], {self.row['id']: 'recognized', 'other': 'unknown_format'})
+        scheduler.reconcile(self.db, data, self.now)
+        self.assertEqual(self.task()['status'], 'cancelled')
+
+    def test_global_database_or_legacy_error_stays_blocking(self):
+        self.enqueue()
+        for data in ({'sessions': [], 'error': 'database unavailable'},
+                     {'sessions': [], 'error': 'database unavailable',
+                      'session_coverage': {}, 'coverage': {'total': 0}}):
+            with self.assertRaises(ValueError):
+                scheduler.reconcile(self.db, data, self.now)
+            self.assertFalse(scheduler.preflight(self.db, self.task(), str(self.fake),
+                                                now=self.now, read=lambda: data))
+            self.assertEqual(self.task()['status'], 'ready')
+
     def test_quota_event_loads_owner_session_and_starts_only_once(self):
         import codex_rpc
         from collections import deque
@@ -118,10 +176,11 @@ class AutomaticSchedulerTests(unittest.TestCase):
                 return {}
         self.enqueue()
         with patch.object(scheduler,'snapshot',return_value=self.data()), \
-             patch('quota.read_limits',return_value={'ordinaryUsageAllowed':True}), \
+             patch('quota.read_limits', side_effect=RuntimeError('unavailable')) as probe, \
              patch('engines.select',return_value='codex-server'), patch.object(codex_rpc,'Client',Owner):
             module.run_due(self.db,str(self.fake))
             module.run_due(self.db,str(self.fake))
+        probe.assert_not_called()
         self.assertEqual(Owner.starts,1)
         self.assertEqual(self.task()['status'],'finished')
         self.assertEqual(self.task()['attempts'],1)
@@ -182,12 +241,12 @@ class AutomaticSchedulerTests(unittest.TestCase):
         self.assertEqual(self.task()['due'], self.now + 120)
 
     def test_quota_probe_is_cached_but_new_event_invalidates_it(self):
-        self.enqueue()
+        self.enqueue(self.row | {'retry_at': None})
         with patch('quota.read_limits', return_value={'ordinaryUsageAllowed': True}) as probe:
             scheduler.refresh_waiting(self.db, str(self.fake), self.now)
             scheduler.refresh_waiting(self.db, str(self.fake), self.now + 60)
             self.assertEqual(probe.call_count, 1)
-            self.enqueue(self.row | {'interrupted_at': self.now - 5, 'updated': self.now - 5})
+            self.enqueue(self.row | {'interrupted_at': self.now - 5, 'updated': self.now - 5, 'retry_at': None})
             scheduler.refresh_waiting(self.db, str(self.fake), self.now + 61)
             self.assertEqual(probe.call_count, 2)
 
@@ -215,7 +274,7 @@ class AutomaticSchedulerTests(unittest.TestCase):
         self.assertEqual(self.task()['status'], 'cancelled')
         self.assertEqual(self.task()['attempts'], 0)
 
-    def test_session_is_reread_after_quota_probe(self):
+    def test_session_is_reread_before_dispatch(self):
         self.enqueue()
         with patch('quota.read_limits', return_value={'ordinaryUsageAllowed': True}), \
                 patch.object(scheduler, 'snapshot', side_effect=[self.data(), {'sessions': [], 'error': None}]), \
@@ -224,18 +283,55 @@ class AutomaticSchedulerTests(unittest.TestCase):
         run.assert_not_called()
         self.assertEqual(self.task()['status'], 'cancelled')
 
-    def test_fresh_quota_permission_required_at_execution(self):
+    def test_announced_deadline_runs_once_without_quota_measurement(self):
         self.enqueue()
         with self.db:
-            scheduler.put(self.db, 'quota_checked_at', self.now)
-            scheduler.put(self.db, 'quota_allowed', True)
+            scheduler.put(self.db, 'quota_allowed', False)
         with patch.object(scheduler, 'snapshot', return_value=self.data()), \
-                patch('quota.read_limits', return_value={'ordinaryUsageAllowed': False}) as probe, \
-                patch.object(module.subprocess, 'run') as run:
+                patch('quota.read_limits', side_effect=RuntimeError('unavailable')) as probe:
+            scheduler.refresh_waiting(self.db, str(self.fake), self.now)
             module.run_due(self.db, str(self.fake))
-        probe.assert_called_once()
-        run.assert_not_called()
-        self.assertEqual(self.task()['status'], 'waiting_quota')
+            module.run_due(self.db, str(self.fake))
+        probe.assert_not_called()
+        # A zero CLI exit without native completion evidence stays under review.
+        self.assertEqual(self.task()['status'], 'needs_review')
+        self.assertEqual(self.task()['attempts'], 1)
+
+    def test_future_announced_deadline_is_preserved_without_probe(self):
+        self.enqueue(self.row | {'retry_at': self.now + 3600})
+        with patch('quota.read_limits', return_value={'ordinaryUsageAllowed': True}) as probe:
+            scheduler.refresh_waiting(self.db, str(self.fake), self.now)
+            self.assertFalse(scheduler.preflight(self.db, self.task(), str(self.fake),
+                                               self.now, read=lambda: self.data()))
+        probe.assert_not_called()
+        self.assertEqual(self.task()['due'], self.now + 3600)
+        self.assertEqual(self.task()['attempts'], 0)
+
+    def test_legacy_waiting_task_recovers_announced_deadline(self):
+        self.enqueue()
+        with self.db:
+            self.db.execute("UPDATE tasks SET status='waiting_quota',due=?", (self.now + 3600,))
+        with patch.object(scheduler, 'snapshot', return_value=self.data()), \
+                patch('quota.read_limits') as probe:
+            scheduler.reconcile(self.db, self.data(), self.now)
+            scheduler.refresh_waiting(self.db, str(self.fake), self.now)
+        probe.assert_not_called()
+        self.assertEqual(self.task()['status'], 'ready')
+        self.assertEqual(self.task()['due'], self.row['retry_at'])
+
+    def test_new_quota_event_uses_new_deadline_without_replaying_old_attempt(self):
+        self.enqueue()
+        with self.db:
+            self.db.execute("UPDATE tasks SET status='needs_review',attempts=1")
+            self.db.execute('UPDATE automation_events SET consumed=1')
+        next_row = self.row | {'interrupted_at': self.now - 2, 'updated': self.now - 2,
+                               'retry_at': self.now + 7200}
+        scheduler.reconcile(self.db, self.data(next_row), self.now)
+        tasks = self.db.execute('SELECT status,due,attempts FROM tasks ORDER BY due').fetchall()
+        self.assertEqual(len(tasks), 2)
+        self.assertEqual((tasks[0]['status'], tasks[0]['attempts']), ('needs_review', 1))
+        self.assertEqual((tasks[1]['status'], tasks[1]['due'], tasks[1]['attempts']),
+                         ('ready', next_row['retry_at'], 0))
 
     def test_disabled_mode_neither_enqueues_nor_executes(self):
         with self.db:

@@ -183,11 +183,8 @@ def execute(db, task, program, values, log, automatic=False, timeout=7200):
         thread = checked_thread(client, task, before_resume=True)
         if automatic:
             account = client.call('account/read', {'refreshToken': False}).get('account') or {}
-            limits = client.call('account/rateLimits/read')
             if account.get('type') != 'chatgpt' or thread.get('modelProvider') != 'openai':
                 raise Unavailable('blocked_auth', 'La reprise automatique exige le compte ChatGPT et le fournisseur OpenAI existants.')
-            if limits.get('ordinaryUsageAllowed') is not True:
-                raise Unavailable('quota_blocked', 'Le serveur propriétaire ne confirme pas la disponibilité de l’usage inclus.')
         checked_thread(client, task, resume=True)
         checked_thread(client, task)
         # Do not change model, permissions, instructions or provider of the loaded session.
