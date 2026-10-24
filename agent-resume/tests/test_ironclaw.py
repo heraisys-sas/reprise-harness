@@ -43,11 +43,23 @@ class SubmitTests(unittest.TestCase):
         self.assertIn('ironclaw run -m', command[-1])
         self.assertNotIn('BEGIN OPENSSH', ' '.join(command))
 
-    def test_remote_command_encodes_prompt_base64(self):
+    def test_prompt_travels_on_stdin_not_in_argv(self):
         with patch.object(ironclaw, '_run', return_value=_Proc(stdout='PONG\n')) as run:
             ironclaw.submit('ssh', self.values, 'mot clé étonnant')
-        remote = run.call_args.args[0][-1]
-        self.assertIn('base64 -d', remote)
+        command = run.call_args.args[0]
+        self.assertEqual(run.call_args.kwargs['input_text'], 'mot clé étonnant')
+        self.assertNotIn('mot clé', ' '.join(command))
+        self.assertNotIn('base64', command[-1])
+        self.assertIn('$(cat)', command[-1])
+
+    def test_ssh_options_ignore_user_config_and_verify_host_key(self):
+        with patch.object(ironclaw, '_run', return_value=_Proc(stdout='PONG\n')) as run:
+            ironclaw.submit('ssh', self.values, 'x')
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index('-F') + 1], '/dev/null')
+        self.assertIn('StrictHostKeyChecking=yes', command)
+        self.assertIn('IdentitiesOnly=yes', command)
+        self.assertNotIn('StrictHostKeyChecking=accept-new', command)
 
     def test_permission_denied_is_engine_unavailable(self):
         with patch.object(ironclaw, '_run', return_value=_Proc(stderr='Permission denied (publickey).', returncode=255)):
@@ -76,7 +88,7 @@ class SubmitTests(unittest.TestCase):
     def test_bytes_key_materialized_0600_then_removed(self):
         values = dict(self.values, key=b'\n-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n')
         seen = {}
-        def fake_run(command, timeout):
+        def fake_run(command, timeout, input_text=None):
             keyfile = command[command.index('-i') + 1]
             seen['tmp'] = keyfile
             seen['mode'] = stat.S_IMODE(Path(keyfile).stat().st_mode)
@@ -122,11 +134,22 @@ class ValuesTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ironclaw.validate_values({'host': 'h', 'port': '1', 'user': 'u'})
 
-    def test_defaults_applied(self):
-        host, port, user, key = ironclaw.validate_values({'key': '/k'})
-        self.assertEqual(host, ironclaw.DEFAULT_HOST)
-        self.assertEqual(port, ironclaw.DEFAULT_PORT)
-        self.assertEqual(user, ironclaw.DEFAULT_USER)
+    def test_no_default_endpoint_everything_explicit(self):
+        base = {'host': 'ironclaw.example.org', 'port': '22', 'user': 'agent', 'key': '/k'}
+        self.assertEqual(ironclaw.validate_values(base), ('ironclaw.example.org', '22', 'agent', '/k'))
+        for missing in ('host', 'port', 'user'):
+            with self.subTest(missing=missing), self.assertRaises(ValueError):
+                ironclaw.validate_values({k: v for k, v in base.items() if k != missing})
+        with self.assertRaises(ValueError):
+            ironclaw.validate_values({'key': '/k'})
+
+    def test_invalid_endpoint_parts_rejected(self):
+        base = {'host': 'ironclaw.example.org', 'port': '22', 'user': 'agent', 'key': '/k'}
+        for field, bad in (('user', '-oProxyCommand=x'), ('user', 'a b'), ('host', '-oProxyCommand=x'),
+                           ('host', 'h;rm'), ('port', '0'), ('port', '70000'), ('port', '22 -o X'),
+                           ('port', True), ('host', None)):
+            with self.subTest(field=field, bad=bad), self.assertRaises(ValueError):
+                ironclaw.validate_values(dict(base, **{field: bad}))
 
 
 if __name__ == '__main__':
