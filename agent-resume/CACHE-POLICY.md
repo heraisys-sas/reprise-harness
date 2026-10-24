@@ -28,3 +28,7 @@ Compare total maintenance cost against the expected cost of rebuilding the prefi
 For example, with a hypothetical cache read multiplier of 0.1 and rebuild multiplier of 1.25, fifteen maintenance reads cost 1.5 units, exceeding one rebuild before any output is counted. The example is normalized, not a price quote.
 
 A future active-maintenance adapter requires an exact reproducible provider request, measured hits, explicit provider/model/account scope, a durable reservation of worst-case monetary cost before transmission, a hard daily budget, bounded concurrency and expiry, no retries after uncertainty, and automatic shutoff after a miss or absent telemetry. A local budget is a safeguard against ordinary bugs, not an absolute billing guarantee: use provider-side spending limits where available. Maintenance must never keep running overnight merely because a local timer says the cache is warm.
+
+## Scheduled continuations — decision of 24 October
+
+The current pre-admission quota checks above do not define the target continuation policy. Record the reset when quota interrupts work, attempt continuation when due without a mandatory quota refresh, then inspect quota after another failure when useful. Session replacement may preserve work through a checkpoint; stop repeated failures without progress rather than impose an arbitrary session cap. See [the continuity contract](HARNESS-ROLES-CONTRACT.md). Runtime guards are not changed by this document.
