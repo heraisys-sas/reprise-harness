@@ -66,6 +66,21 @@ class HarnessIntegrationTests(unittest.TestCase):
     def snapshot(self, root=None):
         return integration.tree_files(root or self.base)
 
+    def test_workspace_write_grant_is_explicit_persisted_and_reversible(self):
+        with self.assertRaises(ValueError):
+            integration.plan(self.root, self.home, 'desktop', self.project, codex_workspace_write=True)
+        granted = integration.plan(self.root, self.home, 'desktop', self.project,
+                                   delegate=True, codex_workspace_write=True)
+        self.assertTrue(granted['codex_workspace_write'])
+        integration.apply(self.root, granted)
+        self.assertIn('--codex-workspace-write', self.config.read_text())
+        self.assertTrue(integration.inspect(self.home, 'desktop')['codex_workspace_write'])
+        self.assertFalse(integration.plan(self.root, self.home, 'desktop', self.project,
+                                        delegate=True, codex_workspace_write=True)['changes'])
+        integration.apply(self.root, self.plan(delegate=True))
+        self.assertNotIn('--codex-workspace-write', self.config.read_text())
+        self.assertFalse(integration.inspect(self.home, 'desktop')['codex_workspace_write'])
+
     def test_public_plan_does_not_expose_personal_configuration(self):
         self.config.write_text('- insert: [{"id":"personal","config":{"token":"fixture-secret"}}]\n')
         proposed = self.plan()

@@ -15,6 +15,16 @@ INSTRUCTIONS = ('Perform the requested expertise, review or generation in read-o
                 'Avoid verbose code comments. Prefer existing tools and dependencies.')
 
 
+IMPLEMENTATION_INSTRUCTIONS = (
+    'Implement the requested bounded task in the authorized project workspace. '
+    'You may edit project files and run the necessary local checks. '
+    'Follow applicable project instructions and preserve concurrent work. '
+    'Do not infer permission to push, merge, deploy or change services from workspace write access. '
+    'Respect native approvals; report any required permission or unresolved action. '
+    'Return changed files, checks actually run, remaining work and evidence. '
+    'A completed turn does not by itself prove deployment or business success.')
+
+
 def review_config(client, root):
     config = client.call('config/read', {'cwd': str(root), 'includeLayers': False}).get('config')
     if not isinstance(config, dict):
@@ -47,7 +57,9 @@ def durable(thread):
 
 
 def review(program, values, project_root, question, paths=None, timeout=300, thread_id=None,
-           model=None, effort=None):
+           model=None, effort=None, implementation=False):
+    if type(implementation) is not bool:
+        raise ValueError('Explicit implementation capability required')
     root = Path(project_root).resolve(strict=True)
     if not root.is_dir() or not isinstance(question, str) or not question.strip() or len(question) > 12000:
         raise ValueError('Project directory and bounded question required')
@@ -66,6 +78,10 @@ def review(program, values, project_root, question, paths=None, timeout=300, thr
     following = bool(thread_id)
     result = {'status': 'needs_review', 'thread_id': thread_id, 'turn_id': None, 'response': '', 'events': []}
     result['resumable'] = False
+    result['mode'] = 'implementation' if implementation else 'expertise'
+    sandbox = 'workspace-write' if implementation else 'read-only'
+    policy = ({'type': 'workspaceWrite', 'writableRoots': [str(root)], 'networkAccess': False}
+              if implementation else {'type': 'readOnly', 'networkAccess': False})
     client, terminal, created, submitted = None, False, False, False
     try:
         client = Client(program, values)
@@ -88,9 +104,9 @@ def review(program, values, project_root, question, paths=None, timeout=300, thr
             thread = client.call('thread/read', {'threadId': thread_id, 'includeTurns': False}).get('thread') or {}
         else:
             started = client.call('thread/start', {'cwd': str(root), 'modelProvider': 'openai',
-                'ephemeral': False, 'threadSource': 'chatgpt_hidden',
-                'sandbox': 'read-only', 'approvalPolicy': 'on-request', 'config': restricted,
-                'developerInstructions': INSTRUCTIONS,
+                'ephemeral': False, **({} if implementation else {'threadSource': 'chatgpt_hidden'}),
+                'sandbox': sandbox, 'approvalPolicy': 'on-request', 'config': restricted,
+                'developerInstructions': IMPLEMENTATION_INSTRUCTIONS if implementation else INSTRUCTIONS,
                 **({'model': model} if model else {})})
             thread = started.get('thread') or {}
             thread_id = thread.get('id')
@@ -110,7 +126,7 @@ def review(program, values, project_root, question, paths=None, timeout=300, thr
             if not durable(thread):
                 raise Unavailable('blocked_session', 'Expert history unavailable; no turn submitted.')
             resumed = client.call('thread/resume', {'threadId': thread_id, 'excludeTurns': True,
-                'config': restricted, 'sandbox': 'read-only', 'approvalPolicy': 'on-request',
+                'config': restricted, 'sandbox': sandbox, 'approvalPolicy': 'on-request',
                 **({'model': model} if model else {})})
             confirmed = resumed.get('thread') or {}
             if model and resumed.get('model') != model:
@@ -128,7 +144,7 @@ def review(program, values, project_root, question, paths=None, timeout=300, thr
         # A lost start response is ambiguous: never delete or automatically retry it.
         submitted = True
         turn = client.call('turn/start', {'threadId': thread_id, 'clientUserMessageId': str(uuid.uuid4()),
-            'sandboxPolicy': {'type': 'readOnly', 'networkAccess': False}, 'approvalPolicy': 'on-request',
+            'sandboxPolicy': policy, 'approvalPolicy': 'on-request',
             **({'model': model, 'effort': effort} if model else {}),
             'input': [{'type': 'text', 'text': text, 'text_elements': []}]}).get('turn') or {}
         result['turn_id'] = turn.get('id')
@@ -190,7 +206,7 @@ def review(program, values, project_root, question, paths=None, timeout=300, thr
                     owned = (current.get('id') == thread_id and current.get('modelProvider') == 'openai'
                              and current.get('cwd') and Path(current['cwd']).resolve() == root)
                     result['resumable'] = bool(owned and durable(current))
-                    if (created and not submitted and owned and not result['resumable']
+                    if (not implementation and created and not submitted and owned and not result['resumable']
                             and (current.get('status') or {}).get('type') == 'idle'):
                         client.call('thread/delete', {'threadId': thread_id})
                         result.update(thread_id=None, empty_thread_removed=True)
