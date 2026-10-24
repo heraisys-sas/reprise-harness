@@ -39,6 +39,35 @@ class TasksTests(unittest.TestCase):
     def submit(self):
         return self.tasks.submit('key','question',allow_submit=True)
 
+    def test_legacy_submit_reuses_key_and_blocks_equivalent_new_key(self):
+        self.submit()
+        with self.db:
+            self.db.execute('UPDATE ironclaw_tasks SET identity=? WHERE request_key=?',
+                            (self.tasks._identity_legacy('question'), 'key'))
+        before = len(self.calls)
+        with self.assertRaises(TaskError):
+            self.tasks.submit('other', 'question', allow_submit=True)
+        self.assertEqual(self.submit()['state'], 'pending')
+        self.assertEqual(len(self.calls), before)
+        self.assertTrue(self.db.execute('SELECT identity FROM ironclaw_tasks').fetchone()[0].startswith('v1:'))
+
+    def test_file_legacy_parent_migrates_inside_admission(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = sqlite3.connect(Path(directory) / 'tasks.sqlite', timeout=.1)
+            try:
+                def transport(endpoint, method, path, payload=None, **kwargs):
+                    if path.endswith('/session'): return {'session_channel_extension_id': 'channel'}
+                    if path.endswith('/threads'): return {'thread': {'thread_id': 'thread'}}
+                    return {'thread_id': 'thread', 'run_id': 'run', 'status': 'queued'}
+                tasks = Tasks(db, self.endpoint, transport)
+                tasks.submit('parent', 'question', allow_submit=True)
+                with db:
+                    db.execute("UPDATE ironclaw_tasks SET identity=?,state='finished' WHERE request_key='parent'",
+                               (tasks._identity_legacy('question'),))
+                self.assertEqual(tasks.followup('child', 'parent', 'next question', allow_submit=True)['state'], 'pending')
+            finally:
+                db.close()
+
     def test_encoded_french_payload_rejected_before_admission_or_network(self):
         with self.assertRaises(TaskError):
             self.tasks.submit('large', 'é' * 11000, allow_submit=True)
