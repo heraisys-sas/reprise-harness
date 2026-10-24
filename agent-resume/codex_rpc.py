@@ -12,6 +12,16 @@ import time
 from engines import Unavailable, socket_path
 from runtime import codex_environment, terminate
 
+class Closed(Unavailable):
+    """Le serveur propriétaire a fermé la connexion ; la fin du tour n'est pas prouvée.
+
+    Sous-classe d'`Unavailable` : pour tout appelant qui ignore si un tour a été envoyé, une
+    fermeture reste une indisponibilité. Seul `execute()` sait la distinguer d'une incertitude.
+    """
+
+    def __init__(self, reason):
+        super().__init__('needs_review', reason)
+
 
 class Client:
     """Bounded RFC 6455 transport over the official local proxy."""
@@ -65,7 +75,7 @@ class Client:
             if ready:
                 chunk = os.read(ready[0][0].fileobj.fileno(), 65536)
                 if not chunk:
-                    raise Unavailable('needs_review', 'Connexion au moteur interrompue ; résultat inconnu, aucune relance automatique.')
+                    raise Closed('Le serveur propriétaire a fermé la connexion.')
                 self.buffer.extend(chunk)
                 return
 
@@ -106,7 +116,7 @@ class Client:
                 raise ValueError('Oversized WebSocket response')
             part = self._take(size, deadline)
             if opcode == 8:
-                raise Unavailable('needs_review', 'Connexion au moteur interrompue ; résultat inconnu, aucune relance automatique.')
+                raise Closed('Le serveur propriétaire a fermé la connexion.')
             if opcode == 9:
                 self._frame(part, 10)
                 continue
@@ -218,6 +228,11 @@ def execute(db, task, program, values, log, automatic=False, timeout=7200):
                     break
             else:
                 raise TimeoutError('Délai maximal du tour atteint')
+    except Closed:
+        if dispatch_attempted:
+            state, reason = 'needs_review', 'Connexion fermée après envoi du tour ; résultat inconnu, aucune relance automatique.'
+        else:
+            state, reason = 'engine_unavailable', 'Connexion fermée avant tout envoi ; aucun tour n’a été lancé.'
     except Unavailable as error:
         state, reason = error.state, error.reason
     except TimeoutError:
