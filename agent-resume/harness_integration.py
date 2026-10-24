@@ -18,7 +18,7 @@ from state_install import initialized, _sync_directory
 
 START = '# BEGIN REPRISE MANAGED INTEGRATION'
 END = '# END REPRISE MANAGED INTEGRATION'
-DOCS = ('REPRISE-AGENTS.template.md', 'HANDOFF-CONTRACT.md', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'HARNESS-SUPERVISION-ARCHITECTURE.md', 'HARNESS-INTEGRATION.md', 'CLARIFICATION-CONTRACT.md')
+DOCS = ('REPRISE-AGENTS.template.md', 'CODEX-EXECUTION-CONTRACT.md', 'HANDOFF-CONTRACT.md', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'HARNESS-SUPERVISION-ARCHITECTURE.md', 'HARNESS-INTEGRATION.md', 'CLARIFICATION-CONTRACT.md')
 OBSERVE = ('reprise_backends', 'reprise_requests', 'reprise_quotas')
 DELEGATE = ('reprise_delegate', 'reprise_followup')
 
@@ -203,6 +203,7 @@ def inspect(home, profile=None):
             result['output_resume_project'] = old.get('output_resume_project', old.get('project'))
             result['delegate'] = 'reprise_delegate' in old.get('tools', [])
             result['agent_role'] = old.get('agent_role', 'standard')
+        result['codex_workspace_write'] = (old or {}).get('codex_workspace_write', False)
         journal = managed / 'operation.json'
         if journal.exists() or journal.is_symlink():
             data = read_journal(journal)
@@ -213,7 +214,7 @@ def inspect(home, profile=None):
     return result
 
 
-def desired(root, home, profile, project, action, delegate=False, agent_role='standard', output_resume=False, output_resume_project=None):
+def desired(root, home, profile, project, action, delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False):
     home, folder, managed = context(home, profile)
     old = manifest(managed)
     project = str(Path(project).expanduser().resolve(strict=True))
@@ -257,6 +258,8 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         tools = OBSERVE + (DELEGATE if delegate else ())
         args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/codex_expert_mcp.py'),
                 '--project-root', project, '--state', state, '--tools', ','.join(tools)]
+        if codex_workspace_write:
+            args.append('--codex-workspace-write')
         entries = [{'id': 'reprise-codex-expert', 'name': '@deepseek-ai/dsh-mcp-client', 'config': {
             'transport': 'stdio', 'serverName': 'reprise_codex', 'command': str(program), 'args': args,
             'toolCallTimeoutMs': 330000, 'failOnStartupError': False, 'reconnect': {'enabled': False}}},
@@ -293,6 +296,8 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         if output_resume:
             next_manifest['output_resume'] = True
             next_manifest['output_resume_project'] = resume_project
+        if codex_workspace_write:
+            next_manifest['codex_workspace_write'] = True
         if agent_role != 'standard':
             next_manifest['agent_role'] = agent_role
     else:
@@ -315,12 +320,12 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
     return files, {'release': str(release) if release else (old or {}).get('release'), 'state': state}, next_manifest
 
 
-def plan(root, home, profile, project, action='install', delegate=False, agent_role='standard', output_resume=False, output_resume_project=None):
-    if action not in ('install', 'remove') or type(delegate) is not bool or agent_role not in ('standard', 'coordinator') or type(output_resume) is not bool:
+def plan(root, home, profile, project, action='install', delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False):
+    if action not in ('install', 'remove') or type(delegate) is not bool or agent_role not in ('standard', 'coordinator') or type(output_resume) is not bool or type(codex_workspace_write) is not bool or (codex_workspace_write and not delegate):
         raise ValueError('Action ou capacité invalide.')
     if inspect(home, profile).get('pending_plan'):
         raise ValueError('Reprendre l’opération partielle conservée avant de créer un autre plan.')
-    files, extra, _ = desired(root, home, profile, project, action, delegate, agent_role, output_resume, output_resume_project)
+    files, extra, _ = desired(root, home, profile, project, action, delegate, agent_role, output_resume, output_resume_project, codex_workspace_write)
     changes = []
     for path, text in files.items():
         before, after = file_hash(path), digest(text.encode()) if text is not None else None
@@ -331,6 +336,8 @@ def plan(root, home, profile, project, action='install', delegate=False, agent_r
     result = {'format': 1, 'action': action, 'home': str(canonical_home), 'profile': profile,
               'project': str(Path(project).expanduser().resolve(strict=True)), 'delegate': delegate,
               'changes': changes, **extra}
+    if codex_workspace_write:
+        result['codex_workspace_write'] = True
     if agent_role != 'standard':
         result['agent_role'] = agent_role
     if output_resume:
@@ -366,12 +373,12 @@ def apply(root, public):
             if journal['plan'] != public:
                 raise ValueError('Un autre plan est en attente ; reprendre ce plan sans écrasement.')
         else:
-            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'))
+            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False))
             if current != public:
                 raise ValueError('Entrées modifiées depuis la prévisualisation. Refaire le plan.')
             if not public['changes']:
                 return {'status': 'completed', 'changed': False, 'message': 'Configuration identique ; aucune écriture.'}
-            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'))
+            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False))
             if public['action'] == 'install':
                 helpers, runtime, _ = bundle_info(root)
                 stage_release(helpers, runtime, Path(public['release']))
@@ -520,6 +527,7 @@ def main(root, argv=None):
             command.add_argument('--delegate', action='store_true')
             command.add_argument('--output-resume-project', help='Explicit project for native continuation; defaults to bridge project')
             command.add_argument('--output-resume', action='store_true', help='Explicitly authorize same-session continuation after output-token limit')
+            command.add_argument('--codex-workspace-write', action='store_true', help='Autoriser les implémentations Codex dans le projet sélectionné')
             command.add_argument('--agent-role', choices=('standard', 'coordinator'), default='standard')
     sub.add_parser('integration-apply')
     args = parser.parse_args(argv)
@@ -529,7 +537,7 @@ def main(root, argv=None):
             result = inspect(args.home, args.profile)
         elif args.command == 'integration-plan':
             result = {'status': 'planned', 'message': 'Plan sans écriture. L’installation n’autorise ni inférence ni activation automatique.',
-                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role, args.output_resume, args.output_resume_project)}
+                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role, args.output_resume, args.output_resume_project, args.codex_workspace_write)}
         elif args.command == 'integration-apply':
             public = json.loads(sys.stdin.read(1024 * 1024))['plan']
             result = apply(root, public)

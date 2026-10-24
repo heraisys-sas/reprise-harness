@@ -30,6 +30,65 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
         self.bridge.program = 'codex'
         self.addCleanup(self.bridge.db.close)
+    def test_implementation_requires_installed_grant_before_admission(self):
+        with patch('codex_expert_mcp.review') as review:
+            with self.assertRaises(ValueError):
+                self.call('reprise_delegate', {'question':'Implement', 'kind':'batch', 'mode':'implementation'})
+            review.assert_not_called()
+        self.assertEqual(self.bridge.db.execute('SELECT COUNT(*) FROM delegation_requests').fetchone()[0], 0)
+        self.assertFalse(self.call('reprise_backends', {})['backends'][0]['writes'])
+
+    def test_new_implementation_invalid_input_is_rejected_before_admission(self):
+        self.bridge.codex_workspace_write = True
+        with patch('codex_expert_mcp.review') as review:
+            with self.assertRaises(ValueError):
+                self.call('reprise_delegate', {'question':'Implement','kind':'batch','mode':'implementation','paths':['missing.py']})
+            review.assert_not_called()
+        self.assertEqual(self.bridge.db.execute('SELECT COUNT(*) FROM delegation_requests').fetchone()[0], 0)
+
+    def test_implementation_followup_inherits_mode_after_restart_and_alias_cannot_promote(self):
+        self.bridge.codex_workspace_write = True
+        output = {'status':'finished', 'resumable':True, 'thread_id':ID, 'response':'Implemented'}
+        with patch('codex_expert_mcp.review', return_value=output.copy()) as review:
+            self.call('reprise_delegate', {'question':'Implement', 'kind':'batch', 'mode':'implementation'})
+            self.assertTrue(review.call_args.kwargs['implementation'])
+        restarted = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', codex_workspace_write=True)
+        self.addCleanup(restarted.db.close)
+        restarted.program = 'codex'
+        with patch('codex_expert_mcp.review', return_value=output.copy()) as review:
+            restarted.call('reprise_followup', {'request_key':'continue-implementation', 'thread_id':ID, 'backend':'codex', 'question':'Continue'})
+            self.assertTrue(review.call_args.kwargs['implementation'])
+            with self.assertRaises(ValueError):
+                restarted.call('codex_followup', {'request_key':'legacy-alias', 'thread_id':ID, 'question':'Continue'})
+        restarted.codex_workspace_write = False
+        with self.assertRaises(ValueError):
+            restarted.call('reprise_followup', {'request_key':'revoked', 'thread_id':ID, 'backend':'codex', 'question':'Continue'})
+
+    def test_legacy_review_cannot_be_promoted_by_prompt_or_mode(self):
+        self.bridge.codex_workspace_write = True
+        with patch('codex_expert_mcp.review', return_value={'status':'finished','resumable':True,'thread_id':ID,'response':'Review'}):
+            self.call('codex_review', {'question':'Review'})
+        with self.assertRaises(ValueError):
+            self.call('reprise_followup', {'thread_id':ID,'backend':'codex','question':'Implement','mode':'implementation'})
+
+    def test_expected_implementation_edit_is_not_an_input_integrity_failure(self):
+        self.bridge.codex_workspace_write = True
+        target = Path(self.temp.name) / 'source.py'
+        target.write_text('before')
+        def implementation(*args, **kwargs):
+            target.write_text('after')
+            return {'status':'finished','response':'Implemented'}
+        with patch('codex_expert_mcp.review', side_effect=implementation):
+            result = self.call('reprise_delegate', {'question':'Implement','kind':'batch','mode':'implementation','paths':['source.py'],'request_key':'edit-request'})
+        self.assertEqual(result['status'], 'finished')
+        self.assertTrue(result['project_files_changed'])
+        target.unlink()
+        with patch('codex_expert_mcp.review') as review:
+            replay = self.bridge.call('reprise_delegate', {'request_key': 'edit-request', 'question':'Implement', 'kind':'batch', 'mode':'implementation', 'paths':['source.py']})
+            review.assert_not_called()
+        self.assertEqual(replay['status'], 'finished')
+
+
     def test_protocol_lists_only_bounded_tools(self):
         self.assertIn('tools', self.bridge.dispatch({'method': 'initialize'})['capabilities'])
         self.assertEqual({item['name'] for item in self.bridge.dispatch({'method': 'tools/list'})['tools']}, {'codex_review','codex_followup','reprise_delegate','reprise_backends','reprise_followup','reprise_resume','reprise_history','reprise_health','reprise_requests','reprise_quotas'})

@@ -72,6 +72,7 @@ extension App {
             if let project = result["output_resume_project"] as? String { self.integrationOutputResumeProject = project }
             if let enabled = result["output_resume"] as? Bool { self.integrationOutputResume = enabled }
             if let enabled = result["delegate"] as? Bool { self.integrationDelegate = enabled }
+            self.integrationCodexWorkspaceWrite = result["codex_workspace_write"] as? Bool ?? false
             if let role = result["agent_role"] as? String { self.integrationAgentRole = role }
             if self.integrationProject.isEmpty, let project = result["project"] as? String { self.integrationProject = project }
             self.integrationResult = result
@@ -85,6 +86,7 @@ extension App {
         guard stateReady, !setupBusy else { return }
         var args = ["integration-plan", "--home", integrationHome, "--profile", integrationProfile, "--project", integrationProject, "--action", action]
         if integrationDelegate { args.append("--delegate") }
+        if integrationDelegate && integrationCodexWorkspaceWrite { args.append("--codex-workspace-write") }
         if integrationOutputResume {
             args.append("--output-resume")
             if !integrationOutputResumeProject.isEmpty { args += ["--output-resume-project", integrationOutputResumeProject] }
@@ -148,6 +150,8 @@ struct Integrations: View {
                     }
                     HStack { path("Projet du pont", app.integrationProject); Spacer(); Button("Choisir le projet…") { app.chooseIntegrationDirectory(project: true) } }
                     Toggle("Exposer aussi les outils de délégation", isOn: $app.integrationDelegate)
+                    Toggle("Autoriser Codex à modifier le projet sélectionné", isOn: $app.integrationCodexWorkspaceWrite).disabled(!app.integrationDelegate)
+                    Text("Le mode implémentation permet les modifications et vérifications locales dans ce projet. Les revues restent en lecture seule. Les approbations natives restent requises ; cette option n’autorise pas implicitement push, fusion ou déploiement.").font(.caption).foregroundStyle(.secondary)
                     Toggle("Continuer après une limite de tokens de sortie", isOn: $app.integrationOutputResume)
                     if app.integrationOutputResume { TextField("Projet de continuation (vide : projet du pont)", text: $app.integrationOutputResumeProject) }
                     Text("Autorise une continuation dans le même chat Harness, après max-tokens confirmé ; deux continuations consécutives maximum. La pause automatique de Reprise reste prioritaire.").font(.caption).foregroundStyle(.secondary)
@@ -263,6 +267,7 @@ struct Integrations: View {
         .onChange(of: app.integrationOutputResumeProject) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationOutputResume) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationAgentRole) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.integrationCodexWorkspaceWrite) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationDelegate) { _, _ in app.invalidateIntegrationPlan() }
     }
 }
