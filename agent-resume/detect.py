@@ -138,6 +138,10 @@ def scan(home=None):
 
 def harness_status(record, last=None, modified=None, now=None):
     now = now or time.time()
+    if last and last.get('kind') == 'max-tokens':
+        return {'state': 'output_limited', 'label': 'Limite de tokens de sortie · continuation Harness requise',
+                'retry_at': None, 'interrupted_at': last.get('time', 0) / 1000 if isinstance(last.get('time'), (int, float)) else None,
+                'interruption_seq': last.get('seq'), 'interruption_kind': 'max-tokens'}
     if last and last.get('kind') == 'aborted':
         return {'state': 'stopped', 'label': 'Session interrompue', 'retry_at': None}
     if last and last.get('kind') == 'error':

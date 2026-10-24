@@ -85,3 +85,35 @@ Instructions d’orchestration déployables : profil optionnel pour modèles sp�
 Courtier d’opérations Git/GitHub (#29, lié #24) : contrat LOCAL-EXECUTION-CONTRACT.md, avis Astra et revue indépendante, premier évaluateur pur git.fast_forward sans IO ni exécution. Étapes suivantes : collecteur fiable/isolation, autorisation opérateur, exécuteur/récupération, façade MCP/CLI et recettes distantes distinctes.
 
 Façade Reprise cliente Codex CLI/Desktop (#30) : exposer aussi la délégation vers Claude/autres harness, leurs clarifications, suivis et résultats durables, comme pour Harness ; pas seulement les recettes Git. Installation gérée du client MCP, CODEX_HOME/host/projet vérifiés, chargement et round-trip réels distincts, retour Claude Desktop MCP corrélé requis. Aucune réactivation implicite des outils de redélégation dans les experts isolés.
+
+### #35 — limite de tokens de sortie Harness
+
+Continuation native dans la même session après `max-tokens`, distincte des quotas
+fournisseur : plugin optionnel installé depuis Intégrations, pause globale,
+réservation durable par événement et protection contre continuations consécutives.
+Lecture de toutes les trames Zstandard des journaux. Vérification réelle de son
+chargement dans un client Desktop après rechargement coordonné à distinguer des
+tests simulés. Contrat : [HARNESS-INTEGRATION.md](HARNESS-INTEGRATION.md).
+
+### #36 — Claude Desktop gratuit : reset affiché et Continuer
+
+Helper natif Accessibilité et registre durable des pauses gratuites, date/fuseau
+vérifiés, clic Continuer après revalidation sur le même dernier message. Option
+installable depuis Intégrations, activée par défaut, subordonnée à la pause
+globale. Aucune API privée ni facturation de repli. Contrat et limites dans
+[CLAUDE-INTEGRATION.md](CLAUDE-INTEGRATION.md). L’essai après échéance réelle et la
+permission Accessibilité restent à confirmer séparément des tests simulés.
+
+
+### #31 — connecteur Claude unifié et déploiement autonome
+
+Façade MCP unique pour tâches entrantes/résultats et délégation sortante, registre
+partagé avec claude-desktopd, isolation projet, retours paginés, cycle Desktop
+immédiat bloqué. Installation/inspection/retrait/vérification depuis Intégrations,
+runtime embarqué, sauvegardes et conflits préservés. Contrat :
+[CLAUDE-CONNECTOR.md](CLAUDE-CONNECTOR.md). Chargement dans Claude à confirmer après
+rechargement consenti ; ce lot ne prétend pas livrer le pilote natif Quick Apply.
+
+### Passation explicite entre harness
+
+Convention immédiate GitHub `agent:*` + `work:active|available|blocked`, branche liée à l’issue et checkpoint de reprise : [contrat](HANDOFF-CONTRACT.md). À implémenter dans Reprise : réservation atomique avec génération, renouvellement, réconciliation des actions en vol et projection des labels ; distribution de la règle avec chaque intégration. Ne pas assimiler expiration, quota, pause volontaire et achèvement.

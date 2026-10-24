@@ -71,16 +71,29 @@ def _ssh_args(endpoint):
             "/usr/bin/curl --disable --config -"]
 
 
+def _curl_config(endpoint, method, path, token, max_filesize, payload=None):
+    # Token stays on stdin (never argv); the payload cap mirrors the request body limit.
+    lines = [f'url = "http://127.0.0.1:{endpoint.http_port}{path}"',
+             f'request = "{method}"', 'proxy = ""',
+             'header = "Accept: application/json"',
+             f'header = "Authorization: Bearer {token}"',
+             f'max-time = {endpoint.timeout}', 'connect-timeout = 5',
+             f'max-filesize = {max_filesize}', 'silent',
+             'write-out = "\\n%{http_code}"']
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=True)
+        if len(body) > 65536:
+            raise ProbeError('Request too large')
+        lines.append('header = "Content-Type: application/json"')
+        lines.append('data = "' + body.replace('\\', '\\\\').replace('"', '\\"') + '"')
+    return "\n".join(lines) + "\n"
+
+
 def probe(endpoint):
     """Return only schema/capability evidence, never response content or credentials."""
     endpoint.validate()
     token = _read_token(endpoint.token_url_file)
-    config = (f'url = "http://127.0.0.1:{endpoint.http_port}/api/webchat/v2/session"\n'
-              'request = "GET"\nproxy = ""\nheader = "Accept: application/json"\n'
-              f'header = "Authorization: Bearer {token}"\n'
-              f'max-time = {endpoint.timeout}\nconnect-timeout = 5\n'
-              'max-filesize = 65536\nsilent\n'
-              'write-out = "\\n%{http_code}"\n')
+    config = _curl_config(endpoint, "GET", "/api/webchat/v2/session", token, 65536)
     try:
         result = subprocess.run(_ssh_args(endpoint), input=config, text=True,
                                 capture_output=True, timeout=endpoint.timeout + 5,
@@ -123,7 +136,8 @@ def request(endpoint, method, path, payload=None, *, allow_submit=False):
     endpoint.validate()
     base = '/api/webchat/v2'
     identifier = r'[A-Za-z0-9_-]{1,128}'
-    valid_get = path == base + '/session' or re.fullmatch(
+    # GET /threads lists sessions (ids and metadata) but never message content.
+    valid_get = path == base + '/session' or path == base + '/threads' or re.fullmatch(
         base + '/threads/' + identifier + r'/timeline\?limit=100(?:&cursor=[A-Za-z0-9%._~-]{1,2048})?', path)
     valid_post = path == base + '/threads' or re.fullmatch(
         base + '/channels/' + identifier + '/messages', path)
@@ -143,17 +157,7 @@ def request(endpoint, method, path, payload=None, *, allow_submit=False):
         if 'content' in payload and (not isinstance(payload['content'], str) or not payload['content'].strip()):
             raise ProbeError('Invalid submission content')
     token = _read_token(endpoint.token_url_file)
-    config = (f'url = "http://127.0.0.1:{endpoint.http_port}{path}"\n'
-              f'request = "{method}"\nproxy = ""\nheader = "Accept: application/json"\n'
-              f'header = "Authorization: Bearer {token}"\n'
-              f'max-time = {endpoint.timeout}\nconnect-timeout = 5\n'
-              'max-filesize = 1048576\nsilent\nwrite-out = "\\n%{http_code}"\n')
-    if payload is not None:
-        body = json.dumps(payload, ensure_ascii=True)
-        if len(body) > 65536:
-            raise ProbeError('Request too large')
-        config += 'header = "Content-Type: application/json"\n'
-        config += 'data = "' + body.replace('\\', '\\\\').replace('"', '\\"') + '"\n'
+    config = _curl_config(endpoint, method, path, token, 1048576, payload)
     try:
         result = subprocess.run(_ssh_args(endpoint), input=config, text=True,
                                 capture_output=True, timeout=endpoint.timeout + 5, check=False)

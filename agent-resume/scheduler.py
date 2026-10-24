@@ -192,10 +192,12 @@ def status(db, state_dir=None):
             task.update(status='needs_review', label='Exécution non confirmée · worker absent', reason='Le processus de reprise n’est plus détecté ; aucun succès déduit.')
         elif task['status'] in ('ready', 'waiting_quota') and not automatic:
             task['label'] = 'Automatisation en pause · aucune relance prévue'
+    import claude_quota
+    claude_events = claude_quota.status(db)
     counts = Counter(task['status'] for task in tasks)
     next_due = min((task['due'] for task in tasks if task['status'] in ('ready', 'waiting_quota')), default=None)
     from presentation import summarize
-    return {'tasks': tasks, 'summary': summarize(tasks), 'launching': counts['launching'], 'auto_enabled': automatic, 'pending': counts.get('ready', 0) + counts.get('waiting_quota', 0),
+    return {'claude_quota': {'enabled': get(db, 'claude_desktop_auto_enabled', True), 'events': claude_events}, 'tasks': tasks, 'summary': summarize(tasks), 'launching': counts['launching'], 'auto_enabled': automatic, 'pending': counts.get('ready', 0) + counts.get('waiting_quota', 0),
             'ready': counts.get('ready', 0), 'waiting_quota': counts.get('waiting_quota', 0),
             'running': counts['running'], 'needs_review': sum(t['status'] in ('needs_review', 'blocked_trust', 'blocked_auth', 'quota_blocked', 'failed', 'timed_out', 'blocked_owner', 'blocked_parent', 'blocked_session', 'blocked_permission', 'needs_input', 'engine_unavailable', 'stopped', 'queued_parent', 'delegated_parent') for t in tasks),
             'next_due': next_due, 'last_tick': get(db, 'last_tick'), 'last_error': get(db, 'last_error'),

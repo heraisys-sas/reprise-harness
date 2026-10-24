@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 MINIMUM = '26.0'
-BINARIES = ('Reprise', 'Embedding', 'FoundationExplain', 'Vault')
+BINARIES = ('Reprise', 'Embedding', 'FoundationExplain', 'Vault', 'ClaudeQuota')
 
 
 def check_sdk(version):

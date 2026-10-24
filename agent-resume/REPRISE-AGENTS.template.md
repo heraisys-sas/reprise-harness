@@ -1,3 +1,8 @@
+
+## Passation entre harness — règle commune
+
+Pour un travail suivi sur GitHub : lire le dernier checkpoint de l’issue avant d’agir ; lier la branche avec `gh issue develop`. Utiliser un seul responsable `agent:<harness>` avec `work:active`. Avant de suspendre et proposer la reprise : pousser les commits autorisés, vérifier le SHA distant, publier un checkpoint (branche, commit, preuves, non publié, actions en vol/incertaines, prochaine action et validation), retirer son label `agent:*` et passer à `work:available`. Si une condition externe empêche de continuer, utiliser `work:blocked` et expliciter cette condition. Ne pas prendre le travail d’un responsable actif sans coordination. Pour reprendre, annoncer la prise en charge, poser son `agent:*` et `work:active`, puis relire l’issue pour détecter une revendication concurrente. Ces labels ne sont pas un verrou atomique ; une automatisation nécessite une réservation Reprise réconciliée. Voir [HANDOFF-CONTRACT.md](HANDOFF-CONTRACT.md). Cette règle est commune à tous les modèles, indépendamment du rôle coordinator.
+
 # Profil Reprise pour un agent auquel est attribué le rôle de coordinateur
 
 Ce profil est applicable uniquement lorsque l’opérateur attribue `agent_role: coordinator`, par exemple pour expérimenter avec ASI1. Ce rôle ne prouve aucune supériorité ni spécialisation du modèle en orchestration. Ne pas activer ce profil en déduisant le rôle du seul nom du modèle ; le choix vient des instructions/configurations de l’opérateur. Pour les autres agents, sa présence dans la skill ne vaut pas activation et n’impose aucune délégation systématique.
