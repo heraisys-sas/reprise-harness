@@ -61,7 +61,7 @@ class QuickApplyDaemonTests(unittest.TestCase):
              patch('subprocess.Popen') as popen, patch('time.sleep'), \
              patch.object(dm, 'app_running', return_value=True):
             popen.return_value.pid = 999999
-            result = dm.daemon_start(state=self.state)
+            result = dm.start(state=self.state)
         self.assertTrue(result['ok'])
         argv = popen.call_args.args[0]
         self.assertEqual(argv[argv.index('--project-root') + 1], self.state)

@@ -7,7 +7,7 @@ therefore exposes: launch (open the linked app if needed), start/stop (the
 Quick Entry server) and status. It never force-quits a running app and never
 starts anything implicitly; each action is explicit.
 """
-from app_paths import state_directory
+from app_paths import state_directory, state_location
 import errno
 import plistlib
 from pathlib import Path
@@ -71,29 +71,9 @@ def launch():
 
 
 def start(socket=None, state=None, daily_limit=8):
-    """Start the Quick Entry server (opt-in). The linked app is not required
-    for the server itself but is needed for a real submission."""
-    if server_running():
-        return {'ok': True, 'started': False, 'reason': 'Service claude-desktopd déjà actif.'}
-    socket = socket or str(DEFAULT_SOCKET)
-    state = state or str(state_directory(Path(__file__).parent, 'quick-state'))
-    import tempfile
-    import time
-    err = Path(tempfile.gettempdir()) / 'reprise-quick-entry-error.log'
+    """Use the managed daemon launcher for the app's Connections start action."""
     try:
-        with err.open('w') as sink:
-            subprocess.Popen([sys.executable, str(SERVER), '--socket', socket, '--state', str(state)],
-                             start_new_session=True, stdout=subprocess.DEVNULL, stderr=sink)
-        time.sleep(0.5)
-        if server_running():
-            return {'ok': True, 'started': True, 'reason': 'Service claude-desktopd démarré.',
-                    'needs_app': not app_running()}
-        detail = ''
-        if err.is_file():
-            lines = err.read_text().strip().splitlines()
-            detail = lines[-1] if lines else ''
-        return {'ok': False, 'started': False,
-                'reason': f'Service claude-desktopd non démarré : {detail or "cause inconnue"}'}
+        return daemon_start(socket=socket, state=state, daily_limit=daily_limit)
     except OSError as error:
         return {'ok': False, 'started': False, 'reason': f'Démarrage impossible : {error}'}
 
@@ -104,7 +84,7 @@ def stop():
 
 # --- Quick Apply daemon (mirrors the Codex app-server daemon) --------------
 DAEMON_NAME = 'reprise-quick-apply'
-DEFAULT_STATE = state_directory(Path(__file__).parent, 'quick-state')
+DEFAULT_STATE = state_location(Path(__file__).parent, 'quick-state')
 
 
 def _pid_file(state):
