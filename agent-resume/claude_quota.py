@@ -174,6 +174,45 @@ def native_clicker(helper):
     return click
 
 
+
+def run_quick(db, now, client_factory=None):
+    """Use the same daemon API as delegating harnesses, never treat admission as a turn."""
+    from claude_desktop_rpc import Client
+    import scheduler
+    initialize(db)
+    client = None
+    try:
+        client = (client_factory or Client)(None, {'socket': str(Path.home()/'.claude-desktop/quick-entry.sock')}, timeout=5)
+        client.call('initialize', {'clientInfo': {'name': 'reprise-scheduler', 'version': '1'}})
+        capabilities = client.call('quick_entry/capabilities', {})
+        if capabilities.get('dispatch_supported') is not True or capabilities.get('resume_validation_supported') is not True:
+            return {'status': 'dispatch_driver_unavailable', 'submitted': 0, 'transport': 'quick-apply'}
+        submitted = 0
+        with db:
+            db.execute("UPDATE claude_quota_resumes SET status='uncertain' WHERE status='dispatching'")
+        rows = db.execute("SELECT event_key,chat_id FROM claude_quota_resumes WHERE due<=? AND status IN ('waiting','awaiting_observation')", (now,)).fetchall()
+        for key, chat in rows:
+            if not scheduler.enabled(db) or scheduler.get(db, 'claude_desktop_auto_enabled', True) is not True:
+                break
+            with db:
+                changed = db.execute("UPDATE claude_quota_resumes SET status='dispatching' WHERE event_key=? AND status IN ('waiting','awaiting_observation')", (key,)).rowcount
+            if not changed:
+                continue
+            try:
+                receipt = client.call('quick_entry/submit', {'request_key': 'resume-' + key,
+                    'prompt': 'retry', 'chatId': chat, 'purpose': 'continuation'})
+                state = ('submitted' if receipt.get('dispatch_attempted') is True and receipt.get('admission_only') is False
+                         else 'admitted' if receipt.get('admission_only') is True else 'uncertain')
+            except Exception:
+                state = 'uncertain'
+            with db:
+                db.execute('UPDATE claude_quota_resumes SET status=? WHERE event_key=?', (state, key))
+            submitted += state == 'submitted'
+        return {'status': 'observed', 'submitted': submitted, 'transport': 'quick-apply'}
+    finally:
+        if client:
+            client.close()
+
 def run_native(db, root, state, now=None):
     """Serialize native ticks; never interact from concurrent scheduler processes."""
     import fcntl
@@ -181,6 +220,14 @@ def run_native(db, root, state, now=None):
     import scheduler
     if not scheduler.enabled(db) or scheduler.get(db, 'claude_desktop_auto_enabled', True) is not True:
         return {'status': 'paused', 'submitted': 0}
+    if scheduler.get(db, 'claude_desktop_transport', 'quick-apply') == 'quick-apply':
+        # The daemon owns native delivery and its session preconditions.
+        with (Path(state) / 'claude-quota.lock').open('a') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {'status': 'busy', 'submitted': 0}
+            return run_quick(db, time.time() if now is None else now)
     root = Path(root)
     helper = root.parent.parent / 'MacOS/ClaudeQuota'
     with (Path(state) / 'claude-quota.lock').open('a') as lock:

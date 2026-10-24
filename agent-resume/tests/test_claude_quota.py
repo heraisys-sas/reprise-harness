@@ -108,6 +108,46 @@ class ClaudeQuotaTests(unittest.TestCase):
         self.tick()
         self.assertEqual({r['status'] for r in quota.status(self.db)}, {'superseded', 'waiting'})
 
+    def test_scheduler_uses_daemon_api_and_never_equates_admission_with_dispatch(self):
+        quota.initialize(self.db)
+        quota.register_notice(self.db, CHAT, TEXT, NOW, ZONE)
+        calls = []
+        class Client:
+            def __init__(self, *args, **kwargs): pass
+            def close(self): pass
+            def call(self, name, args):
+                calls.append((name, args))
+                if name == 'quick_entry/capabilities':
+                    return {'dispatch_supported': True, 'resume_validation_supported': True}
+                if name == 'quick_entry/submit':
+                    return {'status': 'finished', 'admission_only': True, 'dispatch_attempted': False}
+                return {}
+        result = quota.run_quick(self.db, DUE-1, Client)
+        self.assertFalse(any(name == 'quick_entry/submit' for name, _ in calls))
+        result = quota.run_quick(self.db, DUE, Client)
+        self.assertEqual(result['submitted'], 0)
+        self.assertEqual(quota.status(self.db)[0]['status'], 'admitted')
+        message = next(args for name, args in calls if name == 'quick_entry/submit')
+        self.assertEqual(message['prompt'], 'retry')
+        self.assertEqual(message['chatId'], CHAT)
+        quota.run_quick(self.db, DUE+1, Client)
+        self.assertEqual(sum(name == 'quick_entry/submit' for name, _ in calls), 1)
+
+    def test_missing_native_driver_cannot_enqueue_a_false_continuation(self):
+        quota.initialize(self.db)
+        quota.register_notice(self.db, CHAT, TEXT, NOW, ZONE)
+        calls = []
+        class Client:
+            def __init__(self, *args, **kwargs): pass
+            def close(self): pass
+            def call(self, name, args):
+                calls.append(name)
+                return {'dispatch_supported': False}
+        result = quota.run_quick(self.db, DUE, Client)
+        self.assertEqual(result['status'], 'dispatch_driver_unavailable')
+        self.assertNotIn('quick_entry/submit', calls)
+        self.assertEqual(quota.status(self.db)[0]['status'], 'awaiting_observation')
+
     def test_default_enabled_and_explicit_disable(self):
         self.db.execute("DELETE FROM scheduler_meta WHERE key='claude_desktop_auto_enabled'")
         self.db.commit()

@@ -7,7 +7,7 @@ therefore exposes: launch (open the linked app if needed), start/stop (the
 Quick Entry server) and status. It never force-quits a running app and never
 starts anything implicitly; each action is explicit.
 """
-from app_paths import state_directory
+from app_paths import state_directory, state_location
 import errno
 import plistlib
 from pathlib import Path
@@ -71,29 +71,9 @@ def launch():
 
 
 def start(socket=None, state=None, daily_limit=8):
-    """Start the Quick Entry server (opt-in). The linked app is not required
-    for the server itself but is needed for a real submission."""
-    if server_running():
-        return {'ok': True, 'started': False, 'reason': 'Service claude-desktopd déjà actif.'}
-    socket = socket or str(DEFAULT_SOCKET)
-    state = state or str(state_directory(Path(__file__).parent, 'quick-state'))
-    import tempfile
-    import time
-    err = Path(tempfile.gettempdir()) / 'reprise-quick-entry-error.log'
+    """Use the managed daemon launcher for the app's Connections start action."""
     try:
-        with err.open('w') as sink:
-            subprocess.Popen([sys.executable, str(SERVER), '--socket', socket, '--state', str(state)],
-                             start_new_session=True, stdout=subprocess.DEVNULL, stderr=sink)
-        time.sleep(0.5)
-        if server_running():
-            return {'ok': True, 'started': True, 'reason': 'Service claude-desktopd démarré.',
-                    'needs_app': not app_running()}
-        detail = ''
-        if err.is_file():
-            lines = err.read_text().strip().splitlines()
-            detail = lines[-1] if lines else ''
-        return {'ok': False, 'started': False,
-                'reason': f'Service claude-desktopd non démarré : {detail or "cause inconnue"}'}
+        return daemon_start(socket=socket, state=state, daily_limit=daily_limit)
     except OSError as error:
         return {'ok': False, 'started': False, 'reason': f'Démarrage impossible : {error}'}
 
@@ -104,7 +84,7 @@ def stop():
 
 # --- Quick Apply daemon (mirrors the Codex app-server daemon) --------------
 DAEMON_NAME = 'reprise-quick-apply'
-DEFAULT_STATE = state_directory(Path(__file__).parent, 'quick-state')
+DEFAULT_STATE = state_location(Path(__file__).parent, 'quick-state')
 
 
 def _pid_file(state):
@@ -120,7 +100,7 @@ def daemon_pid(state=None):
     return None
 
 
-def daemon_start(socket=None, state=None, daily_limit=8):
+def daemon_start(socket=None, state=None, daily_limit=8, project_root=None):
     """Start the Quick Apply daemon (detached), independent of Desktop being ready.
 
     The server binds its socket without needing Claude Desktop, so it may start
@@ -131,10 +111,18 @@ def daemon_start(socket=None, state=None, daily_limit=8):
         return {'ok': True, 'started': False, 'reason': 'Daemon Quick Apply déjà actif.'}
     socket = socket or str(DEFAULT_SOCKET)
     Path(state).mkdir(parents=True, exist_ok=True, mode=0o700)
+    if project_root is None:
+        try:
+            import claude_integration
+            installed = claude_integration.inspect(Path(__file__).parent)
+            if installed.get('managed'):
+                project_root = installed.get('project')
+        except (OSError, ValueError, KeyError):
+            pass
     try:
         log = open(_log_file(state), 'ab')
         proc = subprocess.Popen([sys.executable, str(SERVER), '--socket', socket,
-                                 '--state', str(state)],
+                                 '--state', str(state)] + (['--project-root', str(project_root)] if project_root else []),
                                 stdout=log, stderr=log, stdin=subprocess.DEVNULL,
                                 start_new_session=True)
         _pid_file(state).write_text(str(proc.pid))
@@ -143,7 +131,7 @@ def daemon_start(socket=None, state=None, daily_limit=8):
         if server_running():
             return {'ok': True, 'started': True, 'daemon': DAEMON_NAME, 'pid': proc.pid,
                     'needs_app': not app_running(),
-                    'reason': 'Daemon Quick Apply démarré. La soumission sera livrée dès que Claude Desktop sera prêt.'}
+                    'reason': 'Daemon Quick Apply démarré. Admission disponible ; émission native non raccordée.'}
         detail = ''
         log = _log_file(state)
         if log.is_file():
