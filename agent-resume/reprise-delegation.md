@@ -12,6 +12,10 @@ Pour un travail suivi sur GitHub : lire le dernier checkpoint de l’issue avant
 
 Read [CODEX-EXECUTION-CONTRACT.md](CODEX-EXECUTION-CONTRACT.md). The default mode is expertise (read-only). Request `mode: "implementation"` only when `reprise_backends` lists it for Codex and the operator authorized this project. It applies edits and local checks under native workspace-write permissions. Follow-ups inherit their original mode; do not promote a review or treat workspace writes as permission to publish/deploy. Native approval requests remain explicit and are never auto-approved by this bridge.
 
+## Harness roles and continuity
+
+See [HARNESS-ROLES-CONTRACT.md](HARNESS-ROLES-CONTRACT.md) for the configurable supervisor/technical lead/worker roles, scheduled quota recovery without mandatory pre-measurement, useful session replacement without loops, and user-proposed session archiving. These are target requirements, not a claim that the current runtime implements them.
+
 ## Host-agent operating instructions
 
 Read [REPRISE-AGENTS.template.md](REPRISE-AGENTS.template.md) only when the operator explicitly selects `agent_role: coordinator` for the host model (for example to evaluate ASI1 in that role), or when preparing that optional profile. Its presence does not activate it for other agents. Apply this profile within existing operator permissions. The template is distributed beside this skill; adapt it to the harness instruction mechanism without replacing personal instructions. Systematic delegation is conditional on the coordinator/operator policy, not required of every capable model. Free fallback routes must be discovered and authorized, never assumed.

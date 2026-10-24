@@ -210,7 +210,7 @@ Aucune nouvelle fonctionnalité de contrôle implémentée par cette décision. 
 
 ## Ordre de travail quotas actualisé
 
-Le plafond local quotidien des sollicitations Codex est supprimé. Priorité à une observation fiable et sourcée des quotas par compte/pool, avec portée, fraîcheur et inconnus explicites. Le comportement de reprise dépendant des quotas sera conçu ensuite ; ne pas étendre l’automatisation actuelle avant cette validation. Les contrôles fournisseur et protections de concurrence existants sont conservés.
+Décision actualisée du 24/10 : enregistrer l’échéance lors du refus puis tenter la reprise à cette échéance, sans mesure de quota préalable obligatoire ; diagnostiquer/mesurer après un nouvel échec si utile. Les contrôles de propriété, concurrence, permissions et actions incertaines restent requis. Voir [le contrat de rôles et continuité](HARNESS-ROLES-CONTRACT.md#reprise-après-quota). Les quotas par compte/pool restent des observations utiles, pas un préalable universel.
 
 Les plafonds locaux non-Codex restants doivent également disparaître : lot explicite « remplacer les plafonds arbitraires restants » dans [la roadmap](ROADMAP.md). Déduplication et protection contre les boucles précèdent cette suppression ; connaissance fiable des quotas puis politique de reprise viennent ensuite.
 

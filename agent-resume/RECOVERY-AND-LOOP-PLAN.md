@@ -35,7 +35,7 @@ Tests : ligne partielle, rotation, événement inconnu, doublon, timestamp tardi
 
 Checkpoint durable : objectif et contraintes, décisions, tâches terminées/restantes, essais échoués, liens parent/enfants, état Git et fichiers pertinents, tests réellement exécutés, outils en attente, effets externes incertains, prochain pas proposé. Séparer faits extraits et résumé généré. Préserver les sources ; ne pas réécrire les transcriptions natives.
 
-Ne reprendre automatiquement que si quota confirmé, session inactive, propriété disponible, capacité native validée et absence d'arrêt volontaire. Une échéance ou un silence ne prouve pas l'arrêt. Reprendre un enfant via son parent lorsque le harness l'exige. Après un dispatch incertain, aucune seconde inférence automatique.
+Tenter la reprise à l’échéance enregistrée sans mesure de quota préalable obligatoire, avec session inactive, propriété disponible, capacité native validée et absence d’arrêt volontaire. Une échéance ou un silence ne prouve pas l'arrêt. Reprendre un enfant via son parent lorsque le harness l'exige. Après un dispatch incertain, aucune seconde inférence automatique.
 
 Tests : quota réel vs erreur réseau/auth/permission ; retour tardif ; concurrence ; parent encore actif ; redémarrage Reprise ; tâche déjà finie ; absence d'échéance fournisseur. Conserver les protections existantes du scheduler Codex.
 
@@ -79,7 +79,7 @@ Décision complémentaire : le [service Reprise bidirectionnel](HARNESS-SUPERVIS
 
 ## Ordre de travail quotas actualisé
 
-Le plafond local quotidien des sollicitations Codex est supprimé. Priorité à une observation fiable et sourcée des quotas par compte/pool, avec portée, fraîcheur et inconnus explicites. Le comportement de reprise dépendant des quotas sera conçu ensuite ; ne pas étendre l’automatisation actuelle avant cette validation. Les contrôles fournisseur et protections de concurrence existants sont conservés.
+Décision actualisée du 24/10 : enregistrer l’échéance lors du refus puis tenter la reprise à cette échéance, sans mesure de quota préalable obligatoire ; diagnostiquer/mesurer après un nouvel échec si utile. Les contrôles de propriété, concurrence, permissions et actions incertaines restent requis. Voir [le contrat de rôles et continuité](HARNESS-ROLES-CONTRACT.md#reprise-après-quota). Les quotas par compte/pool restent des observations utiles, pas un préalable universel.
 
 ## Lot planifié — remplacer les plafonds arbitraires restants
 
