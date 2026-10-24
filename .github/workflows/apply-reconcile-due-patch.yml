@@ -1,0 +1,95 @@
+name: Apply reconcile_due patch (jetable)
+
+# Workflow jetable, present uniquement sur chore/patch-41 et sa PR.
+# Il insere la methode `reconcile_due` dans agent-resume/ironclaw_tasks.py, verifie la
+# syntaxe, controle qu'un seul fichier bouge, puis pousse sur fix/41-reconcile-due.
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'chore/patch-41'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Creer la branche de correction
+        run: |
+          git config user.name 'heraisys-sas'
+          git config user.email 'olivier.hernandez@heraisys.com'
+          git checkout -b fix/41-reconcile-due
+
+      - name: Ecrire la methode a inserer
+        run: |
+          python3 - > [REDACTED_HOST_PATH] <<'PY'
+          parts = [
+              "    def reconcile_due(self, limit=10, now=None, min_age=300):\n",
+              "        '''Read-only sweep of every task left uncertain by a lost acknowledgement.\n",
+              "\n",
+              "        `reconcile()` handles one key and raises when the evidence is inconclusive, so\n",
+              "        nothing ever swept the backlog: a task left `needs_review`, `ambiguous` or\n",
+              "        `dispatching` stayed that way until a human asked. This sweep is bounded -- at\n",
+              "        most `limit` candidates older than `min_age` seconds -- and never raises on a\n",
+              "        single task: each failure is reported per key instead of being swallowed or\n",
+              "        turning the whole sweep into an exception.\n",
+              "        '''\n",
+              "        if type(limit) is not int or not 1 <= limit <= 100:\n",
+              "            raise TaskError('Limit must be between 1 and 100')\n",
+              "        if type(min_age) not in (int, float) or min_age < 0:\n",
+              "            raise TaskError('Minimum age must be a non-negative number')\n",
+              "        now = time.time() if now is None else now\n",
+              "        rows = self.db.execute(\n",
+              "            \"SELECT request_key FROM ironclaw_tasks WHERE state IN \"\n",
+              "            \"('needs_review','ambiguous','dispatching') AND thread_id IS NOT NULL \"\n",
+              "            \"AND admitted_at IS NOT NULL AND admitted_at<=? ORDER BY admitted_at LIMIT ?\",\n",
+              "            (now - min_age, limit)).fetchall()\n",
+              "        results = []\n",
+              "        for (key,) in rows:\n",
+              "            try:\n",
+              "                task = self.reconcile(key)\n",
+              "            except (TaskError, OSError, TimeoutError, ValueError) as exc:\n",
+              "                results.append({'request_key': key, 'state': 'unreconciled',\n",
+              "                                'reason': f'{type(exc).__name__}: {exc}'[:500]})\n",
+              "                continue\n",
+              "            results.append({'request_key': key, 'state': task['state'],\n",
+              "                            'run_id': task.get('run_id')})\n",
+              "        return results\n",
+          ]
+          print(''.join(parts), end='')
+          PY
+          head -3 [REDACTED_HOST_PATH]
+
+      - name: Inserer la methode dans le module
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          method = Path('[REDACTED_HOST_PATH]').read_text(encoding='utf-8')
+          anchor = '    def observe_event(self, key, event_type, frame):\n'
+          path = Path('agent-resume/ironclaw_tasks.py')
+          text = path.read_text(encoding='utf-8')
+
+          assert text.count(anchor) == 1, f'ancre trouvee {text.count(anchor)} fois'
+          text = text.replace(anchor, method + '\n' + anchor, 1)
+          path.write_text(text, encoding='utf-8')
+          print('methode inseree')
+          PY
+          python3 -m py_compile agent-resume/ironclaw_tasks.py && echo syntaxe-ok
+          git diff --stat
+
+      - name: Verifier le perimetre
+        run: |
+          test "$(git diff --name-only)" = 'agent-resume/ironclaw_tasks.py'
+          git diff | head -60
+
+      - name: Committer et pousser
+        run: |
+          git commit -am 'feat(ironclaw_tasks): balayage borne des taches incertaines via reconcile_due (#41)'
+          git push origin fix/41-reconcile-due
