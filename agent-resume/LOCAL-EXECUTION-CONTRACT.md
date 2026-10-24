@@ -80,3 +80,7 @@ Source : [MCP pour Codex Desktop/CLI](https://learn.chatgpt.com/docs/extend/mcp)
 ## Validation de la première tranche
 
 Une revue indépendante a reproduit puis fait corriger deux faux positifs du prototype : caractère DEL interdit dans une ref et identités de dépôt source/destination contradictoires. Les tests portent exclusivement sur des observations synthétiques ; ils n’établissent ni la confiance de leur provenance ni la sûreté d’un exécuteur. Les champs de provenance du prototype sont déclaratifs et ne doivent jamais être exposés comme preuve d’autorisation acceptée d’un LLM.
+
+## Canal natif Codex distinct — 24/10
+
+La délégation d’implémentation native Codex est décrite dans [CODEX-EXECUTION-CONTRACT.md](CODEX-EXECUTION-CONTRACT.md). Elle réutilise thread/start et turn/start avec sandbox workspace-write explicitement autorisée par projet ; elle ne passe pas par l’évaluateur Git pur de ce document et ne le rend pas exécutable. Ne pas confondre l’état désactivé du courtier avec une incapacité de Codex à modifier son workspace.
