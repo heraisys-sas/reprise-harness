@@ -67,6 +67,20 @@ def collect(state, project_root, request_key, field='result'):
         return text
 
 
+def observe(state, project_root, request_key):
+    """Read-only receipt manifest: phase and next action, no inference or acknowledgement."""
+    validate_key(request_key)
+    root = Path(project_root).resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError('Project root must be a directory')
+    database = (Path(state) / 'expert.sqlite').resolve(strict=True)
+    with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)) as db:
+        db.execute('PRAGMA query_only=ON')
+        store = Store.__new__(Store)
+        store.db, store.scope = db, str(root)
+        return store.lookup({'request_key': request_key, 'view': 'receipt'})
+
+
 def write_output(path, text):
     """Create a private new file atomically; never follow, replace or leave a partial entry."""
     path = Path(path)
@@ -92,10 +106,18 @@ def main(argv=None):
     parser.add_argument('--state', required=True, help='Directory containing expert.sqlite')
     parser.add_argument('--project-root', required=True)
     parser.add_argument('--request-key', required=True)
-    parser.add_argument('--output', required=True, help='New output file (never overwritten)')
+    parser.add_argument('--output', help='New output file (never overwritten); required unless --observe')
     parser.add_argument('--field', choices=('result', 'response'), default='result')
+    parser.add_argument('--observe', action='store_true',
+                        help='Print the read-only phase manifest; no inference, collection or acknowledgement')
     args = parser.parse_args(argv)
+    if not args.observe and not args.output:
+        parser.error('--output is required unless --observe is used')
     try:
+        if args.observe:
+            print(json.dumps(observe(args.state, args.project_root, args.request_key),
+                             sort_keys=True, ensure_ascii=False))
+            return 0
         text = collect(args.state, args.project_root, args.request_key, args.field)
         write_output(args.output, text)
     except (ValueError, OSError, sqlite3.Error, TypeError):
