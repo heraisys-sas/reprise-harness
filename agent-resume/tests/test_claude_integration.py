@@ -71,7 +71,7 @@ class ClaudeIntegrationTests(unittest.TestCase):
         self.assertFalse(self.config.exists())
         result = self.install()
         self.assertTrue(result['changed'])
-        entry = json.loads(self.config.read_text())['mcpServers']['reprise']
+        entry = json.loads(self.config.read_text())['mcpServers']['reprise-harness']
         self.assertIn('/integration-releases/', entry['command'])
         self.assertIn('--expert-state', entry['args'])
         self.assertIn(str(self.state / 'quick-state'), entry['args'])
@@ -81,13 +81,31 @@ class ClaudeIntegrationTests(unittest.TestCase):
         for item in (self.managed / 'backups').rglob('*.json'):
             self.assertEqual(item.stat().st_mode & 0o777, 0o600)
 
+    def test_legacy_managed_name_migrates_and_other_reprise_is_preserved(self):
+        self.install()
+        value = json.loads(self.config.read_text())
+        value['mcpServers']['reprise'] = value['mcpServers'].pop('reprise-harness')
+        self.config_write(value)
+        target = self.managed / 'managed.json'
+        old = json.loads(target.read_text())
+        old.pop('connector_name')
+        target.write_text(json.dumps(old))
+        self.install()
+        self.assertNotIn('reprise', json.loads(self.config.read_text())['mcpServers'])
+        value = json.loads(self.config.read_text())
+        value['mcpServers']['reprise'] = {'command': 'unrelated-store-connector'}
+        self.config_write(value)
+        self.install()
+        self.assertEqual(json.loads(self.config.read_text())['mcpServers']['reprise'],
+                         {'command': 'unrelated-store-connector'})
+
     def test_custom_entry_and_managed_edit_refused(self):
-        self.config_write({'mcpServers': {'reprise': {'command': 'custom'}}})
+        self.config_write({'mcpServers': {'reprise-harness': {'command': 'custom'}}})
         with self.assertRaises(ValueError): self.plan()
         self.config.unlink()
         self.install()
         value = json.loads(self.config.read_text())
-        value['mcpServers']['reprise']['args'].append('--custom')
+        value['mcpServers']['reprise-harness']['args'].append('--custom')
         self.config_write(value)
         with self.assertRaises(ValueError): self.plan()
         with self.assertRaises(ValueError): self.plan(action='remove')

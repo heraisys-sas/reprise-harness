@@ -5,12 +5,12 @@
 Dans **Intégrations → Connecteur Claude Desktop**, choisir le projet autorisé,
 prévisualiser l’installation puis appliquer le plan. Le bundle contient le serveur
 et son runtime Python ; ni clone Git ni Python système ne sont requis chez
-l’utilisateur. Un seul serveur MCP nommé `reprise` expose les deux sens.
+l’utilisateur. Un seul serveur MCP nommé `reprise-harness` expose les deux sens.
 
 L’option « Remplacer l’ancien probe Reprise reconnu » retire seulement l’entrée
 `reprise_quick_probe` correspondant au script de test connu. La configuration
 complète est sauvegardée en privé ; les autres connecteurs, préférences et secrets
-ne sont pas copiés vers un autre harness. Une entrée `reprise` personnalisée ou un
+ne sont pas copiés vers un autre harness. Une entrée `reprise-harness` personnalisée ou un
 changement concurrent bloque l’opération. Le retrait ne supprime pas les tâches
 et résultats. Reprise ne redémarre pas Claude ; le chargement effectif après
 rechargement est une preuve distincte de la vérification directe de la release.
@@ -61,3 +61,5 @@ Le champ historique `dispatch` nomme la cible envisagée, pas un appel exécuté
 Le connecteur MCP répare le retour et la délégation, mais ne crée pas à lui seul
 l’IPC manquante vers Quick Apply. Seul un résultat `submit_result` accepté clôt
 une tâche entrante ; ni un socket vivant ni un reçu d’admission ne la clôturent.
+
+Après le rechargement de Claude, autoriser les outils du connecteur **reprise-harness**. Reprise ne peut pas accorder cette autorisation à votre place. Une ancienne entrée `reprise` gérée est migrée ; une entrée appartenant à un autre connecteur est conservée.

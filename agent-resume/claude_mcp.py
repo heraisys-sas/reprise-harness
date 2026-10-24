@@ -46,7 +46,7 @@ class ClaudeMCP:
         params = message.get('params') or {}
         if method == 'initialize':
             return {'protocolVersion': '2024-11-05', 'capabilities': {'tools': {}}, 'serverInfo': {
-                'name': 'reprise-claude', 'version': Path(__file__).with_name('VERSION').read_text().strip(),
+                'name': 'reprise-harness', 'version': Path(__file__).with_name('VERSION').read_text().strip(),
                 'source_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},
                 'instructions': 'Project-scoped bidirectional service. Quick Apply admission is not dispatch proof. Persist request_key and claim_key. Claim an incoming task only when its request_key is explicitly supplied. Only submit_result completes incoming tasks. Claude Desktop loopback is disabled.'}
         if method == 'ping':

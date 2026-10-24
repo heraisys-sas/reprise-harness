@@ -61,10 +61,23 @@ def entry_hash(entry):
     return digest(encoded(entry).encode())
 
 
+CONNECTOR_NAME = 'reprise-harness'
+AUTHORIZATION_NOTICE = 'Dans Claude, autorisez les outils du connecteur reprise-harness pour recevoir les tâches, rendre les résultats et déléguer. Reprise ne peut pas accorder ces autorisations à votre place.'
+
+
+def managed_name(servers, old):
+    if old and old.get('connector_name'):
+        return old['connector_name']
+    if old and 'reprise' in servers and old.get('entry_sha256') == entry_hash(servers['reprise']):
+        return 'reprise'
+    return CONNECTOR_NAME
+
+
 def inspect(root, home=None):
     home, config, managed = paths(home or Path.home())
     value, old = read_config(config), metadata(managed)
-    entry = value.get('mcpServers', {}).get('reprise')
+    servers = value.get('mcpServers', {})
+    entry = servers.get(managed_name(servers, old))
     return {'status': 'inspected', 'home': str(home), 'config_exists': config.exists(),
             'configuration_written': entry is not None,
             'managed': bool(old and entry is not None and old.get('entry_sha256') == entry_hash(entry)),
@@ -80,9 +93,10 @@ def desired(root, home, project, replace_probe, action='install'):
     original = read_config(config)
     old = metadata(managed)
     servers = dict(original.get('mcpServers', {}))
-    existing = servers.get('reprise')
-    if 'reprise' in servers and (not old or old.get('entry_sha256') != entry_hash(existing)):
-        raise ValueError('Entrée reprise personnalisée ou non gérée ; aucun écrasement.')
+    name = managed_name(servers, old)
+    existing = servers.get(name)
+    if name in servers and (not old or old.get('entry_sha256') != entry_hash(existing)):
+        raise ValueError('Entrée reprise-harness personnalisée ou non gérée ; aucun écrasement.')
     if action not in ('install', 'remove'):
         raise ValueError('Action invalide.')
     if action == 'remove':
@@ -90,7 +104,7 @@ def desired(root, home, project, replace_probe, action='install'):
             raise ValueError('Aucune intégration Claude gérée à retirer.')
         if old.get('project') != str(project):
             raise ValueError('Projet sélectionné différent du connecteur géré.')
-        servers.pop('reprise', None)
+        servers.pop(name, None)
         manifest = dict(old, status='removed', entry_sha256=None)
         return home, config, managed, dict(original, mcpServers=servers), manifest, None, None
     replaced_probe = (old or {}).get('replaced_probe')
@@ -117,9 +131,13 @@ def desired(root, home, project, replace_probe, action='install'):
     entry = {'command': str(program), 'args': ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/claude_mcp.py'),
              '--project-root', str(project), '--state', str(quick_state), '--expert-state', str(main_state),
              '--socket', str(home / '.codex/app-server-control/app-server-control.sock')]}
-    servers['reprise'] = entry
+    if name != CONNECTOR_NAME:
+        if CONNECTOR_NAME in servers:
+            raise ValueError('Entrée reprise-harness déjà présente ; migration refusée.')
+        servers.pop(name, None)
+    servers[CONNECTOR_NAME] = entry
     configured = dict(original, mcpServers=servers)
-    manifest = {'format': 1, 'status': 'installed', 'project': str(project),
+    manifest = {'format': 1, 'status': 'installed', 'connector_name': CONNECTOR_NAME, 'project': str(project),
                 'state': str(main_state), 'quick_state': str(quick_state),
                 'entry_sha256': entry_hash(entry), 'release': str(release), 'release_identity': identity}
     if replaced_probe is not None:
@@ -211,13 +229,15 @@ def apply(root, public):
                     atomic(config, old_config.decode('utf-8'))
             raise
     return {'status': 'completed', 'changed': True, 'backup': str(backup), 'client_loaded': 'unknown',
-            'message': 'Connecteur configuré ; aucun démarrage, arrêt ou rechargement de Claude Desktop.'}
+            'authorization_notice': AUTHORIZATION_NOTICE,
+            'message': 'Connecteur reprise-harness configuré. ' + AUTHORIZATION_NOTICE}
 
 
 def verify(root, home=None):
     home, config, managed = paths(home or Path.home())
     old = metadata(managed)
-    entry = read_config(config).get('mcpServers', {}).get('reprise')
+    servers = read_config(config).get('mcpServers', {})
+    entry = servers.get(managed_name(servers, old))
     if not old or old.get('status') != 'installed' or entry is None or entry_hash(entry) != old.get('entry_sha256'):
         raise ValueError('Connecteur géré absent ou modifié.')
     selected_state = state_location(root).resolve()

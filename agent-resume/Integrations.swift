@@ -160,7 +160,7 @@ struct Integrations: View {
                     Button("Inspecter") { app.inspectIntegration() }
                 }.padding(6)
             }
-            GroupBox("Connecteur Claude Desktop · aller-retour et délégation") {
+            GroupBox("Connecteur reprise-harness · Claude Desktop") {
                 VStack(alignment: .leading, spacing: 8) {
                     path("Projet autorisé", app.integrationProject)
                     Button("Choisir le projet Claude…") { app.chooseIntegrationDirectory(project: true) }
@@ -178,7 +178,7 @@ struct Integrations: View {
                         Button("Appliquer le plan Claude") { app.applyClaudeIntegration() }.disabled(!app.claudeIntegrationAcknowledged)
                     }
                     if !app.claudeIntegrationResult.isEmpty { Text(planDetail(app.claudeIntegrationResult)).font(.caption).textSelection(.enabled) }
-                    Text("Claude devra recharger sa configuration. Reprise ne l’arrête pas automatiquement. Une sonde de release ne prouve pas le chargement dans Claude ; le déclenchement Quick Apply reste une capacité distincte.").font(.caption).foregroundStyle(.secondary)
+                    Text("Dans Claude, autorisez les outils du connecteur reprise-harness pour recevoir les tâches, rendre les résultats et déléguer. Reprise ne peut pas accorder ces autorisations à votre place. Claude devra recharger sa configuration. Reprise ne l’arrête pas automatiquement. Une sonde de release ne prouve pas le chargement dans Claude ; le déclenchement Quick Apply reste une capacité distincte.").font(.caption).foregroundStyle(.secondary)
                 }.padding(6)
             }.disabled(app.setupBusy)
             GroupBox("Reprise après quota Claude Desktop") {
