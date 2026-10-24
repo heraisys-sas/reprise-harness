@@ -66,9 +66,10 @@ class Tasks:
             raise TaskError('Endpoint configuration required')
         self.endpoint.validate()
 
-    def _ensure_binding(self, key):
+    def _ensure_binding(self, key, connection=None):
         self._require_endpoint()
-        saved = self.db.execute('SELECT identity,content,parent_request_key FROM ironclaw_tasks WHERE request_key=?', (key,)).fetchone()
+        connection = self.db if connection is None else connection
+        saved = connection.execute('SELECT identity,content,parent_request_key FROM ironclaw_tasks WHERE request_key=?', (key,)).fetchone()
         if not saved:
             return
         stored, content, parent_key = saved
@@ -78,8 +79,11 @@ class Tasks:
         # Ligne écrite avant la version des identités : on migre au lieu de crier à un
         # changement d'endpoint, qui serait un faux diagnostic.
         if ':' not in stored and stored == self._identity_legacy(content, parent_key):
-            with self.db:
-                self.db.execute('UPDATE ironclaw_tasks SET identity=? WHERE request_key=?', (expected, key))
+            if connection is self.db:
+                with self.db:
+                    connection.execute('UPDATE ironclaw_tasks SET identity=? WHERE request_key=?', (expected, key))
+            else:
+                connection.execute('UPDATE ironclaw_tasks SET identity=? WHERE request_key=?', (expected, key))
             return
         raise TaskError('Task belongs to a different endpoint configuration')
 
@@ -153,8 +157,9 @@ class Tasks:
         identity = self._identity(content, parent_key)
         thread = None
         with self._admission() as admission:
+            self._ensure_binding(key, admission)
             if parent_key is not None:
-                self._ensure_binding(parent_key)
+                self._ensure_binding(parent_key, admission)
                 parent = self.get(parent_key)
                 if parent['state'] != 'finished' or not parent['thread_id']:
                     raise TaskError('Followup requires a finished parent with an owned thread')
@@ -171,7 +176,7 @@ class Tasks:
                 active = admission.execute("SELECT request_key FROM ironclaw_tasks WHERE thread_id=? AND request_key<>? AND state<>'finished' LIMIT 1", (thread, key)).fetchone()
                 if active:
                     raise TaskError('Another unfinished task owns this thread')
-            duplicate = admission.execute("SELECT request_key FROM ironclaw_tasks WHERE identity=? AND request_key<>? AND state IN ('prepared','dispatching','ambiguous','pending','needs_operator','needs_review','deferred','blocked_busy') LIMIT 1", (identity, key)).fetchone()
+            duplicate = admission.execute("SELECT request_key FROM ironclaw_tasks WHERE identity IN (?,?) AND request_key<>? AND state IN ('prepared','dispatching','ambiguous','pending','needs_operator','needs_review','deferred','blocked_busy') LIMIT 1", (identity, self._identity_legacy(content, parent_key), key)).fetchone()
             if duplicate:
                 raise TaskError('Equivalent task already admitted; use its existing request key')
             admission.execute('INSERT OR IGNORE INTO ironclaw_tasks(request_key,identity,content,thread_action,message_action,state,thread_id,run_id,result,acknowledged,parent_request_key,admitted_at) VALUES(?,?,?,?,?,?,?,NULL,NULL,0,?,?)',
