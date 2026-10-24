@@ -99,3 +99,7 @@ Quand le rôle coordinator est choisi :
 4. Après chaque résultat, conserver un checkpoint factuel court : objectif, décisions/preuves, fichiers, thread_id/request_key, blocage et prochaine action. Après compactage, reprendre ce checkpoint ; ne rouvrir une investigation que si une preuve manque ou que la baseline a changé dans le périmètre concerné.
 
 Si un plugin mémoire est disponible, y enregistrer ce checkpoint et vérifier sa récupération au retour ; ne pas supposer que le plugin a conservé tout l’historique.
+
+## Passation entre harness
+
+Suivre [le contrat de passation](agent-resume/HANDOFF-CONTRACT.md) : issue comme point de coordination, branche liée via `gh issue develop`, un responsable `agent:*` et un état `work:active|available|blocked`. Avant de suspendre un lot et de le proposer à un autre harness, pousser les commits autorisés, vérifier le SHA distant, publier un checkpoint (preuves, non publié, actions incertaines, prochaine action), puis libérer le label du responsable. Ne pas prendre le travail d’un agent actif sans coordination. Les labels ne constituent pas un verrou atomique.

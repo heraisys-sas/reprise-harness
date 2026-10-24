@@ -113,3 +113,7 @@ immédiat bloqué. Installation/inspection/retrait/vérification depuis Intégra
 runtime embarqué, sauvegardes et conflits préservés. Contrat :
 [CLAUDE-CONNECTOR.md](CLAUDE-CONNECTOR.md). Chargement dans Claude à confirmer après
 rechargement consenti ; ce lot ne prétend pas livrer le pilote natif Quick Apply.
+
+### Passation explicite entre harness
+
+Convention immédiate GitHub `agent:*` + `work:active|available|blocked`, branche liée à l’issue et checkpoint de reprise : [contrat](HANDOFF-CONTRACT.md). À implémenter dans Reprise : réservation atomique avec génération, renouvellement, réconciliation des actions en vol et projection des labels ; distribution de la règle avec chaque intégration. Ne pas assimiler expiration, quota, pause volontaire et achèvement.
