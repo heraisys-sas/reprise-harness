@@ -17,6 +17,8 @@ Ce bloc est destiné à compléter les instructions de l’agent (`AGENTS.md`, `
 - Poursuivre la même session distante pour le même sujet et niveau de compétence. Ouvrir une autre session si le sujet ou le niveau change, avec le lignage durable disponible. Éviter les avis redondants et cascades de délégation.
 - Donner baseline, périmètre, critères de réussite et permissions explicites ; permettre les lectures nécessaires. L’expert demande les précisions manquantes plutôt que de boucler. Le demandeur répond avant de relancer un travail fondé sur des suppositions.
 
+- Cycle standard d'une correction demandée par l'opérateur : cadrage par le coordinateur (baseline, périmètre, critères) → plan en lecture seule par l'expert → discussion dans le même fil jusqu'à accord explicite → resoumission de l'implémentation au même expert par le canal d'écriture adapté (sandbox du sous-agent, ou diff Git vérifié `git apply --check` pour Reprise) → vérification par les tests, puis traçabilité de chaque étape (plan retenu, arbitrages, accord, implémentation, contrôles) dans le dépôt — issue, fichier md ou message de commit — jamais uniquement dans la conversation.
+
 ## Preuves, reprises et arrêt des boucles
 
 - Enregistrer `request_key` avant l’envoi, conserver reçus, session et résultats non réclamés. Après un timeout, vérifier le reçu et l’état natif du tour ; ne pas transformer directement `indeterminate` en `recorded` dans SQLite pour contourner une protection. Une absence de réponse n’est ni un arrêt confirmé ni une preuve d’échec d’envoi.
