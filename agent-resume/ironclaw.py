@@ -8,33 +8,47 @@ temporary file for one invocation and removed afterwards, or a plain path is
 used as-is. No fallback and no automatic retry.
 """
 from pathlib import Path
-import base64
 import os
+import re
 import subprocess
 import tempfile
 
 from engines import Unavailable
 
-DEFAULT_HOST = 'baremetal06.agents.near.ai'
-DEFAULT_PORT = '29403'
-DEFAULT_USER = 'agent'
 DEFAULT_UI_PORT = '3000'
 
 
 def validate_values(values):
-    """Validate and normalise the IronClaw endpoint configuration dict."""
+    """Validate the explicit IronClaw endpoint configuration; there is no default host."""
     if not isinstance(values, dict) or not isinstance(values.get('key'), (str, bytes)):
         raise ValueError('Configuration IronClaw requise : host, port, user, key')
-    host = str(values.get('host', DEFAULT_HOST))
-    port = str(values.get('port', DEFAULT_PORT))
-    user = str(values.get('user', DEFAULT_USER))
+    host, port, user = (values.get(name) for name in ('host', 'port', 'user'))
+    host, port, user = (str(item) if isinstance(item, (str, int)) and not isinstance(item, bool) else ''
+                        for item in (host, port, user))
     if not host or not port or not user:
-        raise ValueError('Configuration IronClaw incomplète')
+        raise ValueError('Configuration IronClaw incomplète : host, port et user explicites requis')
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,252}', host):
+        raise ValueError('Hôte IronClaw invalide')
+    if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]{0,63}', user):
+        raise ValueError('Utilisateur IronClaw invalide')
+    if not re.fullmatch(r'[1-9][0-9]{0,4}', port) or int(port) > 65535:
+        raise ValueError('Port IronClaw invalide')
     return host, port, user, values['key']
 
 
+def _ui_port(values):
+    port = str(values.get('ui_port', DEFAULT_UI_PORT))
+    if not re.fullmatch(r'[1-9][0-9]{0,4}', port) or int(port) > 65535:
+        raise ValueError('Port UI IronClaw invalide')
+    return port
+
+
 def _key_material(key):
-    """Return (keyfile_path, cleanup). Bytes -> 0600 temp file removed afterwards."""
+    """Return (keyfile_path, cleanup). Bytes -> private temporary file removed afterwards.
+
+    The key is briefly on disk (0600); an abrupt process kill before cleanup can leave it behind.
+    Prefer a dedicated key file referenced by path.
+    """
     if isinstance(key, bytes):
         if not key.strip():
             raise ValueError('Clé IronClaw vide')
@@ -54,13 +68,14 @@ def _key_material(key):
 
 
 def _ssh_base(program, keyfile, host, port, user):
-    return [program, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=12',
-            '-o', 'ExitOnForwardFailure=yes', '-o', 'StrictHostKeyChecking=accept-new',
+    # -F /dev/null ignores ~/.ssh/config; the host key must already be in known_hosts.
+    return [program, '-F', '/dev/null', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=12',
+            '-o', 'StrictHostKeyChecking=yes', '-o', 'IdentitiesOnly=yes',
             '-i', keyfile, '-p', str(port), f'{user}@{host}']
 
 
-def _run(command, timeout):
-    return subprocess.run(command, input=None, capture_output=True, text=True, timeout=timeout)
+def _run(command, timeout, input_text=None):
+    return subprocess.run(command, input=input_text, capture_output=True, text=True, timeout=timeout)
 
 
 def _clean_answer(stdout):
@@ -79,14 +94,14 @@ def submit(program, values, question, *, timeout=180):
     host, port, user, key = validate_values(values)
     if not isinstance(question, str) or not question.strip() or len(question) > 12000:
         raise ValueError('Question bornée requise')
-    b64 = base64.b64encode(question.encode('utf-8')).decode('ascii')
-    remote = 'ironclaw run -m "$(printf %s ' + b64 + ' | base64 -d)" 2>/dev/null'
+    # The prompt travels on stdin: it never appears in a local or remote process list.
+    remote = 'ironclaw run -m "$(cat)" 2>/dev/null'
 
     keyfile, cleanup = _key_material(key)
     command = _ssh_base(program, keyfile, host, port, user) + [remote]
     try:
         try:
-            proc = _run(command, timeout)
+            proc = _run(command, timeout, input_text=question)
         except subprocess.TimeoutExpired:
             raise Unavailable('timed_out', 'Soumission IronClaw expirée ; aucune relance automatique.')
         text = (proc.stdout or '') + (proc.stderr or '')
@@ -109,7 +124,7 @@ def health(program, values, *, timeout=30):
     command = _ssh_base(program, keyfile, host, port, user) + [
         'echo SHELL_OK; ironclaw status 2>/dev/null | head -3; '
         + 'curl -s -o /dev/null -w "UI=%{http_code}\n" --max-time 5 http://127.0.0.1:'
-        + str(3000) + '/']
+        + _ui_port(values) + '/']
     try:
         try:
             proc = _run(command, timeout)

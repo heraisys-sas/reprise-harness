@@ -83,6 +83,9 @@ MODES = {
 
 
 TRANSPORT_LIMIT = 7000
+# Largest response a backend could capture before #32 (48,000 characters). A full-mode result up to
+# this size is delivered unchanged; a larger one is replaced by its durable receipt manifest.
+FULL_RESULT_LIMIT = 48000
 
 
 def compact_call(message):
@@ -196,13 +199,13 @@ class Bridge:
                 parent = own[0] if own else row[0] if row else None
             existing = self.requests.begin(key, payload, parent)
             if existing:
+                pointer = existing.get('request_key', key)
                 if return_mode == 'receipt':
-                    pointer = existing.get('request_key', key)
                     manifest = self.requests.lookup({'request_key': pointer, 'view': 'receipt'})
-                    if not manifest['available']:
-                        manifest['status'] = existing['status']
+                    # The lookup status only says the receipt was found, not how the delegation ended.
+                    manifest['status'] = existing['status']
                     return manifest
-                return existing
+                return self._bounded_full(pointer, existing)
             # Exceptions or process exit leave a durable uncertain attempt.
             result = self._call(name, clean)
             try:
@@ -213,8 +216,18 @@ class Bridge:
                 result = dict(result, status='needs_review', reason='Input files changed during delegation; result requires reconciliation.', input_changed=True)
             result = self.requests.finish(key, result)
             if return_mode == 'receipt':
-                return self.requests.lookup({'request_key': key, 'view': 'receipt'})
+                return dict(self.requests.lookup({'request_key': key, 'view': 'receipt'}), status=result['status'])
+            return self._bounded_full(key, result)
+
+    def _bounded_full(self, key, result):
+        """Deliver a full-mode result unchanged up to FULL_RESULT_LIMIT, else its durable manifest."""
+        if len(json.dumps(result, ensure_ascii=False)) <= FULL_RESULT_LIMIT:
             return result
+        manifest = self.requests.lookup({'request_key': key, 'view': 'receipt'})
+        if not manifest['available']:
+            return result
+        return dict(manifest, status=result['status'], return_mode_effective='receipt',
+                    reason='Result exceeds the full-mode delivery limit; read it with reprise_requests view=page or delegation_collect.py.')
 
     def _call(self, name, args, *, preflight=False):
         if name not in ('reprise_backends', 'reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup', 'reprise_resume', 'reprise_history', 'reprise_health') or not isinstance(args, dict):
