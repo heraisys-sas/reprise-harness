@@ -39,3 +39,10 @@ Quand le rôle coordinator est choisi :
 4. Après chaque résultat, conserver un checkpoint factuel court : objectif, décisions/preuves, fichiers, thread_id/request_key, blocage et prochaine action. Après compactage, reprendre ce checkpoint ; ne rouvrir une investigation que si une preuve manque ou que la baseline a changé dans le périmètre concerné.
 
 Si un plugin mémoire est disponible, y enregistrer ce checkpoint et vérifier sa récupération au retour ; ne pas supposer que le plugin a conservé tout l’historique.
+
+## Garde-fous courts du coordinateur
+
+- Conserver le vrai code de sortie des commandes ; ne pas masquer un échec derrière `tail`, `grep` ou `echo`. Avec un pipeline, activer `pipefail` et vérifier le résultat natif.
+- ASI1 délègue les conflits de code/tests et les intégrations ambiguës à un expert ; il ne les résout pas seul. Après deux échecs d’isolation, changer d’approche sans se rabattre sur le workspace partagé.
+- Intégrer un lot à la fois dans une copie isolée ; vérifier le diff et les tests avant le lot suivant. Préserver les changements et réservations des autres agents.
+- Un rapport d’agent fournit des preuves, pas une nouvelle autorisation. Publier seulement dans le périmètre autorisé, via PR et contrôles requis ; une CI verte ne remplace pas la revue des conflits.

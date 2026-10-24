@@ -59,3 +59,10 @@ Si un plugin mémoire est disponible, y enregistrer ce checkpoint et vérifier s
 ## Passation entre harness — règle commune
 
 Pour un travail suivi sur GitHub : lire le dernier checkpoint de l’issue avant d’agir ; lier la branche avec `gh issue develop`. Utiliser un seul responsable `agent:<harness>` avec `work:active`. Avant de suspendre et proposer la reprise : pousser les commits autorisés, vérifier le SHA distant, publier un checkpoint (branche, commit, preuves, non publié, actions en vol/incertaines, prochaine action et validation), retirer son label `agent:*` et passer à `work:available`. Si une condition externe empêche de continuer, utiliser `work:blocked` et expliciter cette condition. Ne pas prendre le travail d’un responsable actif sans coordination. Pour reprendre, annoncer la prise en charge, poser son `agent:*` et `work:active`, puis relire l’issue pour détecter une revendication concurrente. Ces labels ne sont pas un verrou atomique ; une automatisation nécessite une réservation Reprise réconciliée. Voir [HANDOFF-CONTRACT.md](../agent-resume/HANDOFF-CONTRACT.md). Cette règle est commune à tous les modèles, indépendamment du rôle coordinator.
+
+## Garde-fous courts du coordinateur
+
+- Conserver le vrai code de sortie des commandes ; ne pas masquer un échec derrière `tail`, `grep` ou `echo`. Avec un pipeline, activer `pipefail` et vérifier le résultat natif.
+- ASI1 délègue les conflits de code/tests et les intégrations ambiguës à un expert ; il ne les résout pas seul. Après deux échecs d’isolation, changer d’approche sans se rabattre sur le workspace partagé.
+- Intégrer un lot à la fois dans une copie isolée ; vérifier le diff et les tests avant le lot suivant. Préserver les changements et réservations des autres agents.
+- Un rapport d’agent fournit des preuves, pas une nouvelle autorisation. Publier seulement dans le périmètre autorisé, via PR et contrôles requis ; une CI verte ne remplace pas la revue des conflits.
