@@ -174,6 +174,21 @@ class CodexCoverageRegressionTests(unittest.TestCase):
                 self.assertIsNone(module.inspect('/rollout', now=2000, details=details))
                 self.assertEqual(details['coverage'], expected)
 
+    def test_known_metadata_does_not_obscure_quota_completion(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'rollout'
+            records = [{'type': kind} for kind in
+                       ('token_usage_record', 'inter_agent_communication_metadata', 'world_state')]
+            records += [{'type': 'event_msg', 'payload': {'type': kind}} for kind in
+                        ('item_completed', 'thread_settings_applied')]
+            records.append({'type': 'event_msg', 'payload': {
+                'type': 'task_complete', 'completed_at': 1000,
+                'error': {'codex_error_info': 'usage_limit_exceeded'}}})
+            path.write_text('\n'.join(json.dumps(record) for record in records))
+            details = {}
+            self.assertEqual(module.inspect(path, now=2000, details=details)['state'], 'quota_confirmed')
+            self.assertEqual(details['coverage'], 'recognized')
+
     def test_scan_counts_degraded_coverage_without_claiming_idle(self):
         from unittest.mock import Mock, patch
         rows = [(name, name, '/project', name, 2000, 'cli')
@@ -190,6 +205,10 @@ class CodexCoverageRegressionTests(unittest.TestCase):
             result = module.scan('/codex')
         self.assertEqual(result['coverage'], {'total': 4, 'recognized': 1,
                          'unknown_format': 1, 'unreadable': 2, 'degraded': 3})
+        self.assertTrue(result['scan_complete'])
+        self.assertEqual(result['session_coverage'], {
+            'recognized': 'recognized', 'unknown_format': 'unknown_format',
+            'unreadable': 'unreadable', 'denied': 'unreadable'})
         self.assertIsNotNone(result['error'])
         self.assertIsNone(result['active'])
         self.assertEqual(result['sessions'], [])

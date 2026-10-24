@@ -66,19 +66,23 @@ AUTHORIZATION_NOTICE = 'Dans Claude, autorisez les outils du connecteur reprise-
 
 
 def managed_name(servers, old):
-    if old and old.get('connector_name'):
+    if old and old.get('connector_name') in servers:
         return old['connector_name']
     if old and 'reprise' in servers and old.get('entry_sha256') == entry_hash(servers['reprise']):
         return 'reprise'
-    return CONNECTOR_NAME
+    return (old or {}).get('connector_name') or CONNECTOR_NAME
 
 
 def inspect(root, home=None):
     home, config, managed = paths(home or Path.home())
     value, old = read_config(config), metadata(managed)
     servers = value.get('mcpServers', {})
-    entry = servers.get(managed_name(servers, old))
+    name = managed_name(servers, old)
+    entry = servers.get(name)
     return {'status': 'inspected', 'home': str(home), 'config_exists': config.exists(),
+            'connector_name': name if entry is not None else None,
+            'manifest_connector_name': old.get('connector_name') if old else None,
+            'connector_name_matches': bool(old and entry is not None and old.get('connector_name') == name),
             'configuration_written': entry is not None,
             'managed': bool(old and entry is not None and old.get('entry_sha256') == entry_hash(entry)),
             'project': old.get('project') if old else None,
@@ -95,6 +99,8 @@ def desired(root, home, project, replace_probe, action='install'):
     servers = dict(original.get('mcpServers', {}))
     name = managed_name(servers, old)
     existing = servers.get(name)
+    if old and old.get('status') == 'installed' and name not in servers and 'reprise' in servers:
+        raise ValueError('Entrée historique reprise différente du manifeste ; réconciliation explicite requise.')
     if name in servers and (not old or old.get('entry_sha256') != entry_hash(existing)):
         raise ValueError('Entrée reprise-harness personnalisée ou non gérée ; aucun écrasement.')
     if action not in ('install', 'remove'):
@@ -237,9 +243,12 @@ def verify(root, home=None):
     home, config, managed = paths(home or Path.home())
     old = metadata(managed)
     servers = read_config(config).get('mcpServers', {})
-    entry = servers.get(managed_name(servers, old))
+    name = managed_name(servers, old)
+    entry = servers.get(name)
     if not old or old.get('status') != 'installed' or entry is None or entry_hash(entry) != old.get('entry_sha256'):
         raise ValueError('Connecteur géré absent ou modifié.')
+    if name != CONNECTOR_NAME or old.get('connector_name') != name:
+        raise ValueError('Nom du connecteur incohérent ; migration gérée requise avant vérification.')
     selected_state = state_location(root).resolve()
     release = Path(old['release'])
     if (old.get('state') != str(selected_state) or release.parent.resolve() != (selected_state.parent / 'integration-releases').resolve()
@@ -264,18 +273,19 @@ def verify(root, home=None):
     names = sorted(tool['name'] for tool in tools)
     if not {'get_task', 'submit_result', 'reprise_backends', 'reprise_requests', 'reprise_delegate', 'reprise_followup'}.issubset(names):
         raise ValueError('Outils du connecteur unifié incomplets.')
-    daemon = {'binding': 'unknown', 'dispatch_supported': 'unknown'}
+    daemon = {'binding': 'unknown', 'dispatch_supported': 'unknown', 'capabilities_observed': False}
     client = None
     try:
         from claude_desktop_rpc import Client
         client = Client(None, {'socket': str(home / '.claude-desktop/quick-entry.sock')}, timeout=2)
-        client.call('initialize', {})
+        initialized = client.call('initialize', {})
+        daemon['version'] = initialized.get('serverInfo', {}).get('version', 'unknown')
         observed = client.call('quick_entry/capabilities', {})
         matches = (observed.get('project_root') == old['project'] and
                    observed.get('state_sha256') == hashlib.sha256(str(Path(old['quick_state']).resolve()).encode()).hexdigest())
-        daemon = {'binding': 'matched' if matches else 'mismatch',
-                  'dispatch_supported': observed.get('dispatch_supported', 'unknown'),
-                  'version': observed.get('version')}
+        daemon.update(binding='matched' if matches else 'mismatch',
+                      dispatch_supported=observed.get('dispatch_supported', 'unknown'),
+                      capabilities_observed=True)
     except (OSError, ValueError, TimeoutError):
         pass
     finally:
