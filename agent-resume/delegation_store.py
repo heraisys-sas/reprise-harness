@@ -7,15 +7,18 @@ from pathlib import Path
 
 def file_evidence(root, paths=None, file_paths=None):
     evidence = []
+    root = Path(root).resolve(strict=True)
     for project_relative, names in ((True, paths or []), (False, file_paths or [])):
         if not isinstance(names, list) or len(names) > 30:
             raise ValueError("Bounded file path list required")
         for name in names:
             if not isinstance(name, str):
                 raise ValueError("File path required")
-            path = (Path(root) / name) if project_relative else Path(name)
+            if project_relative and Path(name).is_absolute():
+                raise ValueError("Project-relative path required")
+            path = (root / name) if project_relative else Path(name)
             path = path.resolve(strict=True)
-            if project_relative and (Path(name).is_absolute() or not path.is_relative_to(root)):
+            if project_relative and not path.is_relative_to(root):
                 raise ValueError("Project-relative path required")
             if not path.is_file() or path.stat().st_size > 31457280:
                 raise ValueError("Regular file at most 30 MB required")
