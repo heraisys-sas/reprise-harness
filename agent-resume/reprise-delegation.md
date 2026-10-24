@@ -42,7 +42,7 @@ Persist `request_key` before calling any inference tool with `return_mode="recei
 (`reprise_delegate`, `reprise_followup`, `codex_review`, `codex_followup`).
 Prefer compact receipts for delegation and continuations, then read only useful pages.
 The complete result is persisted before the compact manifest is returned,
-including on replay. `return_mode` defaults to `full` and is removed before
+including on replay. `return_mode` defaults to `full`; a full-mode result above 48,000 characters is returned as its receipt manifest (`return_mode_effective="receipt"`, delegation `status`, no `response`), to be read with `view="page"`. A receipt manifest carries the delegation `status`, so `needs_review` is never shown as finished. `return_mode` is removed before
 backend prevalidation, payload construction, identity and signature. Switching
 modes never starts a second inference. Existing admission and uncertainty
 barriers remain in force.

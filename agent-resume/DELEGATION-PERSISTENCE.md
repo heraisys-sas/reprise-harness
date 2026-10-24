@@ -54,7 +54,7 @@ La découverte `initialize` donne version et SHA-256 du module exécuté ; les
 schémas `tools/list` prouvent les paramètres disponibles. Une vérification directe
 de release ne prouve jamais que le client Harness l’a déjà chargée.
 
-La capture Codex conserve jusqu’à 2 000 000 caractères Unicode ; au-delà,
+Depuis 0.1.5, le mode `full` (défaut) livre le résultat tel quel jusqu’à 48 000 caractères, plafond de capture antérieur à #32 : aucun résultat existant ne change. Au-delà,\nle pont renvoie le manifeste du reçu (`return_mode_effective=receipt`, `status`\ndu résultat, `total_length`, `result_sha256`, sans `response`), y compris pour un\nrésultat incertain et pour une rediffusion de la même clé ; la lecture paginée\n`reprise_requests view=page` ou `delegation_collect.py` récupère le contenu complet.\nLe `status` d’un manifeste `receipt` est celui de la délégation (non plus celui de la\nlecture du reçu), donc un résultat `needs_review` n’est plus présenté comme réussi.\nLe helper écrit désormais par fichier temporaire privé puis liaison atomique : un échec\nne laisse aucun fichier partiel et un nouvel essai reste possible.\n\nLa capture Codex conserve jusqu’à 2 000 000 caractères Unicode ; au-delà,
 le résultat est explicitement incomplet et `needs_review`. Le helper installé
 `delegation_collect.py` assemble les pages en lecture seule, vérifie empreinte et
 longueur avant création exclusive d’un fichier privé. Il ne fait aucune inférence

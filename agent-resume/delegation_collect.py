@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import secrets
 import sqlite3
 import sys
 
@@ -67,11 +68,23 @@ def collect(state, project_root, request_key, field='result'):
 
 
 def write_output(path, text):
-    """Create a private new file; never follow or replace an existing entry."""
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0)
-    descriptor = os.open(path, flags, 0o600)
-    with os.fdopen(descriptor, 'w', encoding='utf-8', newline='') as output:
-        output.write(text)
+    """Create a private new file atomically; never follow, replace or leave a partial entry."""
+    path = Path(path)
+    nofollow = getattr(os, 'O_NOFOLLOW', 0)
+    temporary = path.with_name(f'.{path.name}.{secrets.token_hex(8)}.part')
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow, 0o600)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8', newline='') as output:
+            output.write(text)
+            output.flush()
+            os.fsync(output.fileno())
+        # link() fails if the target exists (including a dangling symlink) and never replaces it.
+        os.link(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def main(argv=None):
