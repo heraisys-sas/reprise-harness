@@ -64,6 +64,11 @@ barriers remain in force.
    afterwards. Only `state="recorded"` can be acknowledged; pages cannot
    acknowledge, and reads never acknowledge implicitly.
 
+A result with `status` `blocked_owner` or `blocked_session` is `recorded`: no turn was
+submitted, so an equivalent delegation may be requested again under a new `request_key`.
+`timed_out`, `needs_review`, `blocked_permission` and any exception leave the attempt
+`indeterminate`; reconcile it without redispatching.
+
 `format="receipt-json-v1"` describes JSON of the entire persisted `result`
 object: sorted keys, compact separators, `ensure_ascii=False`, no Unicode
 normalization. Lengths and offsets count Unicode code points. SHA-256 hashes
