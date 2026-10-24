@@ -464,8 +464,11 @@ class CompactReceiptTests(unittest.TestCase):
                     self.assertTrue(receipt['available'])
                     self.assertGreater(receipt['total_length'], 48000)
                     self.assertEqual(receipt, self.dispatch(name, dict(args, return_mode='receipt')))
+                    # Above the full-mode delivery limit the default mode returns the same manifest.
                     full = self.bridge.call(name, dict(args, return_mode='full'))
-                    self.assertEqual(full['response'], 'é😀\\"' * 15000)
+                    self.assertEqual((full['return_mode_effective'], full['result_sha256']),
+                                     ('receipt', receipt['result_sha256']))
+                    self.assertNotIn('response', full)
                     run.assert_called_once()
 
     def test_claude_continuation_compact_replay(self):
