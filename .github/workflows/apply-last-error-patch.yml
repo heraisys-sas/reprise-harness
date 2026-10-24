@@ -1,0 +1,65 @@
+name: Apply last_error patch (jetable)
+
+# Workflow jetable : il n'existe que sur la branche chore/patch-last-error, jamais sur dev.
+# Il calcule le patch cote runner (Python disponible), echoue si la cible a change, et pousse
+# le resultat sur fix/37-expose-last-error. Rien n'est merge depuis cette branche.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Creer la branche de correction
+        run: |
+          git config user.name 'heraisys-sas'
+          git config user.email 'olivier.hernandez@heraisys.com'
+          git checkout -b fix/37-expose-last-error
+
+      - name: Appliquer le patch avec assertions
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('agent-resume/ironclaw_tasks.py')
+          text = path.read_text(encoding='utf-8')
+
+          edits = [
+              (
+                  "SELECT state,thread_id,run_id,result,acknowledged,identity,content FROM ironclaw_tasks",
+                  "SELECT state,thread_id,run_id,result,acknowledged,identity,content,last_error FROM ironclaw_tasks",
+              ),
+              (
+                  "                    acknowledged=bool(row[4] or acknowledge))",
+                  "                    acknowledged=bool(row[4] or acknowledge), last_error=row[7])",
+              ),
+          ]
+
+          for old, new in edits:
+              count = text.count(old)
+              assert count == 1, f'attendu 1 occurrence, trouve {count}: {old[:60]!r}'
+              text = text.replace(old, new)
+
+          path.write_text(text, encoding='utf-8')
+          print('patch applique')
+          PY
+          git diff
+
+      - name: Verifier que seul ce fichier bouge
+        run: |
+          test "$(git diff --name-only | wc -l)" -eq 1
+          test "$(git diff --name-only)" = 'agent-resume/ironclaw_tasks.py'
+          git diff --numstat
+
+      - name: Committer et pousser
+        run: |
+          git commit -am 'fix(ironclaw_tasks): exposer `last_error` dans `get()` (#37)'
+          git push origin fix/37-expose-last-error
