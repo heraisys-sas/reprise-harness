@@ -41,3 +41,42 @@ A [Quick Entry trial](CLAUDE-MCP-PROBE.md#quick-entry-trial--19-october-2026) on
 ## Orientation actuelle — service Reprise unifié
 
 La [cible multi-harness](HARNESS-SUPERVISION-ARCHITECTURE.md) regroupe dans le même service logique les outils de réception/retour et de délégation. Claude Desktop pourra recevoir une tâche et solliciter un autre harness avant de rendre son résultat. Priorité au parcours Desktop avec le compte disponible, même gratuit ; aucun repli API payant. Les prototypes restent séparés. Le CLI d’expertise restreint décrit ci-dessus conserve ses limitations : cette cible ne lui active pas implicitement des outils.
+
+## Pause gratuite affichée — reprise native (#36)
+
+Depuis 0.1.6, `ClaudeQuota` est livré dans le bundle macOS. L’option
+**Continuer le chat après le reset gratuit** dans Intégrations autorise ce canal
+seul ; elle est activée par défaut et reste subordonnée à la pause globale.
+CLI équivalente : `resume claude-quota-config --enabled true` ; inspection :
+`resume claude-quota-status`. Le scheduler installé doit pointer vers cette release.
+
+L’observateur Accessibilité ne lit ni cookies ni API web privée. Il exige une
+application Claude unique, une zone web avec URL `claude.ai/chat/<UUID>`, le
+**dernier** message `Message N sur N`, la pause gratuite française et un bouton
+natif Continuer unique. La date sans année est interprétée près de l’observation,
+dans le fuseau explicite renvoyé par macOS ; dates ambiguës/inexistantes lors du
+changement d’heure sont refusées. Une date récente déjà passée peut être traitée
+si l’application expose toujours cette pause. La date et l’empreinte du dernier
+message restent enregistrées dans `tasks.sqlite`, table `claude_quota_resumes`.
+
+Après l’échéance, le scheduler revérifie deux fois l’identité, l’empreinte, le
+bouton activé, l’absence de réponse en cours et la saisie vide. Il réserve
+l’événement durablement **avant** AXPress. `submitted` prouve seulement la
+soumission du clic ; `uncertain` interdit son rejeu automatique. Un refus prouvé
+avant clic reste en attente. Un autre chat affiché diffère l’action sans naviguer
+à la place de l’utilisateur ; une reprise manuelle ou un dernier message changé
+empêche l’ancien clic. Aucun prompt, changement de modèle ni repli payant.
+
+L’autorisation Accessibilité doit être accordée au composant Reprise qui agit ;
+le helper ne la demande pas et ne l’accorde jamais automatiquement. Sans cette
+permission ou si l’interface ne correspond plus au contrat, l’observation demeure
+indisponible et aucune action n’est déduite. Reprise doit fonctionner dans la
+session graphique connectée, avec le chat cible affiché. Écran verrouillé,
+permissions et clic réel après reset restent des validations distinctes.
+
+Un avis fourni par l’opérateur peut être conservé avec `register_notice` en état
+`awaiting_observation` : date et chat sont mémorisés, mais aucune empreinte AX
+n’est inventée et cet avis n’autorise jamais un clic. La première observation
+native valide crée le véritable reçu d’interruption ; l’avis initial est conservé
+comme remplacé. Cela permet de tracer une échéance même avant l’autorisation
+Accessibilité, sans contourner la revalidation.

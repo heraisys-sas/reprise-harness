@@ -26,6 +26,7 @@ swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cach
 swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Embedding.swift" -o "$APP/Contents/MacOS/Embedding"
 swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/FoundationExplain.swift" -o "$APP/Contents/MacOS/FoundationExplain"
 swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/Vault.swift" -o "$APP/Contents/MacOS/Vault"
+swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/ClaudeQuota.swift" -o "$APP/Contents/MacOS/ClaudeQuota"
 # A persistent certificate and identifier preserve the helper's signing identity.
 # Ad-hoc development builds cannot promise Keychain trust across rebuilds.
 if [ -n "${REPRISE_SIGNING_IDENTITY:-}" ]; then

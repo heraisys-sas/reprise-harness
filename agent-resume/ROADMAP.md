@@ -94,3 +94,12 @@ réservation durable par événement et protection contre continuations consécu
 Lecture de toutes les trames Zstandard des journaux. Vérification réelle de son
 chargement dans un client Desktop après rechargement coordonné à distinguer des
 tests simulés. Contrat : [HARNESS-INTEGRATION.md](HARNESS-INTEGRATION.md).
+
+### #36 — Claude Desktop gratuit : reset affiché et Continuer
+
+Helper natif Accessibilité et registre durable des pauses gratuites, date/fuseau
+vérifiés, clic Continuer après revalidation sur le même dernier message. Option
+installable depuis Intégrations, activée par défaut, subordonnée à la pause
+globale. Aucune API privée ni facturation de repli. Contrat et limites dans
+[CLAUDE-INTEGRATION.md](CLAUDE-INTEGRATION.md). L’essai après échéance réelle et la
+permission Accessibilité restent à confirmer séparément des tests simulés.

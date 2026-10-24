@@ -2,6 +2,17 @@ import Cocoa
 import SwiftUI
 
 extension App {
+    func refreshClaudeQuota() {
+        guard stateReady, !setupBusy else { return }
+        setupCommand(["claude-quota-status"]) { self.claudeQuotaState = $0 }
+    }
+    func configureClaudeQuota(_ enabled: Bool) {
+        guard stateReady, !setupBusy else { return }
+        setupCommand(["claude-quota-config", "--enabled", enabled ? "true" : "false"]) { result in
+            self.claudeQuotaState["enabled"] = result["claude_desktop_auto_enabled"] as? Bool ?? false
+        }
+    }
+
     func invalidateIntegrationPlan() {
         integrationPlan = nil
         integrationAcknowledged = false
@@ -116,6 +127,23 @@ struct Integrations: View {
                     Button("Inspecter") { app.inspectIntegration() }
                 }.padding(6)
             }
+            GroupBox("Reprise après quota Claude Desktop") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Continuer le chat après le reset gratuit", isOn: Binding(
+                        get: { app.claudeQuotaState["enabled"] as? Bool ?? true },
+                        set: { app.configureClaudeQuota($0) }))
+                    Text("Requiert l’autorisation Accessibilité macOS. Reprise vérifie le dernier message du chat affiché et son bouton Continuer, sans saisir de prompt. La pause globale reste prioritaire.").font(.caption).foregroundStyle(.secondary)
+                    if let events = app.claudeQuotaState["events"] as? [[String: Any]], let latest = events.first,
+                       let due = latest["due"] as? Double {
+                        Text("Échéance : " + Date(timeIntervalSince1970: due).formatted(date: .abbreviated, time: .shortened))
+                        Text("État : " + (latest["status"] as? String ?? "inconnu"))
+                    }
+                    if let observation = app.claudeQuotaState["observation"] as? [String: Any], let state = observation["status"] as? String {
+                        Text("Observation : " + state).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button("Actualiser le suivi Claude") { app.refreshClaudeQuota() }
+                }.padding(6)
+            }.disabled(app.setupBusy).onAppear { app.refreshClaudeQuota() }
             Text(app.integrationMessage).textSelection(.enabled)
             if app.setupBusy { ProgressView("Opération en cours…") }
             HStack {
