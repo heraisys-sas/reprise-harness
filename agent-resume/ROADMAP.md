@@ -117,3 +117,7 @@ rechargement consenti ; ce lot ne prétend pas livrer le pilote natif Quick Appl
 ### Passation explicite entre harness
 
 Convention immédiate GitHub `agent:*` + `work:active|available|blocked`, branche liée à l’issue et checkpoint de reprise : [contrat](HANDOFF-CONTRACT.md). À implémenter dans Reprise : réservation atomique avec génération, renouvellement, réconciliation des actions en vol et projection des labels ; distribution de la règle avec chaque intégration. Ne pas assimiler expiration, quota, pause volontaire et achèvement.
+
+### #62 — déléguer une implémentation native à Codex
+
+[Contrat](CODEX-EXECUTION-CONTRACT.md) : grant explicite par projet, mode implementation distinct des expertises, session durable et followup de même mode, installation DSH gérée et contrôles de fichiers adaptés. Le canal ne crée pas de permission implicite GitHub/système et n’est pas le courtier de commandes #29. Vérifier séparément présence/classification Desktop et approbations interactives #24.

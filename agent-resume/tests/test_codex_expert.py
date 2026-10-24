@@ -65,6 +65,25 @@ class ExpertTests(unittest.TestCase):
         self.assertFalse(config['features.apps'])
         self.assertFalse(config['features.plugins'])
         self.assertEqual(config['mcp_servers'], {'external':{'enabled':False}})
+    def test_implementation_sets_native_workspace_policy_and_does_not_hide_thread(self):
+        result = self.run_review(implementation=True)
+        self.assertEqual(result['mode'], 'implementation')
+        start = next(p for m,p in Fake.last.calls if m == 'thread/start')
+        turn = next(p for m,p in Fake.last.calls if m == 'turn/start')
+        self.assertEqual(start['sandbox'], 'workspace-write')
+        self.assertNotIn('threadSource', start)
+        self.assertEqual(turn['sandboxPolicy'], {'type': 'workspaceWrite', 'writableRoots': [str(Path(self.temp.name).resolve())], 'networkAccess': False})
+        self.assertEqual(turn['approvalPolicy'], 'on-request')
+        self.assertIn('Implement', start['developerInstructions'])
+        self.assertEqual(result['status'], 'finished')
+
+    def test_implementation_approval_never_autoapproves_and_keeps_thread(self):
+        Fake.approval = True
+        result = self.run_review(implementation=True)
+        self.assertEqual(result['status'], 'blocked_permission')
+        self.assertIn('pending_request', result)
+        self.assertNotIn('thread/delete', [m for m,p in Fake.last.calls])
+
     def test_long_unicode_response_is_preserved_for_initial_and_followup(self):
         Fake.responses = ['é🙂\\"' * 20_000, 'second message']
         expected = '\n'.join(Fake.responses)

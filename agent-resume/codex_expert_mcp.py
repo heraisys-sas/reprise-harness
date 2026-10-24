@@ -35,6 +35,9 @@ BACKEND_MODELS = {
 RETURN_MODES = {'type': 'string', 'enum': ['full', 'receipt'], 'default': 'full'}
 INFERENCE_TOOLS = ('reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup')
 
+MODE_SCHEMA = {'type': 'string', 'enum': ['expertise', 'implementation'],
+               'description': 'Implementation requires operator-enabled project workspace writes; followup preserves its original mode.'}
+
 MODEL_SCHEMA = {'type': 'string',
                 'description': 'Explicit model from reprise_backends.models; omitted preserves the default or thread route.'}
 
@@ -45,9 +48,10 @@ TOOLS = [
      'inputSchema': {'type': 'object', 'properties': {'engine': {'type': 'string', 'enum': ['codex-cli', 'codex-server', 'codex-parent', 'claude-code', 'claude-desktop', 'harness-cli']}, 'refresh': {'type': 'boolean'}}, 'additionalProperties': False}},
     {'name': 'reprise_requests', 'description': 'Recover durable requests/results by caller-persisted request_key, or list requests after a lost acknowledgement. Never dispatches inference.',
      'inputSchema': LOOKUP_SCHEMA},
-    {'name': 'reprise_delegate', 'description': 'Delegate expertise, review or a bounded batch. Default Codex: standard Sol, deep Astra, standard batch Luna. Explicit claude-code when configured: Sonnet/medium or Opus/high, no tools, only question and supplied project file snapshots. Returns text/patches to verify. Never silently switches backend or billing. Continue via reprise_followup.',
+    {'name': 'reprise_delegate', 'description': 'Delegate expertise, review or a bounded batch. Codex mode implementation applies project edits only when the integration grants workspace writes. Default Codex: standard Sol, deep Astra, standard batch Luna. Explicit claude-code when configured: Sonnet/medium or Opus/high, no tools, only question and supplied project file snapshots. Returns text/patches to verify. Never silently switches backend or billing. Continue via reprise_followup.',
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {
          'return_mode': {'type': 'string', 'enum': ['full', 'receipt'], 'default': 'full'},
+         'mode': MODE_SCHEMA,
          'kind': {'type': 'string', 'enum': ['expertise', 'review', 'batch']},
          'level': {'type': 'string', 'enum': ['standard', 'deep']},
          'model': MODEL_SCHEMA,
@@ -62,9 +66,9 @@ TOOLS = [
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {'paths': {'type': 'array', 'maxItems': 30, 'items': {'type': 'string'}}}}},
     {'name': 'codex_followup', 'description': 'Continue a review created by this project bridge; preserves its Codex conversation.',
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {'thread_id': {'type': 'string'}}, 'required': ['question', 'thread_id', 'request_key']}},
-    {'name': 'reprise_followup', 'description': 'Continue an owned project expertise session. Omitted model preserves the thread route; explicit model overrides it, preserving effort. No fallback.',
+    {'name': 'reprise_followup', 'description': 'Continue an owned project session and inherit its execution mode. Omitted model preserves the thread route; explicit model overrides it, preserving effort. No fallback.',
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | {
-         'model': MODEL_SCHEMA,
+         'model': MODEL_SCHEMA, 'mode': MODE_SCHEMA,
          'thread_id': {'type': 'string'}, 'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop']}},
          'required': ['question', 'thread_id', 'backend', 'request_key']}},
     {'name': 'reprise_resume', 'description': 'List interrupted tasks reconstructed from local logs that can be retried (quota, guard or missing dispatch). Read-only; no automatic retry.',
@@ -129,7 +133,10 @@ def bounded_content(result, ident):
 
 
 class Bridge:
-    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, allowed_tools=None, ironclaw_values=None):
+    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, allowed_tools=None, ironclaw_values=None, codex_workspace_write=False):
+        if type(codex_workspace_write) is not bool:
+            raise ValueError('Explicit workspace-write grant required')
+        self.codex_workspace_write = codex_workspace_write
         known_tools = {item['name'] for item in TOOLS}
         if allowed_tools is not None and (not allowed_tools or set(allowed_tools) - known_tools):
             raise ValueError('Unknown or empty tool selection')
@@ -157,8 +164,29 @@ class Bridge:
         self.db.execute('CREATE TABLE IF NOT EXISTS expert_calls(scope TEXT,day INTEGER,count INTEGER,PRIMARY KEY(scope,day))')
         self.db.execute('CREATE TABLE IF NOT EXISTS expert_routes(scope TEXT,id TEXT,model TEXT,effort TEXT,PRIMARY KEY(scope,id))')
         self.db.execute('CREATE TABLE IF NOT EXISTS claude_expert_routes(scope TEXT,id TEXT,program TEXT,model TEXT,effort TEXT,PRIMARY KEY(scope,id))')
+        self.db.execute('CREATE TABLE IF NOT EXISTS expert_thread_modes(scope TEXT,id TEXT,mode TEXT NOT NULL,PRIMARY KEY(scope,id))')
         self.db.commit()
         self.requests = Store(self.db, str(self.root))
+
+    def execution_mode(self, name, args):
+        mode = args.get('mode', 'expertise')
+        if not isinstance(mode, str) or mode not in ('expertise', 'implementation'):
+            raise ValueError('Unknown delegation mode')
+        if name in ('reprise_followup', 'codex_followup'):
+            if not isinstance(args.get('thread_id'), str):
+                raise ValueError('Owned Codex session required')
+            row = self.db.execute('SELECT mode FROM expert_thread_modes WHERE scope=? AND id=?',
+                                  (self.scope, args.get('thread_id'))).fetchone()
+            stored = row[0] if row else 'expertise'
+            if 'mode' in args and mode != stored:
+                raise ValueError('Followup cannot change the original execution mode')
+            mode = stored
+        if mode == 'implementation':
+            if name not in ('reprise_delegate', 'reprise_followup') or args.get('backend', 'codex') != 'codex':
+                raise ValueError('Implementation requires generic Codex delegation tools')
+            if not self.codex_workspace_write:
+                raise ValueError('Project workspace writes not authorized by the integration')
+        return mode
 
     def call(self, name, args):
         if name not in self.allowed_tools:
@@ -188,15 +216,26 @@ class Bridge:
             except BlockingIOError:
                 return {'status': 'busy', 'reason': 'One active expertise per state directory; no automatic retry.'}
             clean = {k: v for k, v in args.items() if k not in ('request_key', 'parent_request_key', 'return_mode')}
+            mode = self.execution_mode(name, clean)
             self._call(name, clean, preflight=True)
             key = args.get('request_key')
             payload = {'tool': name, **clean}
-            payload['file_evidence'] = file_evidence(self.root, args.get('paths'), args.get('filePaths'))
+            payload['file_evidence'] = (file_evidence(self.root, args.get('paths'), args.get('filePaths'))
+                                        if mode == 'expertise' else [])
             parent = args.get('parent_request_key')
             if name in ('reprise_followup', 'codex_followup') and parent is None:
                 own = self.db.execute('SELECT parent FROM delegation_requests WHERE scope=? AND request_key=?', (self.requests.scope, key)).fetchone()
                 row = self.db.execute("SELECT request_key FROM delegation_requests WHERE scope=? AND json_extract(result,'$.thread_id')=? ORDER BY rowid DESC LIMIT 1", (self.requests.scope, args.get('thread_id'))).fetchone()
                 parent = own[0] if own else row[0] if row else None
+            before_evidence = payload['file_evidence']
+            if mode == 'implementation':
+                known = self.db.execute('SELECT 1 FROM delegation_requests WHERE scope=? AND request_key=?',
+                                        (self.requests.scope, key)).fetchone()
+                if not known:
+                    try:
+                        before_evidence = file_evidence(self.root, args.get('paths'), args.get('filePaths'))
+                    except OSError as error:
+                        raise ValueError('Implementation input unavailable; no request admitted') from error
             existing = self.requests.begin(key, payload, parent)
             if existing:
                 pointer = existing.get('request_key', key)
@@ -209,10 +248,12 @@ class Bridge:
             # Exceptions or process exit leave a durable uncertain attempt.
             result = self._call(name, clean)
             try:
-                changed = payload['file_evidence'] != file_evidence(self.root, args.get('paths'), args.get('filePaths'))
+                changed = before_evidence != file_evidence(self.root, args.get('paths'), args.get('filePaths'))
             except (ValueError, OSError):
                 changed = True
-            if changed:
+            if changed and mode == 'implementation':
+                result = dict(result, project_files_changed=True)
+            elif changed:
                 result = dict(result, status='needs_review', reason='Input files changed during delegation; result requires reconciliation.', input_changed=True)
             result = self.requests.finish(key, result)
             if return_mode == 'receipt':
@@ -256,7 +297,10 @@ class Bridge:
                     'format': 'receipt-json-v1', 'transport_limit': TRANSPORT_LIMIT}, 'backends': [
                 {'id': 'codex', 'configured': bool(self.program), 'billing': 'ChatGPT quota',
                  'models': list(BACKEND_MODELS['codex']),
-                 'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': False},
+                 'modes': ['expertise'] + (['implementation'] if self.codex_workspace_write else []),
+                 'workspace_write_authorized': self.codex_workspace_write,
+                 'implementation_scope': str(self.root) if self.codex_workspace_write else None,
+                 'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': self.codex_workspace_write},
                 {'id': 'autoclaw', 'configured': False, 'models': [], 'reason': 'Adapter, billing and fallback behavior not validated.'},
                 {'id': 'claude-code', 'configured': bool(self.claude_program and self.claude_subscription_only),
                  'models': list(BACKEND_MODELS['claude-code']),
@@ -277,12 +321,13 @@ class Bridge:
                 'automatic_fallback': False}
         allowed = {'question', 'thread_id'} if name in ('codex_followup', 'reprise_followup') else {'question', 'paths'}
         if name == 'reprise_followup':
-            allowed |= {'backend', 'model'}
+            allowed |= {'backend', 'model', 'mode'}
         if name == 'reprise_delegate':
-            allowed |= {'kind', 'level', 'backend', 'model', 'chatId', 'filePaths'}
+            allowed |= {'kind', 'level', 'backend', 'model', 'chatId', 'filePaths', 'mode'}
         if (args.keys()-allowed or not isinstance(args.get('question'), str)
                 or not args['question'].strip() or len(args['question']) > 12000):
             raise ValueError('Invalid question or arguments')
+        mode = self.execution_mode(name, args)
         routing = {}
         backend = args.get('backend', 'codex')
         if backend not in ('codex', 'ironclaw', 'claude-code', 'claude-desktop'):
@@ -301,7 +346,8 @@ class Bridge:
                        'effort': 'high' if level == 'deep' else 'medium'}
             if backend == 'claude-code':
                 routing['model'] = 'opus' if level == 'deep' else 'sonnet'
-            question = MODES[kind] + '\n\n' + question
+            question = (('Implement the bounded task; apply project changes and run appropriate local checks.'
+                         if mode == 'implementation' else MODES[kind]) + '\n\n' + question)
             if len(question) > 12000:
                 raise ValueError('Task including delegation contract exceeds limit')
         ident = args.get('thread_id')
@@ -362,13 +408,17 @@ class Bridge:
                     self.db.execute('INSERT OR REPLACE INTO claude_expert_routes VALUES (?,?,?,?,?)',
                                     (self.scope, result['thread_id'], self.claude_program, result['model'], routing['effort']))
             return result | {'backend': backend, 'automatic_fallback': False}
-        result = review(self.program, self.values, self.root, question, paths=args.get('paths'), thread_id=ident, **routing)
+        result = review(self.program, self.values, self.root, question, paths=args.get('paths'), thread_id=ident,
+                        **({'implementation': True} if mode == 'implementation' else {}), **routing)
+        result['mode'] = mode
         result.update(backend=backend, automatic_fallback=False)
         resumable = result.get('status') in ('finished', 'blocked_permission', 'timed_out') or (
             result.get('status') == 'needs_review' and result.get('turn_id'))
         if result.get('thread_id') and result.get('resumable') is True and resumable:
             with self.db:
                 self.db.execute('INSERT OR IGNORE INTO expert_threads VALUES (?,?)', (self.scope, result['thread_id']))
+                self.db.execute('INSERT OR IGNORE INTO expert_thread_modes VALUES (?,?,?)',
+                                (self.scope, result['thread_id'], mode))
                 if routing:
                     self.db.execute('INSERT OR REPLACE INTO expert_routes VALUES (?,?,?,?)',
                                     (self.scope, result['thread_id'], routing['model'], routing['effort']))
@@ -405,6 +455,7 @@ def main():
     parser.add_argument('--daily-limit', type=int, default=8, help='Deprecated compatibility option; ignored for all backends')
     parser.add_argument('--claude-program', help='Explicit absolute Claude CLI path; disabled by default')
     parser.add_argument('--claude-included-quota-confirmed', action='store_true', help='Operator confirms paid usage credits disabled; CLI cannot verify this')
+    parser.add_argument('--codex-workspace-write', action='store_true', help='Operator grant: implementation may write this project; native approvals remain required')
     parser.add_argument('--desktop-socket', help='Explicit absolute Quick Entry socket path; disabled by default')
     parser.add_argument('--ironclaw-config', help='JSON 0600: {host,port,user,key} du point d’acceptation IronClaw')
     args = parser.parse_args()
@@ -417,7 +468,7 @@ def main():
     bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.state or str(state_directory(Path(__file__).parent)), args.daily_limit,
                     claude_program=args.claude_program, claude_subscription_only=args.claude_included_quota_confirmed,
                     desktop_socket=args.desktop_socket, allowed_tools=args.tools.split(',') if args.tools is not None else None,
-                    ironclaw_values=ironclaw_values)
+                    ironclaw_values=ironclaw_values, codex_workspace_write=args.codex_workspace_write)
     def terminate(signum, frame):
         # Unwind active CLI cleanup before closing the DB and releasing the lock.
         raise SystemExit(128 + signum)
