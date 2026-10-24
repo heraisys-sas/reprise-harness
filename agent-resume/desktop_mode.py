@@ -120,7 +120,7 @@ def daemon_pid(state=None):
     return None
 
 
-def daemon_start(socket=None, state=None, daily_limit=8):
+def daemon_start(socket=None, state=None, daily_limit=8, project_root=None):
     """Start the Quick Apply daemon (detached), independent of Desktop being ready.
 
     The server binds its socket without needing Claude Desktop, so it may start
@@ -131,10 +131,18 @@ def daemon_start(socket=None, state=None, daily_limit=8):
         return {'ok': True, 'started': False, 'reason': 'Daemon Quick Apply déjà actif.'}
     socket = socket or str(DEFAULT_SOCKET)
     Path(state).mkdir(parents=True, exist_ok=True, mode=0o700)
+    if project_root is None:
+        try:
+            import claude_integration
+            installed = claude_integration.inspect(Path(__file__).parent)
+            if installed.get('managed'):
+                project_root = installed.get('project')
+        except (OSError, ValueError, KeyError):
+            pass
     try:
         log = open(_log_file(state), 'ab')
         proc = subprocess.Popen([sys.executable, str(SERVER), '--socket', socket,
-                                 '--state', str(state)],
+                                 '--state', str(state)] + (['--project-root', str(project_root)] if project_root else []),
                                 stdout=log, stderr=log, stdin=subprocess.DEVNULL,
                                 start_new_session=True)
         _pid_file(state).write_text(str(proc.pid))
@@ -143,7 +151,7 @@ def daemon_start(socket=None, state=None, daily_limit=8):
         if server_running():
             return {'ok': True, 'started': True, 'daemon': DAEMON_NAME, 'pid': proc.pid,
                     'needs_app': not app_running(),
-                    'reason': 'Daemon Quick Apply démarré. La soumission sera livrée dès que Claude Desktop sera prêt.'}
+                    'reason': 'Daemon Quick Apply démarré. Admission disponible ; émission native non raccordée.'}
         detail = ''
         log = _log_file(state)
         if log.is_file():

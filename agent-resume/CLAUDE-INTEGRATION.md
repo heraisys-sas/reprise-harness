@@ -80,3 +80,13 @@ n’est inventée et cet avis n’autorise jamais un clic. La première observat
 native valide crée le véritable reçu d’interruption ; l’avis initial est conservé
 comme remplacé. Cela permet de tracer une échéance même avant l’autorisation
 Accessibilité, sans contourner la revalidation.
+
+
+## Connecteur unifié livré (#31)
+
+Voir [CLAUDE-CONNECTOR.md](CLAUDE-CONNECTOR.md) : installation native autonome,
+réception/remise des tâches et délégation par un seul serveur MCP. Pour les
+continuations, le planificateur privilégie maintenant claude-desktopd via le même
+RPC que les harness. Sans capacité d’émission et de validation prouvée, il reste
+bloqué sur `dispatch_driver_unavailable` ; le retour MCP ne remplace pas le pilote
+Quick Apply encore absent. La voie AX de la section précédente est optionnelle.

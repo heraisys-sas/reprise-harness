@@ -55,6 +55,17 @@ class QuickApplyDaemonTests(unittest.TestCase):
         import tempfile
         self.state = tempfile.mkdtemp()
 
+    def test_new_daemon_reads_managed_connector_project(self):
+        with patch.object(dm, 'server_running', side_effect=[False, True]), \
+             patch('claude_integration.inspect', return_value={'managed': True, 'project': self.state}), \
+             patch('subprocess.Popen') as popen, patch('time.sleep'), \
+             patch.object(dm, 'app_running', return_value=True):
+            popen.return_value.pid = 999999
+            result = dm.daemon_start(state=self.state)
+        self.assertTrue(result['ok'])
+        argv = popen.call_args.args[0]
+        self.assertEqual(argv[argv.index('--project-root') + 1], self.state)
+
     def test_daemon_status_shape(self):
         s = dm.daemon_status(self.state)
         self.assertEqual(s['daemon'], 'reprise-quick-apply')

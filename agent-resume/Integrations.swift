@@ -2,13 +2,46 @@ import Cocoa
 import SwiftUI
 
 extension App {
+    func inspectClaudeIntegration() {
+        guard stateReady, !setupBusy else { return }
+        setupCommand(["claude-integration-inspect"]) { result in
+            self.claudeIntegrationResult = result
+            if self.integrationProject.isEmpty, let project = result["project"] as? String { self.integrationProject = project }
+        }
+    }
+    func previewClaudeIntegration(_ action: String) {
+        guard stateReady, !setupBusy else { return }
+        var args = ["claude-integration-plan", "--project", integrationProject, "--action", action]
+        if claudeReplaceProbe { args.append("--replace-probe") }
+        setupCommand(args) { result in
+            self.claudeIntegrationResult = result
+            self.claudeIntegrationPlan = result["plan"] as? [String: Any]
+            self.claudeIntegrationAcknowledged = false
+        }
+    }
+    func applyClaudeIntegration() {
+        guard stateReady, !setupBusy, claudeIntegrationAcknowledged, let plan = claudeIntegrationPlan else { return }
+        setupCommand(["claude-integration-apply"], input: ["plan": plan]) { result in
+            self.claudeIntegrationResult = result
+            self.claudeIntegrationAcknowledged = false
+            if result["status"] as? String == "completed" { self.claudeIntegrationPlan = nil }
+        }
+    }
+    func verifyClaudeIntegration() {
+        guard stateReady, !setupBusy else { return }
+        setupCommand(["claude-integration-verify"]) { self.claudeIntegrationResult = $0 }
+    }
+
     func refreshClaudeQuota() {
         guard stateReady, !setupBusy else { return }
         setupCommand(["claude-quota-status"]) { self.claudeQuotaState = $0 }
     }
-    func configureClaudeQuota(_ enabled: Bool) {
+    func configureClaudeQuota(_ enabled: Bool, transport: String? = nil) {
         guard stateReady, !setupBusy else { return }
-        setupCommand(["claude-quota-config", "--enabled", enabled ? "true" : "false"]) { result in
+        var args = ["claude-quota-config", "--enabled", enabled ? "true" : "false"]
+        if let transport { args += ["--transport", transport] }
+        setupCommand(args) { result in
+            if let transport { self.claudeQuotaState["transport"] = transport }
             self.claudeQuotaState["enabled"] = result["claude_desktop_auto_enabled"] as? Bool ?? false
         }
     }
@@ -127,12 +160,39 @@ struct Integrations: View {
                     Button("Inspecter") { app.inspectIntegration() }
                 }.padding(6)
             }
+            GroupBox("Connecteur Claude Desktop · aller-retour et délégation") {
+                VStack(alignment: .leading, spacing: 8) {
+                    path("Projet autorisé", app.integrationProject)
+                    Button("Choisir le projet Claude…") { app.chooseIntegrationDirectory(project: true) }
+                    Text("Un seul connecteur : recevoir les tâches, rendre les résultats et demander une expertise aux autres harness configurés. Runtime inclus ; aucun Python système requis.").font(.caption).foregroundStyle(.secondary)
+                    Toggle("Remplacer l’ancien probe Reprise reconnu (sauvegardé)", isOn: $app.claudeReplaceProbe)
+                    HStack {
+                        Button("Inspecter") { app.inspectClaudeIntegration() }
+                        Button("Installer / mettre à jour…") { app.previewClaudeIntegration("install") }.disabled(app.integrationProject.isEmpty)
+                        Button("Retirer…") { app.previewClaudeIntegration("remove") }.disabled(app.integrationProject.isEmpty)
+                        Button("Vérifier") { app.verifyClaudeIntegration() }
+                    }
+                    if let plan = app.claudeIntegrationPlan {
+                        Text(planDetail(plan)).font(.caption.monospaced()).textSelection(.enabled)
+                        Toggle("J’ai vérifié le projet et les changements du connecteur Claude", isOn: $app.claudeIntegrationAcknowledged)
+                        Button("Appliquer le plan Claude") { app.applyClaudeIntegration() }.disabled(!app.claudeIntegrationAcknowledged)
+                    }
+                    if !app.claudeIntegrationResult.isEmpty { Text(planDetail(app.claudeIntegrationResult)).font(.caption).textSelection(.enabled) }
+                    Text("Claude devra recharger sa configuration. Reprise ne l’arrête pas automatiquement. Une sonde de release ne prouve pas le chargement dans Claude ; le déclenchement Quick Apply reste une capacité distincte.").font(.caption).foregroundStyle(.secondary)
+                }.padding(6)
+            }.disabled(app.setupBusy)
             GroupBox("Reprise après quota Claude Desktop") {
                 VStack(alignment: .leading, spacing: 8) {
                     Toggle("Continuer le chat après le reset gratuit", isOn: Binding(
                         get: { app.claudeQuotaState["enabled"] as? Bool ?? true },
                         set: { app.configureClaudeQuota($0) }))
-                    Text("Requiert l’autorisation Accessibilité macOS. Reprise vérifie le dernier message du chat affiché et son bouton Continuer, sans saisir de prompt. La pause globale reste prioritaire.").font(.caption).foregroundStyle(.secondary)
+                    Picker("Canal de continuation", selection: Binding(
+                        get: { app.claudeQuotaState["transport"] as? String ?? "quick-apply" },
+                        set: { app.configureClaudeQuota(app.claudeQuotaState["enabled"] as? Bool ?? true, transport: $0) })) {
+                        Text("Quick Apply · claude-desktopd").tag("quick-apply")
+                        Text("Accessibilité macOS · option explicite").tag("accessibility")
+                    }
+                    Text("Quick Apply utilise le même démon que les autres harness et exige une capacité d’émission vérifiée. L’autre canal requiert l’autorisation Accessibilité macOS. Reprise vérifie le dernier message du chat affiché et son bouton Continuer, sans saisir de prompt. La pause globale reste prioritaire.").font(.caption).foregroundStyle(.secondary)
                     if let events = app.claudeQuotaState["events"] as? [[String: Any]], let latest = events.first,
                        let due = latest["due"] as? Double {
                         Text("Échéance : " + Date(timeIntervalSince1970: due).formatted(date: .abbreviated, time: .shortened))

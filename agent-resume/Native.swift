@@ -32,6 +32,10 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var integrationProfile = ""
     @Published var integrationProject = ""
     @Published var integrationDelegate = false
+    @Published var claudeIntegrationPlan: [String: Any]?
+    @Published var claudeIntegrationResult: [String: Any] = [:]
+    @Published var claudeIntegrationAcknowledged = false
+    @Published var claudeReplaceProbe = false
     @Published var claudeQuotaState: [String: Any] = [:]
     @Published var integrationOutputResume = false
     @Published var integrationOutputResumeProject = ""
