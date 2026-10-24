@@ -49,7 +49,7 @@ class Tasks:
     def get(self, key, *, acknowledge=False):
         if not isinstance(key, str) or not key.strip() or len(key) > 128:
             raise TaskError('Invalid request key')
-        row = self.db.execute('SELECT state,thread_id,run_id,result,acknowledged,identity,content FROM ironclaw_tasks WHERE request_key=?', (key,)).fetchone()
+        row = self.db.execute('SELECT state,thread_id,run_id,result,acknowledged,identity,content,last_error FROM ironclaw_tasks WHERE request_key=?', (key,)).fetchone()
         if not row:
             return {'state': 'not_found'}
         if acknowledge:
@@ -59,7 +59,7 @@ class Tasks:
                 self.db.execute('UPDATE ironclaw_tasks SET acknowledged=1 WHERE request_key=?', (key,))
         return dict(state=row[0], thread_id=row[1], run_id=row[2],
                     result=json.loads(row[3]) if row[3] else None,
-                    acknowledged=bool(row[4] or acknowledge))
+                    acknowledged=bool(row[4] or acknowledge), last_error=row[7])
 
     def _require_endpoint(self):
         if self.endpoint is None:
