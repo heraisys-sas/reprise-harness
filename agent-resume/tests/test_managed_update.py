@@ -215,6 +215,38 @@ class ManagedUpdateTests(unittest.TestCase):
         self.assertEqual(selected['project'],str(self.base))
         self.assertEqual(selected['state'],str(self.state))
 
+    def test_default_state_does_not_turn_quick_state_into_a_child(self):
+        from app_paths import state_location
+        with patch.object(Path,'home',return_value=self.home), \
+             patch.dict(os.environ,{'AGENT_RESUME_STATE':str(self.state)}):
+            with update.settings(self.state):
+                self.assertNotIn('AGENT_RESUME_STATE',os.environ)
+                self.assertEqual(state_location(self.source/'Contents/Resources/helpers','quick-state'),
+                                 self.state.parent/'quick-state')
+            self.assertEqual(os.environ['AGENT_RESUME_STATE'],str(self.state))
+
+    def test_plan_refuses_any_implicit_claude_registry_change(self):
+        old={'status':'installed','state':str(self.state),'quick_state':str(self.state.parent/'quick-state'),'project':str(self.base)}
+        # This is a custom state under the actual HOME, so its implicit quick
+        # layout would be a child. Never move an already registered sibling.
+        with patch.object(update.claude,'metadata',return_value=old), \
+             patch.object(update.claude,'plan') as native_plan:
+            with self.assertRaisesRegex(ValueError,'changerait un registre'):
+                self.plan(components=('claude',))
+        native_plan.assert_not_called()
+
+    def test_observed_daemon_binding_mismatch_blocks_success_and_cleanup(self):
+        helpers=self.source/'Contents/Resources/helpers'
+        with update.settings(self.state):
+            initial=update.claude.plan(helpers,self.home,self.base)
+            update.claude.apply(helpers,initial)
+        value=self.plan(components=('app','claude'));update.apply(value)
+        with patch.object(update.claude,'verify',return_value={'daemon':{'binding':'mismatch'}}):
+            self.assertFalse(update.verify(self.receipt(value))['ok'])
+            with self.assertRaisesRegex(ValueError,'Vérification ou logs'):
+                update.cleanup(self.receipt(value))
+        self.assertTrue((update.operation(value)/'app-before.app').exists())
+
     def test_scheduler_completion_requires_loaded_arguments_not_just_plist(self):
         nested={'home':str(self.home),'activate':True,'plist':str(self.home/'scheduler.plist'),'content':'<plist/>'}
         # Early journal mismatch cannot certify a completed native operation.

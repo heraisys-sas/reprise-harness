@@ -32,6 +32,9 @@ Le plan conserve projets, scopes, rôle, droits d’implémentation, options de
 continuation DSH, PATH et intervalle du scheduler. L’activation du scheduler
 est explicite : sans `--activate-scheduler`, son remplacement le laisse arrêté.
 La pause d’automatisation enregistrée dans SQLite n’est jamais modifiée.
+Un changement implicite du registre principal ou Quick Apply du connecteur
+Claude est refusé. Un rattachement de daemon observé contradictoire empêche
+la validation et le nettoyage, même si les outils MCP sont découverts.
 Une activation peut exécuter les travaux déjà autorisés au prochain tick.
 
 Les étapes et empreintes sont enregistrées sous

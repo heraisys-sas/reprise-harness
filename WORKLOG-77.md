@@ -22,18 +22,37 @@ logs bornés, uniquement sauvegardes possédées non modifiées.
 Fichiers : `agent-resume/managed_update.py`, `MANAGED-UPDATE.md`, tests dédiés,
 payload `package_helpers.py` et version préparatoire `0.1.14`.
 
-Validation finale : 17 tests ciblés OK ; 716 tests complets OK, 4 ignorés via
+Validation finale : 20 tests ciblés OK ; 719 tests complets OK, 4 ignorés via
 `ci_test.py` sur HOME jetable. Build autonome et smoke du CLI embarqué sur
 HOME jetable OK ; intégrité du bundle inchangée après exécution de l’updater
 avec `-E -s -B`. Empreinte des sources du build :
-`8533ea3c680c9868d952f583095c21f55967efdfd34501b983246c10aea1dd8c`.
+`66ad21a747474b337ed7d4d93550ddfc5a626c5b148456b0d7d317456d88b315`.
 `git diff --check` OK. ResourceWarnings et dépréciations Trousseau existants.
 
 Limites conservées : intégration Codex produit #30 et arrêt authentifié de
 daemon #25/#27 restent distincts ; reformatage YAML #76 non contourné ;
-chargement par les clients ouverts inconnu ; pas de validation du nouvel
-updater sur les services réels, de signature ou notarisation.
+chargement par les clients ouverts inconnu ; signature et notarisation non
+validées. Un premier usage réel est décrit ci-dessous.
 
 La mise à jour opérateur réelle effectuée avant ce code a installé 0.1.13,
 avec scheduler, DSH, connecteur Claude, claude-desktopd et MCP/skill Codex
 vérifiés séparément. Aucun déploiement 0.1.14 ni fusion n’est inclus ici.
+
+## Premier usage réel et correction
+
+L’updater a ensuite été utilisé pour aligner app/scheduler/DSH/Claude sur le
+paquet 0.1.13 de dev `9f3fc07`. Cet essai a exposé deux défauts avant nettoyage :
+l’override explicite du registre par défaut transformait Quick Apply sibling
+en child ; la vérification globale acceptait un `binding=mismatch` observé.
+Correction : préserver le layout standalone, refuser tout changement implicite
+des registres Claude et bloquer validation/cleanup sur mismatch. Trois tests
+supplémentaires verrouillent ces cas. Le rattachement a été rétabli via le plan
+natif, avec preuve du chemin original depuis la sauvegarde et confirmation
+qu’aucun registre n’avait été créé au mauvais emplacement. Le reçu conserve
+la réconciliation ; aucun changement SQLite ni rejeu de tâche.
+
+Après correction : app intègre, scheduler sur la bonne release et tick sans
+erreur, DSH/Claude MCP 0.1.13, daemon Claude `binding=matched`. Le template ASI1
+est distribué sans activer de rôle. Ce premier usage n’établit ni chargement
+des clients ouverts, ni reprise consécutive à un nouveau quota réel. Le proxy
+ASI1 #72/#74 reste un lot actif distinct, non déployé par cet updater.

@@ -70,7 +70,13 @@ def bundle(app):
 @contextmanager
 def settings(state, path=None):
     old_state, old_path = os.environ.get('AGENT_RESUME_STATE'), os.environ.get('PATH')
-    os.environ['AGENT_RESUME_STATE'] = str(state)
+    default_state = Path.home() / 'Library/Application Support/Reprise/state'
+    if Path(state).absolute() == default_state.absolute():
+        # An explicit default override changes quick-state from a sibling to a
+        # child in app_paths. Keep standalone layout when selecting that state.
+        os.environ.pop('AGENT_RESUME_STATE', None)
+    else:
+        os.environ['AGENT_RESUME_STATE'] = str(state)
     if path is not None:
         os.environ['PATH'] = path
     try:
@@ -143,6 +149,9 @@ def plan(source, destination, home, state, components=('app',), profiles=(), act
             old = claude.metadata(claude.paths(home)[2])
             if not old or old.get('status') != 'installed':
                 raise ValueError('Connecteur Claude géré existant requis.')
+            from app_paths import state_location
+            if (safe(old['state']) != state or safe(old['quick_state']) != safe(state_location(helpers, 'quick-state'))):
+                raise ValueError('Le plan changerait un registre Claude existant ; réconciliation explicite requise.')
             nested['claude'] = claude.plan(helpers, home, old['project'])
     value = {'format': 1, 'id': ident or str(uuid.uuid4()), 'source': str(source),
              'destination': str(destination), 'home': str(home), 'state': str(state),
@@ -352,7 +361,8 @@ def verify(file, _already_locked=False):
             elif name == 'claude':
                 results[name] = claude.verify(helpers, value['home'])
                 configured = claude.metadata(claude.paths(value['home'])[2])
-                ok &= configured['release_identity'] == value['bundle']['release_identity']
+                ok &= (configured['release_identity'] == value['bundle']['release_identity']
+                       and results[name].get('daemon', {}).get('binding') != 'mismatch')
             elif name == 'scheduler':
                 results[name] = scheduler.inspect(helpers, value['home'])
                 results[name].pop('loaded_evidence', None)
