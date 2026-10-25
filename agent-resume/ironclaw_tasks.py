@@ -15,9 +15,23 @@ from ironclaw_ssh import request
 # (« Task belongs to a different endpoint configuration »), rendant les tâches illisibles.
 IDENTITY_SCHEME = 'v1'
 
+# Sortie automatique d'un refus `blocked_busy` : jamais de rejeu du POST, seulement des
+# lectures espacées, puis une décision opérateur. Constantes ajustables.
+BUSY_MAX_ATTEMPTS = 5
+BUSY_BACKOFF_SECONDS = 300
+# Balayage déclenché à l'entrée de `poll()` : borné pour ne pas multiplier les timelines.
+POLL_SWEEP_LIMIT = 5
+# Pages lues au plus par appel de `poll()` ; au-delà, le curseur atteint est persisté et la
+# reprise se fait à l'appel suivant.
+MAX_TIMELINE_PAGES = 20
+
 
 class TaskError(Exception):
     pass
+
+
+def _fingerprint(messages):
+    return hashlib.sha256(json.dumps(messages, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
 
 
 def _id(value):
@@ -45,6 +59,14 @@ class Tasks:
                 db.execute('ALTER TABLE ironclaw_tasks ADD COLUMN admitted_at REAL')
             if 'last_error' not in columns:
                 db.execute('ALTER TABLE ironclaw_tasks ADD COLUMN last_error TEXT')
+            if 'busy_attempts' not in columns:
+                db.execute('ALTER TABLE ironclaw_tasks ADD COLUMN busy_attempts INTEGER NOT NULL DEFAULT 0')
+            if 'next_attempt_at' not in columns:
+                db.execute('ALTER TABLE ironclaw_tasks ADD COLUMN next_attempt_at REAL')
+            # Reprise incrémentale de la timeline : curseur opaque par (thread, run).
+            db.execute('''CREATE TABLE IF NOT EXISTS ironclaw_timeline_cursors(
+              thread_id TEXT NOT NULL, run_id TEXT NOT NULL, page_cursor TEXT, boundary TEXT,
+              folded TEXT, updated_at REAL, PRIMARY KEY(thread_id, run_id))''')
 
     def get(self, key, *, acknowledge=False):
         if not isinstance(key, str) or not key.strip() or len(key) > 128:
@@ -80,8 +102,10 @@ class Tasks:
         # changement d'endpoint, qui serait un faux diagnostic.
         if ':' not in stored and stored == self._identity_legacy(content, parent_key):
             if connection is self.db:
-                with self.db:
-                    connection.execute('UPDATE ironclaw_tasks SET identity=? WHERE request_key=?', (expected, key))
+                # Hors section d'écriture ouverte, la migration est sa propre section ; dans
+                # une section ouverte, `_write_transaction()` la laisse au propriétaire.
+                with self._write_transaction() as owned:
+                    owned.execute('UPDATE ironclaw_tasks SET identity=? WHERE request_key=?', (expected, key))
             else:
                 connection.execute('UPDATE ironclaw_tasks SET identity=? WHERE request_key=?', (expected, key))
             return
@@ -114,19 +138,36 @@ class Tasks:
         return hashlib.sha256(json.dumps({'base': base, 'parent': parent_key}, sort_keys=True).encode()).hexdigest()
 
     @contextmanager
-    def _admission(self):
-        # On a file database the admission section runs on a dedicated connection so the
-        # write lock is committed and released before the network phase; a shared
-        # in-memory connection cannot host a second one, so it keeps the direct path.
+    def _write_transaction(self):
+        """Seul propriétaire d'une section d'écriture : un seul BEGIN IMMEDIATE, émis ici.
+
+        Sur une base fichier la section tourne sur une connexion dédiée dont le verrou est
+        validé puis rendu avant la phase réseau ; une connexion mémoire partagée n'en
+        héberge pas de seconde, elle garde donc le chemin direct et n'ouvre une transaction
+        que si l'appelant n'en a pas déjà une.
+        """
         info = self.db.execute('PRAGMA database_list').fetchall()
         filename = next((row[2] for row in info if row[1] == 'main'), '')
         if not filename:
-            with self.db:
-                self.db.execute('BEGIN IMMEDIATE')
+            owned = not self.db.in_transaction
+            if not owned:
                 yield self.db
+                return
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                yield self.db
+                self.db.commit()
+            except BaseException:
+                self.db.rollback()
+                raise
             return
         conn = sqlite3.connect(filename, isolation_level=None)
+        # Parité avec la connexion appelante : `sqlite3` n'expose pas `detect_types`.
+        conn.row_factory = self.db.row_factory
+        conn.text_factory = self.db.text_factory
+        timeout = self.db.execute('PRAGMA busy_timeout').fetchone()[0]
         try:
+            conn.execute(f'PRAGMA busy_timeout={int(timeout)}')
             conn.execute('BEGIN IMMEDIATE')
             yield conn
             conn.commit()
@@ -156,7 +197,7 @@ class Tasks:
             raise TaskError('Encoded submission too large')
         identity = self._identity(content, parent_key)
         thread = None
-        with self._admission() as admission:
+        with self._write_transaction() as admission:
             self._ensure_binding(key, admission)
             if parent_key is not None:
                 self._ensure_binding(parent_key, admission)
@@ -236,34 +277,30 @@ class Tasks:
             raise TaskError('Dispatch uncertain; inspect remotely before any new request') from exc
         return self.get(key)
 
-    def poll(self, key):
+    def poll(self, key, *, sweep=True):
+        # Une lecture humaine ou un tick de suivi fait aussi avancer le stock incertain ;
+        # le balayage est borné et n'ajoute aucun POST.
+        if sweep:
+            self.reconcile_due(limit=POLL_SWEEP_LIMIT, exclude=key)
         task = self.get(key)
         self._ensure_binding(key)
         if task['state'] not in ('pending', 'needs_operator', 'deferred') or not task['run_id']:
             return task
         thread, run = _id(task['thread_id']), _id(task['run_id'])
-        final, activity_after = None, False
-        for messages in self._timeline(thread):
-            for message in messages:
-                if not isinstance(message, dict) or message.get('turn_run_id') != run:
-                    continue
-                if message.get('kind') in ('assistant', 'assistant_message') and message.get('status') == 'finalized':
-                    if not isinstance(message.get('content'), str):
-                        raise TaskError('Invalid final content')
-                    final, activity_after = message['content'], False
-                elif final is not None:
-                    # A finalized message followed by later run activity (tools,
-                    # streaming, user turn) was intermediate, not the end of the run.
-                    activity_after = True
-        if activity_after:
-            final = None
+        state, complete = self._scan(thread, run)
+        if not complete:
+            # Budget de pages épuisé : le curseur atteint est persisté, l'état reste inchangé.
+            return self.get(key)
+        final = None if state['activity_after'] else state['final']
         if final is None and self._expired(key):
             with self.db:
                 self.db.execute("UPDATE ironclaw_tasks SET state='expired' WHERE request_key=? AND state IN ('pending','deferred')", (key,))
+                self.db.execute('DELETE FROM ironclaw_timeline_cursors WHERE thread_id=? AND run_id=?', (thread, run))
             return self.get(key)
         with self.db:
             if final is not None:
                 self.db.execute("UPDATE ironclaw_tasks SET state='finished',result=? WHERE request_key=? AND state IN ('pending','needs_operator','deferred')", (json.dumps(final), key))
+                self.db.execute('DELETE FROM ironclaw_timeline_cursors WHERE thread_id=? AND run_id=?', (thread, run))
 
         return self.get(key)
 
@@ -283,32 +320,100 @@ class Tasks:
         row = self.db.execute('SELECT admitted_at,state FROM ironclaw_tasks WHERE request_key=?', (key,)).fetchone()
         return bool(row and row[0] is not None and row[1] in ('pending', 'deferred') and time.time() - row[0] > self.expire_after)
 
+    def _timeline_page(self, thread, cursor=None):
+        path = f'/api/webchat/v2/threads/{_id(thread)}/timeline?limit=100'
+        if cursor:
+            path += '&cursor=' + quote(cursor, safe='')
+        page = self.transport(self.endpoint, 'GET', path)
+        messages = page.get('messages')
+        if not isinstance(messages, list):
+            raise TaskError('Invalid timeline messages')
+        next_cursor = page.get('next_cursor')
+        if next_cursor is not None and (not isinstance(next_cursor, str) or not next_cursor or len(next_cursor) > 512):
+            raise TaskError('Invalid timeline cursor')
+        return messages, next_cursor
+
     def _timeline(self, thread):
         cursor, seen = None, set()
-        for _ in range(20):
-            path = f'/api/webchat/v2/threads/{_id(thread)}/timeline?limit=100'
-            if cursor:
-                path += '&cursor=' + quote(cursor, safe='')
-            page = self.transport(self.endpoint, 'GET', path)
-            messages = page.get('messages')
-            if not isinstance(messages, list):
-                raise TaskError('Invalid timeline messages')
+        for _ in range(MAX_TIMELINE_PAGES):
+            messages, next_cursor = self._timeline_page(thread, cursor)
             yield messages
-            cursor = page.get('next_cursor')
-            if cursor is None:
+            if next_cursor is None:
                 return
-            if not isinstance(cursor, str) or not cursor or len(cursor) > 512 or cursor in seen:
+            if next_cursor in seen:
                 raise TaskError('Invalid timeline cursor')
-            seen.add(cursor)
+            seen.add(next_cursor)
+            cursor = next_cursor
         raise TaskError('Timeline page limit reached')
 
-    def reconcile(self, key):
+    def _load_scan(self, thread, run):
+        row = self.db.execute('SELECT page_cursor,boundary,folded FROM ironclaw_timeline_cursors '
+                              'WHERE thread_id=? AND run_id=?', (thread, run)).fetchone()
+        if not row:
+            return {'page_cursor': None, 'boundary': None, 'final': None, 'activity_after': False}
+        folded = json.loads(row[2]) if row[2] else {}
+        return {'page_cursor': row[0], 'boundary': row[1],
+                'final': folded.get('final'), 'activity_after': bool(folded.get('activity_after'))}
+
+    def _save_scan(self, thread, run, state):
+        folded = json.dumps({'final': state['final'], 'activity_after': state['activity_after']},
+                            ensure_ascii=False)
+        with self.db:
+            self.db.execute('INSERT OR REPLACE INTO ironclaw_timeline_cursors'
+                            '(thread_id,run_id,page_cursor,boundary,folded,updated_at) VALUES(?,?,?,?,?,?)',
+                            (thread, run, state['page_cursor'], state['boundary'], folded, time.time()))
+
+    def _fold(self, state, messages, run):
+        final, activity_after = state['final'], state['activity_after']
+        for message in messages:
+            if not isinstance(message, dict) or message.get('turn_run_id') != run:
+                continue
+            if message.get('kind') in ('assistant', 'assistant_message') and message.get('status') == 'finalized':
+                if not isinstance(message.get('content'), str):
+                    raise TaskError('Invalid final content')
+                final, activity_after = message['content'], False
+            elif final is not None:
+                # A finalized message followed by later run activity (tools, streaming,
+                # user turn) was intermediate, not the end of the run.
+                activity_after = True
+        return {'page_cursor': state['page_cursor'], 'boundary': state['boundary'],
+                'final': final, 'activity_after': activity_after}
+
+    def _scan(self, thread, run):
+        """Folds the timeline incrementally; `complete` is False when the page budget ran out."""
+        state = self._load_scan(thread, run)
+        cursor, budget, seen, first = state['page_cursor'], MAX_TIMELINE_PAGES, set(), True
+        while budget:
+            messages, next_cursor = self._timeline_page(thread, cursor)
+            fingerprint = _fingerprint(messages)
+            if first and cursor is not None and state['boundary'] is not None and fingerprint != state['boundary']:
+                # Curseur opaque invalidé par le serveur : un seul rescan complet, puis reprise.
+                state = {'page_cursor': None, 'boundary': None, 'final': None, 'activity_after': False}
+                cursor, first = None, False
+                continue
+            first = False
+            budget -= 1
+            if cursor is None:
+                # Lecture depuis la tête : l'état repart de zéro, sans page de recouvrement.
+                state = dict(state, final=None, activity_after=False)
+            state = self._fold(state, messages, run)
+            state['page_cursor'], state['boundary'] = cursor, fingerprint
+            self._save_scan(thread, run, state)
+            if next_cursor is None:
+                return state, True
+            if next_cursor in seen:
+                raise TaskError('Invalid timeline cursor')
+            seen.add(next_cursor)
+            cursor = next_cursor
+        return state, False
+
+    def reconcile(self, key, now=None):
         """Read-only recovery of a lost ACK in the thread created for this task."""
         task = self.get(key)
         if task['state'] in ('not_found', 'finished'):
             return task
         self._ensure_binding(key)
-        if task['state'] not in ('needs_review', 'ambiguous', 'dispatching') or not task['thread_id']:
+        if task['state'] not in ('needs_review', 'ambiguous', 'dispatching', 'blocked_busy') or not task['thread_id']:
             raise TaskError('Task is not eligible for read-only reconciliation')
         content = self.db.execute('SELECT content FROM ironclaw_tasks WHERE request_key=?', (key,)).fetchone()[0]
         matches = []
@@ -316,23 +421,40 @@ class Tasks:
             for message in messages:
                 if isinstance(message, dict) and message.get('kind') in ('user', 'user_message') and message.get('content') == content:
                     matches.append(_id(message.get('turn_run_id')))
+        if task['state'] == 'blocked_busy' and not matches:
+            return self._busy_backoff(key, now)
         if len(matches) != 1:
             raise TaskError('Reconciliation requires exactly one matching user message')
         if task['run_id'] is not None and task['run_id'] != matches[0]:
             raise TaskError('Reconciliation run conflicts with saved acknowledgement')
         with self.db:
-            self.db.execute("UPDATE ironclaw_tasks SET state='pending',run_id=? WHERE request_key=? AND state IN ('needs_review','ambiguous','dispatching')", (matches[0], key))
-        return self.poll(key)
+            self.db.execute("UPDATE ironclaw_tasks SET state='pending',run_id=? WHERE request_key=? AND state IN ('needs_review','ambiguous','dispatching','blocked_busy')", (matches[0], key))
+        return self.poll(key, sweep=False)
 
-    def reconcile_due(self, limit=10, now=None, min_age=300):
+    def _busy_backoff(self, key, now=None):
+        """Un refus `blocked_busy` absent du thread ne se rejoue pas : lectures espacées, puis opérateur."""
+        now = time.time() if now is None else now
+        row = self.db.execute('SELECT busy_attempts FROM ironclaw_tasks WHERE request_key=?', (key,)).fetchone()
+        attempts = (row[0] if row else 0) + 1
+        with self.db:
+            if attempts >= BUSY_MAX_ATTEMPTS:
+                self.db.execute("UPDATE ironclaw_tasks SET state='needs_operator',busy_attempts=?,next_attempt_at=NULL,"
+                                "last_error='busy: never accepted' WHERE request_key=? AND state='blocked_busy'", (attempts, key))
+            else:
+                self.db.execute("UPDATE ironclaw_tasks SET busy_attempts=?,next_attempt_at=? "
+                                "WHERE request_key=? AND state='blocked_busy'",
+                                (attempts, now + BUSY_BACKOFF_SECONDS, key))
+        return self.get(key)
+
+    def reconcile_due(self, limit=10, now=None, min_age=300, exclude=None):
         '''Read-only sweep of every task left uncertain by a lost acknowledgement.
 
         `reconcile()` handles one key and raises when the evidence is inconclusive, so
-        nothing ever swept the backlog: a task left `needs_review`, `ambiguous` or
-        `dispatching` stayed that way until a human asked. This sweep is bounded -- at
-        most `limit` candidates older than `min_age` seconds -- and never raises on a
-        single task: each failure is reported per key instead of being swallowed or
-        turning the whole sweep into an exception.
+        nothing ever swept the backlog: a task left `needs_review`, `ambiguous`,
+        `dispatching` or `blocked_busy` stayed that way until a human asked. This sweep is
+        bounded -- at most `limit` candidates older than `min_age` seconds -- honours the
+        per-task backoff (`next_attempt_at`) and never raises on a single task: each
+        failure is reported per key instead of turning the whole sweep into an exception.
         '''
         if type(limit) is not int or not 1 <= limit <= 100:
             raise TaskError('Limit must be between 1 and 100')
@@ -341,13 +463,15 @@ class Tasks:
         now = time.time() if now is None else now
         rows = self.db.execute(
             "SELECT request_key FROM ironclaw_tasks WHERE state IN "
-            "('needs_review','ambiguous','dispatching') AND thread_id IS NOT NULL "
-            "AND admitted_at IS NOT NULL AND admitted_at<=? ORDER BY admitted_at LIMIT ?",
-            (now - min_age, limit)).fetchall()
+            "('needs_review','ambiguous','dispatching','blocked_busy') AND thread_id IS NOT NULL "
+            "AND admitted_at IS NOT NULL AND admitted_at<=? "
+            "AND (next_attempt_at IS NULL OR next_attempt_at<=?) AND request_key<>? "
+            "ORDER BY admitted_at LIMIT ?",
+            (now - min_age, now, exclude or '', limit)).fetchall()
         results = []
         for (key,) in rows:
             try:
-                task = self.reconcile(key)
+                task = self.reconcile(key, now=now)
             except (TaskError, OSError, TimeoutError, ValueError) as exc:
                 results.append({'request_key': key, 'state': 'unreconciled',
                                 'reason': f'{type(exc).__name__}: {exc}'[:500]})
