@@ -106,6 +106,39 @@ class CensusTests(unittest.TestCase):
             self.assertEqual(census.main([str(self.tmp / 'absent.app')]), 1)
         self.assertIn('Recensement impossible', errors.getvalue())
 
+    def test_short_minified_names_do_not_become_chain_nodes(self):
+        script = ('function G4(e,t){H.getDispatcher(e)?.dispatchOnQuickEntrySubmit(t)}\n'
+                  'function r(e){return G4(e)}\nfunction K4(e){return G4(e)}\n')
+        text = census.report(self.app(script=script))
+        self.assertIn('appelée dans `K4`', text)
+        self.assertNotIn('appelée dans `r`', text)
+
+    def test_global_counts_cover_every_script_not_only_the_anchor_one(self):
+        app = self.app()
+        write_asar(app / 'Contents' / 'Resources' / 'app.asar',
+                   {'.vite/build/index.js': (CHAIN + '/*' + 'x' * 25000 + '*/').encode(),
+                    '.vite/build/other.js': ('requestQuickWindowDismissWithPayload;' + 'y' * 25000).encode()})
+        text = census.report(app)
+        self.assertIn('requestQuickWindowDismissWithPayload` : 1 occurrence(s)', text)
+        self.assertIn('other.js', text)
+
+    def test_show_prints_the_named_function_and_flags_unknown_ones(self):
+        text = census.show_functions(self.app(), ['z4', 'absent'], 300)
+        self.assertIn('function z4(e)', text)
+        self.assertIn('`absent` : déclaration introuvable', text)
+        self.assertNotIn('A' * 40, text)
+
+    def test_grep_lists_contexts_across_scripts_with_a_limit(self):
+        app = self.app()
+        write_asar(app / 'Contents' / 'Resources' / 'app.asar',
+                   {'.vite/build/a.js': ('function f(){return "scheduled-task"}' * 3 + 'x' * 25000).encode(),
+                    '.vite/build/b.js': ('scheduled-task' + 'y' * 25000).encode()})
+        text = census.grep_scripts(app, 'scheduled-task', 2)
+        self.assertIn('a.js` : 3 occurrence(s)', text)
+        self.assertIn('b.js` : 1 occurrence(s)', text)
+        self.assertEqual(text.count('- offset'), 2)
+        self.assertIn('Aucune occurrence', census.grep_scripts(app, 'nothing-here', 5))
+
     def test_tool_is_read_only_by_construction(self):
         source = Path(census.__file__).read_text()
         for forbidden in ('subprocess', 'socket', 'urllib', 'requests', 'os.system', "open(args.app", "'w'"):
