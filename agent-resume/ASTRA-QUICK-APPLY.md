@@ -32,7 +32,7 @@ Ces mécanismes sont publics et courants dans les applications Electron ; l'abse
 
 **C3 — La piste `companion-web`.** Elle est exposée comme prototype sans AX mais repose sur une interaction « via l'interface web » d'un navigateur dédié. Cela ressemble à de l'automatisation d'interface, que la mission interdit, et ne rejoint pas `dispatchOnQuickEntrySubmit`. À trancher explicitement avant tout prototype.
 
-**C4 — #36 se reformule si une entrée existe.** Si une entrée atteint `dispatchOnQuickEntrySubmit(chatId, prompt)`, le bouton natif « Continuer » n'est plus nécessaire : un message texte dans le même chat après l'échéance peut suffire **[HYPOTHÈSE]** (à valider : la pause gratuite n'empêche pas un nouveau message après reset). #36 interdit pourtant de « substituer silencieusement un nouveau prompt à la continuation native » : décision de l'opérateur.
+**C4 — #36 se reformule si une entrée existe (décision de l'opérateur du 25/10).** Si une entrée atteint `dispatchOnQuickEntrySubmit(chatId, prompt)`, le bouton natif « Continuer » n'est plus nécessaire : un message texte de continuation, explicite et consigné, envoyé au même chat après l'échéance est désormais accepté en second mode (#36 corrigée). Reste **[HYPOTHÈSE]** à valider : la pause gratuite n'empêche pas un nouveau message après reset, et le bouton ne fait pas plus qu'envoyer un message. Le prompt n'est jamais silencieux et ne remplace jamais celui d'une tâche.
 
 ## 3. Meilleure piste positive
 
