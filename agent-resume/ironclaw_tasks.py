@@ -49,7 +49,7 @@ class Tasks:
     def get(self, key, *, acknowledge=False):
         if not isinstance(key, str) or not key.strip() or len(key) > 128:
             raise TaskError('Invalid request key')
-        row = self.db.execute('SELECT state,thread_id,run_id,result,acknowledged,identity,content FROM ironclaw_tasks WHERE request_key=?', (key,)).fetchone()
+        row = self.db.execute('SELECT state,thread_id,run_id,result,acknowledged,identity,content,last_error FROM ironclaw_tasks WHERE request_key=?', (key,)).fetchone()
         if not row:
             return {'state': 'not_found'}
         if acknowledge:
@@ -59,7 +59,7 @@ class Tasks:
                 self.db.execute('UPDATE ironclaw_tasks SET acknowledged=1 WHERE request_key=?', (key,))
         return dict(state=row[0], thread_id=row[1], run_id=row[2],
                     result=json.loads(row[3]) if row[3] else None,
-                    acknowledged=bool(row[4] or acknowledge))
+                    acknowledged=bool(row[4] or acknowledge), last_error=row[7])
 
     def _require_endpoint(self):
         if self.endpoint is None:
@@ -323,6 +323,38 @@ class Tasks:
         with self.db:
             self.db.execute("UPDATE ironclaw_tasks SET state='pending',run_id=? WHERE request_key=? AND state IN ('needs_review','ambiguous','dispatching')", (matches[0], key))
         return self.poll(key)
+
+    def reconcile_due(self, limit=10, now=None, min_age=300):
+        '''Read-only sweep of every task left uncertain by a lost acknowledgement.
+
+        `reconcile()` handles one key and raises when the evidence is inconclusive, so
+        nothing ever swept the backlog: a task left `needs_review`, `ambiguous` or
+        `dispatching` stayed that way until a human asked. This sweep is bounded -- at
+        most `limit` candidates older than `min_age` seconds -- and never raises on a
+        single task: each failure is reported per key instead of being swallowed or
+        turning the whole sweep into an exception.
+        '''
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise TaskError('Limit must be between 1 and 100')
+        if type(min_age) not in (int, float) or min_age < 0:
+            raise TaskError('Minimum age must be a non-negative number')
+        now = time.time() if now is None else now
+        rows = self.db.execute(
+            "SELECT request_key FROM ironclaw_tasks WHERE state IN "
+            "('needs_review','ambiguous','dispatching') AND thread_id IS NOT NULL "
+            "AND admitted_at IS NOT NULL AND admitted_at<=? ORDER BY admitted_at LIMIT ?",
+            (now - min_age, limit)).fetchall()
+        results = []
+        for (key,) in rows:
+            try:
+                task = self.reconcile(key)
+            except (TaskError, OSError, TimeoutError, ValueError) as exc:
+                results.append({'request_key': key, 'state': 'unreconciled',
+                                'reason': f'{type(exc).__name__}: {exc}'[:500]})
+                continue
+            results.append({'request_key': key, 'state': task['state'],
+                            'run_id': task.get('run_id')})
+        return results
 
     def observe_event(self, key, event_type, frame):
         """Consume a verified SSE frame; no event stream connection is made here."""
