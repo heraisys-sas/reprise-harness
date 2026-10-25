@@ -2,6 +2,8 @@
 
 **Statut : préliminaire.** Deux blocages précis empêchent de conclure (voir §4) : le bundle `app.asar` de Claude Desktop n'est pas accessible depuis l'environnement qui a produit ce document, et `MISSION.md`, `FOLLOWUP-EVIDENCE.md`, `ANALYSIS.md` (et les éventuels `QUICK-APPLY-NEXT.md` / `COWORK-RPC-MAP.md`) ne figurent dans aucune branche du dépôt. Rien ci-dessous n'est issu d'une lecture du bundle courant.
 
+Base du dépôt au moment de la rédaction : `dev` `e159fe2` (25/10), `VERSION` 0.1.13. Les versions actives (Reprise installée, Claude Desktop, Codex) évoluent : aucune conclusion de ce document ne vaut au-delà de la version dont elle est tirée, et le recensement du §5 est à relancer à chaque changement de version de l'application.
+
 Niveaux de preuve : **[DÉPÔT]** lu dans le dépôt, **[RAPPORTÉ]** affirmé dans #36 sans accès à la pièce brute, **[HYPOTHÈSE]** à confirmer.
 
 Contraintes respectées : aucune automatisation d'interface (AX, interface web), aucun contournement d'authentification, d'attestation, de fuses ou d'intégrité, aucune modification ni injection dans Claude, aucun secret, cookie ou historique privé, aucune mutation de service, de VM, de redémarrage ou de permission, aucun repli par API payante.
