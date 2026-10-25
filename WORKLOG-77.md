@@ -1,6 +1,10 @@
 # Lot #77 — updater local Reprise
 
-Baseline : dev `e159fe219dc61b12fb51e523e6888e02badc4867`.
+Baseline de découverte : dev `e159fe219dc61b12fb51e523e6888e02badc4867`.
+Base effective de la branche créée par GitHub :
+`9f3fc07febd18e88246c5dbb5d991a32cf614953` (distribution du template ASI1
+arrivée entre le clone et `gh issue develop`). Les tests et le build du lot
+ont porté sur cette base effective, vérifiée avant publication.
 Branche : `codex/77-managed-updater`, créée par `gh issue develop 77 --base dev`.
 
 Plan : consultation déléguée en lecture seule, puis accord du coordinateur sur
