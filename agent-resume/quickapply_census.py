@@ -21,7 +21,9 @@ from pathlib import Path
 ANCHOR = 'dispatchOnQuickEntrySubmit'
 MARKERS = ('open-url', 'second-instance', 'open-file', 'setAsDefaultProtocolClient', 'protocol.handle',
            'continue-activity', 'handleDeepLink', 'deeplink', 'deepLink', 'globalShortcut', 'claude://',
-           'NSUserActivity', 'quickEntrySubmitted', 'requestQuickWindowDismissWithPayload')
+           'NSUserActivity', 'quickEntrySubmitted', 'requestQuickWindowDismissWithPayload', 'submit_quick_entry')
+GLOBAL_IDENTIFIERS = (ANCHOR, 'requestQuickWindowDismissWithPayload', 'quickEntrySubmitted', 'submit_quick_entry',
+                      'handleDeepLink', 'claudeURLHandler')
 PLIST_KEYS = ('CFBundleIdentifier', 'CFBundleShortVersionString', 'CFBundleVersion', 'LSMinimumSystemVersion',
               'LSUIElement', 'NSAppleScriptEnabled', 'OSAScriptingDefinition', 'NSUserActivityTypes')
 MAX_SCRIPT = 80 * 1024 * 1024
@@ -121,7 +123,7 @@ def call_chain(text, depth=6, limit=60):
             callers = []
             for position in references(text, name)[:40]:
                 caller = enclosing(decls, position)
-                if caller and caller != name:
+                if caller and caller != name and len(caller) > 1:
                     callers.append((caller, position))
             graph[name] = callers
             for caller, _ in callers:
@@ -137,6 +139,55 @@ def declaration_snippet(text, decls, name, width=260):
         if declared == name:
             return redact(text[start:start + width])
     return ''
+
+
+def show_functions(app, names, chars):
+    """Print the beginning of the named functions, wherever they are declared (redacted, read-only)."""
+    asar = Path(app) / 'Contents' / 'Resources' / 'app.asar'
+    files, base = read_asar(asar)
+    out = ['# Extraits de fonctions (lecture seule)', '']
+    for name in names:
+        found = False
+        for script, text in main_scripts(asar, files, base):
+            for start, declared in declarations(text):
+                if declared == name:
+                    found = True
+                    out += [f'## `{name}` dans `{script}` (offset {start})', '', '```js', redact(text[start:start + chars]), '```', '']
+                    break
+        if not found:
+            out += [f'## `{name}` : déclaration introuvable', '']
+    return '\n'.join(out) + '\n'
+
+
+def grep_scripts(app, term, limit):
+    """Literal search across every application script: per-file counts and the first contexts."""
+    asar = Path(app) / 'Contents' / 'Resources' / 'app.asar'
+    files, base = read_asar(asar)
+    out = [f'# Recherche littérale `{term}` (lecture seule)', '']
+    shown = 0
+    for script, text in main_scripts(asar, files, base):
+        positions = [m.start() for m in re.finditer(re.escape(term), text)]
+        if not positions:
+            continue
+        out.append(f'## `{script}` : {len(positions)} occurrence(s)')
+        for position in positions:
+            if shown >= limit:
+                break
+            shown += 1
+            out.append(f'- offset {position}, dans `{enclosing(declarations(text), position)}` : `{redact(text[max(0, position - 100):position + 220])}`')
+        out.append('')
+    if shown == 0:
+        out.append('Aucune occurrence.')
+    return '\n'.join(out) + '\n'
+
+
+def global_counts(scripts):
+    out = ['## 2 bis. Références dans tous les scripts applicatifs', '',
+           'Un identifiant de propriété survit à la minification : ces comptes montrent qui d’autre référence le point d’entrée.', '']
+    for identifier in GLOBAL_IDENTIFIERS:
+        per_file = [(name, text.count(identifier)) for name, text in scripts if identifier in text]
+        out.append(f'- `{identifier}` : {sum(count for _, count in per_file)} occurrence(s) dans {[f"{name} ×{count}" for name, count in per_file] or "aucun script"}')
+    return out + ['']
 
 
 def plist_section(app):
@@ -172,6 +223,7 @@ def code_sections(app):
     out += ['## 2. Scripts applicatifs analysés', '']
     out += [f'- `{name}` ({len(text)} caractères)' for name, text in scripts] or ['Aucun script de plus de 20 000 octets.']
     out.append('')
+    out += global_counts(scripts)
     for name, text in scripts:
         if ANCHOR not in text:
             continue
@@ -218,10 +270,14 @@ def report(app):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('app', nargs='?', default='/Applications/Claude.app')
+    parser.add_argument('--show', help='noms de fonctions (séparés par des virgules) dont afficher le début au lieu du rapport complet')
+    parser.add_argument('--grep', help='terme littéral à chercher dans tous les scripts (contextes bornés par --limit)')
+    parser.add_argument('--limit', type=int, default=12, help='nombre maximal de contextes de --grep (défaut 12)')
+    parser.add_argument('--chars', type=int, default=3000, help='longueur des extraits de --show (défaut 3000)')
     parser.add_argument('--out', help='fichier de rapport à créer (refuse d’écraser) ; défaut : sortie standard')
     args = parser.parse_args(argv)
     try:
-        text = report(args.app)
+        text = grep_scripts(args.app, args.grep, max(1, min(args.limit, 80))) if args.grep else show_functions(args.app, [n for n in args.show.split(',') if n], max(200, min(args.chars, 20000))) if args.show else report(args.app)
     except (CensusError, OSError, ValueError, KeyError) as error:
         print(f'Recensement impossible : {error}', file=sys.stderr)
         return 1

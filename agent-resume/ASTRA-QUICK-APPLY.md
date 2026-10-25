@@ -1,83 +1,94 @@
-# ASTRA-QUICK-APPLY — contre-analyse et expérience discriminante (préliminaire)
+# ASTRA-QUICK-APPLY — contre-analyse et expérience discriminante
 
-**Statut : préliminaire.** Deux blocages précis empêchent de conclure (voir §4) : le bundle `app.asar` de Claude Desktop n'est pas accessible depuis l'environnement qui a produit ce document, et `MISSION.md`, `FOLLOWUP-EVIDENCE.md`, `ANALYSIS.md` (et les éventuels `QUICK-APPLY-NEXT.md` / `COWORK-RPC-MAP.md`) ne figurent dans aucune branche du dépôt. Rien ci-dessous n'est issu d'une lecture du bundle courant.
+**Base de preuve** : recensement statique en lecture seule du bundle installé **Claude Desktop 3.6556.2** (rapport fourni par l'opérateur le 25/10), et `dev` à la date de rédaction. `MISSION.md`, `FOLLOWUP-EVIDENCE.md`, `ANALYSIS.md`, `QUICK-APPLY-NEXT.md` et `COWORK-RPC-MAP.md` n'ont toujours pas été fournis : les conclusions d'Astra restent connues par #36 seulement.
 
-Base du dépôt au moment de la rédaction : `dev` `e159fe2` (25/10), `VERSION` 0.1.13. Les versions actives (Reprise installée, Claude Desktop, Codex) évoluent : aucune conclusion de ce document ne vaut au-delà de la version dont elle est tirée, et le recensement du §5 est à relancer à chaque changement de version de l'application.
+Niveaux : **[RECENSEMENT]** extrait cité du bundle 3.6556.2, **[DÉPÔT]** lu dans le dépôt, **[RAPPORTÉ]** affirmé dans #36 sans pièce brute, **[HYPOTHÈSE]** à confirmer.
 
-Niveaux de preuve : **[DÉPÔT]** lu dans le dépôt, **[RAPPORTÉ]** affirmé dans #36 sans accès à la pièce brute, **[HYPOTHÈSE]** à confirmer.
+Contraintes respectées : aucune automatisation d'interface (accessibilité ou web), aucun contournement d'authentification, d'attestation, de fuses ou d'intégrité, aucune modification ni injection dans Claude, aucun secret, cookie ou historique privé, aucune mutation de service, de VM, de redémarrage ou de permission, aucun repli par API payante.
 
-Contraintes respectées : aucune automatisation d'interface (AX, interface web), aucun contournement d'authentification, d'attestation, de fuses ou d'intégrité, aucune modification ni injection dans Claude, aucun secret, cookie ou historique privé, aucune mutation de service, de VM, de redémarrage ou de permission, aucun repli par API payante.
+## 1. Verdict
 
-## 1. Ce qui est établi, par étape
+1. **Objectif direct (entrée externe qui rejoint `dispatchOnQuickEntrySubmit` avec `chatId`/prompt) : négatif pour 3.6556.2.** La fonction de dépôt n'a que deux appelants (§2), tous deux liés à l'interface de Quick Entry. Aucun événement externe (`open-url`, `open-file`, `second-instance`, `continue-activity`) n'apparaît dans sa chaîne d'appels. Réserve : le graphe est heuristique ; le comptage global de l'outil mis à jour (§6) le confirmera sur tous les scripts.
+2. **Aucune piste positive vérifiée, donc pas d'appel exact à fournir.** Créer l'entrée manquante reviendrait à modifier ou injecter dans Claude : interdit.
+3. **Une piste indirecte reste ouverte** : les liens profonds `claude://` aboutissent au renderer (`handleDeepLink`). Ils permettraient au mieux de **préparer** un chat, pas de **livrer** un prompt, sauf si le renderer soumet de lui-même une valeur reçue (à instruire, §6).
 
-| Étape | État | Niveau |
+## 2. Preuves du recensement (3.6556.2)
+
+| Fait | Extrait | Niveau |
 |---|---|---|
-| **Préparation** (valider et admettre un payload) | `claude_desktop_quick.py` valide, borne et enregistre ; ne soumet rien (« intentionally left to the supervised driver »). Reçus `admission_only: true` | [DÉPÔT] |
-| **Livraison** (faire émettre un tour par Claude) | Un seul point d'entrée non visuel connu : `dispatchOnQuickEntrySubmit`, atteint par `FCr → V4r → K4r/G4r` (bundle 2.42304.2). Un essai réel du 19/10 a prouvé le tour **avec ouverture manuelle de Quick Entry** ; le mode non surveillé n'est pas prouvé | [DÉPÔT] `CLAUDE-QUICK-ENTRY-INTERNALS.md` |
-| **Livraison, aucun endpoint externe** | `quick_entry/submit` n'est pas branché au dispatcher ; remote-debugging refusé, fuses `RunAsNode`/`NODE_OPTIONS`/inspect désactivés ; pas de dictionnaire AppleScript ni d'App Intent adapté ; LocalPairing et « Change with Claude » ne ciblent pas un `chatId` | [RAPPORTÉ] #36 (23/10) |
-| **Retour MCP** | `get_task` / `submit_result` : seul `submit_result` vaut retour. `tools/list` et l'admission ne prouvent ni invocation ni livraison. Le serveur MCP local ne déclenche pas un tour | [DÉPÔT] + [RAPPORTÉ] #36 (24/10) |
-| **Garde de compte** | `U4r` compare l'identité à la soumission ; un payload externe passerait par la même garde (même compte : pas un obstacle) | [DÉPÔT] |
+| Ancre présente dans `index.chunk-jPKPzV-P.js` | `$Xr(e,t,n)` : `qVt.getDispatcher(e)?.dispatchOnQuickEntrySubmit(t)` puis `focus()` | [RECENSEMENT] |
+| Appelants de `$Xr` | `QXr` (envoi au chat `e.chatId` si la fenêtre principale est visible, sinon `eZr`) et `eZr` (nouveau chat) | [RECENSEMENT] |
+| `QXr` = `requestQuickWindowDismissWithPayload` | exporté par `LXr` avec `activateQuickEntryWindow` et `stampSubmission` ; sans `chatId` → nouveau chat | [RECENSEMENT] |
+| Appelant 1 de `QXr` | `ZIr({prompt, images, filePaths, chatId})`, enregistré par `rW?.on("quickEntrySubmitted", ZIr)` après le chargement de `claude-swift` ; il obtient `QXr` par l'espace de noms `LXr` (appel par alias, non vu par l'outil) | [RECENSEMENT] |
+| Appelant 2 de `QXr` | `XXr(e)` → `QXr({text: e ?? "", images: []})`, appelée par `requestDismiss` (implémentation posée sur la fenêtre Quick **héritée** via `kSe.for(hq.webContents).setImplementation`) et par le `blur` de cette fenêtre. Sans `chatId` | [RECENSEMENT] |
+| Fenêtre héritée ou overlay natif | `AIr()` choisit l'overlay Swift ; la `BrowserWindow` Quick n'est utilisée que sinon | [RECENSEMENT] |
+| Entrées externes | `open-url` → `$z(url, mainView, {coldStart})` (gestionnaire de liens) ; `continue-activity` : lien web → `cGa`, Spotlight → `uGa`, session Claude Code → `atr` ; `open-file` : skills, fichiers DXT/MCPB, dossiers ; `second-instance` : uniquement l'assistant de relance `nRr` | [RECENSEMENT] |
+| Aucune de ces entrées n'atteint `QXr`/`$Xr` | arêtes `uGa → TGa`, `EGa`, `r`, `pe`, `CGa` du rapport = artefacts de proximité de l'heuristique (le vrai lien de `TGa` est l'action `QUICK_ENTRY` qui **affiche** l'overlay) | [RECENSEMENT] + lecture |
+| Liens profonds | schéma `claude` enregistré ; actions du Dock : `claude://claude.ai/new?surface=chat&source=desktop_action`, `claude://code/new?…`, `claude://code/continue?session=last&…` ; l'application les transmet au renderer par l'événement `handleDeepLink(url)` | [RECENSEMENT] |
+| Absents | `NSServices`, dictionnaire AppleScript, App Intents, `PlugIns`, `XPCServices` | [RECENSEMENT] (confirme Astra) |
+| Clavier | clé de configuration `globalShortcut` (`setGlobalShortcut`) : exige des événements clavier | [RECENSEMENT] |
 
-## 2. Contre-analyse
+## 3. Contre-analyse
 
-**C1 — Deux numéros de version.** La chaîne `FCr/V4r/K4r/G4r` a été extraite du bundle **2.42304.2** ; l'inspection d'Astra du 23/10 porte sur le « package **3.1623.4** ». Si ce sont deux versions du produit, les identifiants minifiés et peut-être la chaîne ne s'appliquent plus ; si c'est un autre schéma de numérotation (version d'application et build), il faut le dire. Toute conclusion négative repose aujourd'hui sur la seconde, toute description de chaîne sur la première. *Argument technique : une négation établie sur un bundle ne vaut pas pour un autre.*
+**C1 — Versions : résolu pour la structure.** Trois versions apparaissent : 2.42304.2 (document d'extraction du dépôt), 3.1623.4 (inspection d'Astra), 3.6556.2 (installée). Les identifiants minifiés ont changé (`FCr/V4r/K4r/G4r` → `ZIr/QXr/eZr/$Xr`) mais le flux est identique : événement Swift → fonction de dépôt → dispatch avec `chatId` optionnel. Les conclusions d'Astra sur AppleScript et App Intents sont **confirmées** sur 3.6556.2.
 
-**C2 — Entrées natives non mentionnées dans le texte accessible.** La liste des pistes écartées couvre le débogage, les fuses, LocalPairing, « Change with Claude », AppleScript et App Intents. Elle ne mentionne pas :
-- les **appelants du chemin de repli `z4r(e)`** (`yCr() || V4r({text: e ?? "", images: []})`, document d'extraction §4), qui rejoint le routage sans overlay Swift ;
-- un **schéma d'URL** (`CFBundleURLTypes` / événement `open-url` / `setAsDefaultProtocolClient`) ;
-- un **service macOS** (`NSServices`), invocable par programme sans permission d'accessibilité ;
-- une **activité utilisateur** (`NSUserActivity`/Handoff), `second-instance` (arguments) et `open-file`.
+**C2 — Entrées natives non écartées par le texte d'Astra : examinées, aucune n'atteint le dispatch.** Voir §2. Le chemin de repli `z4r` du vieux document est devenu `XXr`, et ne se déclenche que depuis la fenêtre Quick héritée.
 
-Ces mécanismes sont publics et courants dans les applications Electron ; l'absence de preuve dans le texte lu n'est pas une preuve d'absence, mais `ANALYSIS.md` les couvre peut-être : à vérifier avec les fichiers manquants. Limite connue d'avance : le chemin de repli construit `{text, images}` **sans `chatId`** (nouvelle conversation, pas la conversation cible).
+**C3 — `companion-web`** interagit par l'interface web : à trancher avant tout prototype, car cela ressemble à l'automatisation d'interface interdite et ne rejoint pas le dispatch.
 
-**C3 — La piste `companion-web`.** Elle est exposée comme prototype sans AX mais repose sur une interaction « via l'interface web » d'un navigateur dédié. Cela ressemble à de l'automatisation d'interface, que la mission interdit, et ne rejoint pas `dispatchOnQuickEntrySubmit`. À trancher explicitement avant tout prototype.
+**C4 — Continuation par prompt (décision de l'opérateur du 25/10, #36 corrigée).** Si une entrée `(chatId, prompt)` existait, un message de continuation explicite remplacerait le bouton. **[HYPOTHÈSE]** à valider : la pause gratuite n'empêche pas un nouveau message après le reset.
 
-**C4 — #36 se reformule si une entrée existe (décision de l'opérateur du 25/10).** Si une entrée atteint `dispatchOnQuickEntrySubmit(chatId, prompt)`, le bouton natif « Continuer » n'est plus nécessaire : un message texte de continuation, explicite et consigné, envoyé au même chat après l'échéance est désormais accepté en second mode (#36 corrigée). Reste **[HYPOTHÈSE]** à valider : la pause gratuite n'empêche pas un nouveau message après reset, et le bouton ne fait pas plus qu'envoyer un message. Le prompt n'est jamais silencieux et ne remplace jamais celui d'une tâche.
+**C5 — Limites du recensement.** Heuristique : les faux liens ci-dessus le prouvent. Le premier rapport ne comptait les références que dans le script de l'ancre ; l'outil mis à jour compte désormais l'ancre, `requestQuickWindowDismissWithPayload`, `quickEntrySubmitted`, `submit_quick_entry`, `handleDeepLink` et `claudeURLHandler` dans tous les scripts. Le module natif `claude-swift` n'est pas du JavaScript : l'émission de `quickEntrySubmitted` par l'overlay n'est pas analysable ici.
 
-## 3. Meilleure piste positive
+## 4. Pistes classées
 
-**Aucune piste n'est vérifiée à ce jour, et je n'ai pas d'appel exact à proposer.** Candidates, par ordre de plausibilité décroissante (toutes **[HYPOTHÈSE]**) :
-
-| # | Mécanisme | Appel côté Reprise si confirmé | Limite probable |
-|---|---|---|---|
-| 1 | Appelants de `z4r` / chemin de repli atteignable par un événement natif | selon l'événement trouvé | pas de `chatId` |
-| 2 | Route `open-url` aboutissant à `V4r` | `/usr/bin/open '<url exacte>'` (LaunchServices) | `chatId` à vérifier ; préremplissage seul possible |
-| 3 | Service `NSServices` dont le message atteint `V4r` | `NSPerformService` depuis le composant Reprise | types de données du service |
-| 4 | `NSUserActivity` / `second-instance` | selon le format | rarement `chatId` |
-
-Écartées d'emblée : modifier `claude_desktop_config.json` (modification de Claude), envoyer des touches ou lancer l'overlay par clavier (automatisation d'interface), inspecteur ou injection.
-
-## 4. Blocages précis
-
-1. **Aucun accès au bundle.** L'environnement est un Linux sans `/Applications/Claude.app` ni `app.asar` ; je ne peux ni confirmer ni réfuter C1 et C2.
-2. **Fichiers de mission absents.** `MISSION.md`, `FOLLOWUP-EVIDENCE.md`, `ANALYSIS.md`, `QUICK-APPLY-NEXT.md`, `COWORK-RPC-MAP.md` : aucun n'existe dans une branche de `heraisys-sas/reprise-harness`, ni dans mon espace disque. Je ne conclus pas sur un contexte insuffisant.
-
-## 5. Plus petite expérience discriminante
-
-**`python3 quickapply_census.py /Applications/Claude.app > census.md`** (outil livré avec ce document, lecture seule : ni lancement, ni réseau, ni écriture hors du rapport ; 7 tests ; lecteur `asar` validé contre une archive produite par l'outil officiel).
-
-Il établit en une commande : (a) les schémas d'URL, services, activités, dictionnaires de script et App Intents **déclarés** par l'application ; (b) la **chaîne d'appels à rebours** depuis `dispatchOnQuickEntrySubmit` ; (c) les entrées externes (`open-url`, `second-instance`, `open-file`, `setAsDefaultProtocolClient`…) présentes dans le même script ; (d) si l'ancre existe encore dans le bundle installé (C1).
-
-| Résultat | Conclusion | Étape suivante |
+| Mécanisme | Atteint le dispatch ? | Verdict |
 |---|---|---|
-| Un événement natif de (c) mène à `V4r` / `G4r` | piste 1 à 4 confirmée statiquement | un seul essai de livraison avec un `request_key` dédié, après accord de l'opérateur ; admission ≠ émission ≠ retour `submit_result` |
-| Aucune entrée externe n'atteint l'ancre | conclusion négative soutenue par preuve, pour cette version | arrêter la recherche d'entrée native ; trancher C3 ; relever Cowork |
-| Ancre absente | la chaîne documentée ne correspond pas à ce bundle (C1) | relancer l'extraction sur la version installée |
+| Événement Swift `quickEntrySubmitted` | oui, avec `chatId` | exige l'overlay natif (interaction d'interface ou accessibilité) : exclu |
+| `requestDismiss` / `blur` de la fenêtre héritée | oui, sans `chatId` | IPC interne du renderer Quick : exclu (injection) |
+| `claude://` → `$z` → `handleDeepLink` (renderer distant) | non | **indirect** : préparation seulement ; à instruire |
+| Lien web universel / Spotlight / Handoff | non | exigent une action utilisateur ou le navigateur |
+| `open-file` (skills, DXT/MCPB) | non | installent des outils MCP : concerne le **retour MCP**, jamais la livraison ; confirmation de l'utilisateur probable **[HYPOTHÈSE]** |
+| `globalShortcut` configuré | via touche | interface : exclu |
+| Modifier `claude_desktop_config.json`, inspecteur, injection | — | interdits |
 
-Pourquoi c'est la plus petite : elle ne demande aucune permission macOS, ne touche à rien de vivant, et chaque résultat possible déclenche une action différente.
+## 5. Blocage précis
 
-## 6. Quota et échéance (sans mesure préalable obligatoire)
+Dans 3.6556.2, **aucun appelant non visuel** de `QXr`/`$Xr` : l'entrée recherchée n'existe pas nativement. Livrer un tour sans interface demanderait d'émettre `quickEntrySubmitted` depuis le module natif ou d'appeler `QXr` depuis l'intérieur du processus, c'est-à-dire d'injecter ou de modifier Claude.
 
-Principe cohérent avec #64 et #59 : enregistrer l'échéance annoncée (avis d'opérateur, `awaiting_observation`, aucune empreinte inventée), tenter **une** fois à l'échéance connue sans lecture préalable obligatoire, puis diagnostiquer en lecture seule après un échec. Sans entrée native confirmée, aucune tentative ne part. La capture du texte natif de pause reste, aujourd'hui, dépendante d'Accessibilité (#36) : elle n'est pas remplacée ici.
+## 6. Plus petite expérience discriminante (suite)
 
-## 7. Cowork
+Trois commandes en lecture seule, nouvelles options de l'outil livré :
 
-Non évalué : `COWORK-RPC-MAP.md` est absent. Le recensement s'applique aussi à une application Cowork s'il s'agit d'un bundle distinct (`python3 quickapply_census.py /chemin/vers/Cowork.app`). À juger après réception du plan RPC.
+```
+python3 quickapply_census.py /Applications/Claude.app --show '$z,cGa,$rr' --chars 4000 > routes.md
+python3 quickapply_census.py /Applications/Claude.app --grep 'submit_quick_entry' --limit 8 > sqe.md
+python3 quickapply_census.py /Applications/Claude.app > census2.md
+```
 
-## 8. Questions à l'opérateur
+- **`routes.md`** : table des routes de `claude://` (chemin, paramètres `q`, identifiant de chat, `source`) ; dit si le gestionnaire du processus principal transmet seulement l'URL au renderer.
+- **`sqe.md`** : le sens de « submit_quick_entry » dans `eZr` (action de la page web ?).
+- **`census2.md`** : le comptage global (confirme ou réfute l'absence d'autre appelant).
 
-1. Où se trouvent `MISSION.md`, `FOLLOWUP-EVIDENCE.md` et `ANALYSIS.md` (workspace Codex/Astra) ? Peux-tu les joindre ou les coller ?
-2. Peux-tu exécuter `quickapply_census.py` sur le Mac et renvoyer `census.md` ?
-3. « 2.42304.2 » et « 3.1623.4 » : deux versions ou deux numérotations ?
-4. `open claude://…` (LaunchServices) et `NSPerformService` sont-ils acceptables au titre des interdits ? Ce sont des mécanismes publics, sans accessibilité ni contournement.
-5. Une interaction via l'interface web (C3) relève-t-elle de l'automatisation d'interface interdite ?
+| Résultat | Conclusion | Suite |
+|---|---|---|
+| Une route porte un prompt ou un `chatId` | piste de **préparation** démontrée | **un seul essai réel**, avec accord explicite de l'opérateur (question 2) : `open 'claude://…'` puis constater si le texte est seulement affiché ou envoyé |
+| Les routes ne portent rien d'exploitable | conclusion négative complète | arrêter la recherche d'entrée ; basculer sur la reprise « tirée » (MCP) et l'avis opérateur ; Cowork (§8) |
+| Un autre appelant de `requestQuickWindowDismissWithPayload` apparaît | l'objectif direct est rouvert | lire ce chunk |
+
+Pourquoi c'est la plus petite : aucune permission, rien de vivant touché, et chaque issue change l'action suivante.
+
+## 7. Quota et échéance
+
+Principe inchangé et cohérent avec #64 et #59 : enregistrer l'échéance annoncée, tenter **une** fois à l'échéance connue sans lecture préalable obligatoire, diagnostiquer en lecture seule après un échec. **Sans entrée native, aucune tentative ne part** : la continuation (bouton ou prompt) reste une action de l'opérateur ou un rappel. La capture du texte natif de pause dépend encore d'Accessibilité (#36).
+
+## 8. Cowork (voie indépendante)
+
+Le bundle contient un protocole `cowork-artifact://`, un serveur MCP `office365-mcp` et des clés de fonctionnalité Cowork : **aucun déclencheur externe** n'en ressort pour l'instant, et `COWORK-RPC-MAP.md` manque. **[HYPOTHÈSE]** à vérifier : des « tâches planifiées » natives (le déclenchement par horloge serait alors fourni par l'application elle-même, sans entrée externe). Vérification : `--grep 'scheduled' --limit 12` et `--grep 'schedule' --limit 12`. Cette voie ne concerne pas le chat gratuit et peut dépendre du plan : à qualifier avant tout travail.
+
+## 9. Questions à l'opérateur
+
+1. Peux-tu lancer les trois commandes du §6 et renvoyer `routes.md`, `sqe.md`, `census2.md` ?
+2. Un seul essai réel `open 'claude://claude.ai/new?q=…'` (lien public, sans accessibilité ni contournement) est-il autorisé si `routes.md` le justifie ?
+3. Les fichiers de mission (`MISSION.md`, `FOLLOWUP-EVIDENCE.md`, `ANALYSIS.md`, `COWORK-RPC-MAP.md`) : où sont-ils ?
+4. `companion-web` : une interaction via l'interface web relève-t-elle de l'automatisation d'interface interdite ?
