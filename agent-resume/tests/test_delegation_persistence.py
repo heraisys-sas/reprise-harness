@@ -15,7 +15,10 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 from codex_expert_mcp import Bridge
 from claude_desktop_quick import Endpoint, serve
 from delegation_store import Store
+from support_clock import FakeClock
 from ux_review_probe import Probe
+
+ID = '12345678-1234-1234-1234-123456789abc'
 
 
 class DurableTests(unittest.TestCase):
@@ -57,12 +60,53 @@ class DurableTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 restarted.call('reprise_requests', {'request_key': 'one', 'acknowledge': True})
 
-    def test_timeout_is_not_permission_to_execute_again(self):
-        with patch('codex_expert_mcp.review', return_value={'status': 'timed_out'}) as run:
+    def test_wait_expiry_is_not_permission_to_execute_again(self):
+        with patch('codex_expert_mcp.review', return_value={'status': 'running'}) as run:
             bridge = self.bridge()
             bridge.call('reprise_delegate', self.args())
             self.assertEqual(bridge.call('reprise_delegate', self.args('two'))['status'], 'indeterminate')
             self.assertEqual(run.call_count, 1)
+
+    def test_transport_budget_changes_cannot_bypass_uncertain_attempt(self):
+        with patch('codex_expert_mcp.review', return_value={'status': 'running'}) as run:
+            bridge = self.bridge()
+            bridge.call('reprise_delegate', self.args(wait_seconds=30))
+            result = bridge.call('reprise_delegate', self.args('changed-budget', wait_seconds=60, inactivity_seconds=10))
+            self.assertEqual(result['status'], 'indeterminate')
+            self.assertEqual(run.call_count, 1)
+
+    def test_crash_after_native_attach_keeps_mode_route_and_blocks_followup(self):
+        bridge = self.bridge()
+        bridge.codex_workspace_write = True
+        def crash(*args, **kwargs):
+            kwargs['on_turn']({'phase': 'active', 'thread_id': ID, 'turn_id': 'turn-1'})
+            raise OSError('MCP client disconnected')
+        with patch('codex_expert_mcp.review', side_effect=crash) as run:
+            with self.assertRaises(OSError):
+                bridge.call('reprise_delegate', self.args(mode='implementation', model='gpt-6-astra'))
+            manifest = bridge.call('reprise_requests', {'request_key': 'one', 'view': 'receipt'})
+            self.assertEqual((manifest['thread_id'], manifest['turn_id']), (ID, 'turn-1'))
+            self.assertIsNone(bridge.requests.phase('one')['owner'])
+            mode = bridge.db.execute('SELECT mode FROM expert_thread_modes WHERE id=?', (ID,)).fetchone()
+            self.assertEqual(mode[0], 'implementation')
+            route = bridge.db.execute('SELECT model FROM expert_routes WHERE id=?', (ID,)).fetchone()
+            self.assertEqual(route[0], 'gpt-6-astra')
+            blocked = bridge.call('reprise_followup', {'request_key': 'child', 'backend': 'codex',
+                                                      'thread_id': ID, 'question': 'Continue'})
+            self.assertEqual(blocked['status'], 'indeterminate')
+            self.assertEqual(blocked['request_key'], 'one')
+            self.assertEqual(run.call_count, 1)
+
+    def test_input_change_preserves_original_timeout_diagnostic(self):
+        source = self.root / 'input.txt'
+        source.write_text('before')
+        def run(*args, **kwargs):
+            source.write_text('after')
+            return {'status': 'needs_review', 'reason': 'Protocol timeout after submission'}
+        with patch('codex_expert_mcp.review', side_effect=run):
+            result = self.bridge().call('reprise_delegate', self.args(paths=['input.txt']))
+        self.assertTrue(result['input_changed'])
+        self.assertEqual(result['original_reason'], 'Protocol timeout after submission')
 
     def test_failure_proven_before_dispatch_does_not_lock_equivalent_requests(self):
         for status in ('blocked_owner', 'blocked_session'):
@@ -328,6 +372,59 @@ class DurableTests(unittest.TestCase):
             parent = str(i)
         self.assertEqual(store.begin('too-deep', {'question': 'different'}, parent)['status'], 'lineage_blocked')
         self.assertIsNone(store.begin('new-root', {'question': 'new'}))
+
+    def running_review(self, status='running', phase='active'):
+        def fake(*args, **kwargs):
+            kwargs['on_turn']({'phase': phase, 'thread_id': ID, 'turn_id': 'turn-1',
+                               'started_at': 1.0, 'deadline_at': None})
+            return {'status': status, 'phase': phase, 'work_completed': False,
+                    'thread_id': ID, 'turn_id': 'turn-1', 'next_action': 'reconcile'}
+        return fake
+
+    def test_lost_ack_running_receipt_lists_phase_and_next_action(self):
+        with patch('codex_expert_mcp.review', side_effect=self.running_review()) as run:
+            bridge = self.bridge()
+            first = bridge.call('reprise_delegate', self.args())
+            self.assertEqual(first['status'], 'running')
+            self.assertEqual(bridge.call('reprise_requests', {'request_key': 'one'})['state'], 'running')
+            manifest = bridge.call('reprise_requests', {'request_key': 'one', 'view': 'receipt'})
+            self.assertEqual((manifest['state'], manifest['phase'], manifest['next_action'],
+                              manifest['work_completed']),
+                             ('running', 'active', 'reconcile', False))
+            self.assertFalse(manifest['acknowledged'])
+            with self.assertRaises(ValueError):
+                bridge.call('reprise_requests', {'request_key': 'one', 'acknowledge': True})
+            replay = self.bridge().call('reprise_delegate', self.args())
+            self.assertEqual(replay['status'], 'running')
+            self.assertEqual(run.call_count, 1)
+
+    def test_equivalent_running_attempt_blocks_new_dispatch(self):
+        with patch('codex_expert_mcp.review', side_effect=self.running_review()) as run:
+            bridge = self.bridge()
+            bridge.call('reprise_delegate', self.args('one'))
+            blocked = bridge.call('reprise_delegate', self.args('two'))
+            self.assertEqual(blocked['status'], 'indeterminate')
+            self.assertEqual(blocked['request_key'], 'one')
+            self.assertEqual(run.call_count, 1)
+
+    def test_concurrent_claim_is_held_then_taken_over_without_dispatch(self):
+        db = sqlite3.connect(':memory:')
+        self.addCleanup(db.close)
+        clock = FakeClock()
+        store = Store(db, 'project', now=clock.now)
+        store.begin('key', {'question': 'A'})
+        store.attach('key', {'phase': 'active', 'thread_id': ID, 'turn_id': 'turn-1',
+                             'owner': 'local:999999', 'started_at': 0})
+        self.assertEqual(store.claim('key', 'local:2', stale_after=120, alive=lambda owner: True), 'held')
+        self.assertEqual(store.phase('key')['owner'], 'local:999999')
+        self.assertEqual(store.claim('key', 'local:2', stale_after=120, alive=lambda owner: False),
+                         'taken_over')
+        self.assertEqual(store.phase('key')['owner'], 'local:2')
+        events = json.loads(db.execute('SELECT events FROM delegation_turns WHERE request_key=?',
+                                       ('key',)).fetchone()[0])
+        self.assertEqual(events[-1]['takeover_from'], 'local:999999')
+        self.assertEqual(store.lookup({'request_key': 'key', 'view': 'receipt'})['phase'], 'active')
+        self.assertEqual(db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0], 1)
 
     def test_desktop_receipt_remains_admission_only_after_recovery(self):
         bridge = Bridge(self.root, {}, self.state, daily_limit=0, desktop_socket='/private/tmp/quick.sock')
