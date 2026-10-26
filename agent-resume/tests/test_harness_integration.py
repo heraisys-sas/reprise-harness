@@ -469,6 +469,126 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertEqual(self.snapshot(self.state), state_before)
         self.assertTrue(Path(proposed['release']).is_dir())
 
+    def asi1_profile(self):
+        return (
+            '- id: llm-pi-ai\n'
+            "  name: '@deepseek-ai/dsh-llm-pi-ai'\n"
+            '  config:\n'
+            '    providers:\n'
+            '      asi-cloud:\n'
+            '        api: openai-completions\n'
+            '        models:\n'
+            '          - id: asi1\n'
+            '            contextWindow: 128000\n'
+            '            maxTokens: 4096\n'
+            '        compat:\n'
+            '          supportsUsageInStreaming: true\n'
+            '          supportsStore: false\n'
+            '      asi-cloud-planner:\n'
+            '        api: openai-completions\n'
+            '        models:\n'
+            '          - id: asi1\n'
+            '            contextWindow: 128000\n'
+            '            maxTokens: 4096\n'
+            '        compat:\n'
+            '          supportsUsageInStreaming: true\n'
+            '          supportsStore: false\n'
+            '- insert:\n'
+            '    - id: preset-asi1-orchestrator\n'
+            "      name: '@deepseek-ai/dsh-agent-preset'\n"
+            '      config:\n'
+            '        id: asi1-orchestrator\n'
+            '        plugins:\n'
+            '          - id: persona\n'
+            "            name: '@deepseek-ai/dsh-persona'\n"
+        )
+
+    def test_asi1_effort_is_explicit_managed_and_reversible(self):
+        original = self.asi1_profile()
+        self.config.write_text(original)
+        proposed = integration.plan(self.root, self.home, 'desktop', self.project,
+                                    output_resume=True, asi1_effort=True)
+        self.assertTrue(proposed['asi1_effort'])
+        integration.apply(self.root, proposed)
+        text = self.config.read_text()
+        self.assertEqual(text.count(integration.ASI1_START + '\n'), 4)
+        self.assertEqual(text.count(integration.ASI1_PLUGIN_START + '\n'), 1)
+        self.assertEqual(text.count('reasoningEfforts:'), 2)
+        self.assertIn('supportsReasoningEffort: true', text)
+        self.assertIn('supportsDeveloperRole: false', text)
+        self.assertIn('- id: asi1-orchestrator-effort', text)
+        plugin_path = self.managed / 'plugins/asi1-orchestrator-effort.cjs'
+        self.assertTrue(plugin_path.is_file())
+        self.assertIn(str(plugin_path), text)
+        manifest = json.loads((self.managed / 'managed.json').read_text())
+        self.assertTrue(manifest['asi1_effort'])
+        self.assertEqual(len(manifest['asi1_effort_blocks']), 4)
+        self.assertEqual(len(manifest['asi1_preset_blocks']), 1)
+        self.assertTrue(integration.inspect(self.home, 'desktop')['asi1_effort'])
+        self.assertEqual(integration.plan(self.root, self.home, 'desktop', self.project,
+                                         output_resume=True, asi1_effort=True)['changes'], [])
+        integration.apply(self.root, integration.plan(self.root, self.home, 'desktop', self.project, 'remove'))
+        self.assertEqual(self.config.read_text(), original)
+        self.assertFalse(plugin_path.exists())
+        self.assertFalse(integration.inspect(self.home, 'desktop')['asi1_effort'])
+
+    def test_asi1_effort_requires_the_route_and_model(self):
+        with self.assertRaisesRegex(ValueError, 'Configuration ASI1 absente'):
+            integration.plan(self.root, self.home, 'desktop', self.project, asi1_effort=True)
+
+    def test_asi1_effort_requires_the_preset(self):
+        self.config.write_text(self.asi1_profile().split('- insert:')[0])
+        with self.assertRaisesRegex(ValueError, 'Preset asi1-orchestrator absent'):
+            integration.plan(self.root, self.home, 'desktop', self.project, asi1_effort=True)
+
+    def test_asi1_effort_does_not_adopt_preexisting_declarations(self):
+        original = self.asi1_profile().replace(
+            '            maxTokens: 4096\n',
+            '            maxTokens: 4096\n'
+            '            reasoningEfforts:\n'
+            '              low: low\n'
+            '              medium: medium\n'
+            '              high: high\n', 1).replace(
+            '          supportsStore: false\n',
+            '          supportsStore: false\n'
+            '          supportsReasoningEffort: true\n'
+            '          supportsDeveloperRole: false\n', 1)
+        self.config.write_text(original)
+        integration.apply(self.root, integration.plan(self.root, self.home, 'desktop', self.project,
+                                                      asi1_effort=True))
+        self.assertEqual(self.config.read_text().count(integration.ASI1_START + '\n'), 2)
+        integration.apply(self.root, integration.plan(self.root, self.home, 'desktop', self.project, 'remove'))
+        self.assertIn('reasoningEfforts:', self.config.read_text())
+
+    def test_asi1_effort_keeps_preexisting_preset_row(self):
+        original = self.asi1_profile().replace(
+            '        plugins:\n          - id: persona\n',
+            '        plugins:\n'
+            '          - id: asi1-orchestrator-effort\n'
+            '            name: /manual/asi1.cjs\n'
+            '          - id: persona\n')
+        self.config.write_text(original)
+        integration.apply(self.root, integration.plan(self.root, self.home, 'desktop', self.project,
+                                                      asi1_effort=True))
+        self.assertNotIn(integration.ASI1_PLUGIN_START, self.config.read_text())
+        self.assertIn('/manual/asi1.cjs', self.config.read_text())
+        plugin_path = self.managed / 'plugins/asi1-orchestrator-effort.cjs'
+        self.assertTrue(plugin_path.is_file())
+        integration.apply(self.root, integration.plan(self.root, self.home, 'desktop', self.project, 'remove'))
+        self.assertIn('/manual/asi1.cjs', self.config.read_text())
+        self.assertFalse(plugin_path.exists())
+
+    def test_asi1_effort_block_is_not_silently_rewritten(self):
+        self.config.write_text(self.asi1_profile())
+        integration.apply(self.root, integration.plan(self.root, self.home, 'desktop', self.project,
+                                                      asi1_effort=True))
+        text = self.config.read_text().replace('low: low', 'low: high', 1)
+        self.config.write_text(text)
+        for action in ('install', 'remove'):
+            with self.assertRaisesRegex(ValueError, 'Bloc ASI1 personnalisé'):
+                integration.plan(self.root, self.home, 'desktop', self.project, action,
+                                 asi1_effort=action == 'install')
+
 
 if __name__ == '__main__':
     unittest.main()

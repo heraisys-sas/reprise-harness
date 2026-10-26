@@ -191,10 +191,22 @@ class BridgeTests(RequestCalls, unittest.TestCase):
     def test_error_payload_details_and_bounds_refusals(self):
         payload = error_payload(ValueError('chatId and filePaths are only valid with backend claude-desktop'))
         self.assertEqual(payload['code'], -32602)
+        self.assertEqual(payload['data']['kind'], 'refused')
         self.assertEqual(payload['message'], 'Request refused or unavailable; no automatic retry.')
         self.assertTrue(payload['data']['error'].startswith('ValueError: '))
         self.assertIn('claude-desktop', payload['data']['error'])
         self.assertLessEqual(len(error_payload(OSError('x' * 500))['data']['error']), 200)
+
+    def test_error_payload_distinguishes_busy_from_unavailable(self):
+        from engines import Unavailable
+        busy = error_payload(BlockingIOError('lock held'))
+        self.assertEqual(busy['code'], -32000)
+        self.assertEqual(busy['data']['kind'], 'busy')
+        unavailable = error_payload(Unavailable('engine_unavailable', 'Exécutable Codex introuvable.'))
+        self.assertEqual(unavailable['code'], -32000)
+        self.assertEqual(unavailable['data']['kind'], 'unavailable')
+        # A refused request keeps its own code: the three cases stay machine-distinguishable (#53).
+        self.assertNotEqual(busy['code'], error_payload(ValueError('bad args'))['code'])
 
     def test_padded_oversized_followup_rejected_before_budget(self):
         self.bridge.db.execute('INSERT INTO expert_threads VALUES (?,?)', (self.bridge.scope, ID))

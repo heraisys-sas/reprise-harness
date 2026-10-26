@@ -40,6 +40,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var claudeQuotaState: [String: Any] = [:]
     @Published var integrationOutputResume = false
     @Published var integrationOutputResumeProject = ""
+    @Published var integrationAsi1Effort = false
     @Published var integrationAgentRole = "standard"
     @Published var integrationAcknowledged = false
     @Published var integrationProfiles: [String] = []

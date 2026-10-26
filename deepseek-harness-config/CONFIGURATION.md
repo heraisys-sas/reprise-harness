@@ -33,3 +33,15 @@ La sauvegarde contient le patch desktop original et un manifeste des fichiers cr
 ## État du routage — 14 octobre 2026
 
 La sélection de modèle reste pilotée par les instructions tant que le plugin n’est pas activé. Le test isolé de `dsh-subagent-router` 0.6.0 a réussi sur le plan logiciel, mais a reproduit un classement insuffisant de certaines demandes françaises. Voir `../routing/README.md`. Le helper Apple de routage est désormais implémenté dans `../routing/`, avec deux moteurs et un test de délégation local ; il reste expérimental et non activé dans le profil quotidien.
+
+## Mode `asi1-orchestrator` — effort bas (25 octobre 2026)
+
+ASI:One documente `asi1` comme un modèle qui raisonne toujours, à la profondeur maximale quand la requête ne précise pas `reasoning_effort` ; `low`, `medium` et `high` sont les trois profondeurs acceptées. Sans `reasoningEfforts`, `dsh-llm-pi-ai` matérialise `asi1` comme non-raisonneur et n'envoie jamais le paramètre.
+
+Le patch déclare donc `reasoningEfforts` sur `asi1` pour les routes `asi-cloud` et `asi-cloud-planner`, avec `supportsReasoningEffort: true` et `supportsDeveloperRole: false`. Le plugin [`agent-resume/asi1-orchestrator-effort.cjs`](../agent-resume/asi1-orchestrator-effort.cjs), monté dans le preset `asi1-orchestrator`, force `low` sur toute requête `asi1` de ce mode, y compris si la session avait sélectionné une autre profondeur. Les autres presets, les modèles Flash et les workers ne sont pas modifiés.
+
+Un preset DSH ne choisit pas le modèle : `agent-default-model` est global et son `reasoningEffort` s'appliquerait à toutes les nouvelles sessions et à leurs sous-agents. Le mode doit donc être ouvert avec `asi-cloud/asi1` (ou `asi-cloud-planner/asi1`) sélectionné ; le preset garantit alors l'effort `low`. Le proxy planner force déjà `low` côté serveur, mais le chemin direct dépend de cette configuration.
+
+Reprise peut déployer cette capacité depuis **Intégrations Harness** avec l’option **Effort bas pour le mode asi1-orchestrator** (`integration-plan --asi1-effort`) : elle installe le plugin sous `PROFIL/.reprise/plugins/`, insère une entrée marquée dans la liste `plugins` du preset `asi1-orchestrator` et n’insère les déclarations `reasoningEfforts`/`compat` que si elles manquent, avec marqueurs et empreintes. Une déclaration déjà présente est conservée et n’est pas retirée. Voir [HARNESS-INTEGRATION.md](../agent-resume/HARNESS-INTEGRATION.md#effort-bas-du-mode-asi1-orchestrator-25-octobre-2026).
+
+Sources : [Reasoning](https://docs.asi1.ai/documentation/build-with-asi-one/reasoning), [OpenAI Compatibility](https://docs.asi1.ai/documentation/build-with-asi-one/openai-compatibility), [Models](https://docs.asi1.ai/documentation/models).

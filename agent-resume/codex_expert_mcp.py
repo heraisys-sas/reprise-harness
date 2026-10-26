@@ -18,13 +18,20 @@ import ironclaw
 import reprise_logs
 import reprise_health
 import shutil
-from engines import executable, options
+from engines import Unavailable, executable, options
 
 
 def error_payload(exc):
     detail = f'{type(exc).__name__}: {exc}'[:200]
-    return {'code': -32602, 'message': 'Request refused or unavailable; no automatic retry.',
-            'data': {'error': detail}}
+    kind, code = 'refused', -32602
+    if isinstance(exc, Unavailable):
+        # Backend/engine down is an availability failure, not a caller mistake.
+        kind, code = 'unavailable', -32000
+    elif isinstance(exc, BlockingIOError):
+        # Bridge lock held by another active expertise.
+        kind, code = 'busy', -32000
+    return {'code': code, 'message': 'Request refused or unavailable; no automatic retry.',
+            'data': {'kind': kind, 'error': detail}}
 
 BACKEND_MODELS = {
     'codex': ('gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'),

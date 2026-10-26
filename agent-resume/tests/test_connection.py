@@ -64,3 +64,24 @@ class ConnectionTests(unittest.TestCase):
                 result = connection.probe('codex', '/chosen.sock', session)
             self.assertEqual(result['thread_loaded'], loaded)
             self.assertEqual([c.args[0] for c in call.call_args_list], ['initialize', 'thread/read'])
+
+    def test_muted_protocol_socket_is_classified_protocol_muted(self):
+        # Socket vivant mais muet : la connexion réussit, initialize ne répond pas (#52).
+        with patch('codex_rpc.Client', FakeClient), patch.object(FakeClient, 'call', side_effect=TimeoutError):
+            result = connection.probe('codex', '/chosen.sock')
+        self.assertFalse(result['connected'])
+        self.assertEqual(result['socket_state'], 'protocol_muted')
+        self.assertTrue(FakeClient.last.closed)
+
+    def test_unreachable_socket_is_classified_unreachable(self):
+        # Le transport lui-même échoue (proxy/handshake) : jamais de requête partie (#52).
+        with patch('codex_rpc.Client', side_effect=OSError('connection refused')):
+            result = connection.probe('codex', '/chosen.sock')
+        self.assertFalse(result['connected'])
+        self.assertEqual(result['socket_state'], 'unreachable')
+
+    def test_responsive_probe_reports_socket_state(self):
+        with patch('codex_rpc.Client', FakeClient):
+            result = connection.probe('codex', '/chosen.sock')
+        self.assertTrue(result['connected'])
+        self.assertEqual(result['socket_state'], 'responsive')

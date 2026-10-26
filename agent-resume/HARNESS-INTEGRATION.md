@@ -89,3 +89,39 @@ chargement. Coordonner ce rechargement après le travail actif et vérifier les
 reçus de continuation. Retirer l’option du plan retire le plugin de la configuration
 sans effacer les reçus. Les journaux Zstandard peuvent contenir plusieurs trames :
 le lecteur Reprise les parcourt toutes et refuse une trame corrompue ou tronquée.
+
+## Effort bas du mode `asi1-orchestrator` (25 octobre 2026)
+
+L’option **Effort bas pour le mode asi1-orchestrator** ajoute une capacité
+optionnelle au même parcours. CLI :
+`integration-plan --home … --profile desktop --project … --action install --asi1-effort`
+puis application du plan vérifié. Elle exige une route `asi-cloud` avec le modèle
+`asi1` déjà déclarée et un preset `asi1-orchestrator` existant ; Reprise ne crée
+ni route, ni modèle, ni preset.
+
+Installation :
+
+- le plugin `asi1-orchestrator-effort.cjs`, empaqueté dans la release, est copié
+  sous `PROFIL/.reprise/plugins/` ;
+- une entrée marquée est insérée dans la liste `plugins` du preset
+  `asi1-orchestrator` : elle ne s’applique qu’à ce mode, pas aux autres sessions ;
+- si `llm-pi-ai` ne les déclare pas déjà, deux blocs marqués
+  `# BEGIN/END REPRISE ASI1 EFFORT` ajoutent `reasoningEfforts` (low/medium/high)
+  et `supportsReasoningEffort` / `supportsDeveloperRole` sur `asi1` pour
+  `asi-cloud` et, lorsqu’elle existe, `asi-cloud-planner` ;
+- une déclaration ou une entrée de preset déjà présente hors marqueurs n’est
+  ni adoptée ni réécrite. Elle reste au propriétaire du profil et n’est pas retirée.
+
+Le retrait enlève le plugin, l’entrée de preset et uniquement les blocs marqués
+dont l’empreinte correspond au manifeste. Une modification d’un bloc marqué
+bloque l’installation comme le retrait. Le modèle par défaut, les autres presets
+et les workers ne sont pas modifiés. Le mode doit toujours être ouvert avec
+`asi-cloud/asi1` (ou `asi-cloud-planner/asi1`) ; le plugin garantit alors
+`reasoning_effort=low`.
+
+Comme pour la continuation, le plan et les empreintes prouvent la configuration
+écrite, pas son chargement par Harness. Le client doit recharger le profil pour
+charger une nouvelle version du plugin. `integration-verify` contrôle le bloc,
+le fichier du plugin et les blocs marqués, puis rapporte
+`asi1_effort.configured` avec `client_loaded: unknown`. Aucun appel d’inférence
+n’est effectué.

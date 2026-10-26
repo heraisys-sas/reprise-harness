@@ -60,6 +60,10 @@
           - id: asi1
             contextWindow: 128000
             maxTokens: 4096
+            reasoningEfforts:
+              low: low
+              medium: medium
+              high: high
           - id: openai/gpt-oss-20b
             contextWindow: 131072
             maxTokens: 4096
@@ -72,6 +76,8 @@
         compat:
           supportsUsageInStreaming: true
           supportsStore: false
+          supportsReasoningEffort: true
+          supportsDeveloperRole: false
       asi-cloud-planner:
         displayName: ASI:Cloud — planner (proxy local 8481)
         api: openai-completions
@@ -87,6 +93,10 @@
           - id: asi1
             contextWindow: 128000
             maxTokens: 4096
+            reasoningEfforts:
+              low: low
+              medium: medium
+              high: high
         retryPolicy:
           mode: normal
           maxRetries: 0
@@ -94,6 +104,8 @@
           supportsUsageInStreaming: true
           supportsStore: false
           supportsLongCacheRetention: true
+          supportsReasoningEffort: true
+          supportsDeveloperRole: false
 - id: ui-chat
   name: '@deepseek-ai/dsh-client-ui-chat'
   config:
@@ -232,6 +244,15 @@
               searchTimeoutMs: 60000
           - id: present
             name: '@deepseek-ai/dsh-tool-present'
+          - id: asi1-orchestrator-effort
+            name: /Users/olivierhz/Documents/deepseek-harness/default-workspace/reprise-harness/agent-resume/asi1-orchestrator-effort.cjs
+            config:
+              effort: low
+              providers:
+                - asi-cloud
+                - asi-cloud-planner
+              models:
+                - asi1
           - id: tool-plugin-manager
             name: '@deepseek-ai/dsh-plugin-manager/tools'
             disabled: true
