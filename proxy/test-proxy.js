@@ -140,7 +140,6 @@ async function main() {
     assert.deepStrictEqual(observed.body, {
       model: 'test-model',
       messages: [{ role: 'user', content: BODY_SECRET }],
-      'x-session-id': SESSION_SECRET,
       stream: true,
       planner_mode: true,
       reasoning_effort: 'low',
@@ -155,10 +154,11 @@ async function main() {
       Number(observed.headers['content-length']), observed.length
     );
     for (const name of [
-      'accept-encoding', 'x-remove-me', 'x-session-id', 'x-asi-planner'
+      'accept-encoding', 'x-remove-me', 'x-asi-planner'
     ]) {
       assert.strictEqual(observed.headers[name], undefined);
     }
+    assert.strictEqual(observed.headers['x-session-id'], SESSION_SECRET);
   });
 
   await check('trois fragments SSE relayés octet pour octet', async () => {

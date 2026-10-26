@@ -71,6 +71,7 @@ extension App {
             self.integrationProfiles = result["profiles"] as? [String] ?? []
             if let project = result["output_resume_project"] as? String { self.integrationOutputResumeProject = project }
             if let enabled = result["output_resume"] as? Bool { self.integrationOutputResume = enabled }
+            self.integrationAsi1Effort = result["asi1_effort"] as? Bool ?? false
             if let enabled = result["delegate"] as? Bool { self.integrationDelegate = enabled }
             self.integrationCodexWorkspaceWrite = result["codex_workspace_write"] as? Bool ?? false
             if let role = result["agent_role"] as? String { self.integrationAgentRole = role }
@@ -91,6 +92,7 @@ extension App {
             args.append("--output-resume")
             if !integrationOutputResumeProject.isEmpty { args += ["--output-resume-project", integrationOutputResumeProject] }
         }
+        if integrationAsi1Effort { args.append("--asi1-effort") }
         args += ["--agent-role", integrationAgentRole]
         setupCommand(args) { result in
             self.integrationPlan = result["plan"] as? [String: Any]
@@ -155,6 +157,8 @@ struct Integrations: View {
                     Toggle("Continuer après une limite de tokens de sortie", isOn: $app.integrationOutputResume)
                     if app.integrationOutputResume { TextField("Projet de continuation (vide : projet du pont)", text: $app.integrationOutputResumeProject) }
                     Text("Autorise une continuation dans le même chat Harness, après max-tokens confirmé ; deux continuations consécutives maximum. La pause automatique de Reprise reste prioritaire.").font(.caption).foregroundStyle(.secondary)
+                    Toggle("Effort bas pour le mode asi1-orchestrator", isOn: $app.integrationAsi1Effort)
+                    Text("Déclare asi1 raisonneur, ajoute les champs compat et insère le plugin dans le preset asi1-orchestrator pour forcer reasoning_effort=low. La route asi-cloud/asi1 et le preset doivent déjà exister. Ne change pas le modèle par défaut ; recharger le profil Harness pour charger une nouvelle version du plugin.").font(.caption).foregroundStyle(.secondary)
                     Picker("Rôle de l’agent", selection: $app.integrationAgentRole) {
                         Text("Standard").tag("standard")
                         Text("Coordinateur").tag("coordinator")
@@ -225,6 +229,7 @@ struct Integrations: View {
                         Text("Rôle : " + ((plan["agent_role"] as? String == "coordinator") ? "Coordinateur" : "Standard"))
                         if let project = plan["output_resume_project"] as? String { path("Projet de continuation", project) }
                         Text("Continuation après limite de sortie : " + ((plan["output_resume"] as? Bool == true) ? "autorisée" : "désactivée"))
+                        Text("Effort ASI1 bas : " + ((plan["asi1_effort"] as? Bool == true) ? "installé" : "non installé"))
                         Text("Délégation : " + ((plan["delegate"] as? Bool == true) ? "exposée" : "non exposée"))
                         ForEach(Array((plan["changes"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, change in
                             VStack(alignment: .leading, spacing: 3) {

@@ -191,9 +191,9 @@ function createProxy() {
             .update(sessionId).digest('hex').slice(0, 24);
 
           body.planner_mode = true;
-          body['x-session-id'] = sessionId;
           delete body.prompt_cache_key;
           delete body.stream_options;
+          delete body['x-session-id'];
           body.reasoning_effort = REASONING_EFFORT;
           body.temperature = TEMPERATURE;
 
@@ -202,6 +202,7 @@ function createProxy() {
           delete headers[PLANNER_HEADER];
           delete headers['accept-encoding'];
           delete headers['x-session-id'];
+          headers['x-session-id'] = sessionId;
           delete headers.expect;
           headers.host = target.host;
           headers['content-type'] = 'application/json';
