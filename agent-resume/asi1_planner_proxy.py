@@ -378,21 +378,26 @@ class PlannerHandler(http.server.BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 raise ProxyError(400, 'INVALID_BODY')
             key = body.get('prompt_cache_key')
-            if not isinstance(key, str) or not key.strip() or len(key) > 64:
+            if (not isinstance(key, str) or not key.strip() or len(key) > 64
+                    or any(ord(char) < 32 or ord(char) > 126 for char in key)):
                 raise ProxyError(400, 'INVALID_PROMPT_CACHE_KEY')
             try:
                 encoded_key = key.encode()
             except UnicodeError:
                 raise ProxyError(400, 'INVALID_PROMPT_CACHE_KEY')
             entry['sessionIdHash'] = hashlib.sha256(encoded_key).hexdigest()[:24]
-            body.update(planner_mode=True, **{'x-session-id': key}, reasoning_effort='low', temperature=0.25)
+            # The session identifier is an HTTP header, never a JSON argument.
+            body.update(planner_mode=True, reasoning_effort='low', temperature=0.25)
+            body.pop('x-session-id', None)
+            body.pop('prompt_cache_retention', None)
             body.pop('prompt_cache_key', None)
             body.pop('stream_options', None)
             payload = json.dumps(body, ensure_ascii=False, allow_nan=False).encode()
             headers = clean_headers(self.headers)
             for name in ('x-asi-planner', 'accept-encoding', 'x-session-id', 'expect', 'host', 'content-length'):
                 headers.pop(name, None)
-            headers.update({'content-type': 'application/json', 'content-length': str(len(payload))})
+            headers.update({'content-type': 'application/json', 'content-length': str(len(payload)),
+                            'x-session-id': key})
             target = self.server.target
             klass = http.client.HTTPSConnection if target.scheme == 'https' else http.client.HTTPConnection
             options = {'timeout': self.server.connect_timeout}
