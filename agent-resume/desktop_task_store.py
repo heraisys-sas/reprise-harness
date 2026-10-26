@@ -61,6 +61,31 @@ class TaskStore:
             self.db.execute('UPDATE desktop_tasks SET claim_key=?,attempt_id=? WHERE scope=? AND request_key=?', (claim_key,attempt,self.scope,request_key))
         return {'status': 'finished', 'request_key': request_key, 'attempt_id': attempt, 'prompt': row[0], 'chat_id': row[1], 'completed': row[4] is not None, 'instruction': 'Already completed; retrieve the result, do not execute again.' if row[4] is not None else 'Perform the scoped task, then call submit_result with this attempt_id.'}
 
+    def claim_next(self, claim_key):
+        """Atomically claim the oldest admitted task, or resume this claim_key's unfinished one.
+
+        Returns None when nothing is waiting. Two claim_keys never receive the same task.
+        """
+        bounded(claim_key, 'claim_key', 128)
+        columns = 'request_key,prompt,chat_id,attempt_id'
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            row = self.db.execute(f'SELECT {columns} FROM desktop_tasks WHERE scope=? AND claim_key=? AND answer IS NULL ORDER BY rowid LIMIT 1',
+                                  (self.scope, claim_key)).fetchone()
+            resumed = row is not None
+            if row is None:
+                row = self.db.execute(f'SELECT {columns} FROM desktop_tasks WHERE scope=? AND claim_key IS NULL ORDER BY rowid LIMIT 1',
+                                      (self.scope,)).fetchone()
+                if row is None:
+                    return None
+                attempt = str(uuid.uuid4())
+                self.db.execute('UPDATE desktop_tasks SET claim_key=?,attempt_id=? WHERE scope=? AND request_key=? AND claim_key IS NULL',
+                                (claim_key, attempt, self.scope, row[0]))
+                row = (row[0], row[1], row[2], attempt)
+        return {'status': 'finished', 'task': True, 'resumed': resumed, 'request_key': row[0], 'attempt_id': row[3],
+                'prompt': row[1], 'chat_id': row[2],
+                'instruction': 'Perform the scoped task, then call submit_result with this attempt_id, then call await_task again with the same claim_key.'}
+
     def submit(self, request_key, attempt_id, answer):
         bounded(request_key, 'request_key', 128)
         bounded(attempt_id, 'attempt_id', 128)
