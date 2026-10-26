@@ -474,7 +474,9 @@ class PlannerProxyTests(unittest.TestCase):
             while self.proxy.active and time.monotonic() < deadline:
                 time.sleep(0.002)
         self.assertFalse(self.proxy.active)
-        self.assertTrue(self.proxy.slots.acquire(blocking=False))
+        # The slot is released in process_request_thread's finally, after
+        # active is discarded; wait on the permit itself, never on active.
+        self.assertTrue(self.proxy.slots.acquire(timeout=2))
         self.proxy.slots.release()
         entry = self.logs()[-1]
         self.assertEqual(entry['errorCode'], 'HEADERS_TIMEOUT')
