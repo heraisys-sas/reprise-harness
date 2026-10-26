@@ -29,6 +29,9 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         self.server.calls += 1
         raw = self.rfile.read(int(self.headers['content-length']))
         self.server.observed = (json.loads(raw), dict(self.headers))
+        if 'x-session-id' in self.server.observed[0]:
+            self.send_error(400, 'Unrecognized request argument supplied: x-session-id')
+            return
         self.server.entered.set()
         mode = self.server.mode
         if mode == 'headers':
@@ -155,27 +158,50 @@ class PlannerProxyTests(unittest.TestCase):
     def test_rewrite_and_exact_sse(self):
         response, _ = self.request({'prompt_cache_key': 'session-secret', 'messages': [{'content': 'body-secret'}],
                                     'stream_options': {'include_usage': True}, 'planner_mode': False,
+                                    'x-session-id': 'body-spoof-secret', 'prompt_cache_retention': '24h',
                                     'reasoning_effort': 'high', 'temperature': 1, 'extra': {'a': 1}})
         self.assertEqual(response.status, 200)
         self.assertEqual(response.read(), self.upstream.payload)
         body, headers = self.upstream.observed
         self.assertEqual(body, {'messages': [{'content': 'body-secret'}], 'planner_mode': True,
-                                'x-session-id': 'session-secret', 'reasoning_effort': 'low',
+                                'reasoning_effort': 'low',
                                 'temperature': 0.25, 'extra': {'a': 1}})
         normalized = {k.lower(): v for k, v in headers.items()}
         self.assertEqual(normalized['authorization'], 'Bearer auth-secret')
         self.assertEqual(normalized['host'], '127.0.0.1:%s' % self.upstream.server_port)
-        for key in ('x-private', 'x-session-id', 'accept-encoding', 'x-asi-planner'):
+        self.assertEqual(normalized['x-session-id'], 'session-secret')
+        for key in ('x-private', 'accept-encoding', 'x-asi-planner'):
             self.assertNotIn(key, normalized)
         logs = self.logs()
         text = json.dumps(logs)
-        for secret in ('session-secret', 'auth-secret', 'body-secret', 'header-secret'):
+        for secret in ('session-secret', 'auth-secret', 'body-secret', 'header-secret', 'body-spoof-secret'):
             self.assertNotIn(secret, text)
         self.assertIsNone(logs[-1]['errorCode'])
         self.assertEqual(logs[-1]['bytesSent'], len(self.upstream.payload))
 
+    def test_session_header_stable_and_isolated(self):
+        for key in ('job-a-secret', 'job-a-secret', 'job-b-secret'):
+            response, _ = self.request({'prompt_cache_key': key, 'x-session-id': 'body-spoof'})
+            self.assertEqual(response.status, 200)
+            response.read()
+            body, headers = self.upstream.observed
+            self.assertNotIn('x-session-id', body)
+            self.assertEqual({k.lower(): v for k, v in headers.items()}['x-session-id'], key)
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            logs = self.logs()
+            if len(logs) == 3:
+                break
+            time.sleep(0.01)
+        self.assertEqual(len(logs), 3)
+        hashes = [row['sessionIdHash'] for row in logs]
+        self.assertEqual(hashes[0], hashes[1])
+        self.assertNotEqual(hashes[0], hashes[2])
+        for secret in ('job-a-secret', 'job-b-secret', 'body-spoof', 'header-secret'):
+            self.assertNotIn(secret, json.dumps(logs))
+
     def test_invalid_keys_never_reach_upstream(self):
-        for key in (None, '', ' ', 'x' * 65, 3, []):
+        for key in (None, '', ' ', 'x' * 65, 3, [], 'bad\rkey', 'bad\nkey', 'bad\x00key', 'été'):
             response, _ = self.request({'prompt_cache_key': key})
             self.assertEqual(response.status, 400)
             response.read()
@@ -221,9 +247,43 @@ class PlannerProxyTests(unittest.TestCase):
     def test_headers_timeout_no_retry(self):
         self.upstream.mode = 'headers'
         self.proxy.headers_timeout = 0.08
-        response, _ = self.request()
-        self.assertEqual(response.status, 504)
-        response.read()
+        started = time.monotonic()
+        try:
+            response, _ = self.request()
+        except http.client.RemoteDisconnected:
+            # The absolute-deadline watchdog may close the client before the
+            # owner thread can emit its 504. Both paths must abort, never retry.
+            pass
+        else:
+            self.assertEqual(response.status, 504)
+            try:
+                response.read()
+            except http.client.IncompleteRead:
+                # The same absolute deadline can interrupt the error body
+                # after its 504 headers. A successful response is never allowed.
+                pass
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(self.logs()[-1]['errorCode'], 'HEADERS_TIMEOUT')
+        self.assertEqual(self.upstream.calls, 1)
+
+    def test_headers_socket_timeout_returns_504(self):
+        self.upstream.mode = 'headers'
+        self.proxy.headers_timeout = 1
+        original = http.client.HTTPConnection.getresponse
+        upstream_port = self.upstream.server_port
+        entered = self.upstream.entered
+
+        def getresponse(connection):
+            if connection.port == upstream_port:
+                if not entered.wait(0.5):
+                    raise AssertionError('Fixture did not receive the upstream POST')
+                raise TimeoutError('injected upstream header timeout')
+            return original(connection)
+
+        with mock.patch('asi1_planner_proxy.http.client.HTTPConnection.getresponse', getresponse):
+            response, _ = self.request()
+            self.assertEqual(response.status, 504)
+            response.read()
         self.assertEqual(self.logs()[-1]['errorCode'], 'HEADERS_TIMEOUT')
         self.assertEqual(self.upstream.calls, 1)
 

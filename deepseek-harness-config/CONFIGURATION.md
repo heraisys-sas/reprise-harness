@@ -36,7 +36,7 @@ La sélection de modèle reste pilotée par les instructions tant que le plugin 
 
 ## Mode `asi1-orchestrator` — effort bas (25 octobre 2026)
 
-ASI:One documente `asi1` comme un modèle qui raisonne toujours, à la profondeur maximale quand la requête ne précise pas `reasoning_effort` ; `low`, `medium` et `high` sont les trois profondeurs acceptées. Sans `reasoningEfforts`, `dsh-llm-pi-ai` matérialise `asi1` comme non-raisonneur et n'envoie jamais le paramètre.
+La documentation ASI:One consultée le 26 octobre indique désormais un défaut équilibré pour `asi1`, qui raisonne toujours ; l'ancienne affirmation « maximale » n'est pas retenue. Cela n'atteste pas le défaut du endpoint CUDOS. Sans déclaration `reasoningEfforts` ni capacité de catalogue, `dsh-llm-pi-ai` matérialise le modèle comme non-raisonneur et n'envoie pas ce paramètre. Voir le [contrat ASI1](../agent-resume/ASI1-ORCHESTRATION-CONTRACT.md) pour mini, le proxy facultatif et les preuves requises.
 
 Le patch déclare donc `reasoningEfforts` sur `asi1` pour les routes `asi-cloud` et `asi-cloud-planner`, avec `supportsReasoningEffort: true` et `supportsDeveloperRole: false`. Le plugin [`agent-resume/asi1-orchestrator-effort.cjs`](../agent-resume/asi1-orchestrator-effort.cjs), monté dans le preset `asi1-orchestrator`, force `low` sur toute requête `asi1` de ce mode, y compris si la session avait sélectionné une autre profondeur. Les autres presets, les modèles Flash et les workers ne sont pas modifiés.
 

@@ -1,6 +1,33 @@
 # Validation e2e du mode orchestrateur ASI1 — issue #75
 
-Placement proposé : `agent-resume/ASI1-ORCHESTRATOR-E2E.md`
+## Proxy Python livré par Reprise — contrôle local actuel
+
+Le service géré par Reprise depuis #78 exécute `agent-resume/asi1_planner_proxy.py`
+avec son Python embarqué. **Les sections historiques ci-dessous décrivent le
+LaunchAgent Node des lots #72–#75 : elles ne valident pas le service Python et
+ne doivent pas être appliquées à son plist.** En particulier, son
+`ProgramArguments.1` vaut `-E`, pas un chemin de script Node.
+
+Depuis une copie du dépôt contenant le correctif, exécuter :
+
+```sh
+python3 -B -m unittest discover -s agent-resume/tests -p test_asi1_planner_proxy.py -q
+```
+
+Cette suite démarre le proxy Python et un upstream factice sur des ports
+loopback éphémères, sans interrompre le service installé. Elle vérifie le
+header `x-session-id`, l'absence de ce champ dans le JSON, stabilité/isolation,
+framing, streaming, délais et confidentialité. Elle ne contacte pas ASI1,
+n'utilise aucune clé et ne démontre ni l'acceptation du planner par CUDOS ni
+le déploiement du correctif. Pour inspecter la release réellement chargée,
+utiliser [PROXY-SERVICE.md](PROXY-SERVICE.md). Une validation réelle requiert un
+plan opérateur distinct ; ne pas réutiliser les commandes `bootout`/Node de
+l'ancien protocole.
+
+Voir le [contrat commun ASI1](ASI1-ORCHESTRATION-CONTRACT.md) pour choisir entre
+orchestration directe et planner serveur, notamment avec `asi1-mini`.
+
+## Protocole historique Node #75 — référence seulement
 
 ## Référence, algorithme et invariants
 
@@ -216,7 +243,8 @@ http.createServer((req, res) => {
       sequence: ++sequence,
       method: req.method,
       url: req.url,
-      body
+      body,
+      sessionIdHeader: req.headers['x-session-id']
     }) + '\n', {mode: 0o600});
 
     res.writeHead(200, {'content-type': 'application/json'});
@@ -228,7 +256,7 @@ http.createServer((req, res) => {
 JS
 ```
 
-Le serveur journalise les corps synthétiques reçus, jamais les en-têtes. Il est réservé à cette phase sans clé et ne doit pas recevoir de conversation réelle.
+Le serveur journalise les corps et l’en-tête `x-session-id` synthétiques reçus, sans autres en-têtes. Il est réservé à cette phase sans clé et ne doit pas recevoir de conversation réelle.
 
 Dans un deuxième terminal, remplacer le chemin temporaire par celui affiché au §1 :
 
@@ -336,10 +364,12 @@ for row, session in zip(received, ["e2e-chat-a", "e2e-chat-a", "e2e-chat-b"]):
     assert row["method"] == "POST"
     assert row["url"] == "/v1/chat/completions"
     assert body["planner_mode"] is True
-    assert body["x-session-id"] == session
+    assert "x-session-id" not in body
+    assert row["sessionIdHeader"] == session
     assert body["reasoning_effort"] == "low"
     assert body["temperature"] == 0.25
     assert "prompt_cache_key" not in body
+    assert "prompt_cache_retention" not in body
     assert "stream_options" not in body
 
 expected = collections.Counter(
@@ -689,7 +719,7 @@ La validation globale exige les preuves de délégation réelle, de streaming et
 |---|---|
 | Livrable | Ce document et les artefacts temporaires de validation ; aucun changement fonctionnel requis |
 | Entrées | Installation des trois lots, profil relancé, outil de délégation disponible, session GUI active |
-| Identité | `sessionId` client → `prompt_cache_key` clampé ≤64 → `x-session-id` dans le corps upstream |
+| Identité | `sessionId` client → `prompt_cache_key` clampé ≤64 → en-tête HTTP `x-session-id` upstream |
 | Admission | Header gate et chemin exacts ; JSON valide ; clé de cache conforme |
 | Rewrite | `planner_mode=true`, identité transférée, effort `low`, température `0.25`, champs supprimés |
 | Transport | Upstream local uniquement pendant l’inspection ; aucun retry ; streaming en production |

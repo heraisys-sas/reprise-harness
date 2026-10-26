@@ -1,5 +1,10 @@
 # Proxy ASI1 Python géré par Reprise
 
+Le proxy est optionnel pour l'orchestration DSH/Reprise ; il vise le planner
+serveur, distinct de la délégation par outils. Exigences, identité par job,
+paramètres mini et limites de preuve CUDOS :
+[contrat ASI1](ASI1-ORCHESTRATION-CONTRACT.md).
+
 launchd exécute le démon. Reprise gère son installation, sa configuration,
 son démarrage, son arrêt et sa mise à jour. DeepSeek Harness reste client :
 aucune autorisation d'exécution en arrière-plan ne lui est ajoutée.
