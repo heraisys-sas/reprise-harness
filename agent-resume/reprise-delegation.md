@@ -61,7 +61,8 @@ modes never starts a second inference. Existing admission and uncertainty
 barriers remain in force.
 
 1. Read `reprise_requests(request_key=key, view="receipt")`. The manifest contains
-   `status, request_key, state, attempt_id, acknowledged, available, format,
+   `status, request_key, state, attempt_id, phase, work_completed,
+   terminal_evidence, next_action, acknowledged, available, format,
    total_length, result_sha256`, without result content.
 2. If available, retain the fingerprint and request `view="page", offset=0,
    max_chars=6000, result_sha256=fingerprint`. Each page adds
@@ -74,8 +75,35 @@ barriers remain in force.
 
 A result with `status` `blocked_owner` or `blocked_session` is `recorded`: no turn was
 submitted, so an equivalent delegation may be requested again under a new `request_key`.
-`timed_out`, `needs_review`, `blocked_permission` and any exception leave the attempt
-`indeterminate`; reconcile it without redispatching.
+`running`, `awaiting_approval`, `needs_review`, `blocked_permission` and any exception
+keep the attempt unacknowledged and block an equivalent redispatch; reconcile it without
+redispatching. `interrupted` is terminal but `work_completed` stays false: a confirmed stop
+is not a finished deliverable.
+
+### Detached turns and reconciliation
+
+Four budgets are separate. `wait_seconds` bounds only this client's wait (default 30): when
+it expires, `turn/interrupt` is **not** called, the native turn keeps running, and the
+receipt stays `status="running"` with `phase="active"` and `next_action="reconcile"`. The
+native `thread_id` and `turn_id` are persisted before the wait, so a reconnect, restart or
+compaction observes the turn instead of resending it. `inactivity_seconds` only produces a
+diagnostic (`inactivity_observed`, `idle_seconds`, `events_observed`); it never stops the
+turn. An interruption happens only through `reprise_reconcile(action="stop")` with an
+explicit authorized `reason` (`user_stop`, `execution_deadline`, `budget`), journaled and
+tested; `execution_seconds` plus `stop_on_deadline=true` is the in-call variant of that same
+explicit path. A timeout is never proof of failure, stop or completion.
+
+`reprise_reconcile(request_key=..., action="observe")` reads the native turn (loading the
+thread with `thread/resume` when needed, without starting a turn) and reports one of
+`active`, `awaiting_approval`, `finished`, `interrupted`, `owner_unavailable`. A late final
+message is captured into the durable receipt, then `delegation_collect.py` can retrieve it.
+When the native history or its final text is not restitutable, the result stays
+`owner_unavailable` with `next_action="collect"`: no automatic retry, no new turn and no
+manual SQLite edit. Approval requests are recorded as `awaiting_approval` with
+`pending_request`; the bridge never approves on a human's behalf and never kills that turn
+implicitly. `delegation_collect.py --observe` prints the same read-only manifest, and
+`reprise_requests view="receipt"` carries `phase`, `work_completed`, `terminal_evidence`
+and `next_action`. There is no polling loop: reconcile is an explicit call.
 
 `format="receipt-json-v1"` describes JSON of the entire persisted `result`
 object: sorted keys, compact separators, `ensure_ascii=False`, no Unicode
@@ -112,7 +140,7 @@ backend fallback or automatic retry is introduced.
 
 Use `mcp__reprise_codex__reprise_followup` only for an owned returned session, with its thread ID and explicit `backend: "codex"` or `backend: "claude-code"`. It retains the recorded model and effort. For the same subject or project, prefer continuing that session over opening a new one while the required competence level is unchanged: the expert keeps its prior exploration of the project and the stable instructions, which reliably saves turns, cost and latency; remote prefix-cache reuse itself is not guaranteed. Open a new session when the competence level changes, the subject diverges or the remote history has become unwieldy. Send the answer or changed facts rather than full history. Legacy bridges may also expose the Codex-specific `codex_followup` alias; use it only if actually discovered. Follow-ups are not a bidirectional Claude Desktop channel.
 
-Respect `quota_blocked`, `budget_blocked`, `busy`, `timed_out`, `blocked_permission`, `needs_review`, `billing_unverified` and `blocked_auth`. No repeated polling, automatic retry, credential copying, authentication on the user's behalf or paid API fallback. A timeout may already have consumed quota; truncated output is incomplete. One request at a time. No backend has a local daily call cap: legacy `--daily-limit` and `expert_calls`/`quick_calls` counters are inert. Provider checks, including the current Codex 5% reserve, remain in force. Explicit user budgets remain separate from provider quotas.
+Respect `quota_blocked`, `budget_blocked`, `busy`, `running`, `awaiting_approval`, `interrupted`, `owner_unavailable`, `blocked_permission`, `needs_review`, `billing_unverified` and `blocked_auth`. No repeated polling, automatic retry, credential copying, authentication on the user's behalf or paid API fallback. A wait expiry is not a failure, a stop or a completion; it may already have consumed quota and truncated output is incomplete. One request at a time. No backend has a local daily call cap: legacy `--daily-limit` and `expert_calls`/`quick_calls` counters are inert. Provider checks, including the current Codex 5% reserve, remain in force. Explicit user budgets remain separate from provider quotas.
 
 ## Backend and quota limits
 
@@ -128,7 +156,7 @@ Explicit `backend: "claude-desktop"` uses the structured Quick Apply submission 
 
 ### Deliverable and timeout discipline
 
-Give the expert the exact baseline, scope, acceptance checks and enough reads to resolve uncertainty. Request a Git-generated diff checked against a clean baseline, and require an explicit statement of checks actually run. After two failed applications, return diagnostics to the same expert conversation or change implementation method; do not repeatedly regenerate hunk headers. A timed-out turn needs native-state reconciliation, not a direct database state rewrite. Preserve request identity and uncertainty until that reconciliation is evidenced.
+Give the expert the exact baseline, scope, acceptance checks and enough reads to resolve uncertainty. Request a Git-generated diff checked against a clean baseline, and require an explicit statement of checks actually run. After two failed applications, return diagnostics to the same expert conversation or change implementation method; do not repeatedly regenerate hunk headers. An expired client wait is not a stop: read the receipt, call `reprise_reconcile` and collect a late result instead of rewriting a database state. Only an explicitly authorized stop interrupts the native turn, and it records `work_completed=false`. Preserve request identity and uncertainty until that reconciliation is evidenced.
 
 
 ### Deterministic local collection
@@ -150,3 +178,34 @@ project scope. Existing output files are never overwritten. Incomplete backend
 captures are refused; pagination cannot reconstruct missing text. Native Harness
 file-reading tools can still shorten their own display: collect or inspect bounded
 ranges instead of treating that display as the full file.
+
+### Précisions de validation #65 (0.1.14)
+
+- La réconciliation initialise la connexion native avant observation. Un `turn_id` absent ou
+  introuvable reste incertain : aucun dernier tour du thread n’est adopté par supposition.
+- Les anciens reçus sans `delegation_turns` sont raccordés seulement si leur résultat conserve
+  les deux identifiants et si `expert_threads` confirme la propriété dans la route configurée
+  (projet et socket). Un ancien reçu sans cette preuve reste bloqué, sans SQL manuel ni rejeu.
+- Une interruption RPC acceptée n’est pas un arrêt confirmé. Seul le statut natif
+  `interrupted` du tour exact autorise le reçu terminal ; refus, perte d’ACK ou tour encore
+  actif restent `needs_review`. La cause initiale d’un timeout reste conservée lorsque
+  `input_changed` est ajouté ; la collecte tardive ne valide pas les entrées modifiées.
+- Les empreintes des entrées explicites sont revérifiées lors de la collecte tardive en
+  mode expertise. Les routes et le mode implementation sont persistés avant l’attente,
+  y compris si le retour MCP est perdu. Modifier seulement les délais ne contourne pas
+  la garde contre les tentatives équivalentes incertaines.
+- Une attente d’approbation persistée reste visible tant que le natif ne fournit pas de
+  preuve terminale ; l’absence de champ approval dans `thread/read` ne vaut pas accord.
+- Aucun collecteur ni superviseur de budget autonome n’est ajouté. Une échéance autorisée
+  doit tenir dans la fenêtre d’attente connectée et précéder le diagnostic d’inactivité,
+  sinon l’admission est refusée. Une déconnexion ou une demande humaine peut interrompre
+  cette surveillance : observer le reçu puis arrêter explicitement si nécessaire.
+- Pendant l’attente connectée, le verrou existant protège l’appel actif : une réconciliation
+  concurrente renvoie `busy`. Après détachement, l’observation et l’arrêt explicite deviennent
+  disponibles ; aucune réservation par PID ne demeure après le retour normal.
+- Les intégrations gérées avec délégation incluent désormais `reprise_reconcile` dans leur
+  allowlist lors du prochain plan/apply. Les anciennes installations nécessitent cette
+  migration explicite ; remplacer les fichiers de la release ne suffit pas. Aucun profil
+  réel ni service n’est modifié par le lot.
+- Les tests utilisent exclusivement des fixtures. L’essai long natif, la continuité réelle
+  après fermeture du client et le déploiement restent à valider séparément par l’opérateur.
