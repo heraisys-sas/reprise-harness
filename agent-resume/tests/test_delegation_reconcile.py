@@ -152,6 +152,19 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(result['pending_request']['method'], 'commandExecution/requestApproval')
         self.assertNotIn('turn/interrupt', factory.last.methods())
 
+    def test_repeated_active_observation_handles_persisted_null_approval(self):
+        bridge = self.bridge()
+        self.prepare(bridge)
+        for _ in range(2):
+            factory = self.factory(items=[])
+            result = self.reconcile(bridge, factory)
+            self.assertEqual((result['status'], result['phase']), ('running', 'active'))
+            stored = bridge.requests.lookup({'request_key': 'key'})['result']
+            self.assertIsNone(stored['pending_request'])
+            self.assertEqual((stored['thread_id'], stored['turn_id']), (THREAD, TURN))
+            self.assertNotIn('turn/start', factory.last.methods())
+            self.assertNotIn('turn/interrupt', factory.last.methods())
+
     def test_absent_native_approval_fields_do_not_clear_persisted_permission(self):
         bridge = self.bridge()
         self.prepare(bridge)
