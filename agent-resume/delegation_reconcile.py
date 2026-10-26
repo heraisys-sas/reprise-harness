@@ -153,7 +153,7 @@ def reconcile(store, root, request_key, *, action='observe', reason=None, progra
                              reason=result['reason'])
         if status in ACTIVE_STATUSES:
             method = (pending_approval(turn) or native.get('pending_method') or
-                      (receipt.get('result') or {}).get('pending_request', {}).get('method'))
+                      ((receipt.get('result') or {}).get('pending_request') or {}).get('method'))
             phase = 'awaiting_approval' if method else 'active'
             store.set_phase(request_key, phase, pending_method=method, work_completed=False)
             store.finish(request_key, dict(receipt.get('result') or {}, status='awaiting_approval' if method else 'running',
