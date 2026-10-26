@@ -1,6 +1,8 @@
 """Durable admission receipts. No transaction spans an external call."""
 import hashlib
 import json
+import os
+import time
 import uuid
 from pathlib import Path
 
@@ -50,8 +52,22 @@ def validate_key(key):
 # delegation may be requested again under a new key. blocked_owner and blocked_session are only
 # emitted before the turn is submitted ("no turn submitted"); blocked_permission is not listed
 # because it also covers a human approval requested mid-turn. Anything else stays uncertain.
-RECORDED_STATUSES = ('finished', 'quota_blocked', 'blocked_auth', 'billing_unverified',
+# `interrupted` is terminal but the work was not achieved: recorded, never finished.
+RECORDED_STATUSES = ('finished', 'interrupted', 'quota_blocked', 'blocked_auth', 'billing_unverified',
                      'engine_unavailable', 'busy', 'blocked_owner', 'blocked_session')
+# A submitted native turn whose outcome is not captured yet. Not recorded: no acknowledgement,
+# no collection, and no equivalent redispatch before reconciliation.
+RUNNING_STATUSES = ('running', 'awaiting_approval')
+# Native reconciliation phases. `finished` and `interrupted` are terminal; `owner_unavailable`
+# keeps the uncertainty instead of inventing a result.
+PHASES = ('starting', 'active', 'awaiting_approval', 'finished', 'interrupted',
+          'owner_unavailable', 'unknown')
+NEXT_ACTIONS = {'starting': 'reconcile', 'active': 'reconcile', 'awaiting_approval': 'reconcile',
+                'finished': 'collect', 'interrupted': 'collect', 'owner_unavailable': 'collect',
+                'unknown': 'reconcile'}
+TURN_FIELDS = ('thread_id', 'turn_id', 'phase', 'work_completed', 'terminal_evidence',
+               'pending_method', 'owner', 'started_at', 'deadline_at', 'last_event_at',
+               'last_event', 'event_count', 'context')
 RECEIPT_FORMAT = 'receipt-json-v1'
 LOOKUP_PROPERTIES = {
     'request_key': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': r'\S'},
@@ -119,12 +135,19 @@ def validate_lookup(args):
     return view
 
 
+def next_action(state, phase):
+    if state == 'recorded':
+        return 'collect'
+    return NEXT_ACTIONS.get(phase, 'reconcile')
+
+
 def receipt_view(receipt):
     result = receipt.get('result')
     text = None if result is None else json.dumps(
         result, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
     manifest = {name: receipt.get(name) for name in
-                ('status', 'request_key', 'state', 'attempt_id')}
+                ('status', 'request_key', 'state', 'attempt_id', 'phase', 'next_action',
+                 'work_completed', 'terminal_evidence', 'thread_id', 'turn_id')}
     manifest.update(
         acknowledged=bool(receipt.get('acknowledged', False)),
         available=text is not None, format=RECEIPT_FORMAT,
@@ -134,8 +157,9 @@ def receipt_view(receipt):
 
 
 class Store:
-    def __init__(self, db, scope):
+    def __init__(self, db, scope, now=None):
         self.db, self.scope = db, scope
+        self.now = now or time.time
         self.active_key = None
         with db:
             db.execute('''CREATE TABLE IF NOT EXISTS delegation_requests(
@@ -143,13 +167,22 @@ class Store:
                 parent TEXT, root TEXT NOT NULL, depth INTEGER NOT NULL, attempt TEXT NOT NULL,
                 state TEXT NOT NULL, result TEXT, acknowledged INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(scope,request_key))''')
+            db.execute('''CREATE TABLE IF NOT EXISTS delegation_turns(
+                scope TEXT, request_key TEXT, attempt TEXT NOT NULL, thread_id TEXT, turn_id TEXT,
+                phase TEXT NOT NULL, work_completed INTEGER NOT NULL DEFAULT 0,
+                terminal_evidence TEXT, pending_method TEXT, owner TEXT, started_at REAL,
+                deadline_at REAL, last_event_at REAL, last_event TEXT,
+                event_count INTEGER NOT NULL DEFAULT 0, events TEXT NOT NULL DEFAULT '[]',
+                updated_at REAL, context TEXT, PRIMARY KEY(scope,request_key))''')
+            if 'context' not in {row[1] for row in db.execute('PRAGMA table_info(delegation_turns)')}:
+                db.execute('ALTER TABLE delegation_turns ADD COLUMN context TEXT')
 
     def lookup(self, args):
         view = validate_lookup(args)
         receipt = self._lookup({k: v for k, v in args.items() if k in LOOKUP_PROPERTIES})
         if view == 'full':
             return receipt
-        manifest, text = receipt_view(receipt)
+        manifest, text = receipt_view(self._enrich(receipt))
         if view == 'receipt' or text is None:
             return manifest
         expected = args.get('result_sha256')
@@ -181,8 +214,146 @@ class Store:
                 if row[0] != 'recorded':
                     raise ValueError('Only a recorded receipt can be acknowledged')
                 self.db.execute('UPDATE delegation_requests SET acknowledged=1 WHERE scope=? AND request_key=?', (self.scope, key))
-        return {'status': 'finished', 'request_key': key, 'state': row[0], 'attempt_id': row[2],
-                'acknowledged': bool(row[3] or args.get('acknowledge')), 'result': json.loads(row[1]) if row[1] else None}
+        receipt = {'status': 'finished', 'request_key': key, 'state': row[0], 'attempt_id': row[2],
+                   'acknowledged': bool(row[3] or args.get('acknowledge')),
+                   'result': json.loads(row[1]) if row[1] else None}
+        return receipt
+
+    def _enrich(self, receipt):
+        """Add the reconciliation fields to compact views only; full receipts stay unchanged."""
+        key = receipt.get('request_key')
+        if not key or 'state' not in receipt:
+            return receipt
+        native = self.phase(key)
+        if native:
+            receipt.update(phase=native['phase'], native=native,
+                           thread_id=native['thread_id'], turn_id=native['turn_id'],
+                           work_completed=native['work_completed'],
+                           terminal_evidence=native['terminal_evidence'],
+                           next_action=next_action(receipt['state'], native['phase']))
+        else:
+            receipt['next_action'] = next_action(receipt['state'], None)
+        return receipt
+
+    def _events(self, key):
+        row = self.db.execute('SELECT events FROM delegation_turns WHERE scope=? AND request_key=?', (self.scope, key)).fetchone()
+        try:
+            events = json.loads(row[0]) if row else []
+        except (TypeError, ValueError):
+            events = []
+        return events if isinstance(events, list) else []
+
+    def _count(self, key):
+        row = self.db.execute('SELECT event_count FROM delegation_turns WHERE scope=? AND request_key=?', (self.scope, key)).fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+    def phase(self, key):
+        # The read-only collector also supports databases predating native-turn storage.
+        if not self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='delegation_turns'").fetchone():
+            return None
+        columns = {row[1] for row in self.db.execute('PRAGMA table_info(delegation_turns)')}
+        fields = [field if field in columns else 'NULL AS ' + field for field in TURN_FIELDS]
+        row = self.db.execute(
+            'SELECT ' + ','.join(fields) + ' FROM delegation_turns WHERE scope=? AND request_key=?',
+            (self.scope, key)).fetchone()
+        if not row:
+            return None
+        native = dict(zip(TURN_FIELDS, row))
+        native['work_completed'] = bool(native['work_completed'])
+        native['context'] = json.loads(native.get('context') or '{}')
+        return native
+
+    def attach(self, key, event):
+        """Persist the native thread and turn identity before any client wait can expire."""
+        validate_key(key)
+        if not isinstance(event, dict) or event.get('phase') not in PHASES:
+            raise ValueError('Invalid turn event')
+        stamp = float(self.now())
+        with self.db:
+            row = self.db.execute('SELECT attempt FROM delegation_requests WHERE scope=? AND request_key=?', (self.scope, key)).fetchone()
+            if not row:
+                raise ValueError('Persist the request before attaching a native turn')
+            events = (self._events(key) + [{'phase': event['phase'],
+                                            'thread_id': event.get('thread_id'),
+                                            'turn_id': event.get('turn_id'),
+                                            'last_event': event.get('last_event'), 'at': stamp}])[-20:]
+            count = self._count(key) + 1
+            self.db.execute(
+                '''INSERT INTO delegation_turns(scope,request_key,attempt,thread_id,turn_id,phase,
+                   work_completed,terminal_evidence,pending_method,owner,started_at,deadline_at,
+                   last_event_at,last_event,event_count,events,updated_at,context)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(scope,request_key) DO UPDATE SET
+                     thread_id=COALESCE(excluded.thread_id,delegation_turns.thread_id),
+                     turn_id=COALESCE(excluded.turn_id,delegation_turns.turn_id),
+                     phase=excluded.phase, work_completed=excluded.work_completed,
+                     terminal_evidence=COALESCE(excluded.terminal_evidence,delegation_turns.terminal_evidence),
+                     pending_method=excluded.pending_method,
+                     owner=COALESCE(excluded.owner,delegation_turns.owner),
+                     started_at=COALESCE(delegation_turns.started_at,excluded.started_at),
+                     deadline_at=COALESCE(delegation_turns.deadline_at,excluded.deadline_at),
+                     last_event_at=excluded.last_event_at, last_event=excluded.last_event,
+                     event_count=excluded.event_count, events=excluded.events,
+                     updated_at=excluded.updated_at,
+                     context=COALESCE(delegation_turns.context,excluded.context)''',
+                (self.scope, key, row[0], event.get('thread_id'), event.get('turn_id'),
+                 event['phase'], int(bool(event.get('work_completed'))),
+                 event.get('terminal_evidence'), event.get('pending_method'),
+                 event.get('owner'), event.get('started_at'), event.get('deadline_at'),
+                 stamp, event.get('last_event') or event['phase'], count,
+                 json.dumps(events, ensure_ascii=False), stamp,
+                 json.dumps(event['context'], ensure_ascii=False) if event.get('context') is not None else None))
+            if event['phase'] == 'active':
+                self.db.execute(
+                    "UPDATE delegation_requests SET state='running' WHERE scope=? AND request_key=? AND state='indeterminate'",
+                    (self.scope, key))
+
+    def set_phase(self, key, phase, **fields):
+        """Record a reconciled native state without inventing a delivered result."""
+        if phase not in PHASES:
+            raise ValueError('Unknown native phase')
+        stamp = float(self.now())
+        with self.db:
+            if not self.db.execute('SELECT 1 FROM delegation_turns WHERE scope=? AND request_key=?',
+                                   (self.scope, key)).fetchone():
+                raise ValueError('No native turn is persisted for this request')
+            assignments, values = ['phase=?', 'updated_at=?'], [phase, stamp]
+            for name in ('work_completed', 'terminal_evidence', 'pending_method', 'owner', 'deadline_at'):
+                if name in fields:
+                    assignments.append(name + '=?')
+                    values.append(int(bool(fields[name])) if name == 'work_completed' else fields[name])
+            last_event = fields.get('last_event', 'reconciled:' + phase)
+            events = (self._events(key) + [{'phase': phase, 'last_event': last_event, 'at': stamp}])[-20:]
+            count = self._count(key) + 1
+            assignments += ['events=?', 'event_count=?', 'last_event=?', 'last_event_at=?']
+            values += [json.dumps(events, ensure_ascii=False), count, last_event, stamp]
+            values += [self.scope, key]
+            self.db.execute('UPDATE delegation_turns SET ' + ', '.join(assignments) + ' WHERE scope=? AND request_key=?', values)
+
+    def claim(self, key, owner, stale_after=120.0, alive=None):
+        """Return owned, held or taken_over. A takeover is recorded, never redispatch."""
+        alive = alive or owner_alive
+        stamp = float(self.now())
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            row = self.db.execute('SELECT owner,updated_at,phase FROM delegation_turns WHERE scope=? AND request_key=?', (self.scope, key)).fetchone()
+            if not row:
+                return 'unknown'
+            if row[0] in (None, owner):
+                self.db.execute('UPDATE delegation_turns SET owner=?, updated_at=? WHERE scope=? AND request_key=?', (owner, stamp, self.scope, key))
+                return 'owned'
+            if self.now() - (row[1] or 0) <= stale_after and alive(row[0]):
+                return 'held'
+            events = (self._events(key) + [{'phase': row[2], 'takeover_from': row[0],
+                                            'owner': owner, 'at': stamp}])[-20:]
+            self.db.execute('UPDATE delegation_turns SET owner=?, updated_at=?, events=?, event_count=? WHERE scope=? AND request_key=?',
+                            (owner, stamp, json.dumps(events, ensure_ascii=False), len(events), self.scope, key))
+            return 'taken_over'
+
+    def release(self, key, owner):
+        with self.db:
+            self.db.execute('UPDATE delegation_turns SET owner=NULL WHERE scope=? AND request_key=? AND owner=?',
+                            (self.scope, key, owner))
 
     def begin(self, key, payload, parent=None):
         validate_key(key)
@@ -190,7 +361,8 @@ class Store:
             validate_key(parent)
         identity = digest({'payload': payload, 'parent': parent})
         # Session IDs differ on a handoff; they must not conceal an equivalent delegation.
-        semantic = {k: v for k, v in payload.items() if k not in ('tool', 'thread_id')}
+        semantic = {k: v for k, v in payload.items() if k not in ('tool', 'thread_id', 'wait_seconds', 'inactivity_seconds',
+                                                                  'execution_seconds', 'stop_on_deadline')}
         semantic.setdefault('backend', 'codex')
         semantic.setdefault('kind', 'review' if payload.get('tool') == 'codex_review' else 'expertise')
         semantic.setdefault('level', 'standard')
@@ -201,13 +373,19 @@ class Store:
             if row:
                 if row[0] != identity:
                     raise ValueError('request_key already bound to another immutable request')
-                return (json.loads(row[2]) if row[2] else {'status': 'indeterminate', 'request_key': key, 'attempt_id': row[3], 'reason': 'Attempt may have executed; reconcile without redispatch.'})
+                stored = json.loads(row[2]) if row[2] else {'status': 'indeterminate', 'request_key': key, 'attempt_id': row[3], 'reason': 'Attempt may have executed; reconcile without redispatch.'}
+                native = self.phase(key)
+                if native:
+                    stored = dict(stored, phase=native['phase'], native=native,
+                                  work_completed=native['work_completed'],
+                                  terminal_evidence=native['terminal_evidence'])
+                return stored
             root, depth, ancestor = key, 0, parent
             while ancestor is not None:
                 row = self.db.execute('SELECT signature,parent,root,depth,state FROM delegation_requests WHERE scope=? AND request_key=?', (self.scope, ancestor)).fetchone()
                 if not row:
                     raise ValueError('Parent must be an existing request in this project scope')
-                if row[4] == 'indeterminate':
+                if row[4] in ('indeterminate',) + RUNNING_STATUSES:
                     return {'status': 'indeterminate', 'request_key': ancestor, 'reason': 'Ancestor attempt remains uncertain; reconcile before delegating.'}
                 if row[0] == signature:
                     return {'status': 'cycle_blocked', 'ancestor_request_key': ancestor, 'reason': 'Equivalent delegation in persistent ancestry; no dispatch.'}
@@ -217,7 +395,9 @@ class Store:
                     if depth > 8:
                         return {'status': 'lineage_blocked', 'reason': 'Maximum delegation depth is eight.'}
                 ancestor = row[1]
-            uncertain = self.db.execute("SELECT request_key FROM delegation_requests WHERE scope=? AND signature=? AND state='indeterminate'", (self.scope, signature)).fetchone()
+            uncertain = self.db.execute(
+                "SELECT request_key FROM delegation_requests WHERE scope=? AND signature=? AND state IN ('indeterminate','running')",
+                (self.scope, signature)).fetchone()
             if uncertain:
                 return {'status': 'indeterminate', 'request_key': uncertain[0], 'reason': 'Equivalent attempt remains uncertain; no new execution.'}
             attempt = str(uuid.uuid4())
@@ -227,7 +407,41 @@ class Store:
 
     def finish(self, key, result):
         result = dict(result, request_key=key)
-        state = 'recorded' if result.get('status') in RECORDED_STATUSES else 'indeterminate'
+        if result.get('status') in RECORDED_STATUSES:
+            state = 'recorded'
+        elif result.get('status') in RUNNING_STATUSES:
+            state = 'running'
+        else:
+            state = 'indeterminate'
         with self.db:
-            self.db.execute('UPDATE delegation_requests SET state=?,result=? WHERE scope=? AND request_key=?', (state, json.dumps(result, ensure_ascii=False), self.scope, key))
+            self.db.execute('UPDATE delegation_requests SET state=?,result=? WHERE scope=? AND request_key=?',
+                            (state, json.dumps(result, ensure_ascii=False), self.scope, key))
+            existing = self.phase(key)
+            if existing:
+                phase = result.get('phase')
+                if phase not in PHASES:
+                    phase = existing['phase']
+                assignments, values = ['phase=?', 'updated_at=?'], [phase, float(self.now())]
+                if 'work_completed' in result:
+                    assignments.append('work_completed=?')
+                    values.append(int(bool(result['work_completed'])))
+                if result.get('terminal_evidence') is not None:
+                    assignments.append('terminal_evidence=?')
+                    values.append(result['terminal_evidence'])
+                if result.get('pending_request'):
+                    assignments.append('pending_method=?')
+                    values.append((result['pending_request'] or {}).get('method'))
+                values += [self.scope, key]
+                self.db.execute('UPDATE delegation_turns SET ' + ', '.join(assignments) + ' WHERE scope=? AND request_key=?', values)
         return result
+
+
+def owner_alive(owner):
+    """Best-effort local ownership probe; unknown formats are treated as dead."""
+    if not isinstance(owner, str) or ':' not in owner:
+        return False
+    try:
+        os.kill(int(owner.rsplit(':', 1)[-1]), 0)
+        return True
+    except (OSError, ValueError):
+        return False
