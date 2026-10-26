@@ -26,7 +26,7 @@ def schema(properties, required=None):
 
 INBOX_TOOLS = [
     {'name': 'get_task', 'description': 'Claim an explicitly identified project task. Persist claim_key before calling; reuse after restart.', 'inputSchema': schema({'request_key': TEXT, 'claim_key': TEXT})},
-    {'name': 'await_task', 'description': 'Wait (bounded, no inference) for the next task the operator admitted through Quick Apply, claim it atomically and return it. Call it only in a chat the operator armed to receive Reprise tasks. When idle, call it again with the same claim_key.', 'inputSchema': schema({'claim_key': TEXT, 'wait_seconds': {'type': 'integer', 'minimum': 1, 'maximum': MAX_WAIT_CEILING}}, ['claim_key'])},
+    {'name': 'await_task', 'description': 'Wait (bounded, no inference) for one explicit project task admitted through Quick Apply, then hand it over once. Call it only in a chat the operator armed for that exact request_key. When idle, stop unless the operator asked you to keep waiting. A task already handed over is never handed over again by this tool.', 'inputSchema': schema({'request_key': TEXT, 'claim_key': TEXT, 'wait_seconds': {'type': 'integer', 'minimum': 1, 'maximum': MAX_WAIT_CEILING}}, ['request_key', 'claim_key'])},
     {'name': 'submit_result', 'description': 'Complete a claimed task. Only this operation marks completion; identical retries are idempotent.', 'inputSchema': schema({'request_key': TEXT, 'attempt_id': TEXT, 'answer': {'type': 'string', 'minLength': 1, 'maxLength': 2_000_000}})},
     {'name': 'get_result', 'description': 'Retrieve a durable result. Acknowledge explicitly only after safely retaining it.', 'inputSchema': schema({'request_key': TEXT, 'acknowledge': {'type': 'boolean', 'default': False}, 'view': {'type': 'string', 'enum': ['receipt','page','full'], 'default': 'receipt'}, **PAGE_PROPERTIES}, ['request_key'])},
 ]
@@ -50,23 +50,47 @@ class ClaudeMCP:
         self.max_wait, self.poll, self.progress_interval = max_wait, poll, progress_interval
 
     def await_task(self, store, args, token=None, cancel=None, emit=None):
-        """Bounded long-poll. Returns a tool result, or None when the request was cancelled."""
+        """Bounded wait for one exact task. Returns a tool result, or None when the request was cancelled.
+
+        Delivery protocol: reserve -> (cancelled before the intention is recorded: release a fresh
+        reservation) -> record the delivery intention -> hand the prompt over. After the intention is
+        recorded the task is never released nor handed over again by this tool.
+        """
         wait = args.get('wait_seconds', self.max_wait)
         if type(wait) is not int or not 1 <= wait <= self.max_wait:
             raise ValueError('wait_seconds must be an integer from 1 to %d' % self.max_wait)
+        request_key, claim_key = args['request_key'], args['claim_key']
         deadline = time.monotonic() + wait
         started = time.monotonic()
         last_progress, count = started, 0
         while True:
-            claimed = store.claim_next(args['claim_key'])
-            if claimed is not None:
-                return tool_content(claimed)
+            reserved = store.reserve(request_key, claim_key)
+            state = reserved['state']
+            if state == 'completed':
+                return tool_content({'status': 'finished', 'task': False, 'delivery': 'completed', 'request_key': request_key,
+                                     'attempt_id': reserved['attempt_id'],
+                                     'instruction': 'Task already completed; retrieve the result with get_result.'})
+            if state == 'attempted':
+                return tool_content({'status': 'finished', 'task': False, 'delivery': 'attempted', 'request_key': request_key,
+                                     'attempt_id': reserved['attempt_id'],
+                                     'instruction': 'The prompt was already handed over by an earlier call; do not execute it from here. If you hold it, finish and call submit_result; otherwise ask the operator.'})
+            if state == 'reserved':
+                if cancel is not None and cancel.is_set():
+                    if reserved['fresh']:
+                        store.release(request_key, reserved['attempt_id'])
+                    return None
+                if not store.mark_attempted(request_key, reserved['attempt_id']):
+                    continue  # another wait recorded the intention first: next loop returns the receipt
+                return tool_content({'status': 'finished', 'task': True, 'delivery': 'handed_over', 'request_key': request_key,
+                                     'attempt_id': reserved['attempt_id'], 'prompt': reserved['prompt'], 'chat_id': reserved['chat_id'],
+                                     'instruction': 'Perform the scoped task, then call submit_result with this attempt_id. Do not call await_task again unless the operator asked you to.'})
             if cancel is not None and cancel.is_set():
                 return None
             now = time.monotonic()
             if now >= deadline:
-                return tool_content({'status': 'finished', 'idle': True, 'task': False, 'waited_seconds': round(now - started, 1),
-                                     'instruction': 'No task waiting. Call await_task again with the same claim_key.'})
+                return tool_content({'status': 'finished', 'idle': True, 'task': False, 'request_key': request_key,
+                                     'waited_seconds': round(now - started, 1),
+                                     'instruction': 'No task yet for this request_key. Do not call await_task again unless the operator asked you to keep waiting.'})
             if token is not None and emit is not None and now - last_progress >= self.progress_interval:
                 count += 1
                 last_progress = now
@@ -85,7 +109,7 @@ class ClaudeMCP:
             return {'protocolVersion': '2024-11-05', 'capabilities': {'tools': {}}, 'serverInfo': {
                 'name': 'reprise-harness', 'version': Path(__file__).with_name('VERSION').read_text().strip(),
                 'source_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},
-                'instructions': 'Project-scoped bidirectional service. Quick Apply admission is not dispatch proof. Persist request_key and claim_key. Claim an incoming task only when its request_key is explicitly supplied, or by calling await_task in a chat the operator armed for that purpose. Only submit_result completes incoming tasks. Claude Desktop loopback is disabled.'}
+                'instructions': 'Project-scoped bidirectional service. Quick Apply admission is not dispatch proof. Persist request_key and claim_key. Claim an incoming task only when its request_key is explicitly supplied, or by calling await_task for an explicit request_key in a chat the operator armed for that purpose. Only submit_result completes incoming tasks. Claude Desktop loopback is disabled.'}
         if method == 'ping':
             return {}
         if method == 'tools/list':
@@ -198,7 +222,7 @@ def main():
                 if message.get('method') == 'tools/call' and isinstance(params, dict) and params.get('name') == 'await_task':
                     arguments = params.get('arguments', {})
                     definition = next(item for item in INBOX_TOOLS if item['name'] == 'await_task')
-                    if not isinstance(arguments, dict) or arguments.keys() - set(definition['inputSchema']['properties']) or 'claim_key' not in arguments:
+                    if not isinstance(arguments, dict) or arguments.keys() - set(definition['inputSchema']['properties']) or not {'request_key', 'claim_key'} <= arguments.keys():
                         raise ValueError('Exact task arguments required')
                     cancel = threading.Event()
                     active[json.dumps(ident)] = cancel
