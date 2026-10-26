@@ -32,6 +32,10 @@ if len(sys.argv) > 1 and sys.argv[1].startswith('claude-integration-'):
     import claude_integration
     sys.exit(claude_integration.main(Path(__file__).resolve().parent, sys.argv[1:]))
 
+if len(sys.argv) > 1 and sys.argv[1].startswith('proxy-service-'):
+    import proxy_service
+    sys.exit(proxy_service.main(Path(__file__).resolve().parent, sys.argv[1:]))
+
 if len(sys.argv) > 1 and sys.argv[1].startswith('scheduler-service-'):
     import scheduler_service
     sys.exit(scheduler_service.main(Path(__file__).resolve().parent, sys.argv[1:]))
