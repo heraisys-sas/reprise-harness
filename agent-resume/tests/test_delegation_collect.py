@@ -1,4 +1,5 @@
-from contextlib import closing
+from contextlib import closing, redirect_stdout
+import io
 import json
 from pathlib import Path
 import sqlite3
@@ -9,8 +10,10 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from delegation_collect import collect, main, write_output
+from delegation_collect import collect, main, observe, write_output
 from delegation_store import Store
+
+ID = '12345678-1234-1234-1234-123456789abc'
 
 
 class CollectionTests(unittest.TestCase):
@@ -39,6 +42,14 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(self.database.read_bytes(), before)
         with closing(sqlite3.connect(self.database)) as db, db:
             self.assertEqual(db.execute('SELECT acknowledged FROM delegation_requests').fetchone()[0], 0)
+
+    def test_readonly_collection_from_pre_native_table_database(self):
+        with closing(sqlite3.connect(self.database)) as db, db:
+            db.execute('DROP TABLE delegation_turns')
+        before = self.database.read_bytes()
+        self.assertEqual(collect(self.state, self.project, 'test', 'response'), self.response)
+        self.assertEqual(observe(self.state, self.project, 'test')['state'], 'recorded')
+        self.assertEqual(self.database.read_bytes(), before)
 
     def test_other_scope_and_absent_key_rejected(self):
         for root, key in ((self.root, 'test'), (self.project, 'missing')):
@@ -106,6 +117,40 @@ class CollectionTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             collect(self.root, self.project, 'test')
         self.assertFalse((self.root / 'expert.sqlite').exists())
+
+    def test_collect_after_restart_refuses_running_then_succeeds_when_finished(self):
+        with closing(sqlite3.connect(self.database)) as db, db:
+            store = Store(db, str(self.project.resolve()))
+            store.begin('late', {'prompt': 'x'})
+            store.attach('late', {'phase': 'active', 'thread_id': ID, 'turn_id': 'turn-1',
+                                  'started_at': 1.0})
+            store.finish('late', {'status': 'running', 'phase': 'active', 'work_completed': False})
+        with self.assertRaises(ValueError):
+            collect(self.state, self.project, 'late')
+        manifest = observe(self.state, self.project, 'late')
+        self.assertEqual((manifest['state'], manifest['phase'], manifest['next_action']),
+                         ('running', 'active', 'reconcile'))
+        self.assertFalse(manifest['acknowledged'])
+        before = self.database.read_bytes()
+        self.assertEqual(observe(self.state, self.project, 'late'), manifest)
+        self.assertEqual(self.database.read_bytes(), before)
+        with closing(sqlite3.connect(self.database)) as db, db:
+            store = Store(db, str(self.project.resolve()))
+            store.finish('late', {'status': 'finished', 'phase': 'finished',
+                                  'work_completed': True, 'response': 'late answer'})
+        self.assertEqual(collect(self.state, self.project, 'late', 'response'), 'late answer')
+        self.assertEqual(observe(self.state, self.project, 'late')['next_action'], 'collect')
+
+    def test_observe_cli_needs_no_output_and_does_not_acknowledge(self):
+        with redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(main(['--state', str(self.state), '--project-root', str(self.project),
+                                   '--request-key', 'test', '--observe']), 0)
+        manifest = json.loads(out.getvalue())
+        self.assertEqual((manifest['state'], manifest['next_action']), ('recorded', 'collect'))
+        self.assertIsNone(manifest['phase'])
+        self.assertFalse(manifest['acknowledged'])
+        with closing(sqlite3.connect(self.database)) as db, db:
+            self.assertEqual(db.execute('SELECT acknowledged FROM delegation_requests').fetchone()[0], 0)
 
     def test_cli(self):
         output = self.root / 'export'
