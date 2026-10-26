@@ -1,5 +1,10 @@
 # LaunchAgent utilisateur — ASI1 planner proxy
 
+> Procédure Node historique (#74), remplacée par la gestion dans Reprise.
+> Ne pas installer ou mettre à jour une seconde instance par ces commandes.
+> Voir [le service Python géré par Reprise](../agent-resume/PROXY-SERVICE.md).
+> launchd reste le moteur d’exécution ; les harness sont uniquement clients.
+
 Le service `sas.heraisys.asi1-planner-proxy` exécute le proxy Node.js
 au premier plan, sous le contrôle exclusif de launchd, dans `gui/$UID`.
 

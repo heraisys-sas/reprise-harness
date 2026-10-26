@@ -20,7 +20,7 @@ START = '# BEGIN REPRISE MANAGED INTEGRATION'
 END = '# END REPRISE MANAGED INTEGRATION'
 DOCS = ('REPRISE-AGENTS.template.md', 'CODEX-EXECUTION-CONTRACT.md', 'ASI1-ORCHESTRATOR.template.md', 'HANDOFF-CONTRACT.md', 'HARNESS-ROLES-CONTRACT.md', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'HARNESS-SUPERVISION-ARCHITECTURE.md', 'HARNESS-INTEGRATION.md', 'CLARIFICATION-CONTRACT.md')
 OBSERVE = ('reprise_backends', 'reprise_requests', 'reprise_quotas')
-DELEGATE = ('reprise_delegate', 'reprise_followup')
+DELEGATE = ('reprise_delegate', 'reprise_followup', 'reprise_reconcile')
 
 
 def digest(value):
