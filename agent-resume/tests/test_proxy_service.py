@@ -124,9 +124,13 @@ class ProxyServiceTests(unittest.TestCase):
                   'EnvironmentVariables': {'HOME': str(self.home)}}
         plist.write_bytes(plistlib.dumps(legacy))
         self.launch.current = copy.deepcopy(legacy)
-        with self.assertRaisesRegex(ValueError, 'adoption'):
-            self.plan()
-        result = self.apply(self.plan(adopt=True, activate=True))
+        # The pinned LEGACY_SCRIPT_SHA256 protects real deployments of the node
+        # proxy; the fixture proves the exact-match rule without coupling the
+        # test to the shipped script's current content.
+        with patch.object(service, 'LEGACY_SCRIPT_SHA256', integration.file_hash(legacy_script)):
+            with self.assertRaisesRegex(ValueError, 'adoption'):
+                self.plan()
+            result = self.apply(self.plan(adopt=True, activate=True))
         self.assertTrue(result['managed'])
         self.assertNotEqual(result['arguments'], legacy['ProgramArguments'])
         self.assertEqual(sum(x[0] == 'bootout' for x in self.launch.commands), 1)
