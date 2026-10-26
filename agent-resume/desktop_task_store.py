@@ -26,13 +26,15 @@ class TaskStore:
             scope TEXT NOT NULL, request_key TEXT NOT NULL, prompt TEXT NOT NULL,
             chat_id TEXT, claim_key TEXT, attempt_id TEXT, answer TEXT,
             acknowledged INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(scope,request_key))''')
+        if 'delivery' not in {row[1] for row in self.db.execute('PRAGMA table_info(desktop_tasks)')}:
+            self.db.execute('ALTER TABLE desktop_tasks ADD COLUMN delivery TEXT')  # NULL | reserved | attempted
         self.db.commit()
 
     def close(self):
         self.db.close()
 
     def _row(self, key):
-        return self.db.execute('SELECT prompt,chat_id,claim_key,attempt_id,answer,acknowledged FROM desktop_tasks WHERE scope=? AND request_key=?', (self.scope,key)).fetchone()
+        return self.db.execute('SELECT prompt,chat_id,claim_key,attempt_id,answer,acknowledged,delivery FROM desktop_tasks WHERE scope=? AND request_key=?', (self.scope,key)).fetchone()
 
     def admit(self, request_key, prompt, chat_id=None):
         bounded(request_key, 'request_key', 128)
@@ -58,33 +60,50 @@ class TaskStore:
             if row[2] is not None and row[2] != claim_key:
                 raise ValueError('Task already claimed')
             attempt = row[3] or str(uuid.uuid4())
-            self.db.execute('UPDATE desktop_tasks SET claim_key=?,attempt_id=? WHERE scope=? AND request_key=?', (claim_key,attempt,self.scope,request_key))
+            self.db.execute('UPDATE desktop_tasks SET claim_key=?,attempt_id=?,delivery=? WHERE scope=? AND request_key=?', (claim_key,attempt,'attempted' if row[4] is None else row[6],self.scope,request_key))
         return {'status': 'finished', 'request_key': request_key, 'attempt_id': attempt, 'prompt': row[0], 'chat_id': row[1], 'completed': row[4] is not None, 'instruction': 'Already completed; retrieve the result, do not execute again.' if row[4] is not None else 'Perform the scoped task, then call submit_result with this attempt_id.'}
 
-    def claim_next(self, claim_key):
-        """Atomically claim the oldest admitted task, or resume this claim_key's unfinished one.
+    def reserve(self, request_key, claim_key):
+        """Reserve one exact task for claim_key without delivering it.
 
-        Returns None when nothing is waiting. Two claim_keys never receive the same task.
+        States: absent | completed | attempted (prompt already handed over: no payload is returned) |
+        reserved (fresh=True when this call created the reservation). A task reserved by another
+        claim_key raises ValueError.
         """
+        bounded(request_key, 'request_key', 128)
         bounded(claim_key, 'claim_key', 128)
-        columns = 'request_key,prompt,chat_id,attempt_id'
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
-            row = self.db.execute(f'SELECT {columns} FROM desktop_tasks WHERE scope=? AND claim_key=? AND answer IS NULL ORDER BY rowid LIMIT 1',
-                                  (self.scope, claim_key)).fetchone()
-            resumed = row is not None
-            if row is None:
-                row = self.db.execute(f'SELECT {columns} FROM desktop_tasks WHERE scope=? AND claim_key IS NULL ORDER BY rowid LIMIT 1',
-                                      (self.scope,)).fetchone()
-                if row is None:
-                    return None
-                attempt = str(uuid.uuid4())
-                self.db.execute('UPDATE desktop_tasks SET claim_key=?,attempt_id=? WHERE scope=? AND request_key=? AND claim_key IS NULL',
-                                (claim_key, attempt, self.scope, row[0]))
-                row = (row[0], row[1], row[2], attempt)
-        return {'status': 'finished', 'task': True, 'resumed': resumed, 'request_key': row[0], 'attempt_id': row[3],
-                'prompt': row[1], 'chat_id': row[2],
-                'instruction': 'Perform the scoped task, then call submit_result with this attempt_id, then call await_task again with the same claim_key.'}
+            row = self._row(request_key)
+            if not row:
+                return {'state': 'absent'}
+            if row[2] is not None and row[2] != claim_key:
+                raise ValueError('Task already claimed')
+            if row[4] is not None:
+                return {'state': 'completed', 'attempt_id': row[3]}
+            if row[6] == 'attempted':
+                return {'state': 'attempted', 'attempt_id': row[3]}
+            fresh = row[2] is None
+            attempt = row[3] or str(uuid.uuid4())
+            self.db.execute('UPDATE desktop_tasks SET claim_key=?,attempt_id=?,delivery=? WHERE scope=? AND request_key=?',
+                            (claim_key, attempt, 'reserved', self.scope, request_key))
+        return {'state': 'reserved', 'fresh': fresh, 'attempt_id': attempt, 'prompt': row[0], 'chat_id': row[1]}
+
+    def mark_attempted(self, request_key, attempt_id):
+        """Record the delivery intention BEFORE the prompt is written; True for exactly one caller."""
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            changed = self.db.execute("UPDATE desktop_tasks SET delivery='attempted' WHERE scope=? AND request_key=? AND attempt_id=? AND delivery='reserved' AND answer IS NULL",
+                                      (self.scope, request_key, attempt_id)).rowcount
+        return changed == 1
+
+    def release(self, request_key, attempt_id):
+        """Drop a reservation proven never handed over (still 'reserved'); never after an attempt."""
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            changed = self.db.execute("UPDATE desktop_tasks SET claim_key=NULL,attempt_id=NULL,delivery=NULL WHERE scope=? AND request_key=? AND attempt_id=? AND delivery='reserved' AND answer IS NULL",
+                                      (self.scope, request_key, attempt_id)).rowcount
+        return changed == 1
 
     def submit(self, request_key, attempt_id, answer):
         bounded(request_key, 'request_key', 128)
