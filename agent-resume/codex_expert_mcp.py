@@ -31,6 +31,14 @@ def error_payload(exc):
     elif isinstance(exc, BlockingIOError):
         # Bridge lock held by another active expertise.
         kind, code = 'busy', -32000
+    elif isinstance(exc, sqlite3.OperationalError) and ('locked' in str(exc).lower() or 'busy' in str(exc).lower()):
+        # Concurrent store write during a lock-free read path; retry later, nothing was refused.
+        kind, code = 'busy', -32000
+    elif isinstance(exc, sqlite3.Error):
+        kind = 'storage_error'
+    elif isinstance(exc, OSError):
+        # I/O failure (disk, socket path); not a caller mistake.
+        kind = 'storage_error'
     return {'code': code, 'message': 'Request refused or unavailable; no automatic retry.',
             'data': {'kind': kind, 'error': detail}}
 

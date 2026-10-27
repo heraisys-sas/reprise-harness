@@ -176,6 +176,14 @@ class Store:
                 updated_at REAL, context TEXT, PRIMARY KEY(scope,request_key))''')
             if 'context' not in {row[1] for row in db.execute('PRAGMA table_info(delegation_turns)')}:
                 db.execute('ALTER TABLE delegation_turns ADD COLUMN context TEXT')
+            self.reconcile_awaiting_human()
+
+    def reconcile_awaiting_human(self):
+        """One-shot, idempotent backfill (issue #53): receipts persisted before the
+        awaiting_human state existed are reclassified from indeterminate; replay changes nothing."""
+        with self.db:
+            self.db.execute("UPDATE delegation_requests SET state='awaiting_human'"
+                            " WHERE state='indeterminate' AND json_extract(result,'$.status')='blocked_permission'")
 
     def lookup(self, args):
         view = validate_lookup(args)
@@ -211,10 +219,20 @@ class Store:
             if not row:
                 return {'status': 'not_found', 'request_key': key}
             if args.get('acknowledge'):
-                if row[0] != 'recorded':
+                if row[0] == 'awaiting_human':
+                    # Acknowledgement is the documented reconciliation act for a human-pending
+                    # attempt; the caller attests the observed native state. No other
+                    # non-recorded state is ever acknowledged.
+                    self.db.execute("UPDATE delegation_requests SET state='recorded', acknowledged=1 WHERE scope=? AND request_key=?", (self.scope, key))
+                    state = 'recorded'
+                elif row[0] != 'recorded':
                     raise ValueError('Only a recorded receipt can be acknowledged')
-                self.db.execute('UPDATE delegation_requests SET acknowledged=1 WHERE scope=? AND request_key=?', (self.scope, key))
-        receipt = {'status': 'finished', 'request_key': key, 'state': row[0], 'attempt_id': row[2],
+                else:
+                    self.db.execute('UPDATE delegation_requests SET acknowledged=1 WHERE scope=? AND request_key=?', (self.scope, key))
+                    state = row[0]
+            else:
+                state = row[0]
+        receipt = {'status': 'finished', 'request_key': key, 'state': state, 'attempt_id': row[2],
                    'acknowledged': bool(row[3] or args.get('acknowledge')),
                    'result': json.loads(row[1]) if row[1] else None}
         return receipt
@@ -385,7 +403,7 @@ class Store:
                 row = self.db.execute('SELECT signature,parent,root,depth,state FROM delegation_requests WHERE scope=? AND request_key=?', (self.scope, ancestor)).fetchone()
                 if not row:
                     raise ValueError('Parent must be an existing request in this project scope')
-                if row[4] in ('indeterminate',) + RUNNING_STATUSES:
+                if row[4] in ('indeterminate', 'awaiting_human') + RUNNING_STATUSES:
                     return {'status': 'indeterminate', 'request_key': ancestor, 'reason': 'Ancestor attempt remains uncertain; reconcile before delegating.'}
                 if row[0] == signature:
                     return {'status': 'cycle_blocked', 'ancestor_request_key': ancestor, 'reason': 'Equivalent delegation in persistent ancestry; no dispatch.'}
@@ -396,7 +414,7 @@ class Store:
                         return {'status': 'lineage_blocked', 'reason': 'Maximum delegation depth is eight.'}
                 ancestor = row[1]
             uncertain = self.db.execute(
-                "SELECT request_key FROM delegation_requests WHERE scope=? AND signature=? AND state IN ('indeterminate','running')",
+                "SELECT request_key FROM delegation_requests WHERE scope=? AND signature=? AND state IN ('indeterminate','running','awaiting_human')",
                 (self.scope, signature)).fetchone()
             if uncertain:
                 return {'status': 'indeterminate', 'request_key': uncertain[0], 'reason': 'Equivalent attempt remains uncertain; no new execution.'}
@@ -411,6 +429,10 @@ class Store:
             state = 'recorded'
         elif result.get('status') in RUNNING_STATUSES:
             state = 'running'
+        elif result.get('status') == 'blocked_permission':
+            # Human approval requested mid-turn: reconcilable, but only by an
+            # acknowledgement that attests the observed native state.
+            state = 'awaiting_human'
         else:
             state = 'indeterminate'
         with self.db:
