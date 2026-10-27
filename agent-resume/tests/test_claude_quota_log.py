@@ -58,6 +58,38 @@ class LatestTests(unittest.TestCase):
         self.assertEqual(result["resets_at_local"], expected)
 
 
+class ObservationTests(unittest.TestCase):
+    """La forme attendue par quota_knowledge.status()."""
+
+    def _write(self, lines):
+        import tempfile
+        handle = tempfile.NamedTemporaryFile("w", suffix=".log", delete=False)
+        handle.write("\n".join(lines) + "\n")
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        return handle.name
+
+    def test_shape_matches_quota_knowledge(self):
+        path = self._write([LINE_OLD])
+        payload = ql.observation(path, now=1793065700)
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["engine"], "claude-desktop")
+        window = payload["pools"][0]["windows"][0]
+        self.assertEqual(window["resets_at"], 1793065800)
+        self.assertIsNone(window["used_percent"])       # inconnu, pas zéro
+        self.assertIn("used_percent_unreported", payload["issues"])
+
+    def test_expired_flagged(self):
+        path = self._write([LINE_OLD])
+        payload = ql.observation(path, now=1793065900)
+        self.assertIn("expired", payload["issues"])
+        self.assertFalse(payload["blocked"])
+
+    def test_no_event_returns_none(self):
+        path = self._write(["2026-10-26 22:00:00 [info] rien"])
+        self.assertIsNone(ql.observation(path, now=0))
+
+
 class CorroborationTests(unittest.TestCase):
     def test_reads_hhmm(self):
         self.assertEqual(ql.hhmm_from_text("Réinitialisation : 14:40."), "14:40")

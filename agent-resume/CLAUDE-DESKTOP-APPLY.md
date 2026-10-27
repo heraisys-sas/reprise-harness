@@ -103,7 +103,11 @@ resume desktop-apply --raise          # connexion humaine
    pour une raison triviale.
 6. **`chat_id` absent ⇒ nouvelle conversation.** Pour viser une existante, l'UUID
    est obligatoire.
-7. **`request_key` reste au démon.** Le transport ne rejoue ni ne déduplique.
+7. **`request_key` reste au démon.** Le transport ne le reçoit pas, ne le
+   stocke pas et ne déduplique rien : il est sans état. Vérifiable par
+   `grep -c request_key claude_desktop_apply.py` → `0`.
+8. **Borne à 12 000 caractères**, identique à `claude_desktop.review()`. Un
+   transport plus permissif accepterait ce que le démon refuse.
 
 ## 6. Pièges déjà payés
 
@@ -130,7 +134,14 @@ resume desktop-apply --raise          # connexion humaine
 
 `blocked = journal.blocked OR (page.sendDisabled AND page.hasText)`.
 
-## 8. Recettes de test (sans consommer de quota)
+## 8. Découpe « lien + collage » : hors périmètre du démon
+
+Le plafond du deep link est de 14 336 caractères, mais `review()` borne la
+question à 12 000 : **la découpe n'a donc pas lieu sur le chemin du démon**. Elle
+ne sert qu'aux appels directs au transport. Ne pas la considérer comme une
+capacité du canal.
+
+## 9. Recettes de test (sans consommer de quota)
 
 ```bash
 # 1. navigateur absent : dégradation propre
@@ -147,7 +158,7 @@ python claude_quota_log.py     # événement + resetsAt + expired
 Ne jamais tester un envoi quand le quota est bloqué : cela ne prouve rien et
 consomme la fenêtre de reprise.
 
-## 9. Ce qui reste, avec critère d'acceptation
+## 10. Ce qui reste, avec critère d'acceptation
 
 | # | Tâche | Acceptation |
 |---|---|---|
@@ -158,14 +169,14 @@ consomme la fenêtre de reprise.
 | 5 | cycle de vie du navigateur | résident ou éphémère, documenté, sans port ouvert par défaut |
 | 6 | non-régression des sélecteurs | `inspect` en CI manuelle après refonte de l'UI |
 
-## 10. Décisions ouvertes
+## 11. Décisions ouvertes
 
 - `on_login` par défaut : `fail` (sûr) ou `raise` (utile) ;
 - navigateur résident (rapide, port ouvert) ou éphémère (propre, +6 s) ;
 - source de `evidence_sha256` ;
 - où vit le profil Chrome dans le déploiement.
 
-## 11. Règle de preuve
+## 12. Règle de preuve
 
 Toute affirmation de ce document a été vérifiée par une commande dont la sortie
 est citée dans l'issue #83. Une affirmation non vérifiée est écrite comme telle

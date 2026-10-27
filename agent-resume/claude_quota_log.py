@@ -118,6 +118,43 @@ def observe(path: str = LOG_PATH, now: float | None = None, zone=None) -> dict:
     return result
 
 
+def observation(path: str = LOG_PATH, now: float | None = None,
+                engine: str = "claude-desktop") -> dict | None:
+    """Événement de quota au format attendu par `quota_knowledge`.
+
+    `used_percent` reste **None** : le journal ne le publie pas, et l'inconnu
+    n'est pas zéro. Seule l'échéance est certaine, ce qui est précisément ce qui
+    manquait aux fenêtres Codex.
+    """
+    entry = latest(path, now)
+    if entry is None:
+        return None
+    issues = ["used_percent_unreported", "source_renderer_log"]
+    if entry.get("expired"):
+        issues.append("expired")
+    return {
+        "schema_version": 1,
+        "engine": engine,
+        "source": "claude.ai-web.log",
+        "observed_at": entry["observed_at"],
+        "observation_status": "observed",
+        "coverage": "partial",
+        "blocked": entry["blocked"],
+        "pools": [{
+            "limit_id": "claude-chat",
+            "scope": "route_observation",
+            "windows": [{
+                "name": "primary",
+                "used_percent": None,
+                "remaining_percent": None,
+                "duration_minutes": None,
+                "resets_at": entry["resets_at"],
+            }],
+        }],
+        "issues": issues,
+    }
+
+
 if __name__ == "__main__":
     from datetime import timezone
     import argparse

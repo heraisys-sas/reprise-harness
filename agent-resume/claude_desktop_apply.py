@@ -31,6 +31,9 @@ import struct
 import time
 
 DEFAULT_PORT = int(os.environ.get("CLAUDE_CDP_PORT", "9333"))
+# Même borne que claude_desktop.review() : au-delà, la soumission est refusée en
+# amont. Aligner ici évite un transport qui accepte ce que le démon rejette.
+MAX_PROMPT_CHARS = 12000
 CHROME_BIN = os.environ.get(
     "CHROME_BIN", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 PROFILE = os.environ.get("CLAUDE_CDP_PROFILE",
@@ -341,13 +344,48 @@ def quota(port: int = DEFAULT_PORT) -> dict:
         cdp.close()
 
 
+def to_submission(result: dict) -> dict:
+    """Projette un résultat de transport sur le contrat de soumission du dépôt.
+
+    `claude_desktop.review()` rend {status, resumable, model, admission_only,…}.
+    Un appelant ne doit pas avoir à connaître deux vocabulaires.
+    """
+    stage = result.get("stage")
+    base = {"status": "needs_review", "resumable": False, "model": "claude-desktop",
+            "automatic_fallback": False, "response": None, "admission_only": True,
+            "transport": {"stage": stage, "detail": result.get("detail")}}
+    if result.get("ok") and stage in ("envoyé", "posé"):
+        base.update(status="finished", dispatch="cdp-web")
+        if stage == "posé":
+            base["admission_only"] = False
+        return base
+    if stage == "quota":
+        base.update(status="blocked_session", staged=True, reason="Quota Claude épuisé")
+    elif stage == "session":
+        base.update(status="blocked_auth", reason="Connexion claude.ai requise")
+    else:
+        base.update(status="engine_unavailable", reason=str(stage))
+    return base
+
+
 def apply(prompt: str, chat_id: str | None = None, *, port: int = DEFAULT_PORT,
           settle: float = 3.0, submit: bool = True,
           on_login: str = "fail") -> dict:
     """Pose `prompt` dans la conversation visée et l'envoie si possible."""
     prompt = (prompt or "").strip()
+    if chat_id:
+        try:
+            from claude_desktop import validate_chat_id
+            chat_id = validate_chat_id(chat_id)
+        except ImportError:
+            pass
+        except ValueError as exc:
+            return {"ok": False, "stage": "chat_id", "staged": False, "detail": str(exc)}
     if not prompt:
         return {"ok": False, "stage": "vide", "staged": False}
+    if len(prompt) > MAX_PROMPT_CHARS:
+        return {"ok": False, "stage": "trop-long", "staged": False,
+                "detail": {"length": len(prompt), "max": MAX_PROMPT_CHARS}}
 
     try:
         cdp = CDP(port)
