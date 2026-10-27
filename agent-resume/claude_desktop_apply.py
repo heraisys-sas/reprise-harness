@@ -342,14 +342,19 @@ def to_submission(result):
 
 
 def apply(prompt, chat_id=None, *, port=DEFAULT_PORT, settle=3.0, submit=True, on_login="fail"):
-    """Stage into an empty, exact target; optionally attempt one guarded click."""
+    """Stage into an existing, exact chat; optionally attempt one guarded click."""
+    try:
+        chat_id = validate_chat_id(chat_id)
+        if chat_id is None:
+            raise ValueError("Conversation Desktop existante requise")
+    except (ValueError, TypeError):
+        return _result("paramètres")
     if not isinstance(prompt, str) or not prompt.strip():
         return _result("vide")
     prompt = prompt.strip()
     if len(prompt) > MAX_PROMPT_CHARS:
         return _result("trop-long", length=len(prompt), max=MAX_PROMPT_CHARS)
     try:
-        chat_id = validate_chat_id(chat_id)
         _port(port)
         if (not isinstance(settle, (int, float)) or isinstance(settle, bool)
                 or not math.isfinite(settle) or not 0 <= settle <= 30
@@ -357,7 +362,7 @@ def apply(prompt, chat_id=None, *, port=DEFAULT_PORT, settle=3.0, submit=True, o
             raise ValueError("Options invalides")
     except (ValueError, TypeError):
         return _result("paramètres")
-    path = "/chat/" + chat_id if chat_id else "/new"
+    path = "/chat/" + chat_id
     try:
         fingerprint = hashlib.sha256(prompt.encode()).hexdigest()
     except UnicodeError:

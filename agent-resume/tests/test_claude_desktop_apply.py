@@ -38,12 +38,22 @@ class PromptGuards(unittest.TestCase):
         with patch.object(transport, 'CDP') as connect:
             for args in cases:
                 with self.subTest(args=list(args)):
-                    self.assertFalse(transport.apply(**args)['ok'])
+                    self.assertFalse(transport.apply(**({'chat_id': CHAT} | args))['ok'])
+            connect.assert_not_called()
+
+    def test_existing_chat_is_required_without_connecting(self):
+        with patch.object(transport, 'CDP') as connect:
+            for args in ({}, {'chat_id': None}, {'chat_id': ''}):
+                with self.subTest(args=args):
+                    result = transport.apply(PROMPT, **args)
+                    self.assertEqual(result['stage'], 'paramètres')
+                    self.assertFalse(result['dispatch_attempted'])
+                    self.assertFalse(result['staged'])
             connect.assert_not_called()
 
     def test_bound_is_preserved(self):
         with patch.object(transport, 'CDP', side_effect=OSError('private error')) as connect:
-            result = transport.apply('x' * transport.MAX_PROMPT_CHARS)
+            result = transport.apply('x' * transport.MAX_PROMPT_CHARS, CHAT)
         self.assertEqual(result['stage'], 'connexion')
         self.assertNotIn('private error', json.dumps(result))
         connect.assert_called_once()
