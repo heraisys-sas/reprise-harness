@@ -59,6 +59,10 @@
         api: openai-completions
         baseURL: https://api.morphllm.com/v1
         apiKeyEnv: MORPH_API_KEY
+        compat:
+          supportsUsageInStreaming: true
+          supportsStore: false
+          supportsReasoningEffort: false
         models:
           - id: morph-dsv41flash-1017
             contextWindow: 1048576
@@ -70,10 +74,6 @@
           - id: morph-glm53-744b
             contextWindow: 1048576
             maxTokens: 32768
-        compat:
-          supportsUsageInStreaming: true
-          supportsStore: false
-          supportsReasoningEffort: true
         retryPolicy:
           mode: normal
           maxRetries: 0
