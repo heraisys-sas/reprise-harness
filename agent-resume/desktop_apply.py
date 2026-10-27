@@ -280,6 +280,14 @@ def raise_for_login(port: int = DEFAULT_PORT) -> bool:
     shutdown(port)
     if not launch(port, visible=True):
         return False
+    # La fenêtre relancée s'ouvre sur une page vide : on la mène directement
+    # à l'écran de connexion, sinon l'humain ne voit qu'un onglet blanc.
+    try:
+        cdp = CDP(port)
+        cdp.navigate("https://claude.ai/login")
+        cdp.close()
+    except (OSError, WSError):
+        pass
     try:
         import subprocess
 
