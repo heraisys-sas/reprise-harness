@@ -202,6 +202,7 @@ def main():
     desktop_apply.add_argument('--chat')
     desktop_apply.add_argument('--raise-on-login', action='store_true')
     desktop_apply.add_argument('--status', action='store_true')
+    desktop_apply.add_argument('--port', type=int)
     sub.add_parser('reprise-health')
     sub.add_parser('restart-chain')
     sub.add_parser('quick-apply-daemon-start')
@@ -244,13 +245,14 @@ def main():
         print(json.dumps(quota_knowledge.status(db, args.engine, settings, refresh=args.refresh), ensure_ascii=False))
     elif args.action == 'desktop-apply':
         import desktop_apply as transport
+        port = args.port or int(os.environ.get('CLAUDE_CDP_PORT', '9333'))
         if args.status:
-            print(json.dumps(transport.quota(), ensure_ascii=False))
+            print(json.dumps(transport.quota(port), ensure_ascii=False))
             sys.exit(0)
         text = args.text or ''
         if args.prompt_file:
             text = Path(args.prompt_file).read_text()
-        result = transport.apply(text, args.chat,
+        result = transport.apply(text, args.chat, port=port,
                                  on_login='raise' if args.raise_on_login else 'fail')
         print(json.dumps(result, ensure_ascii=False))
         sys.exit(0 if result.get('ok') else 1)
