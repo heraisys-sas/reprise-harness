@@ -343,6 +343,10 @@ def quota(port: int = DEFAULT_PORT) -> dict:
     try:
         info = state(cdp)
         url = str(info.get("url") or "")
+        if info.get("sendDisabled") is None:
+            # Pas de bouton d'envoi : on ne peut rien affirmer du quota.
+            return {"blocked": None, "available": False,
+                    "detail": {"url": url, "reason": "composeur absent"}}
         if "claude.ai" not in url:
             # Sur about:blank, un bouton absent ne dit rien du quota.
             return {"blocked": None, "available": False,
