@@ -12,6 +12,16 @@ import subprocess
 import sys
 import uuid
 import zipfile
+
+
+def parse_instant(value):
+    """Parse un instant ISO 8601 avec fuseau, y compris le suffixe Z."""
+    text = value.strip()
+    if text.endswith(('Z', 'z')):
+        text = text[:-1] + '+00:00'
+    return dt.datetime.fromisoformat(text)
+
+
 if len(sys.argv) > 1 and sys.argv[1] in ('ironclaw-inspect', 'ironclaw-configure', 'ironclaw-probe', 'ironclaw-submit', 'ironclaw-poll', 'ironclaw-result', 'ironclaw-requests', 'ironclaw-reconcile', 'ironclaw-followup'):
     import ironclaw_connection
     sys.exit(ironclaw_connection.main(Path(__file__).resolve().parent, sys.argv[1:]))
@@ -243,7 +253,7 @@ def main():
     elif args.action == 'add':
         args.session = engines.validate_session(args.engine, args.session)
         settings = engines.options(args.engine, {k: getattr(args, k) for k in ('profile', 'socket', 'parent') if getattr(args, k) is not None})
-        when = dt.datetime.fromisoformat(args.at)
+        when = parse_instant(args.at)
         if when.tzinfo is None:
             parser.error('--at exige un fuseau horaire')
         cwd = Path(args.cwd).expanduser().resolve(strict=True)
