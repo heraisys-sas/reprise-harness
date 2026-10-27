@@ -15,3 +15,10 @@
 - **Portage** : ajout des deux modules et de la documentation; exposition d'une CLI explicite et expérimentale; inclusion des trois ressources dans `package_helpers.ASSETS`, en conservant les ressources de packaging actuelles de `dev`.
 - **Garde-fous** : aucun raccord au daemon, routage ou reprise automatique. `quota()` rapporte l'indisponibilité si le navigateur ou le bouton manque; les signaux UI restent heuristiques. `send_staged()` ne vérifie pas le chat exact. Clic, admission du tour et retour MCP restent distincts.
 - **Validation** : sous `HOME` temporaire, `test_claude_desktop_apply.py` (14), `test_claude_quota_log.py` (13), `test_package_helpers.py` (5) et `test_resume.py` (29) réussissent, soit 61 tests ciblés. CDP est simulé dans les tests transport; aucun `git add`, commit, push, réseau, app, service ou inférence par ce lot.
+
+## Lot 86 — exemples CDP et WKWebView archivés
+
+- **Baseline** : commit lots 84/85 `9a34fe538356c357c7831fdcea1390cd3e9d3038` sur `dev` `d162a2c401ba306815dc4a268457252de7f8fe57`.
+- **Source** : PR86 `4bd6b9e74d572468cded63b309a03d8011b648c7`.
+- **Portage** : sept fichiers de `harness-tools/desktop-cdp-example`; adaptateur de quota local vers `agent-resume/claude_quota_log.observe`, avec valeurs inconnues conservées comme inconnues; test sur fichier synthétique. README précise provenance, statut non livré, limites d'admission/retour et le caractère opt-in de `--wait-quota`. SPEC WKWebView marque le login bloqué et décrit l'absence de liste blanche d'hôte.
+- **Validation** : adaptateur (3 tests) et AST Python réussis; `bash -n` sur `launch.sh` et `stop.sh` réussi. `node --check cdp.mjs` non vérifié car `node` est absent (`command not found`). Aucun navigateur, CDP, selftest, login, app, service, installation, réseau, commit ou push.
