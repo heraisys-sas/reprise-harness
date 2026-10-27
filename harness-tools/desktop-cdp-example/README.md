@@ -1,66 +1,25 @@
-# Exemples — pilotage de claude.ai par CDP
+# Ancien exemple CDP — neutralisé
 
-Ces fichiers accompagnent #83 et #84. Ce sont des **exemples expérimentaux non
-livrés** : rien ici n'est installé, exporté ou intégré au daemon Reprise. Ils
-documentent un banc d'essai; ils ne garantissent pas que les mesures puissent
-être reproduites dans un autre compte ou état de session.
+Le pilote de ce dossier est désactivé. `apply.py`, `cdp.mjs`, `launch.sh` et
+`stop.sh` refusent les commandes d’envoi, de navigation, de retry, de statut
+CDP, d’attente de quota et de cycle de vie du navigateur. Ils ne lancent aucun
+sous-processus, n’ouvrent aucun socket et ne pilotent aucune fenêtre.
 
-## Contenu
+Pour le parcours produit, utilisez uniquement la CLI Reprise
+`agent-resume/resume desktop-apply` et sa documentation
+[`CLAUDE-DESKTOP-APPLY.md`](../../agent-resume/CLAUDE-DESKTOP-APPLY.md). Le
+code actif de cet exemple n’est pas une alternative à cette CLI.
 
-| Fichier | Rôle |
-|---|---|
-| `cdp.mjs` | pilote Chrome DevTools Protocol (Node, zéro dépendance) : `status`, `inspect`, `navigate`, `apply`, `send-staged`, `retry`, `quota`, `selftest` |
-| `launch.sh` / `stop.sh` | cycle de vie d'un Chrome dédié (profil persistant, port 9333) |
-| `apply.py` | façade Python du pilote : quota, envoi, attente de réouverture |
-| `wkwebview/` | prototype WKWebView **écarté** (voir plus bas), gardé comme preuve |
+L’historique du prototype provient de la source PR86
+`4bd6b9e74d572468cded63b309a03d8011b648c7`. Il est conservé dans l’historique
+Git; les fichiers présents ici sont des refus inertes et ne contiennent plus
+le pilote.
 
-Le transport Python séparé est dans `agent-resume/claude_desktop_apply.py` (#84),
-mais il reste expérimental et n'est pas raccordé au daemon.
+`apply.py:quota_blocked()` reste un adaptateur de lecture locale vers
+`agent-resume/claude_quota_log.py`. Il ne vérifie pas le compte du profil
+Chrome, ne déduit pas sa disponibilité et ne lance aucune action navigateur.
+Les tests n’utilisent que des journaux synthétiques.
 
-Le rapport d'envoi du pilote Node vient de l'auteur dans le commentaire
-6437860868 de l'issue #83; il n'a pas été reproduit pendant ce portage. `apply`
-vise un identifiant de chat fourni, mais le pilote ne prouve pas après navigation
-que la page a ouvert cette cible. Un clic sur « Envoyer » ne prouve pas
-l'admission du tour, et aucun retour de réponse ni `submit_result` MCP n'est
-fourni. Continuer le même chat sur claude.ai ne prouve pas que les outils MCP
-stdio locaux de Claude Desktop sont accessibles au tour web.
-
-## Mise en route
-
-```sh
-./launch.sh                      # Chrome dédié + port 9333
-# se connecter une fois à claude.ai dans cette fenêtre (profil persistant)
-node cdp.mjs status
-node cdp.mjs inspect             # composeur, boutons visibles
-node cdp.mjs selftest            # vérifie frappe + clic sur une page de test locale
-```
-
-Node ≥ 22 est requis pour `WebSocket` natif. Aucun `npm install`. Le selftest
-figure dans la recette, mais n'a pas été exécuté pendant le portage.
-
-## Avertissements
-
-- **Le port n'écoute que sur `127.0.0.1`, mais tout processus local peut piloter
-  ce profil** tant qu'il est ouvert. `./stop.sh` pour fermer.
-- **Ne pas tester d'envoi quand le quota est bloqué** : cela ne prouve rien et
-  consomme la fenêtre de reprise.
-- Aucun retry quota n'est lancé par défaut ni intégré à Reprise. Dans le banc
-  d'essai, `apply.py --wait-quota` est une option explicite qui poll et retente
-  l'envoi du composeur; ne pas laisser cette option tourner sans décision
-  volontaire. Elle ne réarme pas MCP.
-- Dans `status`, `log.available: true` signifie qu'un événement du journal a été
-  trouvé; `null` signifie que la source ne permet pas de conclure. Ce champ ne
-  dit pas que le quota est libre.
-- Ne pas chercher à franchir les contrôles anti-bot (headless, hCaptcha) : c'est
-  documenté comme impasse, pas comme obstacle à contourner.
-
-## `wkwebview/` — prototype archivé, connexion bloquée
-
-`ClaudeApply.swift` charge claude.ai dans un WKWebView pour éviter Chrome.
-Dans le run documenté, WebKit rend la page mais la **connexion reste bloquée** :
-hCaptcha boucle (`challenge → checkbox-invisible → challenge`) et ITP refuse les
-cookies tiers requis par le captcha. Le prototype n'a atteint ni l'insertion ni
-l'envoi; le conserver comme piste active « à prouver » serait trompeur.
-
-Conservé comme archive de cette impasse. Ne pas compiler ici : le build Swift de
-Reprise est interne (`BUILD-AND-CI.md`).
+Le prototype WKWebView demeure une archive de recherche séparée : la recette
+documentée n’a pas dépassé le blocage de connexion. Elle n’est pas une voie
+produit ni un pilote actif.
