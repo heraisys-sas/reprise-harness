@@ -10,8 +10,8 @@ Références : issue #83 (découvertes), PR #84 (ce lot), PR #85 (correctif `res
 
 | Élément | État |
 |---|---|
-| `desktop_apply.py` — lecture d'état, quota, navigation | **testé sur machine** |
-| `desktop_apply.py` — envoi (`stage: envoyé`) | prouvé avec le pilote Node équivalent, **pas encore avec ce portage Python** |
+| `claude_desktop_apply.py` — lecture d'état, quota, navigation | **testé sur machine** |
+| `claude_desktop_apply.py` — envoi (`stage: envoyé`) | prouvé avec le pilote Node équivalent, **pas encore avec ce portage Python** |
 | `claude_quota_log.py` | testé (10 tests) + vérifié sur journal réel |
 | `resume desktop-apply` (CLI) | testé (`--status`, `--raise`) |
 | `ClaudePanel.swift` | **non compilé** (build interne à Reprise) |
@@ -45,7 +45,33 @@ une session de travail.
 `quota` et `session` **ne sont pas des pannes**. Les traiter comme telles est
 l'erreur la plus coûteuse : elle pousse à réessayer, ce qui consomme du quota.
 
-## 3. API
+## 3. Cohérence avec l'existant
+
+Le dépôt possède déjà le contrat de soumission : `claude_desktop.review()` envoie
+`{prompt, request_key, chatId, filePaths}` via `quick_entry/submit`, et rend
+`{status, resumable, model, admission_only, response}`. Ce transport **ne crée pas
+un second vocabulaire** : `to_submission(result)` projette le détail technique sur
+ces statuts.
+
+| `stage` du transport | `status` rendu | Champs ajoutés |
+|---|---|---|
+| `envoyé` | `finished` | `dispatch: cdp-web`, `admission_only: true` |
+| `posé` | `finished` | `admission_only: false` (aucun tour émis) |
+| `quota` | `blocked_session` | `staged: true`, `reason` |
+| `session` | `blocked_auth` | `reason: connexion requise` |
+| autre | `engine_unavailable` | `reason: <stage>` |
+
+Autres alignements :
+
+- `chat_id` est validé par `claude_desktop.validate_chat_id` (ré-export public),
+  pas par une regex locale ;
+- nommage : `claude_desktop_*` pour les modules, `CLAUDE-*.md` pour la doc —
+  comme `CLAUDE-QUICK-ENTRY-INTERNALS.md` et `CLAUDE-CONNECTOR.md` ;
+- point d'insertion : le gestionnaire `quick_entry/submit` de
+  `claude_desktop_quick.py`, là où l'envoi est aujourd'hui laissé au
+  « supervised driver ».
+
+## 4. API
 
 ```python
 from desktop_apply import apply, send_staged, quota, launch, shutdown, raise_for_login
@@ -64,7 +90,7 @@ resume desktop-apply --text "…" --chat <uuid> [--raise-on-login]
 resume desktop-apply --raise          # connexion humaine
 ```
 
-## 4. Invariants — à ne pas casser
+## 5. Invariants — à ne pas casser
 
 1. **Aucune heure déduite d'un « HH:MM » sans date.** L'ambiguïté
    aujourd'hui/demain reste refusée, comme dans `claude_quota.parse_pause`.
@@ -79,7 +105,7 @@ resume desktop-apply --raise          # connexion humaine
    est obligatoire.
 7. **`request_key` reste au démon.** Le transport ne rejoue ni ne déduplique.
 
-## 5. Pièges déjà payés
+## 6. Pièges déjà payés
 
 | # | Symptôme | Cause | Correctif appliqué |
 |---|---|---|---|
@@ -95,7 +121,7 @@ resume desktop-apply --raise          # connexion humaine
 | 5.10 | `claude --resume` « réussi » à tort | `session_id` et JSONL écrits **même si l'appel échoue** | lire `is_error` + `result` |
 | 5.11 | `retry` cliquait le menu d'une conversation | le libellé contient le texte du message | cibler `data-testid` (`action-bar-retry`) |
 
-## 6. Quota : deux sources, une conjonction
+## 7. Quota : deux sources, une conjonction
 
 | Source | Voit | Ne voit pas |
 |---|---|---|
@@ -104,7 +130,7 @@ resume desktop-apply --raise          # connexion humaine
 
 `blocked = journal.blocked OR (page.sendDisabled AND page.hasText)`.
 
-## 7. Recettes de test (sans consommer de quota)
+## 8. Recettes de test (sans consommer de quota)
 
 ```bash
 # 1. navigateur absent : dégradation propre
@@ -121,7 +147,7 @@ python claude_quota_log.py     # événement + resetsAt + expired
 Ne jamais tester un envoi quand le quota est bloqué : cela ne prouve rien et
 consomme la fenêtre de reprise.
 
-## 8. Ce qui reste, avec critère d'acceptation
+## 9. Ce qui reste, avec critère d'acceptation
 
 | # | Tâche | Acceptation |
 |---|---|---|
@@ -132,14 +158,14 @@ consomme la fenêtre de reprise.
 | 5 | cycle de vie du navigateur | résident ou éphémère, documenté, sans port ouvert par défaut |
 | 6 | non-régression des sélecteurs | `inspect` en CI manuelle après refonte de l'UI |
 
-## 9. Décisions ouvertes
+## 10. Décisions ouvertes
 
 - `on_login` par défaut : `fail` (sûr) ou `raise` (utile) ;
 - navigateur résident (rapide, port ouvert) ou éphémère (propre, +6 s) ;
 - source de `evidence_sha256` ;
 - où vit le profil Chrome dans le déploiement.
 
-## 10. Règle de preuve
+## 11. Règle de preuve
 
 Toute affirmation de ce document a été vérifiée par une commande dont la sortie
 est citée dans l'issue #83. Une affirmation non vérifiée est écrite comme telle

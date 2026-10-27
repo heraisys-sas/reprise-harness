@@ -246,7 +246,7 @@ def main():
         settings = (json.loads(row[0]) if row else {}) | {key: getattr(args, key) for key in ('profile', 'socket') if getattr(args, key) is not None}
         print(json.dumps(quota_knowledge.status(db, args.engine, settings, refresh=args.refresh), ensure_ascii=False))
     elif args.action == 'desktop-apply':
-        import desktop_apply as transport
+        import claude_desktop_apply as transport
         port = args.port or int(os.environ.get('CLAUDE_CDP_PORT', '9333'))
         if args.status:
             print(json.dumps(transport.quota(port), ensure_ascii=False))
@@ -261,6 +261,7 @@ def main():
             text = Path(args.prompt_file).read_text()
         result = transport.apply(text, args.chat, port=port,
                                  on_login='raise' if args.raise_on_login else 'fail')
+        # On rend le contrat du dépôt, plus le détail du transport.
         print(json.dumps(result, ensure_ascii=False))
         sys.exit(0 if result.get('ok') else 1)
     elif args.action == 'add':

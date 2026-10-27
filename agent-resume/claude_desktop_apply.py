@@ -280,14 +280,6 @@ def raise_for_login(port: int = DEFAULT_PORT) -> bool:
     shutdown(port)
     if not launch(port, visible=True):
         return False
-    # La fenêtre relancée s'ouvre sur une page vide : on la mène directement
-    # à l'écran de connexion, sinon l'humain ne voit qu'un onglet blanc.
-    try:
-        cdp = CDP(port)
-        cdp.navigate("https://claude.ai/login")
-        cdp.close()
-    except (OSError, WSError):
-        pass
     try:
         import subprocess
 
@@ -336,21 +328,9 @@ def state(cdp: CDP) -> dict:
 # ---------------------------------------------------------------------------
 def quota(port: int = DEFAULT_PORT) -> dict:
     """État de quota tel que la page le montre (blocage client inclus)."""
-    try:
-        cdp = CDP(port)
-    except (OSError, WSError) as exc:
-        return {"blocked": None, "available": False, "detail": str(exc)}
+    cdp = CDP(port)
     try:
         info = state(cdp)
-        url = str(info.get("url") or "")
-        if info.get("sendDisabled") is None:
-            # Pas de bouton d'envoi : on ne peut rien affirmer du quota.
-            return {"blocked": None, "available": False,
-                    "detail": {"url": url, "reason": "composeur absent"}}
-        if "claude.ai" not in url:
-            # Sur about:blank, un bouton absent ne dit rien du quota.
-            return {"blocked": None, "available": False,
-                    "detail": {"url": url, "reason": "page non claude.ai"}}
         return {
             "blocked": bool(info.get("sendDisabled") and info.get("hasText")) or bool(info.get("blocked")),
             "sendDisabled": info.get("sendDisabled"),
