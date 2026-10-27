@@ -3,6 +3,7 @@ from contextlib import closing
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import sys
@@ -177,6 +178,64 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.config.write_text(self.config.read_text().replace('330000', '330001'))
         with self.assertRaisesRegex(ValueError, 'personnalisé'):
             self.plan()
+
+    def reformatted_config(self, transform=lambda payload: payload):
+        text = self.config.read_text()
+        match = re.search(r'^- insert: (.+)$', text, re.M)
+        if match is None:
+            match = re.search(r'^- insert:\n    (.+)$', text, re.M)
+        payload = transform(match.group(1))
+        base = text[:text.index(integration.START)]
+        return base + integration.START + '\n- insert:\n    ' + payload + '\n' + integration.END + '\n'
+
+    def test_equivalent_reformatted_block_is_reconciled(self):
+        self.install()
+        reformatted = self.reformatted_config()
+        old_block = reformatted[reformatted.index(integration.START):]
+        self.assertNotEqual(reformatted, self.config.read_text())
+        outside = '# personal settings\n' + reformatted
+        self.config.write_text(outside)
+        proposed = self.plan()
+        self.assertEqual(proposed['block_reconciled'],
+                         {'from_sha256': integration.digest(old_block.encode()),
+                          'to_sha256': proposed['block_reconciled']['to_sha256']})
+        self.assertNotEqual(proposed['block_reconciled']['from_sha256'],
+                            proposed['block_reconciled']['to_sha256'])
+        integration.apply(self.root, proposed)
+        manifest = json.loads((self.managed / 'managed.json').read_text())
+        self.assertEqual(manifest['reconciled_from_sha256'], proposed['block_reconciled']['from_sha256'])
+        self.assertEqual(self.plan()['changes'], [])
+        self.assertTrue(self.config.read_text().startswith('# personal settings\n'))
+        self.assertNotIn('- insert:\n', self.config.read_text())
+
+    def test_real_block_change_is_refused_not_reconciled(self):
+        self.install()
+        self.config.write_text(self.reformatted_config(lambda payload: payload.replace('330000', '330001')))
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, 'personnalisé'):
+            self.plan()
+        self.assertEqual(self.snapshot(), before)
+
+    def test_unreadable_block_is_refused_not_adopted(self):
+        self.install()
+        self.config.write_text(self.reformatted_config(lambda payload: payload[:len(payload) // 2]))
+        before = self.snapshot()
+        for action in ('install', 'remove'):
+            with self.assertRaisesRegex(ValueError, 'personnalisé'):
+                self.plan(action)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_verify_accepts_equivalent_reformatted_block_and_refuses_real_change(self):
+        probe = self.bridge_probe()
+        self.config.write_text(self.reformatted_config())
+        with patch.object(integration.subprocess, 'run', return_value=probe):
+            result = integration.verify(self.home, 'desktop', self.root)
+        self.assertEqual(result['status'], 'verified')
+        self.assertIn('block_reconciled', result)
+        self.config.write_text(self.reformatted_config(lambda payload: payload.replace('330000', '330001')))
+        with patch.object(integration.subprocess, 'run', return_value=probe):
+            with self.assertRaisesRegex(ValueError, 'absente ou modifiée'):
+                integration.verify(self.home, 'desktop', self.root)
 
     def test_unmanaged_existing_integration_conflicts(self):
         self.config.write_text('- insert: [{"id":"reprise-codex-expert"}]\n')

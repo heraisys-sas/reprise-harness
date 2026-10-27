@@ -114,6 +114,62 @@ def split_block(text):
     return text[:match.start()] + text[match.end():], match.group()
 
 
+_BLOCK_REFUSAL = 'Bloc Reprise personnalisé ou non géré ; aucune réécriture.'
+_BLOCK_ILLISIBLE = 'Bloc Reprise illisible ; réconciliation impossible.'
+
+
+def block_entries(block_text):
+    # Le bloc géré est du YAML minimal produit ici : une seule clé `insert`
+    # portant le JSON des entries, en ligne ou ré-indenté sur les lignes suivantes.
+    lines = block_text.splitlines()
+    index = next((i for i, line in enumerate(lines) if re.match(r'^- insert:', line)), None)
+    if index is None:
+        raise ValueError(_BLOCK_ILLISIBLE)
+    inline = lines[index][len('- insert:'):].strip()
+    if inline:
+        payload = inline
+    else:
+        collected = []
+        indent = None
+        for line in lines[index + 1:]:
+            if not line.strip():
+                continue
+            if not line.startswith(' '):
+                break
+            if indent is None:
+                indent = re.match(r' *', line).end()
+            collected.append(line[indent:])
+        payload = ' '.join(collected)
+    try:
+        entries = json.loads(payload)
+    except json.JSONDecodeError:
+        raise ValueError(_BLOCK_ILLISIBLE)
+    if not isinstance(entries, list):
+        raise ValueError(_BLOCK_ILLISIBLE)
+    return entries
+
+
+def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, codex_workspace_write=False):
+    program = release / 'Contents/Resources/runtime/bin/python3'
+    args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/codex_expert_mcp.py'),
+            '--project-root', project, '--state', state, '--tools', ','.join(tools)]
+    if codex_workspace_write:
+        args.append('--codex-workspace-write')
+    entries = [
+        {'id': 'reprise-codex-expert', 'name': '@deepseek-ai/dsh-mcp-client', 'config': {
+            'transport': 'stdio', 'serverName': 'reprise_codex', 'command': str(program), 'args': args,
+            'toolCallTimeoutMs': 330000, 'failOnStartupError': False, 'reconnect': {'enabled': False}}},
+        {'id': 'reprise-skill-filesystem', 'name': '@deepseek-ai/dsh-skill-filesystem', 'config': {
+            'providerName': 'reprise-' + profile, 'includeDefaultRoots': False,
+            'customSkillDirs': [str(managed / 'skills')], 'watch': False}}]
+    if output_resume:
+        entries.append({'id': 'reprise-output-resume', 'name': str(release / 'Contents/Resources/helpers/harness-output-resume.cjs'),
+                        'config': {'enabled': True, 'projectRoot': output_resume_project or project,
+                                   'stateDirectory': str(Path(state) / 'harness-output-resume'),
+                                   'maxConsecutive': 2}})
+    return entries
+
+
 def tree_files(root):
     result = {}
     for entry in sorted(root.rglob('*')):
@@ -482,8 +538,10 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
     base, asi1_blocks, asi1_preexisting = apply_asi1_effort(base, old, asi1_effort and action == 'install')
     base, asi1_preset_blocks, asi1_preset_preexisting = apply_asi1_preset(
         base, old, asi1_effort and action == 'install', str(managed / 'plugins' / ASI1_PLUGIN))
-    if block is not None and (not old or old.get('status') != 'installed' or digest(block.encode()) != old.get('block_sha256')):
-        raise ValueError('Bloc Reprise personnalisé ou non géré ; aucune réécriture.')
+    mismatched_block = block is not None and (not old or old.get('status') != 'installed' or digest(block.encode()) != old.get('block_sha256'))
+    # Réconciliation install uniquement : l'équivalence se juge sur les entries régénérées plus bas.
+    if mismatched_block and action != 'install':
+        raise ValueError(_BLOCK_REFUSAL)
     if any(token in base for token in ('reprise-codex-expert', 'reprise_codex', 'reprise-skill-filesystem', '# BEGIN REPRISE EXPERTISE')):
         raise ValueError('Ancienne intégration ou définition Reprise non gérée : réconciliation requise, aucun écrasement.')
     for relative, expected in (old or {}).get('managed_files', {}).items():
@@ -502,6 +560,8 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
     if not Path(resume_project).is_dir():
         raise ValueError('Projet de continuation : dossier existant requis.')
     files = {}
+    reconciliation = None
+    reconciled_from = None
     release = None
     state = str(state_location(root).absolute())
     if not bundled(root) and Path(state).resolve().is_relative_to(Path(root).resolve()):
@@ -511,24 +571,21 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
             raise ValueError('Préparer l’état Reprise avant installation ; aucun registre neuf implicite.')
         helpers, runtime, identity = bundle_info(root)
         release = Path(state).parent / 'integration-releases' / identity
-        program = release / 'Contents/Resources/runtime/bin/python3'
         tools = OBSERVE + (DELEGATE if delegate else ())
-        args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/codex_expert_mcp.py'),
-                '--project-root', project, '--state', state, '--tools', ','.join(tools)]
-        if codex_workspace_write:
-            args.append('--codex-workspace-write')
-        entries = [{'id': 'reprise-codex-expert', 'name': '@deepseek-ai/dsh-mcp-client', 'config': {
-            'transport': 'stdio', 'serverName': 'reprise_codex', 'command': str(program), 'args': args,
-            'toolCallTimeoutMs': 330000, 'failOnStartupError': False, 'reconnect': {'enabled': False}}},
-            {'id': 'reprise-skill-filesystem', 'name': '@deepseek-ai/dsh-skill-filesystem', 'config': {
-                'providerName': 'reprise-' + profile, 'includeDefaultRoots': False,
-                'customSkillDirs': [str(managed / 'skills')], 'watch': False}}]
-        if output_resume:
-            entries.append({'id': 'reprise-output-resume', 'name': str(release / 'Contents/Resources/helpers/harness-output-resume.cjs'),
-                            'config': {'enabled': True, 'projectRoot': resume_project,
-                                       'stateDirectory': str(Path(state) / 'harness-output-resume'),
-                                       'maxConsecutive': 2}})
+        entries = _bridge_entries(release, state, tools, project, profile, managed,
+                                  output_resume, resume_project, codex_workspace_write)
+        if mismatched_block:
+            try:
+                parsed = block_entries(block)
+            except ValueError:
+                raise ValueError(_BLOCK_REFUSAL)
+            if parsed != entries:
+                raise ValueError(_BLOCK_REFUSAL)
+            # Bloc reformatté équivalent : réécriture canonique tracée dans le manifeste.
+            reconciled_from = digest(block.encode())
         new_block = START + '\n- insert: ' + json.dumps(entries, ensure_ascii=False) + '\n' + END + '\n'
+        if reconciled_from:
+            reconciliation = {'from_sha256': reconciled_from, 'to_sha256': digest(new_block.encode())}
         empty_before = (old or {}).get('empty_before')
         empty_after = (old or {}).get('empty_after')
         if empty_array:
@@ -563,6 +620,11 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
             next_manifest['asi1_preset_preexisting'] = asi1_preset_preexisting
         if codex_workspace_write:
             next_manifest['codex_workspace_write'] = True
+        if reconciled_from:
+            next_manifest['reconciled_from_sha256'] = reconciled_from
+        elif old and 'reconciled_from_sha256' in old:
+            # Preuve conservée : le manifeste régénéré doit rester identique au manifeste en place.
+            next_manifest['reconciled_from_sha256'] = old['reconciled_from_sha256']
         if agent_role != 'standard':
             next_manifest['agent_role'] = agent_role
     else:
@@ -582,7 +644,10 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         safe_profile_path(path, folder)
         if path not in (config, managed / 'managed.json') and path.exists() and str(path.relative_to(folder)) not in (old or {}).get('managed_files', {}):
             raise ValueError(f'Fichier préexistant non géré : {path}. Aucun écrasement ni adoption implicite.')
-    return files, {'release': str(release) if release else (old or {}).get('release'), 'state': state}, next_manifest
+    extra = {'release': str(release) if release else (old or {}).get('release'), 'state': state}
+    if reconciliation:
+        extra['block_reconciled'] = reconciliation
+    return files, extra, next_manifest
 
 
 def plan(root, home, profile, project, action='install', delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False):
@@ -610,6 +675,8 @@ def plan(root, home, profile, project, action='install', delegate=False, agent_r
         result['output_resume_project'] = str(Path(output_resume_project or project).expanduser().resolve(strict=True))
     if asi1_effort and action == 'install':
         result['asi1_effort'] = True
+    if 'block_reconciled' in extra:
+        result['block_reconciled'] = extra['block_reconciled']
     result['fingerprint'] = digest(encoded(result).encode())
     return result
 
@@ -728,8 +795,15 @@ def verify(home, profile, root=None):
         raise ValueError('Aucune intégration installée gérée dans ce profil.')
     config_text = (folder / 'cordis.patch.yml').read_bytes().decode('utf-8')
     base, block = split_block(config_text)
+    reconciled = None
     if block is None or digest(block.encode()) != old['block_sha256']:
-        raise ValueError('Configuration Reprise absente ou modifiée.')
+        expected = _bridge_entries(Path(old['release']), old['state'], old['tools'], old['project'],
+                                   old['profile'], managed, old.get('output_resume', False),
+                                   old.get('output_resume_project'), old.get('codex_workspace_write', False))
+        if block is None or block_entries(block) != expected:
+            raise ValueError('Configuration Reprise absente ou modifiée.')
+        # Bloc reformatté équivalent : accepté sans réécriture ici.
+        reconciled = digest(block.encode())
     if old.get('asi1_effort'):
         checked, _, _ = apply_asi1_effort(base, old, True)
         if checked != base:
@@ -780,7 +854,7 @@ def verify(home, profile, root=None):
     message = 'Bloc géré et consignes vérifiés ; pont sondé directement sans inférence. Chargement par Harness non observé.'
     if update_required:
         message += ' Mise à jour de l’intégration requise ; rechargement du client à coordonner séparément.'
-    return {'status': 'verified', 'message': message,
+    result = {'status': 'verified', 'message': message,
             'selected_release': selected_release, 'update_required': update_required,
             'bridge_capabilities': capabilities, 'missing_result_capabilities': missing,
             'output_resume': {'configured': old.get('output_resume', False), 'client_loaded': 'unknown'},
@@ -788,6 +862,9 @@ def verify(home, profile, root=None):
             'levels': {'configuration_written': True, 'integration_loaded': 'unknown', 'client_tools_discovered': 'unknown', 'exchange_confirmed': 'unknown'},
             'full_profile_syntax': 'not_checked', 'bridge_tools': names, 'bridge_version': initialized_reply['serverInfo']['version'],
             'bridge_source_sha256': initialized_reply['serverInfo'].get('source_sha256')}
+    if reconciled:
+        result['block_reconciled'] = reconciled
+    return result
 
 
 def main(root, argv=None):
