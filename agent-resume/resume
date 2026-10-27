@@ -203,7 +203,7 @@ def main():
     desktop_apply.add_argument('--raise-on-login', action='store_true')
     desktop_apply.add_argument('--status', action='store_true')
     desktop_apply.add_argument('--port', type=int)
-    desktop_apply.add_argument('--raise', action='store_true',
+    desktop_apply.add_argument('--raise', dest='raise_window', action='store_true',
                                help='rendre la fenêtre visible pour la connexion')
     sub.add_parser('reprise-health')
     sub.add_parser('restart-chain')
@@ -251,7 +251,7 @@ def main():
         if args.status:
             print(json.dumps(transport.quota(port), ensure_ascii=False))
             sys.exit(0)
-        if args.raise:
+        if args.raise_window:
             raised = transport.raise_for_login(port)
             print(json.dumps({'ok': raised, 'stage': 'session', 'raised': raised},
                              ensure_ascii=False))
