@@ -135,7 +135,7 @@ class CDP:
         targets = self._targets()
         page = self._pick_page(targets)
         if page is None:
-            raise WSError("aucune page exposée — launch.sh est-il lancé ?")
+            raise WSError("aucune page exposée — le navigateur de diagnostic est-il lancé sur ce port ?")
         path = page["webSocketDebuggerUrl"].split(str(port), 1)[-1]
         self.ws = WebSocket("127.0.0.1", port, path, timeout=timeout)
 

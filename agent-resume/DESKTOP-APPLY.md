@@ -108,8 +108,9 @@ Non inclus volontairement : le câblage modifie le comportement du démon, et
 ## 6. Exploitation
 
 ```bash
-./launch.sh                       # Chrome dédié, port 9333, profil persistant
-# connexion claude.ai une fois dans ce profil
+# un Chrome dédié, avec le port de diagnostic et un profil persistant :
+google-chrome --remote-debugging-port=9333 --user-data-dir=~/.local/share/claude-cdp/chrome
+# connexion claude.ai une fois dans ce profil, puis :
 python agent-resume/desktop_apply.py --quota
 ```
 
