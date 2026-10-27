@@ -22,3 +22,11 @@
 - **Source** : PR86 `4bd6b9e74d572468cded63b309a03d8011b648c7`.
 - **Portage** : sept fichiers de `harness-tools/desktop-cdp-example`; adaptateur de quota local vers `agent-resume/claude_quota_log.observe`, avec valeurs inconnues conservées comme inconnues; test sur fichier synthétique. README précise provenance, statut non livré, limites d'admission/retour et le caractère opt-in de `--wait-quota`. SPEC WKWebView marque le login bloqué et décrit l'absence de liste blanche d'hôte.
 - **Validation** : adaptateur (3 tests) et AST Python réussis; `bash -n` sur `launch.sh` et `stop.sh` réussi. `node --check cdp.mjs` non vérifié car `node` est absent (`command not found`). Aucun navigateur, CDP, selftest, login, app, service, installation, réseau, commit ou push.
+
+## Vérification du portage complet — coordinateur
+
+- Trois commits locaux : `9ec03a7` (85), `9a34fe5` (84), `5c3996b` (86). Les modes exécutables des scripts exemples sont conservés.
+- `python3 agent-resume/ci_test.py` : premier passage sandbox, 865 tests, 39 erreurs de bind refusé et un échec de démarrage de fixture ; ce passage n'est pas une validation.
+- Même suite avec autorisation des sockets temporaires, HOME jetable : **865 tests, OK, 4 ignorés**, 19,031 s, code de sortie 0. Journaux `/private/tmp/reprise-dev-port-ci.log` et `/private/tmp/reprise-dev-port-ci-authorized.log`. Quelques ResourceWarning restent présents ; aucune inférence ni service installé utilisé.
+- `dev` distant revérifié en lecture seule, toujours `d162a2c401ba306815dc4a268457252de7f8fe57`. Aucun push, modification de PR ou fusion distante.
+- Nouvelle demande utilisateur : intégrer le transport au parcours Reprise et factoriser les doublons pour la maintenabilité. Plan délégué à Sol en lecture seule ; le portage testé ci-dessus demeure une baseline, pas une preuve d'intégration produit ou d'envoi réel.
