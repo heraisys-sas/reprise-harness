@@ -47,3 +47,10 @@
 - d56c750 : garde cible/empreinte/brouillon, incertitude conservée, refus lifecycle non attribué, framing WebSocket partagé et placeholder ProseMirror exact. 75 tests ciblés (2 ignorés) pour le lot, puis 33 tests transport (1 ignoré) et 64 fixtures DOM après le correctif placeholder.
 - Test réel autorisé : un seul envoi effectif vers un chat existant et réponse corrélée observée via CDP, sans AX. Preuve expurgée : agent-resume/evidence/claude-cdp-continuation-20261027.json. Ce test ne qualifie ni la reprise du tour natif suspendu, ni MCP, ni le planificateur. Les reçus bruts restent dans le workspace de mission, non publiés.
 - Revue pré-fusion : module corrigé ; anciens exemples mutants à neutraliser et contrat livré à actualiser. Révision finale et suite complète requises après ces derniers changements.
+
+## Validation finale pour intégration dev
+
+- Périmètre revu : b03f580fe7775545769b2e7ec44f6eb1ec244a91. F1/F2 clos par le même relecteur indépendant : exemples neutralisés, contrat courant, UUID obligatoire avant CDP. Aucun blocage restant pour le transport manuel expérimental et le plan ; automatisation/MCP non qualifiés.
+- `python3 agent-resume/ci_test.py` sur HOME jetable, sockets de fixtures autorisées : **916 tests, OK, 5 ignorés**, 20,264 s, code de sortie 0. Journal local `/private/tmp/reprise-dev-integration-final-ci.log`. Les ResourceWarning préexistants restent présents. Les 64 fixtures DOM ont été exécutées séparément via l’outil JS local ; l’entrée unittest Node est ignorée lorsque Node n’est pas dans le PATH.
+- Exemples neutralisés : **7 tests OK**, `bash -n` et `git diff --check` réussis. Aucun nouveau test Claude, changement de service ou déploiement pendant cette validation. Pas de source Swift modifiée ; aucun rebuild/lancement de l’application requis pour ce lot Python/documentation.
+- Plan approuvé par le coordinateur : sessions initiées/armées dans Desktop ; registre et découverte passive ; observations quota/reset sans attribution fictive ; UI partagée avec Codex ; actions durables à T ; POC Apply→MCP et MCP→MCP distincts. Ce plan ne constitue pas une implémentation de ces fonctions.
