@@ -1,154 +1,147 @@
-# Transport `apply` (CDP) et quota lu dans le journal
+# DESKTOP-APPLY — contrat du transport `apply`
 
-Deux modules indépendants, sans dépendance nouvelle :
+Ce document est écrit pour **un agent qui reprend le travail**. Il distingue
+systématiquement ce qui est prouvé de ce qui ne l'est pas, liste les pièges déjà
+payés, et donne les critères d'acceptation de ce qui reste.
 
-- `desktop_apply.py` — envoi d'un prompt dans une conversation claude.ai, sans
-  permission macOS ;
-- `claude_quota_log.py` — échéance de quota lue dans le journal de Claude
-  Desktop, sans écran ni permission.
+Références : issue #83 (découvertes), PR #84 (ce lot), PR #85 (correctif `resume`).
 
-Aucune modification du démon n'est incluse : voir §5, c'est une décision à
-trancher.
+## 0. Statut
 
-## 1. Pourquoi ce transport
-
-`claude_desktop_quick.py` valide un payload puis s'arrête : « actually submitting
-through Quick Entry's native overlay requires separate operator-granted macOS
-permissions and is intentionally left to the supervised driver ». Ce driver ne
-peut pas exister côté Desktop :
-
-| Voie | Verdict |
+| Élément | État |
 |---|---|
-| CDP sur Desktop (`--remote-debugging-port`) | refus au lancement ; jeton `CLAUDE_CDP_AUTH` signé Ed25519, lié au `userDataPath`, TTL 300 s |
-| Overlay natif Quick Entry | exige l'Accessibilité macOS |
-| claude.ai dans un Chrome contrôlé, via CDP | aucune permission, aucune signature |
+| `desktop_apply.py` — lecture d'état, quota, navigation | **testé sur machine** |
+| `desktop_apply.py` — envoi (`stage: envoyé`) | prouvé avec le pilote Node équivalent, **pas encore avec ce portage Python** |
+| `claude_quota_log.py` | testé (10 tests) + vérifié sur journal réel |
+| `resume desktop-apply` (CLI) | testé (`--status`, `--raise`) |
+| `ClaudePanel.swift` | **non compilé** (build interne à Reprise) |
 
-On ne pilote donc pas la coquille : on pilote la même application web, dans un
-navigateur lancé pour l'occasion.
+## 1. Décision d'architecture, et ce qui a été écarté
 
-## 2. `desktop_apply.py`
+| Voie | Verdict | Preuve |
+|---|---|---|
+| CDP sur Claude Desktop | refusé par l'app | `refusing to start — a debugging or network-override switch…` ; jeton `CLAUDE_CDP_AUTH` Ed25519, TTL 300 s |
+| Overlay Quick Entry | exige l'Accessibilité | IPC interne, aucun socket |
+| claude.ai en WKWebView | refusé au login | hCaptcha en boucle, ITP bloque les cookies tiers |
+| Chrome headless | refusé | interstitiel « Un instant… », aucun composeur |
+| **claude.ai dans un Chrome contrôlé, via CDP** | **retenu** | envoi réel observé |
 
-Client CDP autonome (WebSocket minimal inclus, stdlib uniquement — le démon n'a
-pas Node).
+Ne pas retenter les voies écartées sans une preuve nouvelle : chacune a coûté
+une session de travail.
+
+## 2. Machine à états
+
+| `stage` | `ok` | `staged` | Sens | Action attendue |
+|---|---|---|---|---|
+| `envoyé` | ✓ | ✗ | clic d'envoi effectué | aucune |
+| `posé` | ✓ | ✓ | texte en place, envoi non demandé | aucune |
+| `quota` | ✗ | ✓ | bouton désactivé, texte en place | **attendre**, ne pas réessayer en boucle |
+| `session` | ✗ | ✗ | connexion claude.ai requise | `--raise`, puis humain |
+| `composeur` | ✗ | ✗ | page non prête | vérifier le navigateur |
+| `frappe` | ✗ | ✗ | texte absent après insertion | voir §5.1 |
+| `connexion` | ✗ | ✗ | navigateur absent | `launch()` |
+| `vide` | ✗ | ✗ | rien à envoyer | — |
+
+`quota` et `session` **ne sont pas des pannes**. Les traiter comme telles est
+l'erreur la plus coûteuse : elle pousse à réessayer, ce qui consomme du quota.
+
+## 3. API
 
 ```python
-from desktop_apply import apply, send_staged, quota
+from desktop_apply import apply, send_staged, quota, launch, shutdown, raise_for_login
 
-apply(prompt, chat_id)   # pose + envoie
-send_staged()            # envoie ce qui est déjà posé, sans retaper
-quota()                  # {"blocked", "sendDisabled", "hasText", "resetAt"}
+apply(prompt, chat_id, port=9333, on_login="fail"|"raise")  # pose + envoie
+send_staged(port)          # envoie ce qui est déjà posé, sans retaper
+quota(port)                # {"blocked", "sendDisabled", "hasText", "resetAt"} ou available=False
+raise_for_login(port)      # fenêtre visible + navigation vers /login
 ```
 
-Contrat de retour : `{ok, stage, staged, detail}`.
+CLI (appelé par le Swift via `setupCommand`) :
 
-| `stage` | `ok` | `staged` | Sens |
+```bash
+resume desktop-apply --status
+resume desktop-apply --text "…" --chat <uuid> [--raise-on-login]
+resume desktop-apply --raise          # connexion humaine
+```
+
+## 4. Invariants — à ne pas casser
+
+1. **Aucune heure déduite d'un « HH:MM » sans date.** L'ambiguïté
+   aujourd'hui/demain reste refusée, comme dans `claude_quota.parse_pause`.
+2. **Un composant absent ne prouve rien.** Pas de bouton d'envoi ⇒
+   `available: false`, jamais `blocked: false`.
+3. **Un événement de quota expiré n'est pas un blocage** (`resetsAt <= now`).
+4. **Ne pas fermer le navigateur sur `session`** : la connexion deviendrait
+   impossible.
+5. **Le quota ne se lit qu'après insertion** : à vide, le bouton est désactivé
+   pour une raison triviale.
+6. **`chat_id` absent ⇒ nouvelle conversation.** Pour viser une existante, l'UUID
+   est obligatoire.
+7. **`request_key` reste au démon.** Le transport ne rejoue ni ne déduplique.
+
+## 5. Pièges déjà payés
+
+| # | Symptôme | Cause | Correctif appliqué |
 |---|---|---|---|
-| `envoyé` | ✓ | ✗ | clic d'envoi effectué |
-| `posé` | ✓ | ✓ | texte en place, envoi non demandé |
-| `quota` | ✗ | ✓ | bouton désactivé, texte en place — **admission différée, pas un échec** |
-| `composeur` | ✗ | ✗ | page non prête |
-| `frappe` | ✗ | ✗ | texte absent après insertion |
-| `connexion` | ✗ | ✗ | Chrome de diagnostic absent |
-| `vide` | ✗ | ✗ | rien à envoyer |
+| 5.1 | texte visible, bouton inerte | `execCommand('insertText')` met à jour le DOM, **pas** l'état de l'éditeur | `Input.insertText` (CDP) ; en WebKit, `NSTextInputClient.insertText` |
+| 5.2 | frappe envoyée à la mauvaise app | `NSWorkspace.openURL_` n'active pas la cible | `open(1)` |
+| 5.3 | succès annoncé sans rien faire | un `null` JS arrive en `NSNull`, pas en `nil` (Swift) | tester le type, pas `!= nil` |
+| 5.4 | « composeur présent » sur la page de login | la page de login contient un `contenteditable` | exiger `[data-testid="chat-input-send"]` |
+| 5.5 | CLI refusé au démarrage | `args.raise` : `raise` est un mot réservé Python | `dest='raise_window'` |
+| 5.6 | Quick Entry n'envoie rien, sans erreur | seuil **strictement** > 2 caractères | documenté ; ne pas tester avec « ok » |
+| 5.7 | quota invisible dans le journal | blocage **client** : aucune requête émise | croiser journal + page (§6) |
+| 5.8 | quota jamais détecté | regex de ligne consommant `.*$` → corps vide | motif sans `.*$` |
+| 5.9 | quota jamais détecté (bis) | JSON **doublement échappé** (`\"type\"`) | déséchapper avant extraction |
+| 5.10 | `claude --resume` « réussi » à tort | `session_id` et JSONL écrits **même si l'appel échoue** | lire `is_error` + `result` |
+| 5.11 | `retry` cliquait le menu d'une conversation | le libellé contient le texte du message | cibler `data-testid` (`action-bar-retry`) |
 
-## 3. `claude_quota_log.py`
-
-`claude_quota.py` s'appuie sur le bandeau « En pause : … disponible 27 oct. à
-14:40 ». La formulation actuelle (« Réinitialisation : 14:40 ») ne correspond
-plus : `parse_pause` renvoie `None`. Le journal, lui, donne l'échéance exacte :
-
-```
-[error] [COMPLETION] Request failed {"type":"exceeded_limit","resetsAt":1793065800,…}
-```
-
-```python
-from claude_quota_log import latest, corroborates, observe
-
-latest()        # {"type", "resets_at", "observed_at", "expired", "blocked", "evidence"}
-corroborates(resets_at, banner_text, zone)   # le bandeau confirme-t-il l'heure ?
-observe(zone=…)  # vue unifiée, source = "journal" si l'échéance est certaine
-```
-
-Deux règles conservées du code existant :
-
-- un événement dont `resetsAt` est passé **n'est pas** un blocage (`expired`) ;
-- aucune heure n'est déduite d'un « HH:MM » sans date — l'ambiguïté
-  aujourd'hui/demain reste refusée.
-
-## 4. Deux angles morts à couvrir ensemble
+## 6. Quota : deux sources, une conjonction
 
 | Source | Voit | Ne voit pas |
 |---|---|---|
-| journal (`exceeded_limit`) | rejets **serveur**, datés | blocage **client** (aucune requête émise) |
-| page (`sendDisabled` + texte) | blocage client, heure affichée | au-delà de l'instantané |
+| journal Desktop (`exceeded_limit` + `resetsAt`) | rejets **serveur**, datés | blocage client |
+| page (`sendDisabled` + texte présent) | blocage client, heure affichée | au-delà de l'instantané |
 
-Un blocage client ne produit aucune ligne de journal : `blocked` doit être la
-conjonction des deux, jamais le journal seul.
+`blocked = journal.blocked OR (page.sendDisabled AND page.hasText)`.
 
-## 5. Point d'insertion (non appliqué)
-
-Dans le gestionnaire de socket de `claude_desktop_quick.py`, là où le payload est
-aujourd'hui accepté puis laissé en attente :
-
-```python
-result = apply(payload["prompt"], payload.get("chatId"))
-if result["stage"] == "quota":
-    store.mark_staged(payload["request_key"], result["detail"]["resetAt"])
-elif result["ok"]:
-    store.mark_sent(payload["request_key"], result["detail"]["url"])
-```
-
-`request_key` reste la clé d'idempotence du démon : `apply` ne la connaît pas et
-ne rejoue rien de lui-même.
-
-Non inclus volontairement : le câblage modifie le comportement du démon, et
-`register()` exige un `evidence_sha256` dont la source doit être arbitrée
-(ligne de journal ou bandeau corroborant).
-
-## 6. Session absente : état explicite, fenêtre rendue à l'humain
-
-`apply(..., on_login="fail"|"raise")`.
-
-Une redirection vers `/login` n'est pas une page cassée : c'est une **action
-humaine attendue**. Elle produit donc `stage: "session"`, distinct de
-`composeur`.
-
-- `fail` : retour immédiat, à l'appelant de prévenir ;
-- `raise` : l'instance hors écran est arrêtée puis relancée **visible** en
-  `120,120`, et l'application est activée — Chrome n'offre aucun moyen de
-  repositionner une fenêtre existante sans Accessibilité.
-
-**Ne pas fermer dans ce cas.** Un `stop` après `session` rendrait la connexion
-impossible : l'appelant doit laisser le navigateur ouvert.
-
-La fenêtre est lancée en mode **chromeless** (`--app=`) : pas d'onglets ni de
-barre d'adresse, ce qui donne l'allure d'un panneau intégré sans embarquer
-Chromium (CEF ≈ 300 Mo + helper à signer).
-
-## 7. Exploitation
+## 7. Recettes de test (sans consommer de quota)
 
 ```bash
-./launch.sh                       # Chrome dédié, port 9333, profil persistant
-# connexion claude.ai une fois dans ce profil
-python agent-resume/desktop_apply.py --quota
+# 1. navigateur absent : dégradation propre
+resume desktop-apply --status
+
+# 2. profil vierge : détection de session + fenêtre rendue à l'humain
+TMPP=$(mktemp -d); CLAUDE_CDP_PROFILE=$TMPP resume desktop-apply --raise --port 9340
+CLAUDE_CDP_PROFILE=$TMPP resume desktop-apply --status --port 9340   # → session
+
+# 3. quota, sans envoi
+python claude_quota_log.py     # événement + resetsAt + expired
 ```
 
-Le port n'écoute que sur `127.0.0.1`, mais tout processus local peut piloter ce
-profil tant qu'il est ouvert : prévoir une fermeture explicite.
+Ne jamais tester un envoi quand le quota est bloqué : cela ne prouve rien et
+consomme la fenêtre de reprise.
 
-## 8. Limites
+## 8. Ce qui reste, avec critère d'acceptation
 
-- dépend de la mise en page de claude.ai (`chat-input-send`, `action-bar-retry`) :
-  à revalider après refonte ;
-- c'est l'application web, pas la coquille Desktop : pas de projets locaux ni de
-  MCP Desktop dans cette session ;
-- pas de retour de réponse : le canal est d'émission. Le retour reste
-  `submit_result` côté MCP.
+| # | Tâche | Acceptation |
+|---|---|---|
+| 1 | prouver l'envoi du portage Python | `stage: "envoyé"`, puis un message présent dans la conversation ciblée |
+| 2 | compiler `ClaudePanel.swift` | build Reprise vert, panneau affiché, bouton « Se connecter » sur `session` |
+| 3 | câbler `claude_desktop_quick.py` | un payload reçu produit `envoyé` ou `quota/staged`, jamais un échec silencieux |
+| 4 | arbitrer `evidence_sha256` | décision écrite : ligne de journal ou bandeau corroborant |
+| 5 | cycle de vie du navigateur | résident ou éphémère, documenté, sans port ouvert par défaut |
+| 6 | non-régression des sélecteurs | `inspect` en CI manuelle après refonte de l'UI |
 
-## 9. État de preuve
+## 9. Décisions ouvertes
 
-- `desktop_apply.py` : testé en **lecture seule** (handshake, frames, évaluation,
-  lecture de quota). Le chemin d'envoi a été prouvé avec le pilote Node
-  équivalent — conversation créée, puis réutilisée par `chatId` — pas encore avec
-  ce portage Python.
-- `claude_quota_log.py` : vérifié sur le journal réel et couvert par 10 tests.
+- `on_login` par défaut : `fail` (sûr) ou `raise` (utile) ;
+- navigateur résident (rapide, port ouvert) ou éphémère (propre, +6 s) ;
+- source de `evidence_sha256` ;
+- où vit le profil Chrome dans le déploiement.
+
+## 10. Règle de preuve
+
+Toute affirmation de ce document a été vérifiée par une commande dont la sortie
+est citée dans l'issue #83. Une affirmation non vérifiée est écrite comme telle
+(§0). Conserver cette discipline : elle a évité trois faux positifs en une
+session.
