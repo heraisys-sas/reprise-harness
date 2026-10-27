@@ -1,503 +1,481 @@
-"""Prototype expérimental de transport `apply`, non raccordé au daemon Quick Apply.
+"""Experimental claude.ai transport; not connected to the Quick Apply daemon.
 
-But : remplacer le « supervised driver » resté en attente dans
-`claude_desktop_quick.py` par un envoi réel, sans permission macOS.
-
-Principe : les flags de debug du renderer Claude Desktop sont refusés (jeton
-Ed25519 `CLAUDE_CDP_AUTH`); claude.ai s'ouvre dans un Chrome contrôlé. On
-pilote cette page par le Chrome DevTools Protocol : navigation vers la
-conversation, insertion du texte, clic sur « Envoyer ».
-
-Aucune dépendance : client WebSocket minimal inclus (stdlib uniquement).
-
-Contrat de retour, aligné sur le reste du démon :
-
-    {"ok": bool, "stage": str, "staged": bool, "detail": {...}}
-
-`stage` : "envoyé" | "posé" | "quota" | "session" | "composeur" | "frappe" |
-"connexion" | "vide".
-Un `stage == "quota"` avec `staged: true` signifie que le texte est **posé** dans
-le composeur : `send_staged()` l'enverra sans le retaper dès la réouverture.
+A click is neither admission nor a model result. The adapter changes only the
+explicitly selected page and never launches or stops a browser during apply.
 """
-
 from __future__ import annotations
 
-import base64
+import hashlib
 import json
+import math
 import os
-import random
+import re
 import socket
-import struct
 import time
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
+
+from claude_desktop import validate_chat_id
+from websocket_transport import WebSocketTransport
 
 DEFAULT_PORT = int(os.environ.get("CLAUDE_CDP_PORT", "9333"))
-# Même borne que claude_desktop.review() : au-delà, la soumission est refusée en
-# amont. Aligner ici évite un transport qui accepte ce que le démon rejette.
 MAX_PROMPT_CHARS = 12000
 CHROME_BIN = os.environ.get(
     "CHROME_BIN", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 PROFILE = os.environ.get("CLAUDE_CDP_PROFILE",
                          os.path.expanduser("~/.local/share/claude-cdp/chrome"))
 VISIBLE_POSITION = (120, 120)
-SEND_TESTID = 'chat-input-send'
+SEND_TESTID = "chat-input-send"
 
 
-# ---------------------------------------------------------------------------
-# WebSocket minimal (client, texte uniquement)
-# ---------------------------------------------------------------------------
 class WSError(RuntimeError):
     pass
 
 
-class WebSocket:
-    def __init__(self, host: str, port: int, path: str, timeout: float = 10.0) -> None:
+def _page_path(url):
+    try:
+        parsed = urlsplit(url)
+        if (parsed.scheme != "https" or parsed.netloc != "claude.ai"
+                or parsed.query or parsed.fragment):
+            return None
+        return parsed.path
+    except (TypeError, ValueError):
+        return None
+
+
+def _port(value):
+    if type(value) is not int or not 1 <= value <= 65535:
+        raise ValueError("Port CDP local invalide")
+    return value
+
+
+class WebSocket(WebSocketTransport):
+    def __init__(self, host, port, path, timeout=10.0):
         self.sock = socket.create_connection((host, port), timeout=timeout)
-        self.sock.settimeout(timeout)
-        key = base64.b64encode(bytes(random.getrandbits(8) for _ in range(16))).decode()
-        request = (
-            f"GET {path} HTTP/1.1\r\n"
-            f"Host: {host}:{port}\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            f"Sec-WebSocket-Key: {key}\r\n"
-            "Sec-WebSocket-Version: 13\r\n\r\n"
-        )
-        self.sock.sendall(request.encode())
-        header = self._read_until(b"\r\n\r\n")
-        if b" 101 " not in header.split(b"\r\n", 1)[0]:
-            raise WSError(f"handshake refusé : {header[:80]!r}")
-
-    def _read_until(self, marker: bytes) -> bytes:
-        buffer = b""
-        while marker not in buffer:
-            chunk = self.sock.recv(4096)
-            if not chunk:
-                raise WSError("connexion fermée pendant le handshake")
-            buffer += chunk
-        return buffer
-
-    def _recv_exact(self, size: int) -> bytes:
-        buffer = b""
-        while len(buffer) < size:
-            chunk = self.sock.recv(size - len(buffer))
-            if not chunk:
-                raise WSError("connexion fermée")
-            buffer += chunk
-        return buffer
-
-    def send_text(self, text: str) -> None:
-        payload = text.encode()
-        header = bytearray([0x81])
-        length = len(payload)
-        if length < 126:
-            header.append(0x80 | length)
-        elif length < 65536:
-            header.append(0x80 | 126)
-            header += struct.pack(">H", length)
-        else:
-            header.append(0x80 | 127)
-            header += struct.pack(">Q", length)
-        mask = bytes(random.getrandbits(8) for _ in range(4))
-        header += mask
-        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-        self.sock.sendall(bytes(header) + masked)
-
-    def recv_text(self) -> str:
-        while True:
-            first, second = self._recv_exact(2)
-            opcode = first & 0x0F
-            length = second & 0x7F
-            if length == 126:
-                length = struct.unpack(">H", self._recv_exact(2))[0]
-            elif length == 127:
-                length = struct.unpack(">Q", self._recv_exact(8))[0]
-            if second & 0x80:  # masque improbable côté serveur
-                mask = self._recv_exact(4)
-                data = bytes(b ^ mask[i % 4] for i, b in enumerate(self._recv_exact(length)))
-            else:
-                data = self._recv_exact(length)
-
-            if opcode == 0x8:
-                raise WSError("fermé par le pair")
-            if opcode == 0x9:  # ping
-                self.sock.sendall(b"\x8a" + bytes([0x80]) + b"\x00\x00\x00\x00")
-                continue
-            if opcode == 0xA:  # pong
-                continue
-            if opcode in (0x1, 0x0):
-                return data.decode("utf-8", "replace")
-
-    def close(self) -> None:
+        self.buffer, self.timeout = bytearray(), timeout
         try:
-            self.sock.close()
-        except OSError:
-            pass
+            self._handshake(f"{host}:{port}", path, timeout)
+        except BaseException:
+            self.close()
+            raise
+
+    def _write(self, data):
+        self.sock.sendall(data)
+
+    def _read(self, deadline):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Délai CDP dépassé")
+        self.sock.settimeout(remaining)
+        chunk = self.sock.recv(65536)
+        if not chunk:
+            self._peer_closed()
+        self.buffer.extend(chunk)
+
+    def _peer_closed(self):
+        raise WSError("Connexion CDP fermée")
+
+    def close(self):
+        self.sock.close()
 
 
-# ---------------------------------------------------------------------------
-# Client CDP
-# ---------------------------------------------------------------------------
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        raise WSError("Redirection CDP refusée")
+
+
 class CDP:
-    def __init__(self, port: int = DEFAULT_PORT, timeout: float = 10.0) -> None:
-        self.port = port
-        self._id = 0
-        targets = self._targets()
-        page = self._pick_page(targets)
+    def __init__(self, port=DEFAULT_PORT, timeout=10.0, *, chat_id=None):
+        self.port, self.timeout, self._id = _port(port), timeout, 0
+        page = self._pick_page(self._targets(), chat_id)
         if page is None:
-            raise WSError("aucune page exposée — launch.sh est-il lancé ?")
-        path = page["webSocketDebuggerUrl"].split(str(port), 1)[-1]
-        self.ws = WebSocket("127.0.0.1", port, path, timeout=timeout)
+            raise WSError("Page claude.ai unique requise")
+        self.target_id = page.get("id")
+        if not isinstance(self.target_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", self.target_id):
+            raise WSError("Identité CDP invalide")
+        try:
+            endpoint = urlsplit(page.get("webSocketDebuggerUrl", ""))
+            valid = (endpoint.scheme == "ws" and endpoint.hostname in ("127.0.0.1", "localhost")
+                     and endpoint.port == self.port and not endpoint.username and not endpoint.password
+                     and not endpoint.query and not endpoint.fragment
+                     and endpoint.path == "/devtools/page/" + self.target_id)
+        except (TypeError, ValueError):
+            valid = False
+        if not valid:
+            raise WSError("Endpoint CDP local invalide")
+        self.ws = WebSocket("127.0.0.1", self.port, endpoint.path, timeout=timeout)
 
-    def _targets(self) -> list[dict]:
-        import urllib.request
-
-        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/json/list", timeout=5) as response:
-            return json.loads(response.read().decode())
+    def _targets(self):
+        opener = build_opener(ProxyHandler({}), _NoRedirect())
+        with opener.open(f"http://127.0.0.1:{self.port}/json/list", timeout=self.timeout) as response:
+            data = response.read(WebSocketTransport.LIMIT + 1)
+        if len(data) > WebSocketTransport.LIMIT:
+            raise WSError("Liste CDP trop volumineuse")
+        targets = json.loads(data)
+        if not isinstance(targets, list) or len(targets) > 100 or not all(isinstance(t, dict) for t in targets):
+            raise WSError("Liste CDP invalide")
+        return targets
 
     @staticmethod
-    def _pick_page(targets: list[dict]) -> dict | None:
-        pages = [t for t in targets if t.get("type") == "page"]
-        for target in pages:
-            if "claude.ai" in (target.get("url") or ""):
-                return target
-        return pages[0] if pages else None
+    def _pick_page(targets, chat_id=None):
+        pages = [t for t in targets if t.get("type") == "page" and _page_path(t.get("url")) is not None]
+        if chat_id is not None:
+            matching = [t for t in pages if _page_path(t.get("url")) == "/chat/" + chat_id]
+            if matching:
+                pages = matching
+        return pages[0] if len(pages) == 1 else None
 
-    def call(self, method: str, params: dict | None = None) -> dict:
+    def call(self, method, params=None):
         self._id += 1
         message_id = self._id
-        self.ws.send_text(json.dumps({"id": message_id, "method": method,
-                                      "params": params or {}}))
-        while True:
-            payload = json.loads(self.ws.recv_text())
+        self.ws.send({"id": message_id, "method": method, "params": params or {}})
+        deadline = time.monotonic() + self.timeout
+        for _ in range(201):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Délai CDP dépassé")
+            payload = self.ws.receive(remaining)
             if payload.get("id") != message_id:
-                continue  # événement, pas notre réponse
-            if "error" in payload:
-                raise WSError(f"{method}: {payload['error']}")
+                continue
+            if "error" in payload or not isinstance(payload.get("result", {}), dict):
+                raise WSError("Commande CDP refusée")
             return payload.get("result", {})
+        raise WSError("Trop de notifications CDP")
 
-    def evaluate(self, expression: str):
+    def evaluate(self, expression):
         result = self.call("Runtime.evaluate", {
             "expression": expression, "returnByValue": True, "awaitPromise": True})
         if result.get("exceptionDetails"):
-            raise WSError(result["exceptionDetails"].get("text", "exception page"))
-        return (result.get("result") or {}).get("value")
+            raise WSError("Évaluation CDP refusée")
+        value = result.get("result") or {}
+        if not isinstance(value, dict):
+            raise WSError("Résultat CDP invalide")
+        return value.get("value")
 
-    def navigate(self, url: str) -> None:
-        self.call("Page.navigate", {"url": url})
+    def navigate(self, url):
+        if _page_path(url) is None:
+            raise WSError("Destination claude.ai requise")
+        if self.call("Page.navigate", {"url": url}).get("errorText"):
+            raise WSError("Navigation CDP refusée")
 
-    def close(self) -> None:
+    def close(self):
         self.ws.close()
 
 
-# ---------------------------------------------------------------------------
-# Expressions
-# ---------------------------------------------------------------------------
-JS_COMPOSER_BOX = """(() => {
-  const el = document.querySelector('div[contenteditable="true"], textarea');
-  if (!el) return null;
-  const r = el.getBoundingClientRect();
-  if (r.width < 100 || r.height < 10) return null;
-  return {x: r.x + r.width / 2, y: r.y + r.height / 2};
-})()"""
-
-JS_STATE = """(() => {
-  const NL = String.fromCharCode(10);
-  const send = document.querySelector('[data-testid="chat-input-send"]');
-  const input = document.querySelector('div[contenteditable="true"], textarea');
-  const text = ((input ? (input.innerText ?? input.value) : '') || '');
-  const dialogs = [...document.querySelectorAll('[role="dialog"], [data-testid*="modal"]')]
-    .map(d => (d.innerText || '').split(NL).join(' ').trim()).filter(Boolean);
-  const joined = dialogs.join(' ').toLowerCase();
-  const time = dialogs.join(' ').match(new RegExp('([0-9]{1,2}:[0-9]{2})'));
-  return {
-    url: location.href,
-    sendDisabled: send ? send.disabled : null,
-    hasText: Boolean(text.trim()),
-    text: text.slice(0, 120),
-    blocked: joined.includes('limite') || joined.includes('limit'),
-    resetAt: time ? time[1] : null,
-    dialogs,
+# All page actions use the same composer lookup and full-text fingerprint.
+JS_HELPERS = r"""
+  const composer = () => {
+    const inputs = [...document.querySelectorAll('div[contenteditable="true"], textarea')]
+      .filter(el => {
+        const box = el.getBoundingClientRect();
+        return box.width >= 100 && box.height >= 10 && !el.disabled && !el.readOnly;
+      });
+    return inputs.length === 1 ? inputs[0] : null;
   };
+  const readText = el => {
+    if (!el) return '';
+    if (el.tagName === 'TEXTAREA') return el.value;
+    const text = el.innerText;
+    const paragraph = el.childNodes.length === 1 ? el.childNodes[0] : null;
+    const br = paragraph?.childNodes.length === 1 ? paragraph.childNodes[0] : null;
+    // ProseMirror's sole trailing break renders a newline without draft content.
+    const placeholder = el.tagName === 'DIV' && el.isContentEditable === true
+      && text === '\n' && el.textContent === ''
+      && paragraph?.nodeType === 1 && paragraph.tagName === 'P'
+      && br?.nodeType === 1 && br.tagName === 'BR' && br.childNodes.length === 0
+      && br.classList.length === 1 && br.classList.contains('ProseMirror-trailingBreak');
+    return placeholder ? '' : text;
+  };
+  const sendButton = () => {
+    const buttons = [...document.querySelectorAll('[data-testid="chat-input-send"]')];
+    return buttons.length === 1 ? buttons[0] : null;
+  };
+  const digest = async text => [...new Uint8Array(await crypto.subtle.digest(
+    'SHA-256', new TextEncoder().encode(text)))].map(b => b.toString(16).padStart(2, '0')).join('');
+  const atTarget = path => location.origin === 'https://claude.ai'
+    && location.pathname === path && !location.search && !location.hash;
+"""
+
+JS_STATE = "(async () => {" + JS_HELPERS + """
+  const doc = document, el = composer(), text = readText(el), url = location.href;
+  const sha = el ? await digest(text) : null;
+  if (doc !== document || el !== composer() || text !== readText(el) || url !== location.href)
+    return {changed: true};
+  const send = sendButton();
+  return {url, composerPresent: Boolean(el), text_sha256: sha,
+    text_length: el ? text.length : null, hasText: Boolean(text.length),
+    sendDisabled: send ? Boolean(send.disabled) : null};
 })()"""
 
 
-def browser_up(port: int = DEFAULT_PORT) -> bool:
-    import urllib.request
-
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=2):
-            return True
-    except OSError:
-        return False
+def state(cdp):
+    result = cdp.evaluate(JS_STATE)
+    if not isinstance(result, dict):
+        raise WSError("État du composeur indisponible")
+    return result
 
 
-def shutdown(port: int = DEFAULT_PORT, wait: float = 8.0) -> None:
-    """Arrête uniquement le navigateur de diagnostic (repéré par son profil)."""
-    import subprocess
-    from time import time, sleep
-
-    subprocess.run(["pkill", "-f", f"user-data-dir={PROFILE}"], check=False)
-    deadline = time() + wait
-    while time() < deadline:
-        if not browser_up(port):
-            return
-        sleep(0.3)
-
-
-def launch(port: int = DEFAULT_PORT, visible: bool = False, timeout: float = 20.0,
-           chromeless: bool = True) -> bool:
-    """Démarre le navigateur de diagnostic ; fenêtré, hors écran par défaut.
-
-    Le headless est exclu : claude.ai renvoie un interstitiel anti-bot.
-    """
-    import subprocess
-    from time import time, sleep
-
-    if browser_up(port):
-        return True
-    if not os.path.isfile(CHROME_BIN):
-        return False
-    os.makedirs(PROFILE, exist_ok=True)
-    position = f"--window-position={VISIBLE_POSITION[0]},{VISIBLE_POSITION[1]}" if visible \
-        else "--window-position=-3000,-3000"
-    subprocess.Popen(
-        [CHROME_BIN, f"--remote-debugging-port={port}", f"--user-data-dir={PROFILE}",
-         position, "--window-size=1200,900", "--no-first-run",
-         "--no-default-browser-check"]
-        + (["--app=about:blank"] if chromeless else ["about:blank"]),
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    deadline = time() + timeout
-    while time() < deadline:
-        if browser_up(port):
-            return True
-        sleep(0.4)
-    return False
-
-
-def raise_for_login(port: int = DEFAULT_PORT) -> bool:
-    """Remet une fenêtre visible au premier plan pour laisser l'humain se connecter.
-
-    Chrome ne permet pas de repositionner une fenêtre existante sans
-    Accessibilité : on relance l'instance hors écran en fenêtre visible.
-    """
-    shutdown(port)
-    if not launch(port, visible=True):
-        return False
-    try:
-        import subprocess
-
-        subprocess.run(["open", "-a", "Google Chrome"], check=False)
-    except OSError:
-        pass
-    return True
-
-
-def _select_all(cdp: CDP) -> None:
-    cdp.evaluate("""(() => {
-      const el = document.querySelector('div[contenteditable="true"], textarea');
-      if (!el || el.tagName === 'TEXTAREA') { el && el.focus(); return true; }
+def _prepare(cdp, path):
+    return cdp.evaluate("(async () => {" + JS_HELPERS + "\nconst path = " + json.dumps(path) + ";" + """
+      if (!atTarget(path)) return false;
+      const el = composer();
+      if (!el || readText(el).length !== 0 || !sendButton()) return false;
       el.focus();
-      const range = document.createRange();
-      range.selectNodeContents(el);
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-      return true;
+      if (el.tagName === 'TEXTAREA') {
+        el.setSelectionRange(0, el.value.length);
+      } else {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      return atTarget(path) && el === composer() && readText(el).length === 0;
+    })()""") is True
+
+
+def _send(cdp, path, expected_sha256):
+    return cdp.evaluate("(async () => {" + JS_HELPERS + "\nconst path = " + json.dumps(path)
+                        + ", expected = " + json.dumps(expected_sha256) + ";" + """
+      if (!atTarget(path)) return {stage: 'cible', clicked: false};
+      const doc = document, el = composer(), text = readText(el);
+      if (!el || !text.length) return {stage: 'composeur', clicked: false};
+      const sha = await digest(text);
+      // Recheck synchronously after hashing, before the only click primitive.
+      if (doc !== document || !atTarget(path)) return {stage: 'cible', clicked: false};
+      if (el !== composer() || readText(el) !== text || sha !== expected)
+        return {stage: 'empreinte', clicked: false};
+      const button = sendButton();
+      if (!button) return {stage: 'composeur', clicked: false};
+      if (button.disabled) return {stage: 'bloqué', clicked: false};
+      button.click();
+      return {stage: 'envoyé', clicked: true};
     })()""")
 
 
-def _click_point(cdp: CDP, box: dict) -> None:
-    for kind in ("mousePressed", "mouseReleased"):
-        cdp.call("Input.dispatchMouseEvent", {
-            "type": kind, "x": box["x"], "y": box["y"],
-            "button": "left", "clickCount": 1})
+def _result(stage, *, ok=False, staged=False, dispatch_attempted=False,
+            click_observed=False, **detail):
+    return {"ok": ok, "stage": stage, "staged": staged,
+            "dispatch_attempted": dispatch_attempted, "click_observed": click_observed,
+            "admission_confirmed": False, "response_received": False,
+            "lifecycle_supported": False, "lifecycle_reason": "lifecycle_unverified", "detail": detail}
 
 
-def wait_composer(cdp: CDP, timeout: float = 10.0) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if cdp.evaluate(JS_COMPOSER_BOX):
+def _check(info, path):
+    if info.get("changed") or _page_path(info.get("url")) != path:
+        return "session" if _page_path(info.get("url")) == "/login" else "cible"
+    if info.get("composerPresent") is not True or not isinstance(info.get("sendDisabled"), bool):
+        return "composeur"
+    return None
+
+
+def wait_composer(cdp, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        info = state(cdp)
+        if info.get("composerPresent") is True and info.get("sendDisabled") is not None:
             return True
+        if _page_path(info.get("url")) == "/login":
+            return False
         time.sleep(0.25)
     return False
 
 
-def state(cdp: CDP) -> dict:
-    return cdp.evaluate(JS_STATE)
-
-
-# ---------------------------------------------------------------------------
-# API du transport
-# ---------------------------------------------------------------------------
-def quota(port: int = DEFAULT_PORT) -> dict:
-    """Retourne un indice UI; une page ou un bouton absent n'indique rien."""
+def _dispatch(cdp, path, fingerprint):
+    # A lost response to this evaluation may conceal a click, never retry it.
     try:
-        cdp = CDP(port)
-    except (OSError, WSError) as exc:
-        return {"available": False, "blocked": None, "detail": str(exc)}
-    try:
-        info = state(cdp) or {}
-        if info.get("sendDisabled") is None:
-            return {
-                "available": False,
-                "blocked": None,
-                "sendDisabled": None,
-                "hasText": info.get("hasText"),
-                "resetAt": info.get("resetAt"),
-            }
-        return {
-            "available": True,
-            "blocked": bool(info.get("sendDisabled") and info.get("hasText")) or bool(info.get("blocked")),
-            "sendDisabled": info.get("sendDisabled"),
-            "hasText": info.get("hasText"),
-            "resetAt": info.get("resetAt"),
-        }
-    finally:
-        cdp.close()
+        outcome = _send(cdp, path, fingerprint)
+    except (OSError, ValueError, WSError, TimeoutError):
+        return _result("incertain", staged=None, dispatch_attempted=True)
+    if not isinstance(outcome, dict):
+        return _result("incertain", staged=None, dispatch_attempted=True)
+    if outcome.get("clicked") is True and outcome.get("stage") == "envoyé":
+        return _result("envoyé", ok=True, staged=None, dispatch_attempted=True, click_observed=True,
+                       expected_sha256=fingerprint)
+    if outcome.get("clicked") is False and outcome.get("stage") in ("cible", "composeur", "empreinte", "bloqué"):
+        stage = outcome["stage"]
+        return _result(stage, staged=True if stage == "bloqué" else None,
+                       expected_sha256=fingerprint)
+    return _result("incertain", staged=None, dispatch_attempted=True)
 
 
-def to_submission(result: dict) -> dict:
-    """Projette un résultat de transport sur le contrat de soumission du dépôt.
-
-    `claude_desktop.review()` rend {status, resumable, model, admission_only,…}.
-    Un appelant ne doit pas avoir à connaître deux vocabulaires.
-    """
-    stage = result.get("stage")
-    base = {"status": "needs_review", "resumable": False, "model": "claude-desktop",
-            "automatic_fallback": False, "response": None, "admission_only": True,
-            "transport": {"stage": stage, "detail": result.get("detail")}}
-    if result.get("ok") and stage in ("envoyé", "posé"):
-        base.update(status="finished", dispatch="cdp-web")
-        if stage == "posé":
-            base["admission_only"] = False
-        return base
-    if stage == "quota":
-        base.update(status="blocked_session", staged=True, reason="Quota Claude épuisé")
-    elif stage == "session":
-        base.update(status="blocked_auth", reason="Connexion claude.ai requise")
-    else:
-        base.update(status="engine_unavailable", reason=str(stage))
-    return base
-
-
-def apply(prompt: str, chat_id: str | None = None, *, port: int = DEFAULT_PORT,
-          settle: float = 3.0, submit: bool = True,
-          on_login: str = "fail") -> dict:
-    """Pose `prompt` dans la conversation visée et l'envoie si possible."""
-    prompt = (prompt or "").strip()
-    if chat_id:
+def _close(cdp):
+    if cdp:
         try:
-            from claude_desktop import validate_chat_id
-            chat_id = validate_chat_id(chat_id)
-        except ImportError:
+            cdp.close()
+        except (OSError, ValueError, WSError):
             pass
-        except ValueError as exc:
-            return {"ok": False, "stage": "chat_id", "staged": False, "detail": str(exc)}
-    if not prompt:
-        return {"ok": False, "stage": "vide", "staged": False}
+
+
+def quota(port=DEFAULT_PORT):
+    """An interface observation is not an attributed provider quota."""
+    cdp = None
+    try:
+        cdp = CDP(port)
+        info = state(cdp)
+        available = (not info.get("changed") and info.get("composerPresent") is True
+                     and isinstance(info.get("sendDisabled"), bool))
+        return {"available": bool(available), "blocked": None,
+                "sendDisabled": info.get("sendDisabled") if available else None,
+                "hasText": info.get("hasText") if available else None,
+                "source": "interface", "quota_confirmed": False,
+                "lifecycle_supported": False, "lifecycle_reason": "lifecycle_unverified"}
+    except (OSError, ValueError, WSError, TimeoutError):
+        return {"available": False, "blocked": None, "source": "interface", "quota_confirmed": False,
+                "lifecycle_supported": False, "lifecycle_reason": "lifecycle_unverified"}
+    finally:
+        _close(cdp)
+
+
+def to_submission(result):
+    """Preserve uncertainty; a draft or click is never a completed task."""
+    stage = result.get("stage")
+    attempted = result.get("dispatch_attempted") is True or stage in ("envoyé", "incertain")
+    return {"status": "blocked_auth" if stage == "session" and not attempted else "needs_review",
+            "resumable": False, "model": "claude-desktop", "automatic_fallback": False,
+            "response": None, "admission_only": True, "dispatch": "cdp-web",
+            "dispatch_attempted": attempted, "click_observed": result.get("click_observed") is True,
+            "admission_confirmed": False, "response_received": False,
+            "staged": result.get("staged"), "transport": {"stage": stage},
+            "reason": "Connexion claude.ai requise" if stage == "session" else
+                      "Transport expérimental ; admission et résultat non confirmés"}
+
+
+def apply(prompt, chat_id=None, *, port=DEFAULT_PORT, settle=3.0, submit=True, on_login="fail"):
+    """Stage into an empty, exact target; optionally attempt one guarded click."""
+    if not isinstance(prompt, str) or not prompt.strip():
+        return _result("vide")
+    prompt = prompt.strip()
     if len(prompt) > MAX_PROMPT_CHARS:
-        return {"ok": False, "stage": "trop-long", "staged": False,
-                "detail": {"length": len(prompt), "max": MAX_PROMPT_CHARS}}
-
+        return _result("trop-long", length=len(prompt), max=MAX_PROMPT_CHARS)
     try:
-        cdp = CDP(port)
-    except (OSError, WSError) as exc:
-        return {"ok": False, "stage": "connexion", "staged": False, "detail": str(exc)}
-
+        chat_id = validate_chat_id(chat_id)
+        _port(port)
+        if (not isinstance(settle, (int, float)) or isinstance(settle, bool)
+                or not math.isfinite(settle) or not 0 <= settle <= 30
+                or type(submit) is not bool or on_login not in ("fail", "raise")):
+            raise ValueError("Options invalides")
+    except (ValueError, TypeError):
+        return _result("paramètres")
+    path = "/chat/" + chat_id if chat_id else "/new"
     try:
-        target = (f"https://claude.ai/chat/{chat_id}" if chat_id
-                  else "https://claude.ai/new")
-        cdp.navigate(target)
+        fingerprint = hashlib.sha256(prompt.encode()).hexdigest()
+    except UnicodeError:
+        return _result("paramètres")
+    cdp, staged = None, False
+    try:
+        cdp = CDP(port, chat_id=chat_id)
+        initial = state(cdp)
+        if _page_path(initial.get("url")) == "/login":
+            return _result("session")
+        if initial.get("changed") or _page_path(initial.get("url")) is None:
+            return _result("cible")
+        if initial.get("composerPresent") is not True or initial.get("text_length") is None:
+            return _result("composeur")
+        if initial["text_length"] != 0:
+            return _result("brouillon")
+        # Do not reload the target unnecessarily or navigate away from a draft.
+        if _page_path(initial["url"]) != path:
+            cdp.navigate("https://claude.ai" + path)
         time.sleep(settle)
-        if not wait_composer(cdp):
-            current = state(cdp)
-            url = str(current.get("url") or target)
-            # Une session absente n'est pas une page cassée : c'est une action
-            # humaine attendue, à signaler comme telle.
-            if "/login" not in url:
-                return {"ok": False, "stage": "composeur", "staged": False,
-                        "detail": {"url": url, "title": current.get("title")}}
-            # Session absente : action humaine attendue, pas une panne.
-            raised = False
-            if on_login == "raise":
-                cdp.close()
-                raised = raise_for_login(port)
-            return {"ok": False, "stage": "session", "staged": False, "raised": raised,
-                    "detail": {"url": url, "title": current.get("title"),
-                               "action": "connexion claude.ai requise"}}
-
-        box = cdp.evaluate(JS_COMPOSER_BOX)
-        _click_point(cdp, box)
-        _select_all(cdp)
+        wait_composer(cdp)
+        info = state(cdp)
+        problem = _check(info, path)
+        if problem:
+            return _result(problem)
+        if info.get("text_length") != 0:
+            return _result("brouillon")
+        if not _prepare(cdp, path):
+            return _result("cible")
+        staged = None  # A lost insertion response can conceal an existing draft.
         cdp.call("Input.insertText", {"text": prompt})
-        time.sleep(0.2)
-
         info = state(cdp)
-        if not info.get("hasText"):
-            return {"ok": False, "stage": "frappe", "staged": False, "detail": info}
-
-        if info.get("sendDisabled"):
-            return {"ok": False, "stage": "quota", "staged": True,
-                    "detail": {"resetAt": info.get("resetAt"), "url": info.get("url")}}
-
+        problem = _check(info, path)
+        if problem:
+            return _result(problem, staged=staged)
+        if info.get("text_sha256") != fingerprint:
+            return _result("empreinte", staged=staged)
+        staged = True
         if not submit:
-            return {"ok": True, "stage": "posé", "staged": True, "detail": {"url": info.get("url")}}
-
-        clicked = cdp.evaluate("""(() => {
-          const b = document.querySelector('[data-testid="chat-input-send"]');
-          if (!b || b.disabled) return false;
-          b.click();
-          return true;
-        })()""")
-        if not clicked:
-            return {"ok": False, "stage": "envoi", "staged": True}
-
-        return {"ok": True, "stage": "envoyé", "staged": False,
-                "detail": {"url": info.get("url"), "length": len(prompt)}}
+            return _result("posé", ok=True, staged=True, expected_sha256=fingerprint)
+        return _dispatch(cdp, path, fingerprint)
+    except (OSError, ValueError, WSError, TimeoutError):
+        return _result("connexion", staged=staged)
     finally:
-        cdp.close()
+        _close(cdp)
 
 
-def send_staged(port: int = DEFAULT_PORT) -> dict:
-    """Envoie le texte déjà présent dans le composeur (aucune frappe rejouée)."""
+def send_staged(port=DEFAULT_PORT, *, chat_id, expected_sha256):
+    """Attempt one click only for the supplied target and full composer hash."""
     try:
-        cdp = CDP(port)
-    except (OSError, WSError) as exc:
-        return {"ok": False, "stage": "connexion", "detail": str(exc)}
-
+        chat_id = validate_chat_id(chat_id)
+        _port(port)
+        if chat_id is None or not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise ValueError("Cible et empreinte requises")
+    except (ValueError, TypeError):
+        return _result("paramètres")
+    path = "/chat/" + chat_id
+    cdp = None
     try:
+        cdp = CDP(port, chat_id=chat_id)
         info = state(cdp)
-        if not info.get("hasText"):
-            return {"ok": False, "stage": "vide", "detail": "aucun texte en attente"}
-        if info.get("sendDisabled"):
-            return {"ok": False, "stage": "quota", "detail": {"resetAt": info.get("resetAt")}}
-
-        clicked = cdp.evaluate("""(() => {
-          const b = document.querySelector('[data-testid="chat-input-send"]');
-          if (!b || b.disabled) return false;
-          b.click();
-          return true;
-        })()""")
-        return {"ok": bool(clicked), "stage": "envoyé" if clicked else "envoi"}
+        problem = _check(info, path)
+        if problem:
+            return _result(problem)
+        if info.get("text_length") == 0:
+            return _result("vide")
+        if info.get("text_sha256") != expected_sha256:
+            return _result("empreinte")
+        return _dispatch(cdp, path, expected_sha256)
+    except (OSError, ValueError, WSError, TimeoutError):
+        return _result("connexion", staged=None)
     finally:
-        cdp.close()
+        _close(cdp)
+
+
+def browser_up(port=DEFAULT_PORT):
+    """HTTP liveness only; does not establish browser ownership or identity."""
+    try:
+        _port(port)
+        opener = build_opener(ProxyHandler({}), _NoRedirect())
+        with opener.open(f"http://127.0.0.1:{port}/json/version", timeout=2):
+            return True
+    except (OSError, ValueError, WSError):
+        return False
+
+
+def shutdown(port=DEFAULT_PORT, wait=8.0):
+    """Refuse shutdown: neither a port nor a profile prefix proves ownership."""
+    return False
+
+
+def launch(port=DEFAULT_PORT, visible=False, timeout=20.0, chromeless=True):
+    """Refuse launch/adoption until an owned browser lifecycle is implemented."""
+    return False
+
+
+def raise_for_login(port=DEFAULT_PORT):
+    """Human action required; never stop or relaunch an unverified instance."""
+    return False
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Transport apply (CDP) pour le démon claude-desktop.")
+    parser = argparse.ArgumentParser(description="Transport apply expérimental (CDP).")
     parser.add_argument("text", nargs="?")
     parser.add_argument("--chat")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--quota", action="store_true")
     parser.add_argument("--send-staged", action="store_true")
+    parser.add_argument("--expected-sha256")
     args = parser.parse_args()
-
     if args.quota:
         payload = quota(args.port)
     elif args.send_staged:
-        payload = send_staged(args.port)
+        if not args.chat or not args.expected_sha256:
+            parser.error("--send-staged exige --chat et --expected-sha256")
+        payload = send_staged(args.port, chat_id=args.chat, expected_sha256=args.expected_sha256)
     else:
         payload = apply(args.text or "", args.chat, port=args.port)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
