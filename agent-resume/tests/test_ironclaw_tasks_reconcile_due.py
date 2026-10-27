@@ -14,7 +14,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ironclaw_ssh import Endpoint
-from ironclaw_tasks import Tasks, TaskError
+from ironclaw_tasks import BUSY_BACKOFF_SECONDS, BUSY_MAX_ATTEMPTS, Tasks, TaskError
 
 ID_FILE = '/run/reprise/id'
 TOKEN_FILE = '/run/reprise/token'
@@ -76,6 +76,71 @@ class ReconcileDueTests(unittest.TestCase):
         results = tasks.reconcile_due()
         self.assertEqual(len(results), 1)
         self.assertIn('TaskError', results[0]['reason'])
+
+    def submit_with_outcome(self, key='key', outcome=None, age=3600, content='question'):
+        def transport(endpoint, method, path, payload=None, **kwargs):
+            if path.endswith('/session'):
+                return {'session_channel_extension_id': 'channel'}
+            if path.endswith('/threads'):
+                return {'thread': {'thread_id': 'thread'}}
+            if '/timeline' in path:
+                return {'messages': self.timeline, 'next_cursor': None}
+            ack = {'thread_id': 'thread', 'run_id': 'run', 'status': 'queued'}
+            if outcome:
+                ack['outcome'] = outcome
+            return ack
+        tasks = Tasks(self.db, self.endpoint, transport)
+        result = tasks.submit(key, content, allow_submit=True)
+        with self.db:
+            self.db.execute('UPDATE ironclaw_tasks SET admitted_at=? WHERE request_key=?',
+                            (time.time() - age, key))
+        return tasks, result
+
+    def test_sweep_includes_blocked_busy_and_recovers_on_match(self):
+        tasks, result = self.submit_with_outcome(outcome='rejected_busy')
+        self.assertEqual(result['state'], 'blocked_busy')
+        self.timeline = [{'kind': 'user', 'content': 'question', 'turn_run_id': 'run'}]
+        results = tasks.reconcile_due()
+        self.assertEqual(results[0]['state'], 'pending')
+        self.assertEqual(results[0]['run_id'], 'run')
+
+    def test_blocked_busy_without_evidence_backs_off_then_needs_operator(self):
+        tasks, _ = self.submit_with_outcome(outcome='rejected_busy')
+        now = time.time()
+        self.assertEqual(tasks.reconcile_due(now=now)[0]['state'], 'blocked_busy')
+        self.assertEqual(self.db.execute(
+            "SELECT busy_attempts FROM ironclaw_tasks WHERE request_key='key'").fetchone()[0], 1)
+        self.assertEqual(tasks.reconcile_due(now=now), [])
+        for attempt in range(2, BUSY_MAX_ATTEMPTS):
+            now += BUSY_BACKOFF_SECONDS + 1
+            self.assertEqual(tasks.reconcile_due(now=now)[0]['state'], 'blocked_busy')
+            self.assertEqual(self.db.execute(
+                'SELECT busy_attempts FROM ironclaw_tasks WHERE request_key=?', ('key',)).fetchone()[0], attempt)
+        now += BUSY_BACKOFF_SECONDS + 1
+        results = tasks.reconcile_due(now=now)
+        self.assertEqual(results[0]['state'], 'needs_operator')
+        self.assertEqual(self.db.execute(
+            "SELECT last_error FROM ironclaw_tasks WHERE request_key='key'").fetchone()[0], 'busy: never accepted')
+        self.assertEqual(self.db.execute(
+            'SELECT next_attempt_at FROM ironclaw_tasks WHERE request_key=?', ('key',)).fetchone()[0], None)
+
+    def test_poll_sweeps_backlog_without_touching_the_polled_task(self):
+        tasks, busy = self.submit_with_outcome(key='busy', outcome='rejected_busy')
+        self.assertEqual(busy['state'], 'blocked_busy')
+
+        def transport(endpoint, method, path, payload=None, **kwargs):
+            if path.endswith('/session'):
+                return {'session_channel_extension_id': 'channel'}
+            if path.endswith('/threads'):
+                return {'thread': {'thread_id': 'thread'}}
+            if '/timeline' in path:
+                return {'messages': [], 'next_cursor': None}
+            return {'thread_id': 'thread', 'run_id': 'run', 'status': 'queued'}
+        poller = Tasks(self.db, self.endpoint, transport)
+        self.assertEqual(poller.submit('key', 'another question', allow_submit=True)['state'], 'pending')
+        self.assertEqual(poller.poll('key')['state'], 'pending')
+        self.assertEqual(self.db.execute(
+            "SELECT busy_attempts FROM ironclaw_tasks WHERE request_key='busy'").fetchone()[0], 1)
 
     def test_invalid_bounds_are_rejected(self):
         tasks = Tasks(self.db, self.endpoint, self.transport)
