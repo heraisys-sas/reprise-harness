@@ -36,6 +36,12 @@
         model: openai/gpt-oss-20b
       - provider: asi-cloud
         model: deepseek/deepseek-v4-flash-0731
+      - provider: morph
+        model: morph-dsv41flash-1017
+      - provider: morph
+        model: morph-glm53flash
+      - provider: morph
+        model: morph-glm53-744b
 - id: llm-pi-ai
   config:
     providers:
@@ -48,6 +54,29 @@
         retryPolicy:
           mode: normal
           maxRetries: 2
+      morph:
+        displayName: Morph
+        api: openai-completions
+        baseURL: https://api.morphllm.com/v1
+        apiKeyEnv: MORPH_API_KEY
+        compat:
+          supportsUsageInStreaming: true
+          supportsStore: false
+          supportsReasoningEffort: false
+        models:
+          - id: morph-dsv41flash-1017
+            contextWindow: 1048576
+            maxTokens: 32768
+            input: [text, image]
+          - id: morph-glm53flash
+            contextWindow: 1048576
+            maxTokens: 32768
+          - id: morph-glm53-744b
+            contextWindow: 1048576
+            maxTokens: 32768
+        retryPolicy:
+          mode: normal
+          maxRetries: 0
       asi-cloud:
         displayName: ASI:Cloud — test
         api: openai-completions

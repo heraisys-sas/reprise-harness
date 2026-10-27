@@ -616,13 +616,19 @@ class CompactReceiptTests(unittest.TestCase):
             run.assert_not_called()
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0], 0)
         self.bridge.requests.begin('key', {'question': 'A'})
-        for result in (None, {'status': 'running'}, {'status': 'needs_review'},
-                       {'status': 'blocked_permission'}):
+        for result in (None, {'status': 'running'}, {'status': 'needs_review'}):
             if result is not None:
                 self.bridge.requests.finish('key', result)
             with self.subTest(result=result), self.assertRaises(ValueError):
                 self.dispatch('reprise_requests', {
                     'request_key': 'key', 'view': 'receipt', 'acknowledge': True})
+        # Issue #53 arbitration: an awaiting_human receipt (blocked_permission) is
+        # reconcilable by acknowledgement, which records it and resets acknowledged.
+        self.bridge.requests.finish('key', {'status': 'blocked_permission'})
+        receipt = self.dispatch('reprise_requests', {
+            'request_key': 'key', 'view': 'receipt', 'acknowledge': True})
+        self.assertEqual(receipt['state'], 'recorded')
+        self.assertTrue(self.bridge.requests.lookup({'request_key': 'key'})['acknowledged'])
         self.bridge.requests.finish('key', {'status': 'finished'})
         with self.assertRaises(ValueError):
             self.dispatch('reprise_requests', {
