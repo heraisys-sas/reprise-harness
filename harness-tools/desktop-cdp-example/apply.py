@@ -120,7 +120,9 @@ def quota_blocked(port: int = DEFAULT_PORT, *, log_path: str | None = None,
         return {"available": None, "blocked": None, "expired": None, "type": None,
                 "resetsAtLocal": None, "detail": observed.get("detail")}
     return {
-        "available": True,
+        # Une observation renderer ne prouve pas que le profil Chrome utilise
+        # le même compte/pool; la disponibilité pour ce profil reste inconnue.
+        "available": None,
         "blocked": observed.get("blocked"),
         "expired": observed.get("expired"),
         "type": observed.get("type"),
