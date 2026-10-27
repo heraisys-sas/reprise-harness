@@ -54,3 +54,7 @@ Un retour MCP Desktop n'est pas établi pour le web. Seul un vrai `submit_result
 Observation DOM fournie par le coordinateur : DIV contenteditable avec `innerText="\n"`, `textContent=""`, unique enfant élément P contenant un unique élément BR de classe unique `ProseMirror-trailingBreak`. `readText` partagé reconnaît seulement ce squelette précis comme vide ; aucun trim général et aucune modification de la primitive de clic. Les autres structures gardent leur texte, y compris espaces, retours multiples et squelettes contenant une image jointe.
 
 Validation locale : 33 tests ciblés du transport OK dont 1 entrée Node ignorée ; 64 fixtures DOM exécutées et réussies via l'outil JS local, sans navigateur ni connexion CDP. Le placeholder avec bouton désactivé peut être préparé mais ne constitue pas un envoi. Aucun test live effectué par cet agent.
+
+## Suite du coordinateur, distincte des contrôles simulés ci-dessus
+
+Le 27 octobre, le coordinateur a exécuté une continuation CDP ponctuelle expressément autorisée : placeholder vide corrigé et testé, puis une émission effective et une réponse dans le chat ciblé. Voir `agent-resume/evidence/claude-cdp-continuation-20261027.json` et le contrat livré actualisé. La mention historique « aucun test actif » ci-dessus décrit uniquement la remise du sous-agent avant cette expérience. Les lots 2/3 restent planifiés, sans activation.
