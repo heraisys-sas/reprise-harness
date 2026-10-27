@@ -10,12 +10,18 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from app_paths import native_binary, state_directory
-from package_helpers import package
+from package_helpers import ASSETS, package
 
 SOURCE = Path(__file__).parents[1]
 
 
 class PackageHelpersTests(unittest.TestCase):
+    def test_desktop_apply_assets_preserve_current_packaging(self):
+        for name in ('CLAUDE-DESKTOP-APPLY.md', 'claude_desktop_apply.py',
+                     'claude_quota_log.py', 'managed_update.py', 'proxy_service.py',
+                     'delegation_reconcile.py'):
+            self.assertIn(name, ASSETS)
+
     def test_moved_payload_runs_without_source_and_keeps_state_outside_bundle(self):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary).resolve()

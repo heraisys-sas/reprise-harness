@@ -82,6 +82,17 @@ class SchedulerTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('--at exige un fuseau horaire', result.stderr)
 
+    def test_desktop_apply_cli_help_is_available_without_transport(self):
+        with tempfile.TemporaryDirectory() as folder:
+            import os
+            script = str(Path(__file__).parents[1] / 'resume')
+            result = subprocess.run([script, 'desktop-apply', '--help'],
+                                    env=dict(os.environ, HOME=folder), cwd=folder,
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('--status', result.stdout)
+            self.assertIn('--chat', result.stdout)
+
 
 class AutomaticSchedulerTests(unittest.TestCase):
     def setUp(self):
