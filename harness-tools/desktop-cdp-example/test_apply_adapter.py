@@ -26,19 +26,29 @@ class QuotaAdapterTests(unittest.TestCase):
     def test_active_event_maps_quota_fields(self):
         result = apply_module.quota_blocked(
             log_path=self.log(LINE), now=1793065700)
-        self.assertTrue(result["available"])
+        self.assertIsNone(result["available"])
         self.assertTrue(result["blocked"])
         self.assertFalse(result["expired"])
         self.assertEqual(result["type"], "exceeded_limit")
         self.assertIsInstance(result["resetsAtLocal"], str)
 
-    def test_expired_event_stays_available_but_unblocked(self):
+    def test_expired_event_does_not_prove_current_availability(self):
         result = apply_module.quota_blocked(
             log_path=self.log(LINE), now=1793065900)
-        self.assertTrue(result["available"])
-        self.assertFalse(result["blocked"])
+        self.assertIsNone(result["available"])
+        self.assertIsNone(result["blocked"])
         self.assertTrue(result["expired"])
         self.assertEqual(result["type"], "exceeded_limit")
+
+    def test_event_without_reset_does_not_prove_current_availability(self):
+        line = ('2026-10-26 22:29:57 [error] [COMPLETION] Request failed '
+                '{"name":"Error","message":"{\\"type\\":\\"rate_limit\\"}"}')
+        result = apply_module.quota_blocked(
+            log_path=self.log(line), now=1793065700)
+        self.assertIsNone(result["available"])
+        self.assertIsNone(result["blocked"])
+        self.assertIsNone(result["expired"])
+        self.assertEqual(result["type"], "rate_limit")
 
     def test_missing_log_keeps_quota_unknown(self):
         path = str(HERE / "does-not-exist.synthetic.log")

@@ -1,5 +1,14 @@
 # Portage Desktop Apply vers `dev`
 
+## R6 — observations quota non attribuées
+
+- **Baseline** : `cc2b3ed20e445c122eef4888cbe918d112b10b46`; revue `REVIEW-DESKTOP-APPLY-DEV.md` R6.
+- **Changement** : le lecteur retient le dernier événement structuré `exceeded_limit`/`rate_limit`; une erreur `api_error` ultérieure ne l'efface pas. Un reset expiré ou absent laisse `blocked` inconnu; un reset futur donne seulement un indice de blocage. Les sorties indiquent explicitement l'attribution compte/pool inconnue et remplacent la ligne brute par `evidence_sha256`. Le parseur suit le JSON extérieur et son champ `message` JSON imbriqué, sans extraction regex d'un type trouvé en prose.
+- **Adaptateur** : la disponibilité du profil Chrome reste inconnue, car le journal renderer ne démontre pas le compte/pool associé.
+- **Compatibilité** : `evidence` est retiré au profit de `evidence_sha256`; `blocked` n'est plus `False` après reset expiré ni sans reset (et `expired` vaut `None` sans reset). `overloaded` n'est plus un type quota reconnu dans ce lecteur.
+- **Tests** : fixtures synthétiques couvrant événements multiples, reset absent/expiré, type hors quota, attribution et absence de contenu brut. Aucun journal utilisateur n'est lu.
+- **Validation** : `test_claude_quota_log.py` (21) et `test_apply_adapter.py` (4) réussissent sous `HOME` temporaire, après ajout des cas types non scalaires, reset non fini/hors plage et horodatage invalide. Fixtures locales uniquement; aucun journal utilisateur, réseau, daemon, navigateur ou service. Commit réservé au coordinateur après revue.
+
 ## Lot 85 — suffixe `Z` pour `resume --at`
 
 - **Baseline** : `dev` `d162a2c401ba306815dc4a268457252de7f8fe57`.

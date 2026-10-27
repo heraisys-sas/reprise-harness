@@ -20,16 +20,17 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import math
 import os
 import re
+from hashlib import sha256
 
 LOG_PATH = os.path.expanduser("~/Library/Logs/Claude/claude.ai-web.log")
 
 _LINE = re.compile(
     r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+\[error\]\s+\[COMPLETION\]")
-_TYPE = re.compile(r'"type"\s*:\s*"(?P<type>[a-z_]+)"')
-_RESET = re.compile(r'"resetsAt"\s*:\s*(?P<epoch>\d{9,})')
 _HHMM = re.compile(r'\b([0-2]?\d:[0-5]\d)\b')
+_QUOTA_TYPES = {"exceeded_limit", "rate_limit"}
 
 # Blocage client : le bouton est désactivé alors que du texte est présent, sans
 # aucune requête émise — donc sans ligne de journal. À croiser avec ce module.
@@ -49,11 +50,40 @@ def read_tail(path: str = LOG_PATH, max_bytes: int = 2_000_000) -> list[str]:
         return []
 
 
-def latest(path: str = LOG_PATH, now: float | None = None) -> dict | None:
-    """Dernier rejet serveur connu, avec son échéance.
+def _is_quota_type(value) -> bool:
+    return isinstance(value, str) and value in _QUOTA_TYPES
 
-    Retourne None si le journal est illisible ou sans événement. Un événement
-    dont `resets_at` est passé n'est pas un blocage : il est marqué `expired`.
+
+def _completion_payload(line: str, start: int) -> dict | None:
+    """Parse un objet de complétion et, au plus, son message JSON imbriqué."""
+    fragment = line[start:].lstrip()
+    prefix = "Request failed"
+    if fragment.startswith(prefix):
+        fragment = fragment[len(prefix):].lstrip()
+    try:
+        value, _ = json.JSONDecoder().raw_decode(fragment)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    if "type" in value:
+        return value if _is_quota_type(value.get("type")) else None
+    message = value.get("message")
+    if not isinstance(message, str):
+        return None
+    try:
+        nested = json.loads(message)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return nested if isinstance(nested, dict) and _is_quota_type(nested.get("type")) else None
+
+
+def latest(path: str = LOG_PATH, now: float | None = None) -> dict | None:
+    """Dernier événement quota reconnu, sans exposer le contenu du journal.
+
+    Les erreurs sans type quota ne lèvent pas un événement quota antérieur.
+    `blocked` n'est qu'un indice historique avec reset futur; compte, pool et
+    état courant restent inconnus.
     """
     from time import time as _now
 
@@ -62,22 +92,34 @@ def latest(path: str = LOG_PATH, now: float | None = None) -> dict | None:
         match = _LINE.match(line)
         if not match:
             continue
-        # Le message est un JSON sérialisé dans un JSON : \"type\" et non "type".
-        body = line[match.end():].replace("\\", "")
-        kind = _TYPE.search(body)
-        if not kind:
+        payload = _completion_payload(line, match.end())
+        if payload is None:
             continue
-        reset = _RESET.search(body)
-        epoch = float(reset.group("epoch")) if reset else None
-        observed = datetime.strptime(match.group("ts"), "%Y-%m-%d %H:%M:%S").timestamp()
+        kind = payload.get("type")
+        reset = payload.get("resetsAt")
+        epoch = None
+        if isinstance(reset, (int, float)) and not isinstance(reset, bool):
+            try:
+                candidate = float(reset)
+                if math.isfinite(candidate):
+                    # Ensure downstream datetime conversions can represent it.
+                    datetime.fromtimestamp(candidate)
+                    epoch = candidate
+            except (OverflowError, OSError, ValueError):
+                pass
+        try:
+            observed = datetime.strptime(
+                match.group("ts"), "%Y-%m-%d %H:%M:%S").timestamp()
+        except (OverflowError, OSError, ValueError):
+            continue
+        expired = epoch is not None and epoch <= current
         return {
-            "type": kind.group("type"),
+            "type": kind,
             "resets_at": epoch,
             "observed_at": observed,
-            "expired": epoch is not None and epoch <= current,
-            "blocked": kind.group("type") in {"exceeded_limit", "rate_limit", "overloaded"}
-                       and not (epoch is not None and epoch <= current),
-            "evidence": line[:200],
+            "expired": expired if epoch is not None else None,
+            "blocked": True if epoch is not None and epoch > current else None,
+            "evidence_sha256": sha256(line.encode("utf-8", "replace")).hexdigest(),
         }
     return None
 
@@ -103,15 +145,18 @@ def corroborates(resets_at: float, text: str, zone) -> bool:
 def observe(path: str = LOG_PATH, now: float | None = None, zone=None) -> dict:
     """Vue unifiée : ce que le journal permet d'affirmer, et à quelle heure.
 
-    `source` vaut « journal » quand l'échéance est certaine, « aucun » sinon.
+    `source` vaut « journal » quand un événement quota reconnu est trouvé.
     Aucune heure n'est déduite d'un « HH:MM » sans date : cette ambiguïté
     (aujourd'hui ou demain ?) est précisément ce que `parse_pause` refusait.
     """
     entry = latest(path, now)
     if entry is None:
         return {"source": "aucun", "blocked": None,
-                "detail": "journal illisible ou sans rejet de complétion"}
+                "detail": "journal illisible ou sans événement quota reconnu"}
     result = {"source": "journal", **entry}
+    result["attribution"] = {"account": None, "pool": None}
+    result["attribution_warning"] = (
+        "compte et pool non attribués; ne prouve pas le quota du profil Chrome")
     if zone is not None and entry.get("resets_at"):
         result["resets_at_local"] = datetime.fromtimestamp(
             entry["resets_at"], zone).strftime("%Y-%m-%d %H:%M:%S")
@@ -129,7 +174,7 @@ def observation(path: str = LOG_PATH, now: float | None = None,
     entry = latest(path, now)
     if entry is None:
         return None
-    issues = ["used_percent_unreported", "source_renderer_log"]
+    issues = ["used_percent_unreported", "source_renderer_log", "attribution_unknown"]
     if entry.get("expired"):
         issues.append("expired")
     return {
@@ -140,9 +185,14 @@ def observation(path: str = LOG_PATH, now: float | None = None,
         "observation_status": "observed",
         "coverage": "partial",
         "blocked": entry["blocked"],
+        "attribution_warning": (
+            "compte et pool non attribués; ne prouve pas le quota du profil Chrome"),
         "pools": [{
             "limit_id": "claude-chat",
             "scope": "route_observation",
+            "account_id": None,
+            "pool_id": None,
+            "quota_pool_key": None,
             "windows": [{
                 "name": "primary",
                 "used_percent": None,
