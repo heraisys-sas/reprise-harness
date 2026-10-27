@@ -1,213 +1,79 @@
-# DESKTOP-APPLY — contrat expérimental du transport `apply`
+# Claude Apply : transport CDP expérimental
 
-Ce transport est **expérimental** et n'est pas raccordé au daemon Quick Apply,
-au routage, ni à la reprise automatique. Les exemples CLI sont des interfaces de
-prototype, pas une capacité de production validée.
+## Capacité vérifiée et périmètre
 
-Ce document est écrit pour **un agent qui reprend le travail**. Il distingue
-systématiquement ce qui est prouvé de ce qui ne l'est pas, liste les pièges déjà
-payés, et donne les critères d'acceptation de ce qui reste.
+Le module `claude_desktop_apply.py` pilote **claude.ai dans Chrome** par un endpoint CDP local explicitement choisi. Il ne contrôle pas le renderer ni l’inspecteur principal de Claude Desktop. Il reste indépendant du daemon Quick Apply, de la découverte des sessions et du planificateur.
 
-Références : issue #83 (découvertes), PR #84 (ce lot), PR #85 (correctif `resume`).
+Le 27 octobre 2026, un test autorisé sur un navigateur dédié connecté au compte de l’opérateur a confirmé une continuation dans un chat existant : cible UUID exacte, texte intégral vérifié, une émission effective, message visible et réponse de Claude portant le marqueur demandé. La réponse a retrouvé le contexte de cette conversation. La vérification du retour a été réalisée séparément, en lecture seule, par le coordinateur ; le transport ne fournit pas d’extracteur de réponses.
 
-## 0. Statut
+Ce test démontre **un nouveau tour web dans le même chat**. Il ne qualifie ni le bouton natif « Continuer », ni la reprise automatique après quota, ni les outils MCP Desktop depuis le web, ni un retour `submit_result`. Aucun contournement d’authentification, de quota, de fuse, d’attestation ou de bundle n’a été utilisé. Aucune Accessibilité n’a servi à cet envoi.
 
-| Élément | État |
-|---|---|
-| `claude_desktop_apply.py` — lecture d'état, indice de quota, navigation | prototype testé manuellement; 14 tests unitaires avec CDP simulé |
-| `claude_desktop_apply.py` — envoi (`stage: envoyé`) | rapporté par l'auteur dans le commentaire 6437860868 de l'issue #83 pour le pilote Node équivalent; non revalidé ici et **pas encore avec ce portage Python** |
-| `claude_quota_log.py` | 13 tests unitaires; lecture d'un journal réel observée, pas une validation du transport |
-| `resume desktop-apply` (CLI) | interface expérimentale; transport non raccordé au daemon |
-| `ClaudePanel.swift` | **non compilé** (build interne à Reprise) |
+## Utilisation explicite
 
-## 1. Décision d'architecture, et ce qui a été écarté
+Prérequis : endpoint CDP local déjà ouvert et choisi volontairement, navigateur dédié, connexion humaine à claude.ai. L’ouverture d’un port ne prouve pas la propriété du navigateur ou l’identité du compte. Les fonctions de cycle de vie refusent l’action tant que cette propriété n’est pas établie.
 
-| Voie | Verdict | Preuve |
-|---|---|---|
-| `--remote-debugging-port` au lancement de Claude Desktop | refus au démarrage de l'application rapporté | ce constat ne vient pas d'une observation du renderer et ne porte pas sur l'inspecteur principal natif |
-| Inspecteur principal natif observé le 26 octobre | capacité distincte | non qualifié pour une soumission; ne constitue pas une voie d'envoi démontrée |
-| Overlay Quick Entry automatisé par frappes | prototype testé avec permission Accessibilité requise | limite de ce chemin testé, pas preuve d'une impossibilité universelle |
-| claude.ai en WKWebView | refusé au login | hCaptcha en boucle, ITP bloque les cookies tiers |
-| Chrome headless | refusé | interstitiel « Un instant… », aucun composeur |
-| **claude.ai dans un Chrome contrôlé, via CDP** | prototype exploratoire | rapport d'envoi du pilote Node dans le commentaire 6437860868 de l'issue #83; non revalidé ici |
+```sh
+# Observation uniquement : ce résultat ne mesure pas le quota fournisseur.
+./resume desktop-apply --status --port 9333
 
-Ces constats portent sur les chemins listés et leurs conditions de test; ils ne
-démontrent pas l'impossibilité générale d'autres intégrations.
+# Une tentative explicite dans une conversation existante.
+./resume desktop-apply --chat UUID --prompt-file /chemin/message.txt --port 9333
+```
 
-## 2. Machine à états
-
-| `stage` | `ok` | `staged` | Sens | Action attendue |
-|---|---|---|---|---|
-| `envoyé` | ✓ | ✗ | clic d'envoi effectué | vérifier une preuve indépendante d'admission; le clic seul ne suffit pas |
-| `posé` | ✓ | ✓ | texte en place, envoi non demandé | aucune |
-| `quota` | ✗ | ✓ | bouton désactivé, texte en place | **attendre**, ne pas réessayer en boucle |
-| `session` | ✗ | ✗ | connexion claude.ai requise | `--raise`, puis humain |
-| `composeur` | ✗ | ✗ | page non prête | vérifier le navigateur |
-| `frappe` | ✗ | ✗ | texte absent après insertion | voir §5.1 |
-| `connexion` | ✗ | ✗ | navigateur absent | `launch()` |
-| `vide` | ✗ | ✗ | rien à envoyer | — |
-
-`quota` et `session` **ne sont pas des pannes**. Les traiter comme telles est
-l'erreur la plus coûteuse : elle pousse à réessayer, ce qui consomme du quota.
-
-## 3. Cohérence avec l'existant
-
-Le dépôt possède déjà le contrat Quick Apply : `claude_desktop.review()` envoie
-`{prompt, request_key, chatId, filePaths}` via `quick_entry/submit`, et rend
-`{status, resumable, model, admission_only, response}`. Ce transport **ne crée pas
-un second vocabulaire** : `to_submission(result)` projette le détail technique sur
-ces statuts pour compatibilité, mais il n'est pas raccordé au chemin Quick Apply.
-Le statut `finished` décrit ici le résultat local du clic ou du dépôt dans le
-composeur : **clic ≠ admission du tour ≠ retour MCP**. Aucun résultat de modèle
-n'est lu; `response` reste `None`. Continuer le même chat dans claude.ai ne prouve
-pas que les outils MCP stdio locaux de Claude Desktop seront disponibles dans le
-tour web, ni qu'un `submit_result` sera renvoyé; ces capacités restent à qualifier
-séparément.
-
-| `stage` du transport | `status` rendu | Champs ajoutés |
-|---|---|---|
-| `envoyé` | `finished` | `dispatch: cdp-web`, `admission_only: true` |
-| `posé` | `finished` | `admission_only: false` (aucun tour émis) |
-| `quota` | `blocked_session` | `staged: true`, `reason` |
-| `session` | `blocked_auth` | `reason: connexion requise` |
-| autre | `engine_unavailable` | `reason: <stage>` |
-
-Autres alignements :
-
-- `chat_id` est validé par `claude_desktop.validate_chat_id` (ré-export public),
-  pas par une regex locale ;
-- nommage : `claude_desktop_*` pour les modules, `CLAUDE-*.md` pour la doc —
-  comme `CLAUDE-QUICK-ENTRY-INTERNALS.md` et `CLAUDE-CONNECTOR.md` ;
-- intégration envisagée : le gestionnaire `quick_entry/submit` de
-  `claude_desktop_quick.py`; cette intégration n'est pas incluse dans ce portage.
-
-## 4. API
+Les options historiques `--raise` et `--raise-on-login` n’ouvrent plus de navigateur. `launch`, `shutdown` et `raise_for_login` retournent `False` ; le motif est `lifecycle_unverified`. Il faut une action humaine ou un futur gestionnaire de cycle de vie qualifié.
 
 ```python
-from claude_desktop_apply import apply, send_staged, quota, launch, shutdown, raise_for_login
+from claude_desktop_apply import apply, send_staged, quota
 
-apply(prompt, chat_id, port=9333, on_login="fail"|"raise")  # pose + envoie
-send_staged(port)          # envoie le composeur actif, sans vérifier le chat exact
-quota(port)                # indice UI; available=False/blocked=None si navigateur ou bouton absent
-raise_for_login(port)      # affiche une fenêtre Chrome; ne navigue pas vers /login
+result = apply(prompt, chat_id, port=9333, submit=True)
+# Dépôt seulement, sans clic :
+staged = apply(prompt, chat_id, port=9333, submit=False)
+# Envoi ultérieur : cible ET empreinte complète obligatoires.
+result = send_staged(9333, chat_id=chat_id,
+                     expected_sha256=staged["detail"]["expected_sha256"])
 ```
 
-CLI expérimental (non appelé par le daemon ou le Swift dans ce portage) :
+`apply` exige l’UUID exact d’une conversation existante ; un identifiant absent est refusé avant connexion. Les nouvelles sessions du parcours Reprise doivent être initiées et armées depuis Claude Desktop, puis associées au suivi. Ce transport ne crée pas de nouveau chat web. Limite : 12 000 caractères. Il n’y a pas de découpage de prompt, de retry ou de repli vers un fournisseur.
 
-```bash
-resume desktop-apply --status
-resume desktop-apply --text "…" --chat <uuid> [--raise-on-login]
-resume desktop-apply --raise          # connexion humaine
-```
+## Résultats et incertitude
 
-## 5. Invariants — à ne pas casser
-
-1. **Aucune heure déduite d'un « HH:MM » sans date.** L'ambiguïté
-   aujourd'hui/demain reste refusée, comme dans `claude_quota.parse_pause`.
-2. **Un composant absent ne prouve rien.** Navigateur ou bouton d'envoi absent ⇒
-   `available: false`, `blocked: null`, jamais `blocked: false`.
-   `sendDisabled` et le texte de la page sont des indices d'interface, pas une
-   preuve de quota. Une confirmation peut venir d'un message explicite ou d'un
-   événement renderer, à condition de l'attribuer au même compte et au même
-   pool. Si une échéance connue autorise une tentative, aucune pré-mesure n'est
-   obligatoire.
-3. **Un événement de quota expiré n'est pas un blocage** (`resetsAt <= now`).
-4. **Ne pas fermer le navigateur sur `session`** : la connexion deviendrait
-   impossible.
-5. **Le quota ne se lit qu'après insertion** : à vide, le bouton est désactivé
-   pour une raison triviale.
-6. **`chat_id` absent ⇒ nouvelle conversation.** Pour viser une existante, l'UUID
-   est obligatoire pour `apply`. `send_staged` n'a pas de paramètre chat et n'est
-   pas sécurisé contre l'envoi du texte présent dans le mauvais chat; ne pas
-   l'utiliser pour reprendre une conversation précise.
-7. **`request_key` reste au démon.** Le transport ne le reçoit pas, ne le
-   stocke pas et ne déduplique rien : il est sans état. Vérifiable par
-   `grep -c request_key claude_desktop_apply.py` → `0`.
-8. **Borne à 12 000 caractères**, identique à `claude_desktop.review()`. Un
-   transport plus permissif accepterait ce que le démon refuse.
-
-## 6. Pièges déjà payés
-
-| # | Symptôme | Cause | Correctif appliqué |
-|---|---|---|---|
-| 5.1 | texte visible, bouton inerte | `execCommand('insertText')` met à jour le DOM, **pas** l'état de l'éditeur | `Input.insertText` (CDP) ; en WebKit, `NSTextInputClient.insertText` |
-| 5.2 | frappe envoyée à la mauvaise app | `NSWorkspace.openURL_` n'active pas la cible | `open(1)` |
-| 5.3 | succès annoncé sans rien faire | un `null` JS arrive en `NSNull`, pas en `nil` (Swift) | tester le type, pas `!= nil` |
-| 5.4 | « composeur présent » sur la page de login | la page de login contient un `contenteditable` | exiger `[data-testid="chat-input-send"]` |
-| 5.5 | CLI refusé au démarrage | `args.raise` : `raise` est un mot réservé Python | `dest='raise_window'` |
-| 5.6 | Quick Entry n'envoie rien, sans erreur | seuil **strictement** > 2 caractères | documenté ; ne pas tester avec « ok » |
-| 5.7 | quota invisible dans le journal | blocage **client** : aucune requête émise | croiser journal + page (§6) |
-| 5.8 | quota jamais détecté | regex de ligne consommant `.*$` → corps vide | motif sans `.*$` |
-| 5.9 | quota jamais détecté (bis) | JSON **doublement échappé** (`\"type\"`) | déséchapper avant extraction |
-| 5.10 | `claude --resume` « réussi » à tort | `session_id` et JSONL écrits **même si l'appel échoue** | lire `is_error` + `result` |
-| 5.11 | `retry` cliquait le menu d'une conversation | le libellé contient le texte du message | cibler `data-testid` (`action-bar-retry`) |
-
-## 7. Quota : éléments de preuve et indices d'interface
-
-| Source | Voit | Ne voit pas |
+| `stage` | Signification | Suite permise |
 |---|---|---|
-| Message explicite de quota | le refus annoncé dans ce contexte | événements non visibles dans ce message |
-| Journal renderer (`exceeded_limit` + `resetsAt`) attribué au même compte/pool | rejet serveur et échéance | blocage client sans requête émise |
-| Page (`sendDisabled` + texte présent) | un indice de blocage client | la cause certaine du bouton désactivé |
+| `envoyé` | réponse à la primitive de clic reçue | vérifier séparément l’admission et la réponse ; ne pas rejouer |
+| `posé` | texte intégral déposé et vérifié, sans clic | conserver cible et SHA-256 pour un envoi explicite |
+| `incertain` | réponse au clic perdue ou inexploitable | réconciliation humaine ; aucune répétition automatique |
+| `bloqué` | bouton désactivé, texte déposé | cause inconnue ; ce n’est pas une preuve de quota |
+| `brouillon` | contenu préexistant dans le composeur | refuser l’écrasement |
+| `cible`, `empreinte`, `composeur` | précondition non établie | consulter `staged` et `dispatch_attempted` ; ne pas présumer absence d’effet |
+| `session` | connexion humaine requise | aucune relance automatique du navigateur |
+| `connexion` | endpoint ou échange indisponible | distinguer absence d’envoi et dépôt incertain grâce au reçu |
+| `vide`, `paramètres`, `trop-long` | entrée refusée | corriger la requête |
 
-`page.sendDisabled` avec texte présent est seulement un indice de blocage client;
-le bouton peut être désactivé pour d'autres raisons. `quota()` ne prouve donc pas
-un quota. Un événement explicite attribué au bon compte/pool ou une échéance déjà
-connue peut autoriser une tentative sans mesure préalable obligatoire. Aucun
-retour MCP n'est produit par le transport.
+Champs principaux : `staged` peut être `null`, `dispatch_attempted` conserve l’incertitude, `click_observed` constate seulement le clic. `admission_confirmed` et `response_received` restent `false`. `ok=true` signifie une opération locale observée, pas une tâche achevée.
 
-## 8. Découpe « lien + collage » : hors périmètre du démon
+`to_submission` retourne `needs_review`, ou `blocked_auth` pour une connexion requise avant tentative. Il ne retourne **jamais `finished`**, conserve `response=null`, `resumable=false`, `automatic_fallback=false`. Le champ historique `admission_only` ne prouve pas une admission : consulter `admission_confirmed`. Le fait que Claude Desktop reste ouvert sur ce chat synchronisé ne prouve pas qu’il exécutera les outils MCP d’un tour déclenché sur le web ; seul un résultat MCP effectivement reçu et corrélé peut le démontrer.
 
-Le transport Python ne découpe pas les messages et n'implémente pas le parcours
-« lien + collage ». Il rejette les prompts de plus de 12 000 caractères. Une
-limite de taille connue pour les deep links ne constitue pas une capacité de
-découpage de ce transport.
+## Protections et limites
 
-## 9. Recettes de test (sans consommer de quota)
+- Origine exacte `https://claude.ai`, URL sans query/fragment, cible CDP épinglée et UUID effectif vérifiés autour des opérations. Aucun repli vers une page étrangère ou plusieurs cibles ambiguës.
+- Brouillons source et destination préservés, même lorsqu’ils ne contiennent que des espaces. Seul le placeholder structurel observé `DIV > P > BR.ProseMirror-trailingBreak`, sans texte, est reconnu comme vide.
+- SHA-256 du texte complet après insertion et immédiatement avant clic. La vérification de cible et du hash, après calcul asynchrone, précède le clic dans la même évaluation JavaScript.
+- `Input.insertText` ne fournit pas de condition atomique liée au document : une navigation extérieure entre préparation et frappe reste une limite. Le contrôle suivant interdit le clic si cible ou texte ont changé. Ce test ponctuel ne qualifie pas une automatisation sans surveillance.
+- Aucun lancement, `pkill`, arrêt, permission modifiée ou ouverture d’endpoint implicite. Un port local accessible ne constitue pas une attestation de propriété.
+- Le framing WebSocket est partagé avec `codex_rpc` ; propriété, protocole, notifications et erreurs du canal Codex restent dans son adaptateur.
+- Le module n’a pas de registre durable ni de sérialisation entre appelants. Le raccordement au service devra réserver une tentative avant l’I/O, garder une barrière durable après effet incertain et éviter les doublons après redémarrage.
+- Les diagnostics rendus par le transport n’incluent ni le texte du composeur, ni les bandeaux bruts, ni les erreurs brutes du pair.
 
-```bash
-# 1. navigateur absent : dégradation propre
-resume desktop-apply --status
+## Quotas : observation et attribution
 
-# 2. profil vierge : fenêtre rendue à l'humain; ouvrir la page de connexion manuellement
-TMPP=$(mktemp -d); CLAUDE_CDP_PROFILE=$TMPP resume desktop-apply --raise --port 9340
-CLAUDE_CDP_PROFILE=$TMPP resume desktop-apply --status --port 9340   # état UI/quota, pas un stage session
+`quota()` lit l’état de l’interface, sans inférence. `sendDisabled` ne distingue pas un quota d’un composeur vide ou d’un autre blocage : `blocked=null`, `quota_confirmed=false`.
 
-# 3. quota, sans envoi
-python claude_quota_log.py     # événement + resetsAt + expired
-```
+`claude_quota_log.py` retient les événements JSON structurés `exceeded_limit`/`rate_limit` et leurs resets, sans exposer la ligne brute. Les lignes malformées sont ignorées. Une erreur sans rapport n’efface pas l’ancien événement. Après échéance, le quota courant reste **inconnu**, pas « libre ».
 
-Ne jamais tester un envoi quand le quota est bloqué : cela ne prouve rien et
-consomme la fenêtre de reprise.
+L’attribution compte/pool du journal Desktop reste inconnue : elle ne peut pas être transférée au profil Chrome. Un événement quota isolé ne désigne pas le chat à reprendre. À une échéance déjà établie, une tentative peut être autorisée sans mesure de quota préalable obligatoire ; les contrôles d’identité, de consentement et de non-duplication restent nécessaires.
 
-## 10. Ce qui reste, avec critère d'acceptation
+## Validation et suite
 
-| # | Tâche | Acceptation |
-|---|---|---|
-| 1 | qualifier l'envoi du portage Python | vérifier la cible effective, puis une preuve indépendante d'admission; le clic et l'affichage d'un message ne suffisent pas |
-| 2 | compiler `ClaudePanel.swift` | build Reprise vert, panneau affiché, bouton « Se connecter » sur `session` |
-| 3 | câbler `claude_desktop_quick.py` | un payload reçu produit `envoyé` ou `quota/staged`, jamais un échec silencieux |
-| 4 | arbitrer `evidence_sha256` | décision écrite : ligne de journal ou bandeau corroborant |
-| 5 | cycle de vie du navigateur | résident ou éphémère, documenté, sans port ouvert par défaut |
-| 6 | non-régression des sélecteurs | `inspect` en CI manuelle après refonte de l'UI |
+Les tests Python simulent CDP et les fixtures JavaScript exécutent les expressions réelles sur un DOM synthétique. Ils couvrent notamment cible erronée, brouillons, empreinte, bouton désactivé, réponse perdue, framing et placeholder vide. Le test réel décrit ci-dessus constitue une preuve ponctuelle supplémentaire ; il ne garantit pas les futures versions de claude.ai.
 
-## 11. Décisions ouvertes
-
-- `on_login` par défaut : `fail` (sûr) ou `raise` (utile) ;
-- navigateur résident (rapide, port ouvert) ou éphémère (propre, +6 s) ;
-- source de `evidence_sha256` ;
-- où vit le profil Chrome dans le déploiement.
-
-## 12. Provenance et limites de qualification
-
-Les tests unitaires listés au §0 ont été exécutés localement; ils simulent CDP
-et ne valident pas un envoi réel. Les observations de navigation et l'envoi du
-pilote Node sont des rapports d'auteur consignés dans l'issue #83, notamment le
-commentaire 6437860868; ils n'ont pas été reproduits pendant ce portage. Les
-propriétés non établies sont indiquées comme expérimentales ou non qualifiées.
-
-`apply` valide la forme de `chat_id`, mais ne revalide pas après navigation que
-l'URL et l'identifiant de chat effectifs correspondent à la cible avant
-l'insertion ou le clic. Cette vérification est requise avant toute utilisation
-en production. Même après vérification de la cible, il faut distinguer le clic,
-l'admission effective du tour et le retour MCP.
+Les sources PR84/85/86 et la revue indépendante sont retracées dans `WORKLOG-DESKTOP-APPLY-DEV.md`, `INTEGRATION-DESKTOP-APPLY-DEV.md` et `REVIEW-DESKTOP-APPLY-DEV.md`. Le plan de découverte, attribution, échéances, interface et orchestration est dans `CLAUDE-SESSION-QUOTA-PLAN.md`. Ces fonctions restent à implémenter et qualifier avant activation automatique.

@@ -39,3 +39,11 @@
 - Même suite avec autorisation des sockets temporaires, HOME jetable : **865 tests, OK, 4 ignorés**, 19,031 s, code de sortie 0. Journaux `/private/tmp/reprise-dev-port-ci.log` et `/private/tmp/reprise-dev-port-ci-authorized.log`. Quelques ResourceWarning restent présents ; aucune inférence ni service installé utilisé.
 - `dev` distant revérifié en lecture seule, toujours `d162a2c401ba306815dc4a268457252de7f8fe57`. Aucun push, modification de PR ou fusion distante.
 - Nouvelle demande utilisateur : intégrer le transport au parcours Reprise et factoriser les doublons pour la maintenabilité. Plan délégué à Sol en lecture seule ; le portage testé ci-dessus demeure une baseline, pas une preuve d'intégration produit ou d'envoi réel.
+
+## Consolidation pour dev — 27 octobre 2026
+
+- Origin/dev actualisé à c3c46dcbcbf70af3dec1b69c78c9d80a762659a2 ; cinq commits concurrents intégrés sans conflit via b012604. Aucune branche ni copie de travail concurrente modifiée.
+- a164dbe : décodages quota tolérants aux ValueError/RecursionError ; 23 tests quota et 4 adaptateur réussis sous HOME temporaire selon l’agent.
+- d56c750 : garde cible/empreinte/brouillon, incertitude conservée, refus lifecycle non attribué, framing WebSocket partagé et placeholder ProseMirror exact. 75 tests ciblés (2 ignorés) pour le lot, puis 33 tests transport (1 ignoré) et 64 fixtures DOM après le correctif placeholder.
+- Test réel autorisé : un seul envoi effectif vers un chat existant et réponse corrélée observée via CDP, sans AX. Preuve expurgée : agent-resume/evidence/claude-cdp-continuation-20261027.json. Ce test ne qualifie ni la reprise du tour natif suspendu, ni MCP, ni le planificateur. Les reçus bruts restent dans le workspace de mission, non publiés.
+- Revue pré-fusion : module corrigé ; anciens exemples mutants à neutraliser et contrat livré à actualiser. Révision finale et suite complète requises après ces derniers changements.
