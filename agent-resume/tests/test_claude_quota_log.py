@@ -97,6 +97,21 @@ class LatestTests(unittest.TestCase):
         self.assertEqual(entry["type"], "exceeded_limit")
         self.assertEqual(entry["resets_at"], 1793065800)
 
+    def test_malformed_outer_json_is_skipped_in_favor_of_prior_quota_event(self):
+        huge_integer = "9" * 5000
+        recursive_array = "[" * 1500 + "0" + "]" * 1500
+        for malformed in (f'{{"resetsAt":{huge_integer}}}', recursive_array):
+            with self.subTest(length=len(malformed)):
+                line = f"2026-10-26 22:30:03 [error] [COMPLETION] Request failed {malformed}"
+                entry = ql.latest(self._write([LINE_OLD, line]), now=1793065700)
+                self.assertEqual(entry["type"], "exceeded_limit")
+
+    def test_malformed_nested_json_is_skipped_in_favor_of_prior_quota_event(self):
+        nested = "[" * 1500 + "0" + "]" * 1500
+        line = completion_line({"message": nested})
+        entry = ql.latest(self._write([LINE_OLD, line]), now=1793065700)
+        self.assertEqual(entry["type"], "exceeded_limit")
+
     def test_no_completion_line(self):
         path = self._write(["2026-10-26 22:00:00 [info] autre chose"])
         self.assertIsNone(ql.latest(path, now=0))

@@ -62,7 +62,7 @@ def _completion_payload(line: str, start: int) -> dict | None:
         fragment = fragment[len(prefix):].lstrip()
     try:
         value, _ = json.JSONDecoder().raw_decode(fragment)
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return None
     if not isinstance(value, dict):
         return None
@@ -73,7 +73,7 @@ def _completion_payload(line: str, start: int) -> dict | None:
         return None
     try:
         nested = json.loads(message)
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return None
     return nested if isinstance(nested, dict) and _is_quota_type(nested.get("type")) else None
 
