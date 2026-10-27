@@ -196,6 +196,12 @@ def main():
     quota_status.add_argument('--refresh', action='store_true', help='Read native quota metadata; never starts a turn')
     quota_status.add_argument('--profile')
     quota_status.add_argument('--socket')
+    desktop_apply = sub.add_parser('desktop-apply')
+    desktop_apply.add_argument('--text')
+    desktop_apply.add_argument('--prompt-file')
+    desktop_apply.add_argument('--chat')
+    desktop_apply.add_argument('--raise-on-login', action='store_true')
+    desktop_apply.add_argument('--status', action='store_true')
     sub.add_parser('reprise-health')
     sub.add_parser('restart-chain')
     sub.add_parser('quick-apply-daemon-start')
@@ -236,6 +242,18 @@ def main():
             row = db.execute("SELECT options FROM engine_settings WHERE engine='codex'").fetchone()
         settings = (json.loads(row[0]) if row else {}) | {key: getattr(args, key) for key in ('profile', 'socket') if getattr(args, key) is not None}
         print(json.dumps(quota_knowledge.status(db, args.engine, settings, refresh=args.refresh), ensure_ascii=False))
+    elif args.action == 'desktop-apply':
+        import desktop_apply as transport
+        if args.status:
+            print(json.dumps(transport.quota(), ensure_ascii=False))
+            sys.exit(0)
+        text = args.text or ''
+        if args.prompt_file:
+            text = Path(args.prompt_file).read_text()
+        result = transport.apply(text, args.chat,
+                                 on_login='raise' if args.raise_on_login else 'fail')
+        print(json.dumps(result, ensure_ascii=False))
+        sys.exit(0 if result.get('ok') else 1)
     elif args.action == 'add':
         args.session = engines.validate_session(args.engine, args.session)
         settings = engines.options(args.engine, {k: getattr(args, k) for k in ('profile', 'socket', 'parent') if getattr(args, k) is not None})

@@ -14,7 +14,8 @@ Contrat de retour, aligné sur le reste du démon :
 
     {"ok": bool, "stage": str, "staged": bool, "detail": {...}}
 
-`stage` : "envoyé" | "quota" | "composeur" | "frappe" | "connexion" | "vide".
+`stage` : "envoyé" | "posé" | "quota" | "session" | "composeur" | "frappe" |
+"connexion" | "vide".
 Un `stage == "quota"` avec `staged: true` signifie que le texte est **posé** dans
 le composeur : `send_staged()` l'enverra sans le retaper dès la réouverture.
 """
@@ -30,6 +31,11 @@ import struct
 import time
 
 DEFAULT_PORT = int(os.environ.get("CLAUDE_CDP_PORT", "9333"))
+CHROME_BIN = os.environ.get(
+    "CHROME_BIN", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+PROFILE = os.environ.get("CLAUDE_CDP_PROFILE",
+                         os.path.expanduser("~/.local/share/claude-cdp/chrome"))
+VISIBLE_POSITION = (120, 120)
 SEND_TESTID = 'chat-input-send'
 
 
@@ -135,7 +141,7 @@ class CDP:
         targets = self._targets()
         page = self._pick_page(targets)
         if page is None:
-            raise WSError("aucune page exposée — le navigateur de diagnostic est-il lancé sur ce port ?")
+            raise WSError("aucune page exposée — launch.sh est-il lancé ?")
         path = page["webSocketDebuggerUrl"].split(str(port), 1)[-1]
         self.ws = WebSocket("127.0.0.1", port, path, timeout=timeout)
 
@@ -212,6 +218,77 @@ JS_STATE = """(() => {
 })()"""
 
 
+def browser_up(port: int = DEFAULT_PORT) -> bool:
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def shutdown(port: int = DEFAULT_PORT, wait: float = 8.0) -> None:
+    """Arrête uniquement le navigateur de diagnostic (repéré par son profil)."""
+    import subprocess
+    from time import time, sleep
+
+    subprocess.run(["pkill", "-f", f"user-data-dir={PROFILE}"], check=False)
+    deadline = time() + wait
+    while time() < deadline:
+        if not browser_up(port):
+            return
+        sleep(0.3)
+
+
+def launch(port: int = DEFAULT_PORT, visible: bool = False, timeout: float = 20.0,
+           chromeless: bool = True) -> bool:
+    """Démarre le navigateur de diagnostic ; fenêtré, hors écran par défaut.
+
+    Le headless est exclu : claude.ai renvoie un interstitiel anti-bot.
+    """
+    import subprocess
+    from time import time, sleep
+
+    if browser_up(port):
+        return True
+    if not os.path.isfile(CHROME_BIN):
+        return False
+    os.makedirs(PROFILE, exist_ok=True)
+    position = f"--window-position={VISIBLE_POSITION[0]},{VISIBLE_POSITION[1]}" if visible \
+        else "--window-position=-3000,-3000"
+    subprocess.Popen(
+        [CHROME_BIN, f"--remote-debugging-port={port}", f"--user-data-dir={PROFILE}",
+         position, "--window-size=1200,900", "--no-first-run",
+         "--no-default-browser-check"]
+        + (["--app=about:blank"] if chromeless else ["about:blank"]),
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    deadline = time() + timeout
+    while time() < deadline:
+        if browser_up(port):
+            return True
+        sleep(0.4)
+    return False
+
+
+def raise_for_login(port: int = DEFAULT_PORT) -> bool:
+    """Remet une fenêtre visible au premier plan pour laisser l'humain se connecter.
+
+    Chrome ne permet pas de repositionner une fenêtre existante sans
+    Accessibilité : on relance l'instance hors écran en fenêtre visible.
+    """
+    shutdown(port)
+    if not launch(port, visible=True):
+        return False
+    try:
+        import subprocess
+
+        subprocess.run(["open", "-a", "Google Chrome"], check=False)
+    except OSError:
+        pass
+    return True
+
+
 def _select_all(cdp: CDP) -> None:
     cdp.evaluate("""(() => {
       const el = document.querySelector('div[contenteditable="true"], textarea');
@@ -251,9 +328,17 @@ def state(cdp: CDP) -> dict:
 # ---------------------------------------------------------------------------
 def quota(port: int = DEFAULT_PORT) -> dict:
     """État de quota tel que la page le montre (blocage client inclus)."""
-    cdp = CDP(port)
+    try:
+        cdp = CDP(port)
+    except (OSError, WSError) as exc:
+        return {"blocked": None, "available": False, "detail": str(exc)}
     try:
         info = state(cdp)
+        url = str(info.get("url") or "")
+        if "claude.ai" not in url:
+            # Sur about:blank, un bouton absent ne dit rien du quota.
+            return {"blocked": None, "available": False,
+                    "detail": {"url": url, "reason": "page non claude.ai"}}
         return {
             "blocked": bool(info.get("sendDisabled") and info.get("hasText")) or bool(info.get("blocked")),
             "sendDisabled": info.get("sendDisabled"),
@@ -265,7 +350,8 @@ def quota(port: int = DEFAULT_PORT) -> dict:
 
 
 def apply(prompt: str, chat_id: str | None = None, *, port: int = DEFAULT_PORT,
-          settle: float = 3.0, submit: bool = True) -> dict:
+          settle: float = 3.0, submit: bool = True,
+          on_login: str = "fail") -> dict:
     """Pose `prompt` dans la conversation visée et l'envoie si possible."""
     prompt = (prompt or "").strip()
     if not prompt:
@@ -282,7 +368,21 @@ def apply(prompt: str, chat_id: str | None = None, *, port: int = DEFAULT_PORT,
         cdp.navigate(target)
         time.sleep(settle)
         if not wait_composer(cdp):
-            return {"ok": False, "stage": "composeur", "staged": False, "detail": target}
+            current = state(cdp)
+            url = str(current.get("url") or target)
+            # Une session absente n'est pas une page cassée : c'est une action
+            # humaine attendue, à signaler comme telle.
+            if "/login" not in url:
+                return {"ok": False, "stage": "composeur", "staged": False,
+                        "detail": {"url": url, "title": current.get("title")}}
+            # Session absente : action humaine attendue, pas une panne.
+            raised = False
+            if on_login == "raise":
+                cdp.close()
+                raised = raise_for_login(port)
+            return {"ok": False, "stage": "session", "staged": False, "raised": raised,
+                    "detail": {"url": url, "title": current.get("title"),
+                               "action": "connexion claude.ai requise"}}
 
         box = cdp.evaluate(JS_COMPOSER_BOX)
         _click_point(cdp, box)

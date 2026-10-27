@@ -105,19 +105,38 @@ Non inclus volontairement : le câblage modifie le comportement du démon, et
 `register()` exige un `evidence_sha256` dont la source doit être arbitrée
 (ligne de journal ou bandeau corroborant).
 
-## 6. Exploitation
+## 6. Session absente : état explicite, fenêtre rendue à l'humain
+
+`apply(..., on_login="fail"|"raise")`.
+
+Une redirection vers `/login` n'est pas une page cassée : c'est une **action
+humaine attendue**. Elle produit donc `stage: "session"`, distinct de
+`composeur`.
+
+- `fail` : retour immédiat, à l'appelant de prévenir ;
+- `raise` : l'instance hors écran est arrêtée puis relancée **visible** en
+  `120,120`, et l'application est activée — Chrome n'offre aucun moyen de
+  repositionner une fenêtre existante sans Accessibilité.
+
+**Ne pas fermer dans ce cas.** Un `stop` après `session` rendrait la connexion
+impossible : l'appelant doit laisser le navigateur ouvert.
+
+La fenêtre est lancée en mode **chromeless** (`--app=`) : pas d'onglets ni de
+barre d'adresse, ce qui donne l'allure d'un panneau intégré sans embarquer
+Chromium (CEF ≈ 300 Mo + helper à signer).
+
+## 7. Exploitation
 
 ```bash
-# un Chrome dédié, avec le port de diagnostic et un profil persistant :
-google-chrome --remote-debugging-port=9333 --user-data-dir=~/.local/share/claude-cdp/chrome
-# connexion claude.ai une fois dans ce profil, puis :
+./launch.sh                       # Chrome dédié, port 9333, profil persistant
+# connexion claude.ai une fois dans ce profil
 python agent-resume/desktop_apply.py --quota
 ```
 
 Le port n'écoute que sur `127.0.0.1`, mais tout processus local peut piloter ce
 profil tant qu'il est ouvert : prévoir une fermeture explicite.
 
-## 7. Limites
+## 8. Limites
 
 - dépend de la mise en page de claude.ai (`chat-input-send`, `action-bar-retry`) :
   à revalider après refonte ;
@@ -126,7 +145,7 @@ profil tant qu'il est ouvert : prévoir une fermeture explicite.
 - pas de retour de réponse : le canal est d'émission. Le retour reste
   `submit_result` côté MCP.
 
-## 8. État de preuve
+## 9. État de preuve
 
 - `desktop_apply.py` : testé en **lecture seule** (handshake, frames, évaluation,
   lecture de quota). Le chemin d'envoi a été prouvé avec le pilote Node
