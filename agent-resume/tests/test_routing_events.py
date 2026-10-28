@@ -42,6 +42,64 @@ class RoutingEventsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             routing_events.setup(db)
 
+    def test_migration_v2_to_v3_additive_preserves_data(self):
+        db = memory_db(version=0, legacy=True)
+        # Simule une base v2 (lot ① bis) : une donnée existante, sans les colonnes v3.
+        db.execute("INSERT INTO routing_events(ts,type,tool,channel,terminal_state,reason) "
+                   "VALUES (0,'routed','t','codex','dispatched','before upgrade')")
+        db.execute('ALTER TABLE routing_events DROP COLUMN account_key')
+        db.execute('ALTER TABLE routing_events DROP COLUMN admissibility')
+        db.execute('PRAGMA user_version=2')
+        routing_events.setup(db)
+        self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 3)
+        columns = {row[1] for row in db.execute('PRAGMA table_info(routing_events)')}
+        self.assertIn('account_key', columns)
+        self.assertIn('admissibility', columns)
+        self.assertEqual(db.execute(
+            'SELECT admissibility FROM routing_events WHERE reason=?', ('before upgrade',)).fetchone()[0],
+            'not_required')
+
+    def test_admissibility_matrix(self):
+        db = memory_db()
+        for channel, billing in (('codex', 'included'), ('claude-api', 'paid'),
+                                 ('foundation-models', 'free'), ('new-route', 'unknown')):
+            routing_events.declare(db, channel, billing)
+        # automatic=True : free/included passent ; paid et unknown refusés (fail-closed).
+        self.assertEqual(routing_events.admissible(db, 'codex', automatic=True), (True, 'included'))
+        self.assertEqual(routing_events.admissible(db, 'foundation-models', automatic=True), (True, 'free'))
+        self.assertEqual(routing_events.admissible(db, 'claude-api', automatic=True), (False, 'paid'))
+        self.assertEqual(routing_events.admissible(db, 'new-route', automatic=True), (False, 'unknown'))
+        self.assertEqual(routing_events.admissible(db, 'never-declared', automatic=True), (False, 'unknown'))
+        # automatic=False (route explicite) : toléré quelle que soit la classe.
+        self.assertEqual(routing_events.admissible(db, 'claude-api', automatic=False), (True, 'paid'))
+        self.assertEqual(routing_events.admissible(db, 'new-route', automatic=False), (True, 'unknown'))
+
+    def test_populate_from_quota_requires_known_identity_and_allowed(self):
+        db = memory_db()
+        routing_events.populate_from_quota(db, {'identity_status': 'known', 'account_key': 'hmac-1',
+                                                'ordinary_usage_allowed_observed': True,
+                                                'pools': [{'quota_pool_key': 'pool-1'}]})
+        row = db.execute("SELECT billing_class,account_key,pool_key FROM route_admissibility WHERE channel='codex'").fetchone()
+        self.assertEqual(row, ('included', 'hmac-1', 'pool-1'))
+        routing_events.populate_from_quota(db, {'identity_status': 'known', 'account_key': 'hmac-1',
+                                                'ordinary_usage_allowed_observed': False, 'pools': []})
+        row = db.execute("SELECT billing_class FROM route_admissibility WHERE channel='codex'").fetchone()
+        self.assertEqual(row[0], 'unknown')
+        routing_events.populate_from_quota(db, {'identity_status': 'unknown', 'account_key': None})
+        row = db.execute("SELECT billing_class FROM route_admissibility WHERE channel='codex'").fetchone()
+        self.assertEqual(row[0], 'unknown')
+
+    def test_seed_local_declares_free_channels_once(self):
+        db = memory_db()
+        routing_events.seed_local(db)
+        routing_events.seed_local(db)
+        rows = db.execute("SELECT channel,billing_class FROM route_admissibility WHERE channel IN ('foundation-models','ironclaw')").fetchall()
+        self.assertEqual(sorted(rows), [('foundation-models', 'free'), ('ironclaw', 'free')])
+        routing_events.declare(db, 'ironclaw', 'unknown')
+        routing_events.seed_local(db)
+        row = db.execute("SELECT billing_class FROM route_admissibility WHERE channel='ironclaw'").fetchone()
+        self.assertEqual(row[0], 'unknown')
+
     def test_routed_event(self):
         db = memory_db()
         event_id = routing_events.record(db, 'routed', 'reprise_delegate', 'codex',
