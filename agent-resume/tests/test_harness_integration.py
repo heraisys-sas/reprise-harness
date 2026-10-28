@@ -543,15 +543,6 @@ class HarnessIntegrationTests(unittest.TestCase):
             '        compat:\n'
             '          supportsUsageInStreaming: true\n'
             '          supportsStore: false\n'
-            '      asi-cloud-planner:\n'
-            '        api: openai-completions\n'
-            '        models:\n'
-            '          - id: asi1\n'
-            '            contextWindow: 128000\n'
-            '            maxTokens: 4096\n'
-            '        compat:\n'
-            '          supportsUsageInStreaming: true\n'
-            '          supportsStore: false\n'
             '- insert:\n'
             '    - id: preset-asi1-orchestrator\n'
             "      name: '@deepseek-ai/dsh-agent-preset'\n"
@@ -570,9 +561,9 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertTrue(proposed['asi1_effort'])
         integration.apply(self.root, proposed)
         text = self.config.read_text()
-        self.assertEqual(text.count(integration.ASI1_START + '\n'), 4)
+        self.assertEqual(text.count(integration.ASI1_START + '\n'), 2)
         self.assertEqual(text.count(integration.ASI1_PLUGIN_START + '\n'), 1)
-        self.assertEqual(text.count('reasoningEfforts:'), 2)
+        self.assertEqual(text.count('reasoningEfforts:'), 1)
         self.assertIn('supportsReasoningEffort: true', text)
         self.assertIn('supportsDeveloperRole: false', text)
         self.assertIn('- id: asi1-orchestrator-effort', text)
@@ -581,7 +572,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertIn(str(plugin_path), text)
         manifest = json.loads((self.managed / 'managed.json').read_text())
         self.assertTrue(manifest['asi1_effort'])
-        self.assertEqual(len(manifest['asi1_effort_blocks']), 4)
+        self.assertEqual(len(manifest['asi1_effort_blocks']), 2)
         self.assertEqual(len(manifest['asi1_preset_blocks']), 1)
         self.assertTrue(integration.inspect(self.home, 'desktop')['asi1_effort'])
         self.assertEqual(integration.plan(self.root, self.home, 'desktop', self.project,
@@ -615,7 +606,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.config.write_text(original)
         integration.apply(self.root, integration.plan(self.root, self.home, 'desktop', self.project,
                                                       asi1_effort=True))
-        self.assertEqual(self.config.read_text().count(integration.ASI1_START + '\n'), 2)
+        self.assertEqual(self.config.read_text().count(integration.ASI1_START + '\n'), 0)
         integration.apply(self.root, integration.plan(self.root, self.home, 'desktop', self.project, 'remove'))
         self.assertIn('reasoningEfforts:', self.config.read_text())
 

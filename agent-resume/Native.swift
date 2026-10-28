@@ -55,12 +55,6 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var ironclawIdentity = ""
     @Published var ironclawTokenFile = ""
     @Published var ironclawNote = "Configurez un accès SSH explicite ; aucune clé ni aucun jeton n’est copié."
-    @Published var proxyService: [String: Any] = [:]
-    @Published var proxyServicePlan: [String: Any]? = nil
-    @Published var proxyServiceActivate = false
-    @Published var proxyServiceAdopt = false
-    @Published var proxyServiceAcknowledged = false
-    @Published var proxyServiceMessage = "launchd exécute le proxy ; Reprise le gère."
     @Published var schedulerService: [String: Any] = [:]
     @Published var schedulerServicePlan: [String: Any]? = nil
     @Published var schedulerServiceMessage = "Inspectez le planificateur avant de préparer une modification."
