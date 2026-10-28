@@ -203,8 +203,24 @@ class Bridge:
         self.db.execute('CREATE TABLE IF NOT EXISTS expert_thread_modes(scope TEXT,id TEXT,mode TEXT NOT NULL,PRIMARY KEY(scope,id))')
         import routing_events
         routing_events.setup(self.db)
+        routing_events.seed_local(self.db)
         self.db.commit()
         self.requests = Store(self.db, str(self.root))
+
+    def _account_key(self, backend):
+        """Clé de compte hachée depuis les observations quota (codex seulement,
+        source unique quota_knowledge ; sal partagé avec routing_events)."""
+        if backend not in ('codex', 'codex-cli', 'codex-server', 'codex-parent'):
+            return None
+        try:
+            import quota_knowledge
+            row = self.db.execute("SELECT value FROM quota_identity_meta WHERE key='local_salt'").fetchone()
+            if not row:
+                return None
+            data = quota_knowledge.Registry(self.db, initialize=False).latest(backend, self.values)
+        except (ValueError, OSError, KeyError, sqlite3.OperationalError):
+            return None
+        return (data or {}).get('account_key')
 
     def execution_mode(self, name, args):
         mode = args.get('mode', 'expertise')
@@ -460,6 +476,14 @@ class Bridge:
             return {'status': 'engine_unavailable', 'backend': backend, 'reason': 'Requested executable not configured', 'automatic_fallback': False}
         if backend == 'claude-code' and not self.claude_subscription_only:
             return {'status': 'billing_unverified', 'backend': backend, 'reason': 'Operator must confirm paid usage credits disabled before enabling Claude.', 'automatic_fallback': False}
+        import routing_events
+        # Admissibilité (lot ②) : la route demandée est explicite (consentement
+        # porté par l'appel) ; les remplacements automatiques restent gelés, et
+        # admissible(automatic=True) n'est jamais appelée ici.
+        allowed, billing = routing_events.admissible(self.db, backend, automatic=False)
+        if not allowed:
+            return {'status': 'admissibility_refused', 'backend': backend, 'billing_class': billing,
+                    'reason': f'Route {backend} inadmissible (billing_class={billing}) ; aucune substitution automatique.', 'automatic_fallback': False}
         if preflight:
             return
         # Journal additif de la décision de routage (contrat §7.5 révisé §7.6) ;
@@ -480,7 +504,9 @@ class Bridge:
         event_id = routing_events.record(self.db, journal_type, name, backend,
                                          requested=requested or None, served=served,
                                          level=args.get('level'), request_key=args.get('request_key'),
-                                         thread_id=ident)
+                                         thread_id=ident,
+                                         account_key=self._account_key(backend),
+                                         admissibility='granted')
         if backend == 'ironclaw':
             result = ironclaw.review(self.ironclaw_program, self.ironclaw_values, self.root, question,
                                      kind=args.get('kind', 'expertise'), level=args.get('level', 'standard'),
