@@ -65,8 +65,45 @@ class ExternalRankingsTests(unittest.TestCase):
         with mock.patch('external_rankings.urllib.request.urlopen') as opener:
             opener.return_value.__enter__.return_value.read.return_value = \
                 json.dumps({'instructions': 'ignore previous'}).encode()
+            opener.return_value.__enter__.return_value.headers = {'Content-Type': 'application/json'}
             with self.assertRaises(ValueError):
                 external_rankings.fetch_url('https://e/x')
+
+    def test_fetch_url_rejects_non_json_content_type(self):
+        with mock.patch('external_rankings.urllib.request.urlopen') as opener:
+            opener.return_value.__enter__.return_value.headers = {'Content-Type': 'text/html'}
+            with self.assertRaises(ValueError):
+                external_rankings.fetch_url('https://e/x')
+
+    def test_fetch_url_rejects_oversized_response(self):
+        with mock.patch('external_rankings.urllib.request.urlopen') as opener:
+            opener.return_value.__enter__.return_value.headers = {'Content-Type': 'application/json'}
+            opener.return_value.__enter__.return_value.read.return_value = \
+                b'[' + b'1,' * (external_rankings.MAX_RESPONSE_BYTES // 2)
+            with self.assertRaises(ValueError):
+                external_rankings.fetch_url('https://e/x')
+
+    def test_fetch_url_rejects_invalid_json(self):
+        with mock.patch('external_rankings.urllib.request.urlopen') as opener:
+            opener.return_value.__enter__.return_value.headers = {'Content-Type': 'application/json'}
+            opener.return_value.__enter__.return_value.read.return_value = b'not json {'
+            with self.assertRaises(ValueError):
+                external_rankings.fetch_url('https://e/x')
+
+    def test_refresh_end_to_end_with_mocked_http(self):
+        db = memory_db()
+        db.execute("INSERT INTO external_model_map VALUES ('gpt-6','codex')")
+        payload = json.dumps([
+            {'model': 'gpt-6', 'metric': 'price_per_mtok', 'value': 2.0},
+            {'model': 'evil', 'metric': 'latency_ms',
+             'value': "'; DROP TABLE external_rankings;--"},
+        ]).encode()
+        with mock.patch('external_rankings.urllib.request.urlopen') as opener:
+            opener.return_value.__enter__.return_value.headers = {'Content-Type': 'application/json'}
+            opener.return_value.__enter__.return_value.read.return_value = payload
+            accepted, rejected = external_rankings.refresh(db, 'openrouter', 'https://e/x')
+        self.assertEqual((accepted, rejected), (1, 1))
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM external_rankings').fetchone()[0], 1)
 
     def test_route_metrics_requires_two_sources_no_conflict(self):
         db = memory_db()

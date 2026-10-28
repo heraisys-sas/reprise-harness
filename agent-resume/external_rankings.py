@@ -92,12 +92,19 @@ def ingest(db, source, records, url=''):
     return accepted, rejected
 
 
+MAX_RESPONSE_BYTES = 5 * 1024 * 1024
+
+
 def fetch_url(url, timeout=10):
     """Télécharge et parse ; retourne la liste brute (le filtrage est dans ingest).
     Aucune donnée n'est écrite ici — la séparation fetch/ingest garantit que le
-    réseau n'a jamais accès à SQLite."""
+    réseau n'a jamais accès à SQLite. Réponse bornée en taille ; content-type
+    JSON exigé."""
     with urllib.request.urlopen(url, timeout=timeout) as response:
-        payload = json.loads(response.read().decode('utf-8', errors='replace'))
+        content_type = response.headers.get('Content-Type', '')
+        if 'json' not in content_type:
+            raise ValueError(f'Content-Type inattendu : {content_type!r}')
+        payload = json.loads(response.read(MAX_RESPONSE_BYTES + 1).decode('utf-8', errors='replace'))
     if not isinstance(payload, list):
         raise ValueError('Structure inattendue : liste attendue')
     return payload
