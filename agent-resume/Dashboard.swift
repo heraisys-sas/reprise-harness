@@ -198,6 +198,7 @@ struct Dashboard: View {
                         }
                     }
                 }
+                claudeSessionsCard
                 Surface {
                     HStack(spacing: 16) {
                         Image(systemName: "clock.arrow.circlepath").font(.title2).foregroundStyle(.secondary).accessibilityHidden(true)
@@ -310,8 +311,10 @@ struct Dashboard: View {
     }
     func quotaRow(_ name: String, value: [String: Any]?, attributed: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            if let value, let used = value["used_percent"] as? Double, used.isFinite, (0...100).contains(used) {
-                let remaining = 100-used
+            if let value {
+                let used = value["used_percent"] as? Double
+                let validUsed = used.flatMap { $0.isFinite && (0...100).contains($0) ? $0 : nil }
+                let remaining = validUsed.map { 100 - $0 }
                 let minutes = (value["duration_minutes"] ?? value["window_minutes"]) as? Int
                 let title = minutes == 300 ? "Fenêtre de 5 heures" : minutes == 10080 ? "Fenêtre hebdomadaire" : name
                 let reset = value["resets_at"] as? Double
@@ -322,10 +325,12 @@ struct Dashboard: View {
                 if expired {
                     Text("Mesure périmée").font(.system(size: 27, weight: .semibold, design: .rounded)).foregroundStyle(.secondary)
                         .accessibilityLabel(title + " : reset dépassé, quota actuel inconnu")
-                } else {
+                } else if let remaining {
                     Text("\(Int(remaining)) % observés restants" + (remaining < 15 ? " ⚠" : "")).font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit()
                         .accessibilityLabel(title + " : " + String(Int(remaining)) + " % observés restants")
                     ProgressView(value: remaining, total: 100).tint(remaining < 15 ? .orange : .accentColor)
+                } else {
+                    Text("Quantité inconnue").font(.callout).foregroundStyle(.secondary)
                 }
                 Text(attributed ? "Compte associé à cette observation" : "Compte non attribué").font(.caption).foregroundStyle(.secondary)
                 if let date {
@@ -337,6 +342,81 @@ struct Dashboard: View {
                 Text(name + " · indisponible").foregroundStyle(.secondary)
             }
         }
+    }
+    var claudeSessionsCard: some View {
+        let status = app.claudeSessionsStatus
+        let route = status["route"] as? [String: Any] ?? [:]
+        let sessions = status["sessions"] as? [[String: Any]] ?? []
+        let enabled = route["enabled"] as? Bool == true
+        let rootStatus = status["status"] as? String ?? "unavailable"
+        let statusKnown = rootStatus == "ok"
+        return Surface {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Sessions Claude Desktop · observation").font(.headline)
+                    Spacer()
+                    Button("Configurer") { app.page = "connections"; app.connectionTab = "quickapply" }.buttonStyle(.link)
+                }
+                Text(!statusKnown ? "État de configuration inconnu · \(rootStatus)" : enabled ? "Observation CDP opt-in · sessions ouvertes seulement" : "Observation désactivée · aucune lecture CDP").font(.caption).foregroundStyle(.secondary)
+                if sessions.isEmpty {
+                    Text(statusKnown ? "Aucune session Desktop déclarée. L’observation ne crée pas de chat." : "Sessions inconnues tant que l’état du connecteur n’est pas disponible.").font(.callout).foregroundStyle(.secondary)
+                }
+                ForEach(Array(sessions.enumerated()), id: \.offset) { _, session in
+                    claudeSessionSummary(session)
+                }
+                if let next = route["next_refresh_at"] as? Double, next.isFinite, next > 0 {
+                    Text("Prochaine lecture au plus tôt : " + localDateTime(Date(timeIntervalSince1970: next))).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+    @ViewBuilder func claudeSessionSummary(_ session: [String: Any]) -> some View {
+        let registration = session["registration"] as? [String: Any] ?? [:]
+        let observation = session["observation"] as? [String: Any] ?? [:]
+        let quota = session["quota"] as? [String: Any] ?? [:]
+        let presence = observation["presence"] as? String ?? "unavailable"
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Claude Desktop · " + String((session["chat_id"] as? String ?? "session").suffix(8))).font(.callout.weight(.semibold))
+                Spacer()
+                Text(presence == "open" ? "Ouvert observé" : presence == "not_open" ? "Non ouvert" : "Présence inconnue").font(.caption).foregroundStyle(.secondary)
+            }
+            if let lastSeen = observation["last_seen_at"] as? Double, lastSeen.isFinite, lastSeen > 0 {
+                Text("Présence observée le \(localDateTime(Date(timeIntervalSince1970: lastSeen))) · \(observation["target_count"] as? Int ?? 0) onglet(s) cible(s)").font(.caption).foregroundStyle(.secondary)
+            }
+            let knowledge = quota["knowledge"] as? String ?? "unknown"
+            let blocked = quota["blocked"] as? Bool
+            Text(blocked == true ? "Blocage signalé · compte ou pool non attribué" : knowledge == "unknown" ? "Quota inconnu" : "État de quota : \(knowledge)").font(.callout)
+            if let observed = quota["observed_at"] as? Double, observed.isFinite, observed > 0 {
+                Text("Observation quota : \(localDateTime(Date(timeIntervalSince1970: observed))) · \(quota["freshness"] as? String ?? "fraîcheur inconnue")").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Aucune observation quota récente · \(quota["observation_status"] as? String ?? "indisponible")").font(.caption).foregroundStyle(.secondary)
+            }
+            Text("Source : \(quota["source"] as? String ?? "inconnue") · compte non attribué").font(.caption).foregroundStyle(.secondary)
+            if let pools = quota["pools"] as? [[String: Any]] {
+                ForEach(Array(pools.enumerated()), id: \.offset) { _, pool in
+                    if let windows = pool["windows"] as? [[String: Any]] {
+                        ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
+                            quotaRow(window["name"] as? String ?? "Fenêtre rapportée", value: window)
+                        }
+                    }
+                }
+            }
+            let datedReset = ((quota["pools"] as? [[String: Any]]) ?? []).contains { pool in
+                ((pool["windows"] as? [[String: Any]]) ?? []).contains { window in
+                    guard let reset = window["resets_at"] as? Double else { return false }
+                    return reset.isFinite && reset > 0
+                }
+            }
+            if !datedReset, let displayed = quota["displayed_reset_time"] as? String, !displayed.isEmpty {
+                Text("Heure affichée : \(displayed) · date inconnue (\(quota["reset_status"] as? String ?? "ambiguë"))").font(.caption).foregroundStyle(.secondary)
+            }
+            if let historical = quota["historical_reset"] as? [String: Any], let reset = historical["resets_at"] as? Double, reset.isFinite, reset > 0 {
+                Text("Dernier reset historique (pas un état courant) : \(localDateTime(Date(timeIntervalSince1970: reset)))").font(.caption).foregroundStyle(.secondary)
+            }
+            Text("Association déclarative : \(registration["source"] as? String ?? "inconnue") · non attestée · observation CDP ≠ admission ni retour MCP.").font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(.top, 8)
     }
     var sessions: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -566,10 +646,64 @@ struct Dashboard: View {
                     Text("Une connexion réussie confirme le service claude-desktopd, pas la soumission dans l’overlay Desktop.").font(.callout).foregroundStyle(.secondary)
                 }
             }
+            claudeObserverPanel
             Surface {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Soumission Quick Apply").font(.headline)
                     Text("La soumission réelle dans l’overlay Quick Apply exige les autorisations macOS (Accessibilité, Capture d’écran) accordées par l’opérateur. Reprise valide et route la charge utile ; elle ne pilote pas l’interface Desktop.").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+    var claudeObserverPanel: some View {
+        let status = app.claudeSessionsStatus
+        let route = status["route"] as? [String: Any] ?? [:]
+        let binding = status["binding"] as? [String: Any] ?? [:]
+        let sessions = status["sessions"] as? [[String: Any]] ?? []
+        return Surface {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Observation des sessions Claude Desktop").font(.headline)
+                Text("L’association est déclarée par l’opérateur. L’observation CDP est en lecture seule, limitée aux onglets ouverts et ne prouve ni admission du message ni retour MCP.").font(.callout).foregroundStyle(.secondary)
+                Toggle("Activer l’observation CDP opt-in", isOn: $app.claudeObserverEnabledDraft)
+                    .disabled(app.claudeSessionsBusy)
+                HStack(spacing: 12) {
+                    TextField("Port CDP local", text: $app.claudeObserverPort).frame(width: 140).textFieldStyle(.roundedBorder)
+                    TextField("Intervalle en secondes (15–3 600)", text: $app.claudeObserverInterval).frame(width: 260).textFieldStyle(.roundedBorder)
+                    Button("Enregistrer") { app.configureClaudeObserver(enabled: app.claudeObserverEnabledDraft) }
+                        .disabled(app.claudeSessionsBusy)
+                    if app.claudeSessionsBusy { ProgressView().controlSize(.small) }
+                }
+                let lastRead = (route["last_refresh_at"] as? Double).flatMap { $0.isFinite && $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
+                Text("État : \(route["refresh_status"] as? String ?? status["status"] as? String ?? "inconnu") · instance : \(route["instance_status"] as? String ?? "inconnue") · couverture : \(route["coverage"] as? String ?? "open_tabs_only")").font(.caption).foregroundStyle(.secondary)
+                Text("État du rattachement local : \(binding["status"] as? String ?? "inconnu")").font(.caption).foregroundStyle(.secondary)
+                if let lastRead { Text("Dernière lecture de la route : \(localDateTime(lastRead))").font(.caption).foregroundStyle(.secondary) }
+                if let next = route["next_refresh_at"] as? Double, next.isFinite, next > 0 {
+                    Text("Prochaine observation au plus tôt : \(localDateTime(Date(timeIntervalSince1970: next)))").font(.caption).foregroundStyle(.secondary)
+                }
+                Divider()
+                Text("Associer un chat déjà ouvert dans Claude Desktop").font(.callout.weight(.semibold))
+                TextField("UUID du chat", text: $app.claudeSessionChatID).textFieldStyle(.roundedBorder)
+                Toggle("Je confirme que ce chat correspond à une session ouverte dans Claude Desktop", isOn: $app.claudeSessionConfirmed)
+                    .disabled(app.claudeSessionsBusy)
+                HStack {
+                    Button("Associer la session") { app.registerClaudeSession() }
+                        .disabled(app.claudeSessionsBusy || !app.claudeSessionConfirmed)
+                    Button("Retirer l’association") { app.registerClaudeSession(remove: true) }
+                        .disabled(app.claudeSessionsBusy)
+                    Button("Actualiser maintenant") { app.refreshClaudeSessions() }
+                        .disabled(app.claudeSessionsBusy)
+                }
+                if !app.claudeSessionsNote.isEmpty { Text(app.claudeSessionsNote).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+                if sessions.isEmpty {
+                    Text("Aucune session enregistrée.").font(.callout).foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(sessions.enumerated()), id: \.offset) { _, session in
+                        claudeSessionSummary(session)
+                    }
+                }
+                let capabilities = status["capabilities"] as? [String: Any] ?? [:]
+                if capabilities["action_eligible"] as? Bool != true {
+                    Text("Aucune action de reprise n’est proposée : la pilotabilité, l’admission et le retour MCP restent des capacités distinctes.").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
