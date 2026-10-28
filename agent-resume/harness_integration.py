@@ -275,7 +275,7 @@ ASI1_START = '# BEGIN REPRISE ASI1 EFFORT'
 ASI1_END = '# END REPRISE ASI1 EFFORT'
 ASI1_PLUGIN_START = '# BEGIN REPRISE ASI1 EFFORT PLUGIN'
 ASI1_PLUGIN_END = '# END REPRISE ASI1 EFFORT PLUGIN'
-ASI1_ROUTES = ('asi-cloud', 'asi-cloud-planner')
+ASI1_ROUTES = ('asi-cloud',)
 ASI1_PLUGIN = 'asi1-orchestrator-effort.cjs'
 
 
@@ -290,7 +290,7 @@ def _route_bounds(lines, route):
             end = index + 1
             while end < len(lines):
                 raw = lines[end].rstrip('\n')
-                if raw.strip() and _indent(raw) == 6 and not raw.lstrip().startswith('-'):
+                if raw.strip() and _indent(raw) <= 6 and not raw.lstrip().startswith('#'):
                     break
                 end += 1
             return index, end
@@ -402,11 +402,11 @@ def apply_asi1_effort(text, old, enable):
         if compat is None:
             route_end = _route_bounds(lines, route)[1]
             block = [
+                '        ' + ASI1_START + '\n',
                 '        compat:\n',
-                '          ' + ASI1_START + '\n',
                 '          supportsReasoningEffort: true\n',
                 '          supportsDeveloperRole: false\n',
-                '          ' + ASI1_END + '\n',
+                '        ' + ASI1_END + '\n',
             ]
             lines[route_end:route_end] = block
             blocks.append(''.join(block))
@@ -514,7 +514,6 @@ def apply_asi1_preset(text, old, enable, plugin_path):
         indent + '    effort: low\n',
         indent + '    providers:\n',
         indent + '      - asi-cloud\n',
-        indent + '      - asi-cloud-planner\n',
         indent + '    models:\n',
         indent + '      - asi1\n',
         indent + ASI1_PLUGIN_END + '\n',

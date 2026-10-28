@@ -105,10 +105,10 @@ Installation :
   sous `PROFIL/.reprise/plugins/` ;
 - une entrée marquée est insérée dans la liste `plugins` du preset
   `asi1-orchestrator` : elle ne s’applique qu’à ce mode, pas aux autres sessions ;
-- si `llm-pi-ai` ne les déclare pas déjà, deux blocs marqués
-  `# BEGIN/END REPRISE ASI1 EFFORT` ajoutent `reasoningEfforts` (low/medium/high)
-  et `supportsReasoningEffort` / `supportsDeveloperRole` sur `asi1` pour
-  `asi-cloud` et, lorsqu’elle existe, `asi-cloud-planner` ;
+- si `llm-pi-ai` ne les déclare pas déjà, un bloc marqué
+  `# BEGIN/END REPRISE ASI1 EFFORT` ajoute `reasoningEfforts` (low/medium/high)
+  et `supportsReasoningEffort` / `supportsDeveloperRole` sur `asi1` pour la
+  route directe `asi-cloud` ;
 - une déclaration ou une entrée de preset déjà présente hors marqueurs n’est
   ni adoptée ni réécrite. Elle reste au propriétaire du profil et n’est pas retirée.
 
@@ -116,8 +116,9 @@ Le retrait enlève le plugin, l’entrée de preset et uniquement les blocs marq
 dont l’empreinte correspond au manifeste. Une modification d’un bloc marqué
 bloque l’installation comme le retrait. Le modèle par défaut, les autres presets
 et les workers ne sont pas modifiés. Le mode doit toujours être ouvert avec
-`asi-cloud/asi1` (ou `asi-cloud-planner/asi1`) ; le plugin garantit alors
-`reasoning_effort=low`.
+`asi-cloud/asi1` ; le plugin garantit alors `reasoning_effort=low`. Le provider
+proxy planner n'est pas inclus dans la configuration active : CUDOS a confirmé
+que son planner n'est pas implémenté.
 
 Comme pour la continuation, le plan et les empreintes prouvent la configuration
 écrite, pas son chargement par Harness. Le client doit recharger le profil pour

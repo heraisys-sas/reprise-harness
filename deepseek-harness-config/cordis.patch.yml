@@ -107,32 +107,6 @@
           supportsStore: false
           supportsReasoningEffort: true
           supportsDeveloperRole: false
-      asi-cloud-planner:
-        displayName: ASI:Cloud — planner (proxy local 8481)
-        api: openai-completions
-        baseURL: http://127.0.0.1:8481/v1
-        apiKeyEnv: ASI_API_KEY
-        headers:
-          x-asi-planner: "1"
-        cacheRetention: long
-        models:
-          - id: asi1-mini
-            contextWindow: 128000
-            maxTokens: 4096
-          - id: asi1
-            contextWindow: 128000
-            maxTokens: 4096
-            reasoningEfforts:
-              low: low
-              medium: medium
-              high: high
-        retryPolicy:
-          mode: normal
-          maxRetries: 0
-        compat:
-          supportsUsageInStreaming: true
-          supportsStore: false
-          supportsLongCacheRetention: true
           supportsReasoningEffort: true
           supportsDeveloperRole: false
 - id: ui-chat
@@ -279,7 +253,6 @@
               effort: low
               providers:
                 - asi-cloud
-                - asi-cloud-planner
               models:
                 - asi1
           - id: tool-plugin-manager

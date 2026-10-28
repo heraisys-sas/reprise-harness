@@ -138,8 +138,6 @@ struct Integrations: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            ProxyService(app: app)
-            Divider()
             SchedulerService(app: app)
             Text("L’installation écrit la configuration et les consignes du profil choisi. Elle ne démarre aucun service et n’effectue aucune inférence.").foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 10) {
