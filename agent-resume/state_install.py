@@ -13,9 +13,14 @@ import uuid
 
 MARKER = '.reprise-state.json'
 FORMAT = 1
-# Versions de schéma SQLite acceptées à l'import : une base marquée au-delà
-# de la version supportée vient d'un build plus récent → refus explicite.
-SUPPORTED_SCHEMA_VERSION = 2
+# Version de schéma SQLite maximale acceptée à l'import : suit les modules
+# de journal (routing_events.VERSION / external_rankings.VERSION) ; une base
+# marquée au-delà vient d'un build plus récent → refus explicite.
+try:
+    from routing_events import VERSION as _ROUTING_VERSION
+    SUPPORTED_SCHEMA_VERSION = max(2, _ROUTING_VERSION)
+except ImportError:  # import de state hors bundle runtime
+    SUPPORTED_SCHEMA_VERSION = 2
 
 
 def initialized(path):

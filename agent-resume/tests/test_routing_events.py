@@ -51,7 +51,7 @@ class RoutingEventsTests(unittest.TestCase):
         db.execute('ALTER TABLE routing_events DROP COLUMN admissibility')
         db.execute('PRAGMA user_version=2')
         routing_events.setup(db)
-        self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 3)
+        self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 4)
         columns = {row[1] for row in db.execute('PRAGMA table_info(routing_events)')}
         self.assertIn('account_key', columns)
         self.assertIn('admissibility', columns)

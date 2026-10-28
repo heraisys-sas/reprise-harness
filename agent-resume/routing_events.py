@@ -16,7 +16,7 @@ import json
 import os
 import time
 
-VERSION = 3
+VERSION = 4
 TYPES = ('routed', 'explicit', 'routing_substituted')
 DEFAULT_RETENTION_DAYS = 180
 # Classes de facturation : free (local), included (abonnement confirmé),
@@ -84,6 +84,9 @@ def setup(db):
         db.execute('CREATE INDEX IF NOT EXISTS route_admissibility_class ON route_admissibility(billing_class)')
         db.execute("INSERT OR IGNORE INTO routing_meta VALUES ('local_salt',?)", (os.urandom(32).hex(),))
         db.execute("INSERT OR IGNORE INTO routing_meta VALUES ('retention_days',?)", (str(DEFAULT_RETENTION_DAYS),))
+        # v4 : cache externe (tables additives IF NOT EXISTS, données préservées).
+        import external_rankings
+        external_rankings.setup(db)
         db.execute(f'PRAGMA user_version = {VERSION}')
     return version
 
