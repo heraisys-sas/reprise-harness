@@ -160,3 +160,40 @@ class ExternalRankingsTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class OpenRouterAdapterTests(unittest.TestCase):
+    def test_unwrap_data_envelope(self):
+        import openrouter_adapter as adapter
+        self.assertEqual(adapter.unwrap({'data': [1, 2]}), [1, 2])
+        self.assertEqual(adapter.unwrap([1]), [1])
+        with self.assertRaises(ValueError):
+            adapter.unwrap({'results': [1]})
+        with self.assertRaises(ValueError):
+            adapter.unwrap({'data': 'DROP TABLE'})
+
+    def test_normalize_model_replaces_slashes(self):
+        import openrouter_adapter as adapter
+        self.assertEqual(adapter.normalize_model('openai/gpt-6'), 'openai_gpt-6')
+        with self.assertRaises(ValueError):
+            adapter.normalize_model(42)
+
+    def test_transform_full_payload_passes_ingest(self):
+        import openrouter_adapter as adapter
+        db = memory_db()
+        payload = {'data': [
+            {'id': 'openai/gpt-6', 'pricing': {'prompt': '0.0000025'},
+             'benchmarks': {'artificial_analysis': {'intelligence_index': 71.2}}},
+            {'id': 'evil/model', 'pricing': {'prompt': "1'; DROP TABLE x--"}},
+            {'id': 'no-price/model'},
+        ]}
+        records = adapter.transform(payload)
+        # Double défense : l'adaptateur ignore l'entrée malformée (float() échoue),
+        # et ingest revaliderait de toute façon chaque enregistrement.
+        self.assertEqual(len(records), 2)
+        accepted, rejected = external_rankings.ingest(db, 'openrouter', records)
+        self.assertEqual((accepted, rejected), (2, 0))
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM external_rankings').fetchone()[0],
+                         accepted)
+        self.assertEqual(db.execute('SELECT model FROM external_rankings').fetchall()[0][0],
+                         'openai_gpt-6')
