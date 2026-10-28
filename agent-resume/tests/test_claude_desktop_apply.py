@@ -102,11 +102,6 @@ class TargetSelection(unittest.TestCase):
             client.navigate(URL)
         self.assertNotIn('private', str(caught.exception))
 
-    def test_http_discovery_refuses_redirects(self):
-        with self.assertRaises(transport.WSError):
-            transport._NoRedirect().redirect_request(None, None, None, None, None, None)
-
-
 class ApplyOrchestration(unittest.TestCase):
     def run_apply(self, snapshots=None, send=None, prepare=True, source=None, **kwargs):
         self.client = Mock()

@@ -6,6 +6,8 @@ explicitly selected page and never launches or stops a browser during apply.
 from __future__ import annotations
 
 import hashlib
+from http.client import HTTPException, HTTPResponse
+import io
 import json
 import math
 import os
@@ -13,7 +15,6 @@ import re
 import socket
 import time
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
 from claude_desktop import validate_chat_id
 from websocket_transport import WebSocketTransport
@@ -79,15 +80,73 @@ class WebSocket(WebSocketTransport):
         self.sock.close()
 
 
-class _NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, *args, **kwargs):
-        raise WSError("Redirection CDP refusée")
+class _DeadlineHTTPReader(io.RawIOBase):
+    """Let stdlib HTTP parsing use one deadline, including slow headers/body."""
+    def __init__(self, sock, deadline):
+        self.sock, self.deadline = sock, deadline
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Délai des métadonnées CDP dépassé")
+        self.sock.settimeout(remaining)
+        return self.sock.recv_into(buffer)
+
+    def makefile(self, mode):
+        # HTTPResponse only needs a buffered binary reader; the caller owns socket.
+        return io.BufferedReader(self)
+
+
+def local_json(port, path, *, timeout=1.0):
+    _port(port)
+    if path not in ('/json/list', '/json/version'):
+        raise WSError("Endpoint CDP metadata invalide")
+    if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("Délai CDP positif requis")
+    deadline = time.monotonic() + timeout
+    # Numeric loopback only, no proxy, redirect, credentials or background worker.
+    with socket.create_connection(('127.0.0.1', port), timeout=timeout) as sock:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Délai des métadonnées CDP dépassé")
+        sock.settimeout(remaining)
+        sock.sendall(f'GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n'.encode('ascii'))
+        try:
+            with HTTPResponse(_DeadlineHTTPReader(sock, deadline)) as response:
+                response.begin()
+                if response.status != 200:
+                    raise WSError("Réponse HTTP CDP refusée")
+                data = response.read(WebSocketTransport.LIMIT + 1)
+        except HTTPException as error:
+            raise WSError("Réponse HTTP CDP invalide") from error
+    if len(data) > WebSocketTransport.LIMIT:
+        raise WSError("Métadonnées CDP trop volumineuses")
+    try:
+        return json.loads(data)
+    except (ValueError, RecursionError) as error:
+        raise WSError("JSON CDP invalide") from error
+
+
+def read_targets(port, *, timeout=1.0):
+    targets = local_json(port, '/json/list', timeout=timeout)
+    if not isinstance(targets, list) or len(targets) > 100 or not all(isinstance(t, dict) for t in targets):
+        raise WSError("Liste CDP invalide")
+    return targets
 
 
 class CDP:
-    def __init__(self, port=DEFAULT_PORT, timeout=10.0, *, chat_id=None):
+    def __init__(self, port=DEFAULT_PORT, timeout=10.0, *, chat_id=None, target_id=None):
         self.port, self.timeout, self._id = _port(port), timeout, 0
-        page = self._pick_page(self._targets(), chat_id)
+        targets = self._targets()
+        if target_id is None:
+            page = self._pick_page(targets, chat_id)
+        else:
+            matches = [t for t in targets if t.get('id') == target_id and t.get('type') == 'page'
+                       and _page_path(t.get('url')) == '/chat/' + str(chat_id)]
+            page = matches[0] if len(matches) == 1 else None
         if page is None:
             raise WSError("Page claude.ai unique requise")
         self.target_id = page.get("id")
@@ -106,15 +165,7 @@ class CDP:
         self.ws = WebSocket("127.0.0.1", self.port, endpoint.path, timeout=timeout)
 
     def _targets(self):
-        opener = build_opener(ProxyHandler({}), _NoRedirect())
-        with opener.open(f"http://127.0.0.1:{self.port}/json/list", timeout=self.timeout) as response:
-            data = response.read(WebSocketTransport.LIMIT + 1)
-        if len(data) > WebSocketTransport.LIMIT:
-            raise WSError("Liste CDP trop volumineuse")
-        targets = json.loads(data)
-        if not isinstance(targets, list) or len(targets) > 100 or not all(isinstance(t, dict) for t in targets):
-            raise WSError("Liste CDP invalide")
-        return targets
+        return read_targets(self.port, timeout=self.timeout)
 
     @staticmethod
     def _pick_page(targets, chat_id=None):

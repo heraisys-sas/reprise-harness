@@ -28,6 +28,11 @@ class TaskStore:
             acknowledged INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(scope,request_key))''')
         self.db.commit()
 
+    def register_session(self, chat_id):
+        from claude_session_store import SessionStore
+        session = SessionStore(self.db, self.scope).register(chat_id, source='desktop_mcp_declared')
+        return {'status': 'registered', **session}
+
     def close(self):
         self.db.close()
 
