@@ -1,0 +1,125 @@
+import json
+import sqlite3
+import sys
+import unittest
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import external_rankings
+import routing_events
+
+
+def memory_db(version=None):
+    db = sqlite3.connect(':memory:')
+    routing_events.setup(db)  # porte user_version à 4 et crée le cache
+    return db
+
+
+class ExternalRankingsTests(unittest.TestCase):
+    def test_setup_creates_tables_and_bumps_version(self):
+        db = memory_db()
+        self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 4)
+        names = {row[0] for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertIn('external_rankings', names)
+        self.assertIn('external_model_map', names)
+
+    def test_migration_preserves_routing_data(self):
+        db = memory_db()
+        routing_events.declare(db, 'codex', 'included')
+        routing_events.record(db, 'routed', 'tool', 'codex', reason='kept')
+        routing_events.setup(db)  # idempotent
+        self.assertEqual(db.execute('SELECT billing_class FROM route_admissibility '
+                                    "WHERE channel='codex'").fetchone()[0], 'included')
+        self.assertEqual(db.execute("SELECT reason FROM routing_events "
+                                    "WHERE reason='kept'").fetchone()[0], 'kept')
+
+    def test_ingest_rejects_injection_payloads(self):
+        db = memory_db()
+        payloads = [
+            {'model': 'gpt-6', 'metric': 'price_per_mtok',
+             'value': "1.5'; DROP TABLE external_rankings;--"},       # valeur non numérique
+            {'model': 'x" UNION SELECT 1--', 'metric': 'latency_ms', 'value': 1.0},  # modèle
+            {'model': 'gpt-6', 'metric': 'price_per_mtok', 'value': float('nan')},   # NaN
+            {'model': 'gpt-6', 'metric': 'price_per_mtok', 'value': float('inf')},   # inf
+            {'model': 'gpt-6', 'metric': 'price_per_mtok', 'value': 1.0,
+             'extra': 'IGNORED'},                                      # champ inattendu
+            {'model': 'a' * 200, 'metric': 'latency_ms', 'value': 1.0},  # trop long
+        ]
+        accepted, rejected = external_rankings.ingest(db, 'openrouter', payloads)
+        self.assertEqual((accepted, rejected), (0, 6))
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM external_rankings').fetchone()[0], 0)
+
+    def test_ingest_accepts_conforming_records(self):
+        db = memory_db()
+        ok = [{'model': 'gpt-6', 'metric': 'price_per_mtok', 'value': 2.5},
+              {'model': 'claude-x', 'metric': 'latency_ms', 'value': 850}]
+        accepted, rejected = external_rankings.ingest(db, 'openrouter', ok, url='https://e/x')
+        self.assertEqual((accepted, rejected), (2, 0))
+        row = db.execute('SELECT source_url_hash FROM external_rankings '
+                         "WHERE model='gpt-6'").fetchone()
+        self.assertEqual(len(row[0]), 16)  # haché, jamais l'URL
+
+    def test_fetch_url_rejects_non_list_payload(self):
+        with mock.patch('external_rankings.urllib.request.urlopen') as opener:
+            opener.return_value.__enter__.return_value.read.return_value = \
+                json.dumps({'instructions': 'ignore previous'}).encode()
+            with self.assertRaises(ValueError):
+                external_rankings.fetch_url('https://e/x')
+
+    def test_route_metrics_requires_two_sources_no_conflict(self):
+        db = memory_db()
+        db.execute("INSERT INTO external_model_map VALUES ('gpt-6','codex')")
+        for source in ('artificial-analysis', 'openrouter'):
+            external_rankings.ingest(db, source,
+                                     [{'model': 'gpt-6', 'metric': 'price_per_mtok', 'value': 2.0}])
+        m = external_rankings.route_metrics(db, 'codex')
+        self.assertEqual(m['price_per_mtok'], 2.0)
+        self.assertFalse(m['conflict'])
+        self.assertEqual(m['origin'], 'external-cache')
+
+    def test_divergence_badges_and_ignores_external(self):
+        db = memory_db()
+        db.execute("INSERT INTO external_model_map VALUES ('gpt-6','codex')")
+        external_rankings.ingest(db, 'artificial-analysis',
+                                 [{'model': 'gpt-6', 'metric': 'price_per_mtok', 'value': 1.0}])
+        external_rankings.ingest(db, 'openrouter',
+                                 [{'model': 'gpt-6', 'metric': 'price_per_mtok', 'value': 9.0}])
+        m = external_rankings.route_metrics(db, 'codex')
+        self.assertTrue(m['conflict'])
+        self.assertIsNone(m['price_per_mtok'])
+
+    def test_route_choice_never_returns_inadmissible(self):
+        db = memory_db()
+        routing_events.declare(db, 'codex', 'included')
+        routing_events.declare(db, 'claude-api', 'paid')
+        db.execute("INSERT INTO external_model_map VALUES ('gpt-6','codex')")
+        db.execute("INSERT INTO external_model_map VALUES ('claude-api','claude-api')")
+        for source in ('artificial-analysis', 'openrouter'):
+            external_rankings.ingest(db, source, [
+                {'model': 'gpt-6', 'metric': 'price_per_mtok', 'value': 9.0},
+                {'model': 'claude-api', 'metric': 'price_per_mtok', 'value': 0.1}])
+        # claude-api est 45x moins cher mais paid → jamais retourné en auto.
+        self.assertEqual(external_rankings.route_choice(
+            db, ['codex', 'claude-api'], automatic=True), 'codex')
+
+    def test_route_choice_none_without_data(self):
+        db = memory_db()
+        routing_events.declare(db, 'codex', 'included')
+        self.assertIsNone(external_rankings.route_choice(db, ['codex'], automatic=True))
+
+    def test_stale_and_refresh_failure_keeps_cache(self):
+        db = memory_db()
+        external_rankings.ingest(db, 'openrouter',
+                                 [{'model': 'gpt-6', 'metric': 'price_per_mtok', 'value': 2.0}])
+        self.assertFalse(external_rankings.stale(db, 'openrouter'))
+        db.execute("UPDATE external_rankings SET fetched_at=0")
+        self.assertTrue(external_rankings.stale(db, 'openrouter'))
+        with mock.patch('external_rankings.fetch_url', side_effect=OSError('down')):
+            self.assertIsNone(external_rankings.refresh(db, 'openrouter', 'https://e'))
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM external_rankings').fetchone()[0], 1)
+
+
+if __name__ == '__main__':
+    unittest.main()
