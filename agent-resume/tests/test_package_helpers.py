@@ -37,6 +37,33 @@ class PackageHelpersTests(unittest.TestCase):
                                       cwd=root, capture_output=True, text=True)
             self.assertEqual(imported.returncode, 0, imported.stderr)
             self.assertTrue((root / 'install-ux-review.py').is_file())
+            project = folder / 'project'
+            project.mkdir()
+            quick_state, expert_state = folder / 'temporary-state/quick', folder / 'temporary-state/expert'
+            environment = dict(os.environ)
+            for key in ('AGENT_RESUME_STATE', 'PYTHONPATH', 'REPRISE_ALLOW_NEW_STATE'):
+                environment.pop(key, None)
+            requests = [
+                {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {}},
+                {'jsonrpc': '2.0', 'method': 'notifications/initialized'},
+                {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list', 'params': {}},
+            ]
+            launched = subprocess.run([sys.executable, str(root / 'claude_mcp.py'),
+                                        '--project-root', str(project), '--state', str(quick_state),
+                                        '--expert-state', str(expert_state), '--enable-await'],
+                                       cwd=folder, env=environment,
+                                       input='\n'.join(json.dumps(message) for message in requests) + '\n',
+                                       capture_output=True, text=True, timeout=20)
+            self.assertEqual(launched.returncode, 0, launched.stderr)
+            replies = [json.loads(line) for line in launched.stdout.splitlines()]
+            initialized = next(message['result'] for message in replies if message.get('id') == 1)
+            tools = next(message['result']['tools'] for message in replies if message.get('id') == 2)
+            self.assertEqual(initialized['serverInfo']['name'], 'reprise-harness')
+            self.assertIn('await_task', {tool['name'] for tool in tools})
+            self.assertTrue((quick_state / 'quick.sqlite').is_file())
+            self.assertTrue((expert_state / 'expert.sqlite').is_file())
+            for module in ('routing_events.py', 'external_rankings.py', 'openrouter_adapter.py', 'artificial_analysis_adapter.py'):
+                self.assertTrue((root / module).is_file())
             self.assertFalse((root / 'state').exists())
             self.assertFalse((root / 'tests').exists())
             self.assertFalse((root / 'quick-entry-com.example.reprise.plist').exists())
