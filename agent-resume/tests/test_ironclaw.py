@@ -115,7 +115,9 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(result['response'], 'Réponse')
         self.assertFalse(result['resumable'])
         self.assertFalse(result['automatic_fallback'])
-        self.assertEqual(result['model'], 'ironclaw-distant')
+        # Le moteur n'est plus une valeur en dur : None si la configuration
+        # distante n'est pas lisible (config incomplète dans ce test).
+        self.assertIsNone(result['model'])
         self.assertIn('kind', result)
 
     def test_unavailable_is_mapped_to_status(self):
@@ -154,3 +156,45 @@ class ValuesTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class EngineDiscoveryTests(unittest.TestCase):
+    """Le moteur distant est interrogé, jamais deviné."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        keyfile = Path(self.temp.name) / 'id'
+        keyfile.write_bytes(b'\n-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n')
+        keyfile.chmod(0o600)
+        self.values = {'host': 'instance.example', 'port': '29403', 'user': 'agent',
+                       'key': str(keyfile)}
+
+    def test_reads_provider_and_model_from_llm_default(self):
+        proc = _Proc(stdout='provider_id = "morph"\nmodel = "morph-dsv41flash-abliterated"\n')
+        with patch.object(ironclaw, '_run', return_value=proc):
+            found = ironclaw.engine('ssh', self.values)
+        self.assertEqual(found, {'provider_id': 'morph', 'model': 'morph-dsv41flash-abliterated'})
+
+    def test_unreadable_config_returns_none_never_invents(self):
+        with patch.object(ironclaw, '_run', return_value=_Proc(stdout='', returncode=1)):
+            self.assertIsNone(ironclaw.engine('ssh', self.values))
+        with patch.object(ironclaw, '_run', return_value=_Proc(stdout='\n  \n')):
+            self.assertIsNone(ironclaw.engine('ssh', self.values))
+
+    def test_command_restricts_output_to_llm_default_keys(self):
+        captured = {}
+        def fake_run(command, timeout):
+            captured['command'] = command
+            return _Proc(stdout='')
+        with patch.object(ironclaw, '_run', side_effect=fake_run):
+            ironclaw.engine('ssh', self.values)
+        remote = captured['command'][-1]
+        self.assertIn('[llm.default]', remote.replace('\\', ''))
+        self.assertIn('provider_id', remote)
+        self.assertIn('config.toml', remote)
+
+    def test_submit_no_longer_hardcodes_model_name(self):
+        with patch.object(ironclaw, '_run', return_value=_Proc(stdout='PONG\n')):
+            result = ironclaw.submit('ssh', self.values, 'PING')
+        self.assertNotIn('model', result)
