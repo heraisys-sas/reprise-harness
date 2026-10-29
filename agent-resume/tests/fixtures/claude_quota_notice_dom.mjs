@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
+import {readFileSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
 import vm from 'node:vm';
 
@@ -55,5 +55,5 @@ export function runQuotaFixtures(script) {
 }
 
 if (typeof process !== 'undefined' && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  console.log(JSON.stringify(runQuotaFixtures(JSON.parse(await readFile(0, 'utf8')))));
+  console.log(JSON.stringify(runQuotaFixtures(JSON.parse(readFileSync(0, 'utf8')))));
 }
