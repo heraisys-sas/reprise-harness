@@ -21,6 +21,7 @@ def schema(properties, required=None):
 
 
 INBOX_TOOLS = [
+    {'name': 'register_session', 'description': 'Associate an existing chat initiated in Claude Desktop. Origin and UUID are declarations, not native attestation; never authorizes a resume.', 'inputSchema': schema({'chat_id': TEXT})},
     {'name': 'get_task', 'description': 'Claim an explicitly identified project task. Persist claim_key before calling; reuse after restart.', 'inputSchema': schema({'request_key': TEXT, 'claim_key': TEXT})},
     {'name': 'submit_result', 'description': 'Complete a claimed task. Only this operation marks completion; identical retries are idempotent.', 'inputSchema': schema({'request_key': TEXT, 'attempt_id': TEXT, 'answer': {'type': 'string', 'minLength': 1, 'maxLength': 2_000_000}})},
     {'name': 'get_result', 'description': 'Retrieve a durable result. Acknowledge explicitly only after safely retaining it.', 'inputSchema': schema({'request_key': TEXT, 'acknowledge': {'type': 'boolean', 'default': False}, 'view': {'type': 'string', 'enum': ['receipt','page','full'], 'default': 'receipt'}, **PAGE_PROPERTIES}, ['request_key'])},
@@ -68,6 +69,8 @@ class ClaudeMCP:
                 raise ValueError('Compact calls require a bounded JSON-RPC id')
             if name == 'get_task':
                 result = self.tasks.claim(**args)
+            elif name == 'register_session':
+                result = self.tasks.register_session(**args)
             elif name == 'submit_result':
                 result = self.tasks.submit(**args)
             else:

@@ -13,6 +13,15 @@ import uuid
 
 MARKER = '.reprise-state.json'
 FORMAT = 1
+# Version de schéma SQLite maximale acceptée à l'import : suit les modules
+# de journal (routing_events.VERSION / external_rankings.VERSION) ; une base
+# marquée au-delà vient d'un build plus récent → refus explicite.
+try:
+    from external_rankings import VERSION as _CACHE_VERSION
+    from routing_events import VERSION as _ROUTING_VERSION
+    SUPPORTED_SCHEMA_VERSION = max(2, _ROUTING_VERSION, _CACHE_VERSION)
+except ImportError:  # import de state hors bundle runtime
+    SUPPORTED_SCHEMA_VERSION = 2
 
 
 def initialized(path):
@@ -99,8 +108,10 @@ def _copy(source, destination, inventory):
             sqlite_header = handle.read(16) == b'SQLite format 3\x00'
         if sqlite_header or entry.suffix in ('.sqlite', '.db', '.sqlite3'):
             with closing(sqlite3.connect(entry.as_uri() + '?mode=ro', uri=True, timeout=2)) as original:
-                if original.execute('PRAGMA user_version').fetchone()[0] != 0:
-                    raise ValueError('Version de schéma SQLite inconnue : import refusé.')
+                version = original.execute('PRAGMA user_version').fetchone()[0]
+                if version > SUPPORTED_SCHEMA_VERSION:
+                    raise ValueError(f'Version de schéma SQLite {version} postérieure au support '
+                                     f'({SUPPORTED_SCHEMA_VERSION}) : import refusé.')
                 with closing(sqlite3.connect(output)) as copied:
                     original.backup(copied)
                     if copied.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:

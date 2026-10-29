@@ -1,0 +1,52 @@
+{
+  "kind": "operator_authorized_live_observation",
+  "date": "2026-10-27",
+  "surface": "claude.ai in dedicated Chrome",
+  "transport": "claude_desktop_apply.apply over loopback CDP",
+  "transport_source_sha256": "72b406c4f1c165bdf14ac041516492244f5863b3d37521815d7115feec248ca1",
+  "target_identity": "exact existing chat UUID checked; identifier omitted",
+  "prompt_sha256": "b89414ef6194ea624c35e2e5a0cd48ec33c5ab60036e1684d228af731006a257",
+  "first_call": {
+    "stage": "brouillon",
+    "staged": false,
+    "dispatch_attempted": false
+  },
+  "correction": "Recognize only the observed empty ProseMirror placeholder structure",
+  "effective_dispatch_attempts": 1,
+  "transport_result": {
+    "ok": true,
+    "stage": "envoyé",
+    "staged": null,
+    "dispatch_attempted": true,
+    "click_observed": true,
+    "admission_confirmed": false,
+    "response_received": false,
+    "lifecycle_supported": false,
+    "lifecycle_reason": "lifecycle_unverified",
+    "detail": {
+      "expected_sha256": "b89414ef6194ea624c35e2e5a0cd48ec33c5ab60036e1684d228af731006a257"
+    }
+  },
+  "independent_readback": {
+    "observed_at": "2026-10-27T18:54:43.154853+00:00",
+    "exact_chat": true,
+    "exact_prompt_visible": true,
+    "assistant_follows_prompt": true,
+    "response_marker_present": true,
+    "stop_button_present": false,
+    "response_sha256": "df2f85bfa4d5f65c6e2622a243262dd1a0b5562248f7d0823b5b7d2240cec5e4"
+  },
+  "qualification": {
+    "targeted_web_continuation_observed": true,
+    "native_paused_turn_resume_proven": false,
+    "mcp_submit_result_received": false,
+    "automatic_quota_recovery_qualified": false
+  },
+  "limitations": [
+    "One authorized live session, not a browser version compatibility guarantee",
+    "Readback performed separately by coordinator, not implemented in transport",
+    "No native Continue action tested",
+    "No MCP submit_result or automatic quota recovery tested",
+    "Underlying remote work and tests mentioned by Claude not independently verified"
+  ]
+}

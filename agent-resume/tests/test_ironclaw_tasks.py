@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 import sqlite3
 import sys
@@ -10,7 +11,7 @@ import subprocess
 import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ironclaw_ssh import Endpoint, ProbeError, request
-from ironclaw_tasks import Tasks, TaskError
+from ironclaw_tasks import MAX_TIMELINE_PAGES, Tasks, TaskError
 
 
 class TasksTests(unittest.TestCase):
@@ -65,6 +66,48 @@ class TasksTests(unittest.TestCase):
                     db.execute("UPDATE ironclaw_tasks SET identity=?,state='finished' WHERE request_key='parent'",
                                (tasks._identity_legacy('question'),))
                 self.assertEqual(tasks.followup('child', 'parent', 'next question', allow_submit=True)['state'], 'pending')
+            finally:
+                db.close()
+
+    def test_admission_holds_one_immediate_transaction_across_legacy_migration(self):
+        self.submit()
+        with self.db:
+            self.db.execute("UPDATE ironclaw_tasks SET identity=? WHERE request_key='key'",
+                            (self.tasks._identity_legacy('question'),))
+        statements = []
+        self.db.set_trace_callback(lambda sql: statements.append((sql, self.db.in_transaction)))
+        self.addCleanup(self.db.set_trace_callback, None)
+        self.assertEqual(self.submit()['state'], 'pending')
+        begins = [sql for sql, _ in statements if sql.strip().upper().startswith('BEGIN IMMEDIATE')]
+        self.assertEqual(len(begins), 1)
+        duplicate_check = [inside for sql, inside in statements if 'state IN (' in sql and 'prepared' in sql]
+        self.assertTrue(duplicate_check)
+        self.assertTrue(all(duplicate_check), 'la détection de doublon doit voir la transaction ouverte')
+        self.assertTrue(self.db.execute("SELECT identity FROM ironclaw_tasks WHERE request_key='key'").fetchone()[0].startswith('v1:'))
+
+    def test_nested_write_section_never_begins_a_second_transaction(self):
+        with self.db:
+            self.db.execute("UPDATE ironclaw_tasks SET state='prepared' WHERE request_key='absent'")
+            self.assertTrue(self.db.in_transaction)
+            with self.tasks._write_transaction() as owned:
+                owned.execute('INSERT OR REPLACE INTO ironclaw_tasks(request_key,identity,content,thread_action,message_action,state,acknowledged) VALUES(?,?,?,?,?,?,0)',
+                              ('nested', 'v1:x', 'q', 'a', 'b', 'prepared'))
+            self.assertTrue(self.db.in_transaction)
+        self.assertFalse(self.db.in_transaction)
+        self.assertEqual(self.db.execute("SELECT state FROM ironclaw_tasks WHERE request_key='nested'").fetchone(), ('prepared',))
+
+    def test_file_write_section_copies_connection_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = sqlite3.connect(Path(directory) / 'tasks.sqlite', timeout=.1)
+            db.row_factory = sqlite3.Row
+            try:
+                def transport(endpoint, method, path, payload=None, **kwargs):
+                    if path.endswith('/session'): return {'session_channel_extension_id': 'channel'}
+                    if path.endswith('/threads'): return {'thread': {'thread_id': 'thread'}}
+                    return {'thread_id': 'thread', 'run_id': 'run', 'status': 'queued'}
+                tasks = Tasks(db, self.endpoint, transport)
+                self.assertEqual(tasks.submit('key', 'question', allow_submit=True)['state'], 'pending')
+                self.assertFalse(db.in_transaction)
             finally:
                 db.close()
 
@@ -262,6 +305,58 @@ class TasksTests(unittest.TestCase):
             {'kind': 'tool_use', 'status': 'completed', 'turn_run_id': 'run'},
             {'kind': 'assistant', 'status': 'finalized', 'content': 'done', 'turn_run_id': 'run'}], 'next_cursor': None}]
         self.assertEqual(tasks.poll('key')['result'], 'done')
+
+    def paged(self, pages, requests):
+        def transport(endpoint, method, path, payload=None, **kwargs):
+            if path.endswith('/session'): return {'session_channel_extension_id': 'channel'}
+            if path.endswith('/threads'): return {'thread': {'thread_id': 'thread'}}
+            if '/timeline' not in path: return {'thread_id': 'thread', 'run_id': 'run', 'status': 'queued'}
+            match = re.search(r'[?&]cursor=([^&]+)', path)
+            cursor = match.group(1) if match else None
+            requests.append(cursor)
+            return pages[0 if cursor is None else int(cursor[1:])]
+        return transport
+
+    def long_timeline(self, length):
+        pages = [{'messages': [], 'next_cursor': f'c{i + 1}'} for i in range(length - 1)]
+        pages.append({'messages': [], 'next_cursor': None})
+        return pages
+
+    def test_timeline_budget_persists_cursor_and_resumes_without_error(self):
+        self.submit()
+        pages, requests = self.long_timeline(25), []
+        tasks = Tasks(self.db, self.endpoint, self.paged(pages, requests))
+        self.assertEqual(tasks.poll('key')['state'], 'pending')
+        self.assertEqual(len(requests), MAX_TIMELINE_PAGES)
+        self.assertEqual(tasks.poll('key')['state'], 'pending')
+        self.assertEqual(requests[MAX_TIMELINE_PAGES:], ['c19', 'c20', 'c21', 'c22', 'c23', 'c24'])
+        before = len(requests)
+        self.assertEqual(tasks.poll('key')['state'], 'pending')
+        self.assertEqual(requests[before:], ['c24'])
+
+    def test_resume_finds_final_only_in_pages_after_the_saved_cursor(self):
+        self.submit()
+        pages, requests = self.long_timeline(25), []
+        tasks = Tasks(self.db, self.endpoint, self.paged(pages, requests))
+        tasks.poll('key')
+        pages[24] = {'messages': [{'kind': 'assistant', 'status': 'finalized', 'content': 'done', 'turn_run_id': 'run'}],
+                     'next_cursor': None}
+        result = tasks.poll('key')
+        self.assertEqual(result['state'], 'finished')
+        self.assertEqual(result['result'], 'done')
+        self.assertEqual(requests[MAX_TIMELINE_PAGES:], ['c19', 'c20', 'c21', 'c22', 'c23', 'c24'])
+
+    def test_boundary_mismatch_falls_back_to_one_full_rescan(self):
+        self.submit()
+        pages, requests = self.long_timeline(21), []
+        tasks = Tasks(self.db, self.endpoint, self.paged(pages, requests))
+        tasks.poll('key')
+        pages[19] = {'messages': [{'kind': 'assistant', 'status': 'finalized', 'content': 'done', 'turn_run_id': 'run'}],
+                     'next_cursor': None}
+        result = tasks.poll('key')
+        self.assertEqual(result['result'], 'done')
+        self.assertEqual(requests[MAX_TIMELINE_PAGES], 'c19')
+        self.assertIsNone(requests[MAX_TIMELINE_PAGES + 1], 'curseur invalidé : rescan complet depuis la tête')
 
     def test_activity_on_next_page_after_finalized_is_not_the_end(self):
         self.submit()
