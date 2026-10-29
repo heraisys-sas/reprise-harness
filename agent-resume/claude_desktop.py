@@ -91,7 +91,7 @@ def status(db, state):
     """Read-only connection discovery, mirroring connection.status()."""
     row = db.execute("SELECT options FROM engine_settings WHERE engine='claude-desktop'").fetchone()
     configured = json.loads(row[0]).get('socket') if row else None
-    paths = [(str(DEFAULT_SOCKET), 'Serveur Quick Entry local'),
+    paths = [(str(DEFAULT_SOCKET), 'Socket par défaut du démon claude-desktopd'),
              (str(Path(state)/'claude-desktop.sock'), 'Serveur de supervision dédié')]
     if configured and configured not in {p for p, _ in paths}:
         paths.insert(0, (configured, 'Chemin enregistré'))
@@ -133,7 +133,7 @@ def probe(program, path, session=None):
         return {'connected': False, 'model_called': False, 'reason': error.reason}
     except (OSError, ValueError, TimeoutError):
         return {'connected': False, 'model_called': False,
-                'reason': 'Le serveur ne répond pas au protocole Quick Entry attendu.'}
+                'reason': 'Le service ne répond pas au protocole Quick Apply attendu.'}
     finally:
         if client:
             try:
@@ -145,7 +145,7 @@ def probe(program, path, session=None):
 def configure(db, program, path=None):
     """Persist an explicitly probed socket, or restore automatic discovery."""
     if path is None:
-        result = {'saved': True, 'reason': 'Détection automatique restaurée : socket Quick Entry local.'}
+        result = {'saved': True, 'reason': 'Détection automatique restaurée : socket du démon claude-desktopd.'}
     else:
         result = probe(program, path)
         if not result['connected']:
@@ -191,14 +191,14 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
         submitted = client.call('quick_entry/submit', payload_args)
         if submitted.get('status') != 'finished':
             return result | {'status': submitted.get('status', 'needs_review'),
-                             'reason': submitted.get('reason', 'Soumission Quick Entry non aboutie.')}
+                             'reason': submitted.get('reason', 'Soumission Quick Apply non aboutie.')}
         return result | {'status': 'finished', 'thread_id': submitted.get('submission_id'),
                          'resumable': False, 'model': 'claude-desktop', 'dispatch': submitted.get('dispatch'),
                          'response': None, 'admission_only': True, 'billing': 'Claude Desktop session; quota not reported'}
     except engines.Unavailable as error:
         return result | {'status': error.state, 'reason': error.reason}
     except (OSError, ValueError, TimeoutError):
-        return result | {'status': 'timed_out', 'reason': 'Endpoint Quick Entry indisponible ; aucune relance automatique.'}
+        return result | {'status': 'timed_out', 'reason': 'Endpoint Quick Apply indisponible ; aucune relance automatique.'}
     finally:
         if client:
             try:

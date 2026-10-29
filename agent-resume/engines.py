@@ -16,7 +16,7 @@ ENGINES = {
     'codex-parent': ('Codex · délégation au parent', 'Codex'),
     'harness-cli': ('DeepSeek Harness CLI', 'Harness'),
     'claude-code': ('Claude Code CLI', 'Claude Code'),
-    'claude-desktop': ('Claude Desktop · Quick Entry', 'Claude Desktop'),
+    'claude-desktop': ('Claude Desktop · Quick Apply', 'Claude Desktop'),
 }
 
 class Unavailable(ValueError):
@@ -187,7 +187,7 @@ def command(engine, task, program, values=None, automatic=False):
     if engine == 'claude-code':
         raise Unavailable('engine_unavailable', 'Adaptateur Claude Code non validé ; détection seule pour le moment.')
     if engine == 'claude-desktop':
-        raise Unavailable('engine_unavailable', 'Le endpoint Quick Entry utilise JSON-RPC, pas exec resume.')
+        raise Unavailable('engine_unavailable', 'Le endpoint Quick Apply utilise JSON-RPC, pas exec resume.')
     raise ValueError('Le serveur partagé utilise JSON-RPC, pas exec resume')
 
 
