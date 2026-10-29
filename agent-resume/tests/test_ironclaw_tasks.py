@@ -578,3 +578,17 @@ class ProviderRunStatusTests(unittest.TestCase):
             self.db.execute("UPDATE ironclaw_tasks SET state='needs_operator' WHERE request_key='key'")
         self.statuses = {'run': 'failed'}
         self.assertEqual(self.tasks.poll('key')['state'], 'needs_operator')
+
+    def test_reader_defect_is_persisted_and_visible_to_operator(self):
+        self.tasks.submit('key', 'question', allow_submit=True)
+        def broken(endpoint, thread):
+            raise OSError('SSE endpoint down')
+        self.tasks.status_reader = broken
+        self.assertEqual(self.tasks.poll('key')['state'], 'pending')
+        task = self.tasks.get('key')
+        self.assertIn('run_status: OSError', task['last_error'])
+        # Lecteur rétabli : le statut fournisseur prime, l'erreur obsolète ne bloque pas.
+        self.statuses = {'run': 'failed'}
+        self.pages = [{'messages': [], 'next_cursor': None}]
+        self.tasks.status_reader = self.reader
+        self.assertEqual(self.tasks.poll('key')['state'], 'failed')

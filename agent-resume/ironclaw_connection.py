@@ -67,8 +67,13 @@ def task_operation(root, command, value):
     dbpath = path / 'tasks.sqlite'
     file_hash(dbpath)
     with closing(sqlite3.connect(dbpath)) as db:
-        tasks = Tasks(db, None if command in ('ironclaw-result', 'ironclaw-requests', 'ironclaw-fail') else endpoint(root),
-                      status_reader=None if command in ('ironclaw-result', 'ironclaw-requests', 'ironclaw-fail') else run_statuses)
+        # Commandes locales : aucun endpoint (aucune lecture réseau). Commandes réseau :
+        # lecteur de statut fournisseur (preuve #90) et échéance de clôture — un run
+        # sans statut livré ne reste pas pending indéfiniment (7 jours).
+        local = command in ('ironclaw-result', 'ironclaw-requests', 'ironclaw-fail')
+        tasks = Tasks(db, None if local else endpoint(root),
+                      expire_after=None if local else 7 * 86400,
+                      status_reader=None if local else run_statuses)
         if command == 'ironclaw-requests':
             return {'requests': tasks.list_requests(), 'limit': 100}
         if command in ('ironclaw-submit', 'ironclaw-followup'):

@@ -166,7 +166,10 @@ def run_statuses(endpoint, thread_id):
             if isinstance(item, dict) and isinstance(item.get('run_status'), dict):
                 run, status = item['run_status'].get('run_id'), item['run_status'].get('status')
                 if isinstance(run, str) and isinstance(status, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', run):
-                    statuses[run] = status
+                    # Un statut terminal gagne sur un statut de transit, quel que soit
+                    # l'ordre des trames ; sinon le dernier événement chronologique gagne.
+                    if run not in statuses or status not in ('running', 'queued'):
+                        statuses[run] = status
     return statuses
 
 
