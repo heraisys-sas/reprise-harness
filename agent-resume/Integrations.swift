@@ -32,6 +32,20 @@ extension App {
         setupCommand(["claude-integration-verify"]) { self.claudeIntegrationResult = $0 }
     }
 
+    func saveAAKey() {
+        let value = aaKey
+        guard stateReady, !setupBusy, !value.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        aaNote = "Écriture de la clé…"
+        setupCommand(["aa-key-save"], input: ["key": value]) { result in
+            self.aaKey = ""
+            if result["saved"] as? Bool == true {
+                self.aaNote = "Clé enregistrée hors dépôt. Empreinte SHA-256 : \(result["fingerprint"] as? String ?? "indisponible")."
+            } else {
+                self.aaNote = result["message"] as? String ?? "Enregistrement non confirmé."
+            }
+        }
+    }
+
     func refreshClaudeQuota() {
         guard stateReady, !setupBusy else { return }
         setupCommand(["claude-quota-status"]) { self.claudeQuotaState = $0 }
@@ -140,6 +154,16 @@ struct Integrations: View {
         VStack(alignment: .leading, spacing: 18) {
             SchedulerService(app: app)
             Text("L’installation écrit la configuration et les consignes du profil choisi. Elle ne démarre aucun service et n’effectue aucune inférence.").foregroundStyle(.secondary)
+            GroupBox("Clé API Artificial Analysis") {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        SecureField("Clé (masquée)", text: $app.aaKey)
+                        Button("Enregistrer") { app.saveAAKey() }.disabled(app.setupBusy || app.aaKey.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                    if !app.aaNote.isEmpty { Text(app.aaNote).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+                    Text("Écrite hors dépôt (REPRISE_SUPPORT/credentials/artificial-analysis.key, permissions 0600, sauvegarde .bak avant écrasement). Vérifiée par empreinte SHA-256 ; jamais affichée ni journalisée.").font(.caption).foregroundStyle(.secondary)
+                }.padding(6)
+            }
             VStack(alignment: .leading, spacing: 10) {
             Text("Cible explicite").font(.headline)
                 VStack(alignment: .leading, spacing: 12) {

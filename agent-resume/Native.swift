@@ -48,6 +48,8 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var integrationResult: [String: Any]? = nil
     @Published var integrationVerification: [String: Any]? = nil
     @Published var integrationMessage = "Inspectez le dossier Harness choisi avant de préparer une modification."
+    @Published var aaKey = ""
+    @Published var aaNote = ""
     @Published var ironclawHost = ""
     @Published var ironclawUser = ""
     @Published var ironclawPort = "22"

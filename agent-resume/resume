@@ -42,6 +42,18 @@ if len(sys.argv) > 1 and sys.argv[1] == 'vault-authorize':
         sys.exit(1)
     sys.exit(0)
 
+if len(sys.argv) > 1 and sys.argv[1] == 'aa-key-save':
+    if len(sys.argv) != 2:
+        sys.exit('Usage: resume aa-key-save  (cle en JSON sur stdin)')
+    import artificial_analysis_adapter
+    try:
+        payload = json.load(sys.stdin)
+        print(json.dumps(artificial_analysis_adapter.save_key(payload.get('key')), ensure_ascii=False))
+    except (ValueError, json.JSONDecodeError) as error:
+        print(json.dumps({'saved': False, 'message': str(error)}, ensure_ascii=False))
+        sys.exit(1)
+    sys.exit(0)
+
 if len(sys.argv) > 1 and sys.argv[1].startswith('claude-integration-'):
     import claude_integration
     sys.exit(claude_integration.main(Path(__file__).resolve().parent, sys.argv[1:]))

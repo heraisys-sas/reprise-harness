@@ -1,5 +1,8 @@
+import hashlib
+import os
 import sqlite3
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -39,6 +42,29 @@ class AATests(unittest.TestCase):
         with mock.patch.object(aa, 'key_path', return_value='/nonexistent/key'):
             with self.assertRaises(ValueError):
                 aa.load_key()
+
+    def test_save_key_writes_restricted_file_with_backup_and_fingerprint(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, 'credentials', 'artificial-analysis.key')
+            first = aa.save_key('premiere-cle', path)
+            self.assertTrue(first['saved'])
+            self.assertEqual(
+                first['fingerprint'],
+                hashlib.sha256(b'premiere-cle').hexdigest()[:12])
+            self.assertEqual(oct(os.stat(path).st_mode)[-3:], '600')
+            second = aa.save_key('cle-suivante', path)
+            backup = path + '.bak'
+            self.assertTrue(os.path.exists(backup))
+            self.assertEqual(oct(os.stat(backup).st_mode)[-3:], '600')
+            with open(backup, encoding='utf-8') as handle:
+                self.assertEqual(handle.read().strip(), 'premiere-cle')
+            self.assertEqual(aa.load_key(path), 'cle-suivante')
+            self.assertNotIn('cle-suivante', str(second))
+
+    def test_save_key_refuses_empty_value(self):
+        with tempfile.TemporaryDirectory() as root:
+            with self.assertRaises(ValueError):
+                aa.save_key('   ', os.path.join(root, 'k.key'))
 
     def test_fetch_requires_json_content_type(self):
         response = mock.MagicMock()

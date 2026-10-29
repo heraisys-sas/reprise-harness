@@ -11,9 +11,12 @@ intelligence_index.
 Correspondance declarative uniquement : ingest() revalide tout.
 """
 
+import hashlib
 import json
 import os
 import re
+import shutil
+import tempfile
 import urllib.request
 
 MODELS_URL = 'https://artificialanalysis.ai/api/v2/data/llms/models'
@@ -38,6 +41,30 @@ def load_key(path=None):
     if not key:
         raise ValueError('Cle Artificial Analysis vide')
     return key
+
+
+def save_key(value, path=None):
+    """Ecrit la cle hors depot (0600, sauvegarde .bak avant ecrasement) et
+    retourne l'empreinte SHA-256 ; la valeur n'est jamais retournee."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError('Cle Artificial Analysis vide')
+    path = path or key_path()
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    os.chmod(directory, 0o700)
+    if os.path.exists(path):
+        shutil.copy2(path, path + '.bak')
+    handle, temp = tempfile.mkstemp(dir=directory, prefix='.aa-key-')
+    try:
+        with os.fdopen(handle, 'w', encoding='utf-8') as writer:
+            writer.write(value.strip() + '\n')
+        os.chmod(temp, 0o600)
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+    fingerprint = hashlib.sha256(value.strip().encode('utf-8')).hexdigest()[:12]
+    return {'saved': True, 'fingerprint': fingerprint, 'path': path}
 
 
 def fetch(timeout=30):
