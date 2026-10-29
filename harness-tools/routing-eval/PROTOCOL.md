@@ -73,4 +73,37 @@ Tester le contrat d'un éventuel cache partagé seulement avec données synthét
 
 Conserver A par défaut et le routage quotidien désactivé. Un candidat est seulement admissible à une confirmation s'il ne perd aucune tâche réussie par A, ne viole aucune contrainte, et apporte soit ≥20 % de réduction du coût complet par tâche validée sans hausse du temps médian >20 %, soit au moins une tâche validée supplémentaire dans l'enveloppe. Ces seuils conventionnels limitent les changements pour un gain marginal ; sur six cas ils ne démontrent pas une généralisation.
 
+## Interprétation des résultats — exigences de documentation
+
+Un résultat chiffré n'a de valeur que relativement à son cadre. Deux couches de documentation sont obligatoires avant de citer un résultat dans un document décisionnel.
+
+### Couche 1 : limites internes du test (dans le fichier de résultats)
+
+Chaque fichier de résultats (`evaluation*.json`, rapport de bras, synthèse) doit porter, à côté des chiffres :
+
+| Dimension | À documenter |
+|---|---|
+| Échantillon | Taille, provenance, méthode d'annotation ; préciser la performance attendue du hasard sur cette distribution |
+| Baseline | Résultat du repli déterministe (niveau `standard`/modèle par défaut) sur le même jeu — un candidat qui ne le bat pas n'apporte rien |
+| Distribution | Répartition des classes du jeu vs répartition réelle attendue en production |
+| Biais d'annotation | Qui a étiqueté, étiquettes fixées avant ou après observation des résultats |
+| Conditions | Cache froid/chaud, langue, réseau, effort modèle, versions |
+| Non-mesuré | Coût réel, calibration, cas limites, ce que le test ne couvre pas |
+
+Toute citation d'un résultat dans une synthèse ou une issue doit reprendre au minimum l'échantillon, la baseline et le statut des annotations. Un chiffre cité sans ses limites au même endroit est considéré comme non établi.
+
+### Couche 2 : contextualisation externe (avant l'exécution du test)
+
+Avant de lancer une comparaison, identifier 2–3 sources externes de référence pour la tâche évaluée et les consigner dans le même fichier de résultats (pas dans une conversation) avec DOI ou URL vérifiés. Exemples pour le routage et la classification de décisions :
+
+- Benchmarks publics de routage de requêtes LLM (ex. RouterBench, RouteLLM) — pour situer les scores auto-déclarés d'un fournisseur relativement au domaine ;
+- Calibration des réseaux de neurones (Guo, Pleiss, Sun & Weinberger, *On Calibration of Modern Neural Networks*, ICML 2017, arXiv 1706.04599, DOI 10.48550/arXiv.1706.04599 — pair-évalué ICML) — pour l'évaluation par classe plutôt que par précision globale quand les coûts d'erreur sont asymétriques ; le papier établit aussi que les réseaux modernes sont mal calibrés par défaut, ce qui fonde l'exigence de vérifier la calibration des probabilités d'un classificateur de routage avant de lui faire confiance ;
+- Tech report du modèle évalué (ex. Apple Intelligence Foundation Language Models, arXiv 2507.13575) — pour fixer l'attente réaliste d'un modèle on-device.
+
+Chaque source citée doit distinguer : pair-évalué, prépublication, documentation officielle, benchmark auto-déclaré. Un benchmark auto-déclaré par le fournisseur du modèle (cas de JevBench pour Super Decider) ne suffit jamais comme preuve de qualité ; il sert d'hypothèse à confronter au test local. Les vérifications de métadonnées passent par `paper_lookup.py` (API Crossref publique) ; une absence dans Crossref ne prouve pas l'absence d'une publication.
+
+### Application aux bras de classification à venir
+
+Pour l'évaluation future des classificateurs de routage (FoundationModels on-device, Super Decider) : construire le jeu annoté d'abord (couches 1 et 2 préparées avant exécution), inclure le repli déterministe comme baseline obligatoire, évaluer par classe avec l'asymétrie des coûts d'erreur explicite (`tool_call_ok` ≠ `best_model`), et ne retenir un classificateur que s'il bat le repli de façon nette et documentée.
+
 Présenter les données brutes par tâche et les inconnues, puis une recommandation observation/poursuite/abandon. Même un résultat favorable ne déclenche pas automatiquement l'installation quotidienne. Les journaux complets et dossiers restent privés hors Git ; versionner seulement fixtures synthétiques, manifeste public sans secrets et résultats agrégés audités. Supprimer les sorties temporaires privées après la période de revue définie pour le pilote.

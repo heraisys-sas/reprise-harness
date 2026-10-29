@@ -79,9 +79,12 @@ def transform(payload, fetched_at=None):
             if blended not in (None, ''):
                 records.append({'model': model, 'metric': 'price_per_mtok',
                                 'value': float(blended), **stamp})
+            # TTFT AA -> ttft_ms, jamais latency_ms : le temps jusqu'au premier
+            # token n'est pas la latence perçue de la route (un modèle de
+            # raisonnement à 139 s de TTFT reste un problème de TTFT).
             ttft = entry.get('median_time_to_first_token_seconds')
             if ttft not in (None, ''):
-                records.append({'model': model, 'metric': 'latency_ms',
+                records.append({'model': model, 'metric': 'ttft_ms',
                                 'value': float(ttft) * 1000.0, **stamp})
             index = ((entry.get('evaluations') or {})
                      .get('artificial_analysis_intelligence_index'))

@@ -22,11 +22,25 @@ class TaskStore:
         state = Path(state)
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.db = sqlite3.connect(state/'quick.sqlite', timeout=2)
-        self.db.execute('''CREATE TABLE IF NOT EXISTS desktop_tasks(
-            scope TEXT NOT NULL, request_key TEXT NOT NULL, prompt TEXT NOT NULL,
-            chat_id TEXT, claim_key TEXT, attempt_id TEXT, answer TEXT,
-            acknowledged INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(scope,request_key))''')
-        self.db.commit()
+        try:
+            # Serialize schema discovery and migration. A concurrent opener must not observe
+            # the new column before the legacy rows have been classified.
+            self.db.execute('BEGIN IMMEDIATE')
+            self.db.execute('''CREATE TABLE IF NOT EXISTS desktop_tasks(
+                scope TEXT NOT NULL, request_key TEXT NOT NULL, prompt TEXT NOT NULL,
+                chat_id TEXT, claim_key TEXT, attempt_id TEXT, answer TEXT,
+                acknowledged INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(scope,request_key))''')
+            columns = {row[1] for row in self.db.execute('PRAGMA table_info(desktop_tasks)')}
+            if 'delivery' not in columns:
+                self.db.execute('ALTER TABLE desktop_tasks ADD COLUMN delivery TEXT')  # NULL | reserved | attempted
+                # Old rows do not record whether a claim was actually handed over. Treat
+                # any persisted claim/attempt/result as uncertain and never redeliver it.
+                self.db.execute("UPDATE desktop_tasks SET delivery='attempted' WHERE claim_key IS NOT NULL OR attempt_id IS NOT NULL OR answer IS NOT NULL")
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            self.db.close()
+            raise
 
     def register_session(self, chat_id):
         from claude_session_store import SessionStore
@@ -37,7 +51,7 @@ class TaskStore:
         self.db.close()
 
     def _row(self, key):
-        return self.db.execute('SELECT prompt,chat_id,claim_key,attempt_id,answer,acknowledged FROM desktop_tasks WHERE scope=? AND request_key=?', (self.scope,key)).fetchone()
+        return self.db.execute('SELECT prompt,chat_id,claim_key,attempt_id,answer,acknowledged,delivery FROM desktop_tasks WHERE scope=? AND request_key=?', (self.scope,key)).fetchone()
 
     def admit(self, request_key, prompt, chat_id=None):
         bounded(request_key, 'request_key', 128)
@@ -53,6 +67,11 @@ class TaskStore:
         return {'status': 'finished', 'request_key': request_key, 'admitted': True, 'dispatch_confirmed': False}
 
     def claim(self, request_key, claim_key):
+        """Explicit pull (get_task), sharing await_task's one-attempt delivery barrier.
+
+        The barrier records intent before writing, so a replay returns a receipt with
+        unconfirmed delivery, never another prompt.
+        """
         bounded(request_key, 'request_key', 128)
         bounded(claim_key, 'claim_key', 128)
         with self.db:
@@ -62,9 +81,58 @@ class TaskStore:
                 raise ValueError('Unknown project task')
             if row[2] is not None and row[2] != claim_key:
                 raise ValueError('Task already claimed')
+            if row[6] == 'attempted':
+                return {'status': 'finished', 'request_key': request_key, 'attempt_id': row[3], 'completed': row[4] is not None,
+                        'delivery': 'attempted',
+                        'instruction': 'A delivery attempt was recorded, but receipt is unconfirmed. Do not execute unless you actually hold the prompt from that attempt. If you do not hold it, ask the operator to reconcile the state before any new admission; do not create a replacement key to bypass uncertainty.'}
             attempt = row[3] or str(uuid.uuid4())
-            self.db.execute('UPDATE desktop_tasks SET claim_key=?,attempt_id=? WHERE scope=? AND request_key=?', (claim_key,attempt,self.scope,request_key))
-        return {'status': 'finished', 'request_key': request_key, 'attempt_id': attempt, 'prompt': row[0], 'chat_id': row[1], 'completed': row[4] is not None, 'instruction': 'Already completed; retrieve the result, do not execute again.' if row[4] is not None else 'Perform the scoped task, then call submit_result with this attempt_id.'}
+            self.db.execute('UPDATE desktop_tasks SET claim_key=?,attempt_id=?,delivery=? WHERE scope=? AND request_key=?',
+                            (claim_key, attempt, 'attempted' if row[4] is None else row[6], self.scope, request_key))
+        return {'status': 'finished', 'request_key': request_key, 'attempt_id': attempt, 'prompt': row[0], 'chat_id': row[1],
+                'completed': row[4] is not None, 'delivery': 'handed_over',
+                'instruction': 'Already completed; retrieve the result with get_result.' if row[4] is not None else 'Perform the scoped task, then call submit_result with this attempt_id.'}
+
+    def reserve(self, request_key, claim_key):
+        """Reserve one exact task for claim_key without delivering it.
+
+        States: absent | completed | attempted (delivery intent recorded; receipt unconfirmed, no payload returned) |
+        reserved (fresh=True when this call created the reservation). A task reserved by another
+        claim_key raises ValueError.
+        """
+        bounded(request_key, 'request_key', 128)
+        bounded(claim_key, 'claim_key', 128)
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            row = self._row(request_key)
+            if not row:
+                return {'state': 'absent'}
+            if row[2] is not None and row[2] != claim_key:
+                raise ValueError('Task already claimed')
+            if row[4] is not None:
+                return {'state': 'completed', 'attempt_id': row[3]}
+            if row[6] == 'attempted':
+                return {'state': 'attempted', 'attempt_id': row[3]}
+            fresh = row[2] is None
+            attempt = row[3] or str(uuid.uuid4())
+            self.db.execute('UPDATE desktop_tasks SET claim_key=?,attempt_id=?,delivery=? WHERE scope=? AND request_key=?',
+                            (claim_key, attempt, 'reserved', self.scope, request_key))
+        return {'state': 'reserved', 'fresh': fresh, 'attempt_id': attempt, 'prompt': row[0], 'chat_id': row[1]}
+
+    def mark_attempted(self, request_key, attempt_id):
+        """Record intent before writing; True for one caller. This does not confirm receipt."""
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            changed = self.db.execute("UPDATE desktop_tasks SET delivery='attempted' WHERE scope=? AND request_key=? AND attempt_id=? AND delivery='reserved' AND answer IS NULL",
+                                      (self.scope, request_key, attempt_id)).rowcount
+        return changed == 1
+
+    def release(self, request_key, attempt_id):
+        """Drop a reservation while no write attempt is recorded; never after attempted."""
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            changed = self.db.execute("UPDATE desktop_tasks SET claim_key=NULL,attempt_id=NULL,delivery=NULL WHERE scope=? AND request_key=? AND attempt_id=? AND delivery='reserved' AND answer IS NULL",
+                                      (self.scope, request_key, attempt_id)).rowcount
+        return changed == 1
 
     def submit(self, request_key, attempt_id, answer):
         bounded(request_key, 'request_key', 128)
