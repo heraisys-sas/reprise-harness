@@ -4,6 +4,7 @@ from pathlib import Path
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import external_rankings
 import routing_events
 
 
@@ -25,7 +26,8 @@ def memory_db(version=0, legacy=False):
 class RoutingEventsTests(unittest.TestCase):
     def test_setup_migrates_v1_to_v2_idempotently(self):
         db = memory_db(version=0, legacy=True)
-        self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], routing_events.VERSION)
+        self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],
+                         max(routing_events.VERSION, external_rankings.VERSION))
         # La ligne v1 est perdue (recréation assumée) et le schéma v2 est en place.
         self.assertEqual(db.execute('SELECT COUNT(*) FROM routing_events').fetchone()[0], 0)
         indexes = {row[0] for row in db.execute(
@@ -34,11 +36,12 @@ class RoutingEventsTests(unittest.TestCase):
         self.assertIn('routing_events_type', indexes)
         # Deuxième setup : no-op, aucune perte.
         routing_events.setup(db)
-        self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], routing_events.VERSION)
+        self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],
+                         max(routing_events.VERSION, external_rankings.VERSION))
 
     def test_setup_rejects_unknown_future_version(self):
         db = sqlite3.connect(':memory:')
-        db.execute(f'PRAGMA user_version={routing_events.VERSION + 1}')
+        db.execute(f'PRAGMA user_version={max(routing_events.VERSION, external_rankings.VERSION) + 1}')
         with self.assertRaises(ValueError):
             routing_events.setup(db)
 
@@ -51,7 +54,8 @@ class RoutingEventsTests(unittest.TestCase):
         db.execute('ALTER TABLE routing_events DROP COLUMN admissibility')
         db.execute('PRAGMA user_version=2')
         routing_events.setup(db)
-        self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 4)
+        self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],
+                         max(routing_events.VERSION, external_rankings.VERSION))
         columns = {row[1] for row in db.execute('PRAGMA table_info(routing_events)')}
         self.assertIn('account_key', columns)
         self.assertIn('admissibility', columns)

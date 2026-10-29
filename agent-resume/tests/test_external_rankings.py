@@ -19,7 +19,8 @@ def memory_db(version=None):
 class ExternalRankingsTests(unittest.TestCase):
     def test_setup_creates_tables_and_bumps_version(self):
         db = memory_db()
-        self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 4)
+        self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],
+                         external_rankings.VERSION)
         names = {row[0] for row in db.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertIn('external_rankings', names)
@@ -197,3 +198,51 @@ class OpenRouterAdapterTests(unittest.TestCase):
                          accepted)
         self.assertEqual(db.execute('SELECT model FROM external_rankings').fetchall()[0][0],
                          'openai_gpt-6')
+
+
+class RefreshBySourceTests(unittest.TestCase):
+    def test_unknown_source_raises(self):
+        db = memory_db()
+        with self.assertRaises(ValueError):
+            external_rankings.refresh_by_source(db, 'lmarena')
+
+    def test_openrouter_end_to_end(self):
+        db = memory_db()
+        payload = [{'model': 'openai_gpt-6.1-sol-pro', 'metric': 'price_per_mtok',
+                    'value': 4.0}]
+        with mock.patch('openrouter_adapter.fetch', return_value=payload), \
+             mock.patch('openrouter_adapter.transform', return_value=payload):
+            accepted, rejected = external_rankings.refresh_by_source(db, 'openrouter')
+        self.assertEqual((accepted, rejected), (1, 0))
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM external_rankings').fetchone()[0], 1)
+
+    def test_artificial_analysis_end_to_end(self):
+        db = memory_db()
+        records = [{'model': 'gpt-6-1-sol', 'metric': 'quality_index', 'value': 71.0}]
+        with mock.patch('artificial_analysis_adapter.fetch', return_value=[{}]), \
+             mock.patch('artificial_analysis_adapter.transform', return_value=records):
+            accepted, rejected = external_rankings.refresh_by_source(db, 'artificial-analysis')
+        self.assertEqual((accepted, rejected), (1, 0))
+
+    def test_not_stale_returns_none(self):
+        db = memory_db()
+        external_rankings.ingest(db, 'openrouter',
+                                 [{'model': 'm', 'metric': 'latency_ms', 'value': 1.0}])
+        with mock.patch('openrouter_adapter.fetch') as fetch:
+            self.assertIsNone(external_rankings.refresh_by_source(db, 'openrouter'))
+            fetch.assert_not_called()
+
+    def test_network_failure_keeps_cache(self):
+        db = memory_db()
+        with mock.patch('openrouter_adapter.fetch', side_effect=OSError('down')):
+            self.assertIsNone(external_rankings.refresh_by_source(db, 'openrouter'))
+
+    def test_populate_model_map_idempotent(self):
+        db = memory_db()
+        first = external_rankings.populate_model_map(db)
+        second = external_rankings.populate_model_map(db)
+        self.assertGreater(first, 0)
+        self.assertEqual(second, 0)
+        channels = {row[0] for row in db.execute('SELECT DISTINCT channel FROM external_model_map')}
+        self.assertIn('codex', channels)
+        self.assertIn('claude-code', channels)

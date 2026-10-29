@@ -17,8 +17,9 @@ FORMAT = 1
 # de journal (routing_events.VERSION / external_rankings.VERSION) ; une base
 # marquée au-delà vient d'un build plus récent → refus explicite.
 try:
+    from external_rankings import VERSION as _CACHE_VERSION
     from routing_events import VERSION as _ROUTING_VERSION
-    SUPPORTED_SCHEMA_VERSION = max(2, _ROUTING_VERSION)
+    SUPPORTED_SCHEMA_VERSION = max(2, _ROUTING_VERSION, _CACHE_VERSION)
 except ImportError:  # import de state hors bundle runtime
     SUPPORTED_SCHEMA_VERSION = 2
 

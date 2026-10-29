@@ -20,7 +20,7 @@ import sqlite3
 import time
 import urllib.request
 
-VERSION = 4
+VERSION = 5
 DEFAULT_TTL_SECONDS = 86400
 
 SOURCES = ('artificial-analysis', 'openrouter', 'lmarena')
@@ -41,7 +41,8 @@ SCHEMA = (
     'PRIMARY KEY (source, model, metric))',
     'CREATE INDEX IF NOT EXISTS external_rankings_fresh ON external_rankings(metric, fetched_at)',
     'CREATE TABLE IF NOT EXISTS external_model_map ('
-    'external_model TEXT PRIMARY KEY, channel TEXT NOT NULL)',
+    'external_model TEXT NOT NULL, channel TEXT NOT NULL, '
+    'PRIMARY KEY (external_model, channel))',
     'CREATE TABLE IF NOT EXISTS external_rankings_meta('
     'key TEXT PRIMARY KEY, value TEXT NOT NULL)',
 )
@@ -52,6 +53,13 @@ def setup(db):
     if version > VERSION:
         raise ValueError(f'Schéma external_rankings inconnu : user_version={version}')
     with db:
+        # v5 : external_model_map passe en clé composite (un modèle peut servir
+        # plusieurs canaux). Table de correspondance reconstructible → re-création
+        # sans perte (les mappings sont déclaratifs, pas mesurés).
+        if version == 4:
+            existing = {row[1] for row in db.execute('PRAGMA table_info(external_model_map)')}
+            if 'channel' in existing:
+                db.execute('DROP TABLE IF EXISTS external_model_map')
         for statement in SCHEMA:
             db.execute(statement)
         db.execute(f'PRAGMA user_version = {VERSION}')
@@ -133,25 +141,98 @@ def refresh(db, source, url):
     return ingest(db, source, records, url=url)
 
 
+# Mappings initiaux canal → IDs externes, relevés sur les flux réels le
+# 29/10/2026 (AA : 716 modèles, OpenRouter : 457). Les IDs OpenRouter sont
+# déjà normalisés (vendor/model → vendor_model) : c'est la forme que
+# l'adaptateur écrit dans le cache. À affiner avec le journal local.
+CHANNEL_MODEL_MAP = {
+    'codex': ('openai_gpt-6.1-sol-pro', 'gpt-6-1-sol',
+              'openai_gpt-6.1-terra', 'gpt-6-1-terra'),
+    'claude-code': ('anthropic_claude-opus-5', 'claude-opus-5',
+                    'anthropic_claude-opus-4.8'),
+    'claude-desktop': ('anthropic_claude-opus-5', 'claude-opus-5'),
+    'foundation-models': (),  # local : aucune donnée externe pertinente
+    'ironclaw': (),
+    'super-decider': (),      # classifieur interne : pas de classement public
+    'asi1': (),               # pas de classement public fiable
+    'asi1-mini': (),
+}
+
+
+def populate_model_map(db):
+    """Insère les mappings initiaux canal → modèle externe, idempotent.
+    Jointure sur le nom de modèle seul : route_metrics agrège déjà toutes
+    les sources, et les flux AA/OpenRouter partagent les mêmes identifiants."""
+    inserted = 0
+    for channel, externals in CHANNEL_MODEL_MAP.items():
+        for model in externals:
+            row = db.execute('SELECT 1 FROM external_model_map '
+                             'WHERE external_model=? AND channel=?',
+                             (model, channel)).fetchone()
+            if not row:
+                db.execute('INSERT INTO external_model_map VALUES (?,?)',
+                           (model, channel))
+                inserted += 1
+    db.commit()
+    return inserted
+
+
+def refresh_by_source(db, source):
+    """Dispatch par source : stale → fetch (adaptateur) → transform → ingest.
+    Le réseau n'écrit jamais directement — ingest revalide tout. Retour :
+    (accepted, rejected), ou None si pas stale, ou None en échec réseau."""
+    if source not in ('openrouter', 'artificial-analysis'):
+        raise ValueError(f'Source inconnue : {source}')
+    if not stale(db, source):
+        return None
+    try:
+        if source == 'openrouter':
+            import openrouter_adapter
+            payload = openrouter_adapter.fetch()
+            records = openrouter_adapter.transform(payload)
+        else:
+            import artificial_analysis_adapter
+            payload = artificial_analysis_adapter.fetch()
+            records = artificial_analysis_adapter.transform(payload)
+    except (OSError, ValueError):
+        return None
+    return ingest(db, source, records)
+
+
 def route_metrics(db, channel):
-    """Coût/latence priorisés : (1) journal local routing_events (mesures réelles),
-    (2) cache externe si ≥2 sources concordantes, (3) None si insuffisant.
-    Divergence >50% entre sources externes → conflict=True, l'externe est
+    """Coût/latence priorisés : (1) journal local routing_events (mesures
+    réelles), (2) cache externe quand une même métrique est corroborée par
+    ≥2 sources pour un même modèle, (3) None si insuffisant.
+
+    La concordance se juge PAR MODÈLE entre sources : comparer les valeurs de
+    modèles différents n'a pas de sens (AA publie un prix blended 3:1,
+    OpenRouter un prix d'entrée — l'écart est normal, pas un conflit).
+    Divergence >50 % sur un même modèle → conflict=True et l'externe est
     ignoré au profit du seul journal local. Jamais de substitution."""
     result = {'price_per_mtok': None, 'latency_ms': None, 'quality_index': None,
               'origin': None, 'conflict': False}
     external = {}
     for metric in METRICS:
         rows = db.execute(
-            'SELECT value FROM external_rankings r JOIN external_model_map m '
-            'ON m.external_model=r.model WHERE m.channel=? AND r.metric=?',
-            (channel, metric)).fetchall()
-        values = [row[0] for row in rows]
-        if len(values) >= 2:
-            spread = (max(values) - min(values)) / min(abs(v) for v in values if v)
-            if spread > 0.5:
-                result['conflict'] = True
-                continue
+            'SELECT r.source, r.model, r.value FROM external_rankings r '
+            'JOIN external_model_map m ON m.external_model=r.model '
+            'WHERE m.channel=? AND r.metric=?', (channel, metric)).fetchall()
+        per_model = {}
+        for source, model, value in rows:
+            per_model.setdefault(model, {})[source] = value
+        values = []
+        for model, by_source in per_model.items():
+            corroborated = [v for v in by_source.values() if v]
+            if len(by_source) >= 2 and corroborated:
+                spread = ((max(corroborated) - min(corroborated))
+                          / min(abs(v) for v in corroborated))
+                if spread > 0.5:
+                    result['conflict'] = True
+                    break
+            values.extend(by_source.values())
+        if result['conflict']:
+            external.clear()
+            break
         if values:
             external[metric] = min(values)
     if not result['conflict'] and external:

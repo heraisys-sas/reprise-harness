@@ -61,8 +61,12 @@ def setup(db):
     2 → 3 : ALTER TABLE additif (account_key, admissibility) + route_admissibility,
     les données v2 sont préservées.
     """
+    import external_rankings
     version = db.execute('PRAGMA user_version').fetchone()[0]
-    if version > VERSION:
+    # Le cache externe vit dans la même base et peut être en avance sur le
+    # journal : la version supportée est le maximum des deux schémas.
+    supported = max(VERSION, external_rankings.VERSION)
+    if version > supported:
         raise ValueError(f'Schéma routing_events inconnu : user_version={version}')
     with db:
         if version < 2:
@@ -85,9 +89,10 @@ def setup(db):
         db.execute("INSERT OR IGNORE INTO routing_meta VALUES ('local_salt',?)", (os.urandom(32).hex(),))
         db.execute("INSERT OR IGNORE INTO routing_meta VALUES ('retention_days',?)", (str(DEFAULT_RETENTION_DAYS),))
         # v4 : cache externe (tables additives IF NOT EXISTS, données préservées).
-        import external_rankings
         external_rankings.setup(db)
-        db.execute(f'PRAGMA user_version = {VERSION}')
+        # user_version reflète le schéma le plus récent (le cache peut être en
+        # avance sur le journal) : la valeur la plus élevée fait foi.
+        db.execute(f'PRAGMA user_version = {max(VERSION, external_rankings.VERSION)}')
     return version
 
 
