@@ -418,6 +418,18 @@ class ClaudeDesktopBridgeTests(RequestCalls, unittest.TestCase):
         self.assertEqual(result['dispatch'], 'dispatchOnQuickEntrySubmit')
         self.assertEqual(review.call_args.kwargs['chat_id'], ID)
 
+    def test_delegate_claude_desktop_allowed_without_quota_flag(self):
+        # claude-desktop = inclus dans l'abonnement : la condition billing_unverified
+        # ne s'applique qu'au backend claude-code (payant par clé API).
+        self.assertFalse(self.bridge.claude_subscription_only)
+        with patch('claude_desktop.review',
+                   return_value={'status': 'finished', 'resumable': False, 'thread_id': ID}) as review:
+            result = self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise', 'backend': 'claude-desktop'})
+        self.assertEqual(result['status'], 'finished')
+        self.assertEqual(result['backend'], 'claude-desktop')
+        self.assertFalse(result['automatic_fallback'])
+        review.assert_called_once()
+
     def test_delegate_rejects_unknown_backend(self):
         with self.assertRaises(ValueError):
             self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise', 'backend': 'nope'})
@@ -475,6 +487,35 @@ class IronclawBridgeTests(RequestCalls, unittest.TestCase):
         review.assert_not_called()
         self.assertEqual(self.bridge.db.execute(
             "SELECT json_extract(result,'$.status') FROM delegation_requests").fetchone()[0], 'engine_unavailable')
+
+    def test_delegate_ironclaw_configured_dispatches_review(self):
+        self.bridge.ironclaw_values = {'host': 'ironclaw.example.org', 'port': '22',
+                                       'user': 'agent', 'key': '/k'}
+        with patch('codex_expert_mcp.ironclaw.review',
+                   return_value={'status': 'finished', 'response': 'Réponse'}) as review:
+            result = self.call('reprise_delegate', {'backend': 'ironclaw', 'kind': 'expertise', 'question': 'Ping'})
+        self.assertEqual(result['status'], 'finished')
+        self.assertEqual(result['backend'], 'ironclaw')
+        self.assertEqual(result['response'], 'Réponse')
+        self.assertFalse(result['automatic_fallback'])
+        review.assert_called_once()
+        self.assertEqual(self.bridge.db.execute(
+            "SELECT json_extract(result,'$.status') FROM delegation_requests").fetchone()[0], 'finished')
+
+    def test_delegate_ironclaw_incomplete_config_returns_engine_unavailable(self):
+        self.bridge.ironclaw_values = {'host': 'ironclaw.example.org', 'user': 'agent'}
+        with patch('codex_expert_mcp.ironclaw.review') as review:
+            result = self.call('reprise_delegate', {'backend': 'ironclaw', 'kind': 'expertise', 'question': 'Ping'})
+        self.assertEqual(result['status'], 'engine_unavailable')
+        self.assertIn('Configuration IronClaw requise', result['reason'])
+        self.assertFalse(result['automatic_fallback'])
+        review.assert_not_called()
+
+    def test_backends_declare_ironclaw_configured_when_values_are_valid(self):
+        self.bridge.ironclaw_values = {'host': 'ironclaw.example.org', 'port': '22',
+                                       'user': 'agent', 'key': '/k'}
+        row = next(b for b in self.bridge.call('reprise_backends', {})['backends'] if b['id'] == 'ironclaw')
+        self.assertTrue(row['configured'])
 
     def test_followup_ironclaw_rejected(self):
         with self.assertRaises(ValueError):

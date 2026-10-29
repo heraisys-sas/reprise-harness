@@ -207,6 +207,13 @@ class Bridge:
         self.db.commit()
         self.requests = Store(self.db, str(self.root))
 
+    def _ironclaw_configured(self):
+        try:
+            ironclaw.validate_values(self.ironclaw_values)
+        except ValueError:
+            return False
+        return True
+
     def _account_key(self, backend):
         """Clé de compte hachée depuis les observations quota (codex seulement,
         source unique quota_knowledge ; sal partagé avec routing_events)."""
@@ -384,9 +391,10 @@ class Bridge:
                  'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': False,
                  'dispatch': 'dispatchOnQuickEntrySubmit (full turn, not a prefill)',
                  'context': 'Structured Quick Apply payload; images/files bounded; target chat routing'},
-                {'id': 'ironclaw', 'configured': False, 'models': [],
-                 'reason': 'CLI prototype not enabled: durable Tasks/Endpoint MCP binding pending.',
-                 'billing': 'Remote IronClaw runtime (default model observed: morph-dsv41flash-1017)',
+                {'id': 'ironclaw', 'configured': self._ironclaw_configured(), 'models': [],
+                 'reason': None if self._ironclaw_configured() else
+                 'Configuration IronClaw requise (--ironclaw-config : host, port, user, key).',
+                 'billing': 'Remote IronClaw runtime (paid) — moteur lu via ironclaw.engine()',
                  'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': False,
                  'context': 'Experimental CLI retained for audit; use explicit durable ironclaw-submit/poll/result commands.'}],
                 'automatic_fallback': False}
@@ -466,8 +474,14 @@ class Bridge:
         if policy and backend != 'codex':
             raise ValueError('Wait and execution budgets apply to the Codex backend only')
         if backend == 'ironclaw':
-            return {'status': 'engine_unavailable', 'backend': backend,
-                    'reason': 'Prototype CLI IronClaw désactivé : raccordement MCP au registre durable Tasks/Endpoint requis.', 'automatic_fallback': False}
+            # Appel explicite uniquement (billing paid, admissibilité automatic=False) ;
+            # une configuration absente ou incomplète renvoie un statut actionnable.
+            try:
+                ironclaw.validate_values(self.ironclaw_values)
+            except ValueError as exc:
+                return {'status': 'engine_unavailable', 'backend': backend,
+                        'reason': f'Configuration IronClaw requise (host, port, user, key) : {exc}',
+                        'automatic_fallback': False}
         if backend == 'claude-desktop' and not self.desktop_values:
             return {'status': 'engine_unavailable', 'backend': backend,
                     'reason': 'Quick Apply non configuré sur ce pont ; relancez-le avec --desktop-socket.', 'automatic_fallback': False}
