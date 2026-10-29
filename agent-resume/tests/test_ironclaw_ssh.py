@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ironclaw_ssh import Endpoint, ProbeError, probe, request
+from ironclaw_ssh import Endpoint, ProbeError, probe, request, run_statuses
 
 
 class IronclawSshTests(unittest.TestCase):
@@ -137,3 +137,62 @@ class IronclawSshTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+class RunStatusesTests(unittest.TestCase):
+    """Issue #90 : la projection SSE expose `run_status` — preuve fournisseur de fin de run."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.token = Path(self.temp.name) / 'url'
+        self.token.write_text('http://localhost:3000/#token=private-test-value')
+        self.token.chmod(0o600)
+        self.endpoint = Endpoint('host.example', 'agent', 29403, '/tmp/key', str(self.token))
+
+    def sse(self, *events):
+        body = ''.join(f'event: {name}\ndata: {data}\n\n' for name, data in events)
+        return subprocess.CompletedProcess([], 0, body + '\n200', 'private-test-value')
+
+    @patch('ironclaw_ssh.subprocess.run')
+    def test_extracts_run_statuses_from_snapshot_and_updates(self, run):
+        snapshot = {'state': {'thread_id': 'thread', 'items': [
+            {'run_status': {'run_id': 'run-a', 'status': 'running'}}]}}
+        update = {'state': {'thread_id': 'thread', 'items': [
+            {'run_status': {'run_id': 'run-a', 'status': 'failed'}}]}}
+        run.return_value = self.sse(('projection_snapshot', json.dumps(snapshot)),
+                                    ('projection_update', json.dumps(update)))
+        statuses = run_statuses(self.endpoint, 'thread')
+        self.assertEqual(statuses, {'run-a': 'failed'})
+        args, kwargs = run.call_args
+        self.assertNotIn('private-test-value', repr(args))
+        self.assertIn('threads/thread/events', kwargs['input'])
+
+    @patch('ironclaw_ssh.subprocess.run')
+    def test_malformed_events_and_foreign_items_are_ignored(self, run):
+        run.return_value = self.sse(('projection_snapshot', '{not json'),
+                                    ('projection_update', json.dumps({'state': {'items': [
+                                        {'other': {'run_id': 'x', 'status': 'failed'}},
+                                        {'run_status': {'run_id': 'run-b', 'status': 'queued'}}]}})))
+        self.assertEqual(run_statuses(self.endpoint, 'thread'), {'run-b': 'queued'})
+
+    @patch('ironclaw_ssh.subprocess.run')
+    def test_transport_failure_raises_sanitized_error(self, run):
+        run.return_value = subprocess.CompletedProcess([], 255, '', 'private-test-value')
+        with self.assertRaises(ProbeError):
+            run_statuses(self.endpoint, 'thread')
+
+    @patch('ironclaw_ssh.subprocess.run')
+    def test_curl_max_time_after_snapshot_is_a_successful_read(self, run):
+        # Un flux SSE reste ouvert : curl sort 28 apres avoir livre le snapshot.
+        snapshot = {'state': {'thread_id': 'thread', 'items': [
+            {'run_status': {'run_id': 'run', 'status': 'failed'}}]}}
+        body = f'event: projection_snapshot\ndata: {json.dumps(snapshot)}\n\n'
+        run.return_value = subprocess.CompletedProcess([], 28, body + '\n200', '')
+        self.assertEqual(run_statuses(self.endpoint, 'thread'), {'run': 'failed'})
+
+    def test_invalid_thread_identifier_refused_before_transport(self):
+        with patch('ironclaw_ssh.subprocess.run') as run:
+            with self.assertRaises(ProbeError):
+                run_statuses(self.endpoint, 'bad identifier/../')
+            run.assert_not_called()

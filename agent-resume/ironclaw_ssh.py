@@ -131,6 +131,45 @@ def probe(endpoint):
     return evidence
 
 
+def run_statuses(endpoint, thread_id):
+    """Read-only sample of the thread SSE projection: {run_id: status} for every
+    `run_status` item observed in the snapshot. Provider-provided, so a terminal
+    status here is evidence, not inference."""
+    endpoint.validate()
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', thread_id):
+        raise ProbeError('Invalid thread identifier')
+    token = _read_token(endpoint.token_url_file)
+    # Le flux SSE reste ouvert : curl atteint max-time (code 28) après avoir livré le
+    # snapshot. Ce cas est une lecture réussie, pas un échec de transport.
+    config = _curl_config(endpoint, 'GET', f'/api/webchat/v2/threads/{thread_id}/events', token, 1048576)
+    try:
+        result = subprocess.run(_ssh_args(endpoint), input=config, text=True,
+                                capture_output=True, timeout=endpoint.timeout + 5, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        raise ProbeError('API transport interrupted; outcome unknown') from None
+    body, separator, status = result.stdout.rpartition('\n')
+    if (result.returncode and result.returncode != 28) or len(result.stdout) > 1048582 \
+            or not separator or not re.fullmatch(r'2[0-9]{2}', status):
+        raise ProbeError('API transport failed; outcome unknown')
+    statuses = {}
+    for line in body.split('\n'):
+        if not line.startswith('data: '):
+            continue
+        try:
+            payload = json.loads(line[6:])
+            items = payload.get('state', {}).get('items')
+        except (ValueError, RecursionError, AttributeError):
+            continue
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict) and isinstance(item.get('run_status'), dict):
+                run, status = item['run_status'].get('run_id'), item['run_status'].get('status')
+                if isinstance(run, str) and isinstance(status, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', run):
+                    statuses[run] = status
+    return statuses
+
+
 def request(endpoint, method, path, payload=None, *, allow_submit=False):
     """Bounded API transport; POST requires explicit caller opt-in, never retries."""
     endpoint.validate()

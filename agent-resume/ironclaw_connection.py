@@ -9,7 +9,7 @@ import sys
 from app_paths import state_location
 from state_install import initialized
 from harness_integration import atomic, file_hash
-from ironclaw_ssh import Endpoint, ProbeError, probe
+from ironclaw_ssh import Endpoint, ProbeError, probe, run_statuses
 from ironclaw_tasks import Tasks, TaskError
 
 
@@ -67,7 +67,8 @@ def task_operation(root, command, value):
     dbpath = path / 'tasks.sqlite'
     file_hash(dbpath)
     with closing(sqlite3.connect(dbpath)) as db:
-        tasks = Tasks(db, None if command in ('ironclaw-result', 'ironclaw-requests', 'ironclaw-fail') else endpoint(root))
+        tasks = Tasks(db, None if command in ('ironclaw-result', 'ironclaw-requests', 'ironclaw-fail') else endpoint(root),
+                      status_reader=None if command in ('ironclaw-result', 'ironclaw-requests', 'ironclaw-fail') else run_statuses)
         if command == 'ironclaw-requests':
             return {'requests': tasks.list_requests(), 'limit': 100}
         if command in ('ironclaw-submit', 'ironclaw-followup'):
