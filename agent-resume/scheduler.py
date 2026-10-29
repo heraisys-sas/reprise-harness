@@ -39,6 +39,32 @@ def enabled(db):
     return get(db, 'auto_enabled', True) is True
 
 
+def refresh_external(db, now=None):
+    """Point d'accroche du timer pour le cache externe (tolérance de panne).
+
+    Ne lève jamais : refresh_due contient tout échec, garde le cache périmé
+    servi et se contente de le tracer. Le TTL (86400 s/source) est la seule
+    condition de déclenchement — aucun appel réseau si le cache est frais.
+    Le compte-rendu est conservé sous scheduler_meta.external_rankings_last.
+
+    Branchement timer (2 lignes, à faire dans la branche `tick` de `resume`,
+    juste après run_due(db, executable)) : `scheduler.refresh_external(db)`.
+    Non câblé ici : ce fichier n'est pas dans le périmètre d'écriture du lot.
+    """
+    import external_rankings
+    try:
+        external_rankings.setup(db)  # idempotent : la base du tick peut l'ignorer
+        report = external_rankings.refresh_due(db, now=now)
+    except Exception as error:  # dernier filet : jamais bloquant pour le tick
+        report = {'error': type(error).__name__}
+    try:
+        with db:
+            put(db, 'external_rankings_last', report)
+    except Exception:
+        pass
+    return report
+
+
 def snapshot():
     from detect import scan
     return scan()

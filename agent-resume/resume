@@ -449,6 +449,15 @@ def main():
             except Exception as error:
                 with db:
                     scheduler.put(db, 'last_error', 'Détection automatique indisponible : ' + type(error).__name__)
+        # Cache de classements externes : brique gérée par Reprise elle-même.
+        # refresh_external ne lève jamais et respecte le TTL (aucun appel réseau
+        # si le cache est frais) ; l'échec est tracé sous scheduler_meta sans
+        # bloquer le tick.
+        try:
+            scheduler.refresh_external(db)
+        except Exception as error:
+            with db:
+                scheduler.put(db, 'last_error', "Rafraîchissement des classements indisponible : " + type(error).__name__)
         try:
             import claude_quota
             claude_result = claude_quota.run_native(db, ROOT, STATE)

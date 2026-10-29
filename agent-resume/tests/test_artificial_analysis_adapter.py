@@ -10,13 +10,31 @@ import external_rankings
 import routing_events
 
 
-def memory_db():
-    db = sqlite3.connect(':memory:')
-    routing_events.setup(db)
-    return db
-
-
 class AATests(unittest.TestCase):
+    def setUp(self):
+        # Toute connexion :memory: créée pendant le test est fermée à la fin.
+        self.addCleanup(self._close_dbs)
+        self._dbs = []
+
+    def _close_dbs(self):
+        while self._dbs:
+            self._dbs.pop().close()
+
+    def memory_db(self):
+        db = sqlite3.connect(':memory:')
+        self._dbs.append(db)
+        routing_events.setup(db)
+        return db
+
+    def test_transform_writes_ttft_ms_not_latency_ms(self):
+        payload = [{'slug': 'reasoner-x',
+                    'median_time_to_first_token_seconds': 139.0}]
+        records = aa.transform(payload)
+        self.assertEqual([r['metric'] for r in records], ['ttft_ms'])
+        self.assertEqual(records[0]['value'], 139000.0)
+        # Aucun 139 s ne doit atterrir dans latency_ms (latence perçue).
+        self.assertNotIn('latency_ms', {r['metric'] for r in records})
+
     def test_load_key_missing_raises_without_default(self):
         with mock.patch.object(aa, 'key_path', return_value='/nonexistent/key'):
             with self.assertRaises(ValueError):
@@ -49,11 +67,12 @@ class AATests(unittest.TestCase):
         self.assertEqual(len(records), 3)
         by_metric = {r['metric']: r['value'] for r in records}
         self.assertEqual(by_metric['price_per_mtok'], 8.0)
-        self.assertAlmostEqual(by_metric['latency_ms'], 65505.0)
+        self.assertAlmostEqual(by_metric['ttft_ms'], 65505.0)
         self.assertEqual(by_metric['quality_index'], 59.4)
+        self.assertNotIn('latency_ms', by_metric)
 
     def test_end_to_end_ingest(self):
-        db = memory_db()
+        db = self.memory_db()
         records = aa.transform([{
             'slug': 'gpt-6', 'pricing': {'price_1m_blended_3_to_1': 2.5},
             'evaluations': {'artificial_analysis_intelligence_index': 70.0},
