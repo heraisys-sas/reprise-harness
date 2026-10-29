@@ -27,6 +27,27 @@ def content(result):
     return json.loads(result['content'][0]['text'])
 
 
+class FakeTime:
+    """Deterministic time: wait() advances a virtual clock and fires callbacks that came due; nothing sleeps."""
+
+    def __init__(self):
+        self.now, self.events, self.waits = 1000.0, [], []
+
+    def clock(self):
+        return self.now
+
+    def at(self, delay, callback):
+        self.events.append((self.now + delay, callback))
+
+    def wait(self, cancel, seconds):
+        self.waits.append(round(seconds, 3))
+        self.now += seconds
+        for event in sorted(self.events, key=lambda item: item[0]):
+            if event[0] <= self.now and event in self.events:
+                self.events.remove(event)
+                event[1]()
+
+
 class Workspace(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -87,13 +108,55 @@ class ReserveTests(Workspace):
         self.store.submit('k', attempt, 'done')
         self.assertEqual(self.store.reserve('k', 'w1')['state'], 'completed')
 
-    def test_get_task_shares_the_delivery_marker_and_keeps_its_identical_replay(self):
+    def test_get_task_hands_over_once_and_replays_a_receipt_without_payload(self):
         self.store.admit('k', 'p')
         first = self.store.claim('k', 'w1')
-        self.assertEqual(self.store.claim('k', 'w1'), first)  # explicit recovery stays byte-identical
-        self.assertEqual(self.row('k')[2], 'attempted')
-        receipt = self.store.reserve('k', 'w1')
-        self.assertEqual((receipt['state'], 'prompt' in receipt), ('attempted', False))
+        self.assertEqual((first['delivery'], first['prompt']), ('handed_over', 'p'))
+        again = self.store.claim('k', 'w1')
+        self.assertEqual((again['delivery'], again['attempt_id'], 'prompt' in again), ('attempted', first['attempt_id'], False))
+        self.assertEqual(self.store.reserve('k', 'w1')['state'], 'attempted')
+
+    def test_await_then_get_task_cannot_bypass_the_barrier(self):
+        self.store.admit('k', 'secret prompt')
+        attempt = self.store.reserve('k', 'w1')['attempt_id']
+        self.assertTrue(self.store.mark_attempted('k', attempt))
+        receipt = self.store.claim('k', 'w1')
+        self.assertEqual(receipt['delivery'], 'attempted')
+        self.assertNotIn('secret prompt', json.dumps(receipt))
+
+    def test_get_task_then_await_returns_a_receipt(self):
+        self.store.admit('k', 'p')
+        self.store.claim('k', 'w1')
+        self.assertEqual(self.store.reserve('k', 'w1')['state'], 'attempted')
+
+    def test_get_task_on_a_pending_reservation_wins_and_blocks_a_later_mark(self):
+        self.store.admit('k', 'p')
+        attempt = self.store.reserve('k', 'w1')['attempt_id']
+        self.assertEqual(self.store.claim('k', 'w1')['delivery'], 'handed_over')
+        self.assertFalse(self.store.mark_attempted('k', attempt))
+
+    def test_two_scopes_sharing_a_request_key_stay_independent(self):
+        other_root = Path(self.tmp) / 'other'
+        other_root.mkdir()
+        other = TaskStore(self.tmp, other_root)
+        self.addCleanup(other.close)
+        self.store.admit('k', 'prompt A')
+        other.admit('k', 'prompt B')
+        self.assertEqual(self.store.reserve('k', 'w1')['prompt'], 'prompt A')
+        self.assertEqual(other.reserve('k', 'w1')['prompt'], 'prompt B')
+        self.assertTrue(self.store.mark_attempted('k', self.store.reserve('k', 'w1')['attempt_id']))
+        self.assertEqual(other.reserve('k', 'w1')['state'], 'reserved')
+
+    def test_a_result_submitted_before_the_intention_is_never_downgraded(self):
+        self.store.admit('k', 'p')
+        attempt = self.store.reserve('k', 'w1')['attempt_id']
+        self.store.submit('k', attempt, 'answer')
+        self.assertFalse(self.store.mark_attempted('k', attempt))
+        self.assertEqual(self.row('k')[2:], ('reserved', 'answer'))
+        self.assertEqual(self.store.reserve('k', 'w1')['state'], 'completed')
+        self.assertTrue(self.store.submit('k', attempt, 'answer')['completed'])
+        with self.assertRaises(ValueError):
+            self.store.submit('k', attempt, 'different')
 
     def test_invalid_keys_refused(self):
         for bad in ('', ' ', None, 'x' * 129):
@@ -119,7 +182,8 @@ class ReserveTests(Workspace):
 class AwaitTaskTests(Workspace):
     def setUp(self):
         super().setUp()
-        self.facade = ClaudeMCP(self.store, Mock(), max_wait=3, poll=0.02, progress_interval=0.05)
+        self.time = FakeTime()
+        self.facade = ClaudeMCP(self.store, Mock(), max_wait=3, clock=self.time.clock, wait=self.time.wait)
 
     def await_(self, **args):
         return call(self.facade, 'await_task', dict({'request_key': 'k', 'claim_key': 'w1'}, **args))
@@ -133,9 +197,8 @@ class AwaitTaskTests(Workspace):
     def test_exact_task_is_handed_over_immediately_and_only_that_one(self):
         self.store.admit('older', 'not me')
         self.store.admit('k', 'do it')
-        started = time.monotonic()
         result = self.await_()
-        self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(self.time.waits, [])
         self.assertEqual((result['task'], result['delivery'], result['prompt'], result['request_key']), (True, 'handed_over', 'do it', 'k'))
         self.assertIn('submit_result', result['instruction'])
         self.assertNotIn('call await_task again.', result['instruction'])
@@ -147,28 +210,43 @@ class AwaitTaskTests(Workspace):
         self.await_()
         again = self.await_()
         self.assertEqual((again['task'], again['delivery']), (False, 'attempted'))
-        self.assertNotIn('prompt', again)
         self.assertNotIn('secret prompt', json.dumps(again))
 
-    def test_idle_instruction_never_asks_for_an_automatic_rearm(self):
-        started = time.monotonic()
+    def test_timeout_terminates_once_without_a_task_a_reservation_or_further_wakeups(self):
         result = self.await_(wait_seconds=1)
-        elapsed = time.monotonic() - started
-        self.assertTrue(0.9 <= elapsed < 2.5, elapsed)
-        self.assertEqual((result['idle'], result['task']), (True, False))
+        self.assertEqual((result['idle'], result['task'], result['waited_seconds']), (True, False, 1.0))
         self.assertIn('Do not call await_task again unless the operator asked', result['instruction'])
         self.assertIsNone(self.row('k'))
+        woke = len(self.time.waits)
+        self.assertEqual(self.time.waits, [0.25, 0.5, 0.25])  # bounded backoff, ends at the deadline
+        self.assertEqual(len(self.time.waits), woke)
+        self.assertEqual(self.time.events, [])
 
-    def test_task_admitted_during_the_wait_is_delivered(self):
-        def admit_later():
-            other = TaskStore(self.tmp, self.tmp)  # own connection in the timer thread
-            try:
-                other.admit('k', 'arrived')
-            finally:
-                other.close()
-        threading.Timer(0.2, admit_later).start()
+    def test_task_admitted_during_the_wait_is_delivered_once(self):
+        self.time.at(0.5, lambda: self.store.admit('k', 'arrived'))
         result = self.await_(wait_seconds=3)
         self.assertEqual((result['request_key'], result['prompt']), ('k', 'arrived'))
+        self.assertEqual(self.time.waits, [0.25, 0.5])
+
+    def test_arrival_between_the_first_read_and_the_next_one_is_not_lost(self):
+        outer = self
+
+        class AdmitAfterFirstRead:
+            def __init__(self, inner):
+                self.inner, self.calls = inner, 0
+
+            def reserve(self, *args):
+                self.calls += 1
+                reserved = self.inner.reserve(*args)
+                if self.calls == 1:
+                    self.inner.admit('k', 'raced in')  # lands right after the empty read
+                return reserved
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+        result = content(self.facade.await_task(AdmitAfterFirstRead(self.store), {'request_key': 'k', 'claim_key': 'w1', 'wait_seconds': 3}))
+        self.assertEqual((result['prompt'], result['delivery']), ('raced in', 'handed_over'))
+        self.assertEqual(outer.row('k')[2], 'attempted')
 
     def test_another_claim_key_is_refused_not_waited_on(self):
         self.store.admit('k', 'p')
@@ -190,7 +268,7 @@ class AwaitTaskTests(Workspace):
 
         def waiter():
             local = TaskStore(self.tmp, self.tmp)
-            facade = ClaudeMCP(local, Mock(), max_wait=3, poll=0.01)
+            facade = ClaudeMCP(local, Mock(), max_wait=3)
             try:
                 barrier.wait()
                 results.append(facade.await_task(local, {'request_key': 'k', 'claim_key': 'w1', 'wait_seconds': 1}))
@@ -208,12 +286,10 @@ class AwaitTaskTests(Workspace):
         self.assertEqual(sum(1 for item in payloads if item.get('prompt') == 'once only'), 1)
         self.assertEqual(sum(1 for item in payloads if item.get('delivery') == 'attempted'), 3)
 
-    def test_cancel_before_arrival_returns_nothing_and_creates_no_reservation(self):
+    def test_cancel_while_waiting_returns_nothing_and_creates_no_reservation(self):
         cancel = threading.Event()
-        threading.Timer(0.1, cancel.set).start()
-        started = time.monotonic()
+        self.time.at(0.3, cancel.set)
         self.assertIsNone(self.facade.await_task(self.store, {'request_key': 'k', 'claim_key': 'w', 'wait_seconds': 3}, cancel=cancel))
-        self.assertLess(time.monotonic() - started, 1.5)
         self.assertIsNone(self.row('k'))
 
     def test_cancel_after_a_fresh_reservation_and_before_the_intention_releases_it(self):
@@ -243,15 +319,47 @@ class AwaitTaskTests(Workspace):
         self.assertIsNone(self.facade.await_task(self.store, {'request_key': 'k', 'claim_key': 'w1'}, cancel=cancel))
         self.assertEqual(self.row('k')[:3], ('w1', attempt, 'reserved'))
 
-    def test_cancel_after_the_intention_keeps_the_task_uncertain(self):
+    def test_cancel_between_the_intention_and_the_write_keeps_the_task_uncertain_and_writes_nothing(self):
         self.store.admit('k', 'p')
-        attempt = self.store.reserve('k', 'w1')['attempt_id']
-        self.store.mark_attempted('k', attempt)
-        cancel = threading.Event()
-        cancel.set()
-        receipt = content(self.facade.await_task(self.store, {'request_key': 'k', 'claim_key': 'w1'}, cancel=cancel))
-        self.assertEqual(receipt['delivery'], 'attempted')
+        cancel, written = threading.Event(), []
+
+        class CancelAfterMark:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def mark_attempted(self, *args):
+                marked = self.inner.mark_attempted(*args)
+                cancel.set()
+                return marked
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+        wrote = self.facade.deliver_wait(1, CancelAfterMark(self.store), {'arguments': {'request_key': 'k', 'claim_key': 'w1'}}, cancel, written.append)
+        self.assertFalse(wrote)
+        self.assertEqual(written, [])
+        self.assertEqual(self.row('k')[:3][2], 'attempted')
+        self.assertEqual(self.store.reserve('k', 'w1')['state'], 'attempted')
+
+    def test_a_failed_write_after_the_intention_never_releases_or_redelivers(self):
+        self.store.admit('k', 'p')
+
+        def broken_pipe(_payload):
+            raise BrokenPipeError('client went away')
+        with self.assertRaises(BrokenPipeError):
+            self.facade.deliver_wait(1, self.store, {'arguments': {'request_key': 'k', 'claim_key': 'w1'}}, threading.Event(), broken_pipe)
         self.assertEqual(self.row('k')[2], 'attempted')
+        receipt = self.await_()
+        self.assertEqual((receipt['delivery'], 'prompt' in receipt), ('attempted', False))
+        attempt = receipt['attempt_id']
+        self.assertTrue(self.store.submit('k', attempt, 'late answer')['completed'])  # a late result is still accepted
+        self.assertEqual(self.row('k')[3], 'late answer')
+
+    def test_deliver_wait_writes_exactly_one_response_with_the_request_id(self):
+        self.store.admit('k', 'p')
+        written = []
+        self.assertTrue(self.facade.deliver_wait(41, self.store, {'arguments': {'request_key': 'k', 'claim_key': 'w1'}}, threading.Event(), written.append))
+        self.assertEqual([item['id'] for item in written], [41])
+        self.assertEqual(json.loads(written[0]['result']['content'][0]['text'])['prompt'], 'p')
 
     def test_arguments_are_strict(self):
         for args in ({}, {'claim_key': 'w'}, {'request_key': 'k'}, {'request_key': 'k', 'claim_key': 'w', 'wait_seconds': 0},
@@ -265,13 +373,19 @@ class AwaitTaskTests(Workspace):
         with self.assertRaises(ValueError):
             call(self.facade, 'await_task', {'request_key': 'k', 'claim_key': 'w'}, _meta={'progressToken': {'a': 1}})
 
-    def test_progress_notifications_are_sent_only_with_a_token(self):
+    def test_no_progress_notification_by_default_even_with_a_token(self):
         sent = []
-        self.facade.await_task(self.store, {'request_key': 'k', 'claim_key': 'w', 'wait_seconds': 1}, token='tok', emit=sent.append)
+        self.facade.await_task(self.store, {'request_key': 'k', 'claim_key': 'w', 'wait_seconds': 2}, token='tok', emit=sent.append)
+        self.assertEqual(sent, [])
+
+    def test_progress_is_opt_in_and_needs_a_token(self):
+        facade = ClaudeMCP(self.store, Mock(), max_wait=3, progress_interval=0.4, clock=self.time.clock, wait=self.time.wait)
+        sent = []
+        facade.await_task(self.store, {'request_key': 'k', 'claim_key': 'w', 'wait_seconds': 2}, token='tok', emit=sent.append)
         self.assertGreaterEqual(len(sent), 2)
         self.assertEqual([item['params']['progress'] for item in sent][:2], [1, 2])
         silent = []
-        self.facade.await_task(self.store, {'request_key': 'k', 'claim_key': 'w', 'wait_seconds': 1}, token=None, emit=silent.append)
+        facade.await_task(self.store, {'request_key': 'k', 'claim_key': 'w', 'wait_seconds': 2}, token=None, emit=silent.append)
         self.assertEqual(silent, [])
 
     def test_submit_result_stays_idempotent_and_conflicts_are_refused_after_await(self):
@@ -291,7 +405,7 @@ class AwaitTaskTests(Workspace):
 
 
 class StdioProcessTests(unittest.TestCase):
-    """The real server over pipes: waiting never blocks ping, cancel is silent, delivery happens once."""
+    """The real server over pipes. No sleep is used to synchronise: ordering comes from the replies."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -330,28 +444,39 @@ class StdioProcessTests(unittest.TestCase):
     def test_ping_served_during_the_wait_then_exact_task_delivered_once_and_completed(self):
         self.tool(1, 'await_task', {'request_key': 'job-1', 'claim_key': 'w1', 'wait_seconds': 2})
         self.send({'jsonrpc': '2.0', 'id': 2, 'method': 'ping'})
-        self.assertEqual(self.reply(1), {'jsonrpc': '2.0', 'id': 2, 'result': {}})
+        self.assertEqual(self.reply(2), {'jsonrpc': '2.0', 'id': 2, 'result': {}})
         store = TaskStore(self.state, self.tmp / 'project')
         self.addCleanup(store.close)
         store.admit('job-0', 'not this one')
         store.admit('job-1', 'sort 7,2,5', chat_id='chat-9')
-        delivered = self.reply(3)
+        delivered = self.reply(4)
         self.assertEqual(delivered['id'], 1)
         task = json.loads(delivered['result']['content'][0]['text'])
         self.assertEqual((task['request_key'], task['prompt'], task['chat_id']), ('job-1', 'sort 7,2,5', 'chat-9'))
         self.tool(3, 'await_task', {'request_key': 'job-1', 'claim_key': 'w1', 'wait_seconds': 1})
         replay = json.loads(self.reply(3)['result']['content'][0]['text'])
         self.assertEqual((replay['delivery'], 'prompt' in replay), ('attempted', False))
+        self.tool(5, 'get_task', {'request_key': 'job-1', 'claim_key': 'w1'})
+        bypass = json.loads(self.reply(3)['result']['content'][0]['text'])
+        self.assertEqual((bypass['delivery'], 'prompt' in bypass), ('attempted', False))
         self.tool(4, 'submit_result', {'request_key': 'job-1', 'attempt_id': task['attempt_id'], 'answer': '2,5,7'})
         self.assertTrue(json.loads(self.reply()['result']['content'][0]['text'])['completed'])
 
-    def test_cancelled_wait_sends_no_response_and_keeps_no_reservation(self):
-        self.tool(7, 'await_task', {'request_key': 'later', 'claim_key': 'w1', 'wait_seconds': 2})
-        time.sleep(0.2)
+    def test_cancelled_wait_sends_no_response(self):
+        self.tool(7, 'await_task', {'request_key': 'later', 'claim_key': 'w1', 'wait_seconds': 1})
         self.send({'jsonrpc': '2.0', 'method': 'notifications/cancelled', 'params': {'requestId': 7}})
-        time.sleep(2.6)
         self.send({'jsonrpc': '2.0', 'id': 8, 'method': 'ping'})
         self.assertEqual(self.reply(2)['id'], 8)
+        with self.assertRaises(queue.Empty):  # the wait window is 1 s: no response may follow the cancellation
+            self.lines.get(timeout=2)
+
+    def test_eof_while_waiting_stops_the_waiter_and_reserves_nothing(self):
+        self.tool(9, 'await_task', {'request_key': 'never', 'claim_key': 'w1', 'wait_seconds': 2})
+        self.process.stdin.close()
+        self.assertEqual(self.process.wait(timeout=6), 0)
+        store = TaskStore(self.state, self.tmp / 'project')
+        self.addCleanup(store.close)
+        self.assertEqual(store.reserve('never', 'w1'), {'state': 'absent'})
 
     def test_bad_arguments_get_an_error_not_a_hang(self):
         self.tool(5, 'await_task', {'claim_key': 'w', 'wait_seconds': 1})

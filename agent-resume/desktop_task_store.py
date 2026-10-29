@@ -50,6 +50,8 @@ class TaskStore:
         return {'status': 'finished', 'request_key': request_key, 'admitted': True, 'dispatch_confirmed': False}
 
     def claim(self, request_key, claim_key):
+        """Explicit pull (get_task). Shares the delivery barrier with await_task: the prompt is handed
+        over once; after a delivery attempt by either tool the replay returns a receipt, not the payload."""
         bounded(request_key, 'request_key', 128)
         bounded(claim_key, 'claim_key', 128)
         with self.db:
@@ -60,8 +62,15 @@ class TaskStore:
             if row[2] is not None and row[2] != claim_key:
                 raise ValueError('Task already claimed')
             attempt = row[3] or str(uuid.uuid4())
-            self.db.execute('UPDATE desktop_tasks SET claim_key=?,attempt_id=?,delivery=? WHERE scope=? AND request_key=?', (claim_key,attempt,'attempted' if row[4] is None else row[6],self.scope,request_key))
-        return {'status': 'finished', 'request_key': request_key, 'attempt_id': attempt, 'prompt': row[0], 'chat_id': row[1], 'completed': row[4] is not None, 'instruction': 'Already completed; retrieve the result, do not execute again.' if row[4] is not None else 'Perform the scoped task, then call submit_result with this attempt_id.'}
+            if row[6] == 'attempted':
+                return {'status': 'finished', 'request_key': request_key, 'attempt_id': attempt, 'completed': row[4] is not None,
+                        'delivery': 'attempted',
+                        'instruction': 'The prompt was already handed over; do not execute it again from here. If you hold it, finish and call submit_result; otherwise ask the operator.'}
+            self.db.execute('UPDATE desktop_tasks SET claim_key=?,attempt_id=?,delivery=? WHERE scope=? AND request_key=?',
+                            (claim_key, attempt, 'attempted' if row[4] is None else row[6], self.scope, request_key))
+        return {'status': 'finished', 'request_key': request_key, 'attempt_id': attempt, 'prompt': row[0], 'chat_id': row[1],
+                'completed': row[4] is not None, 'delivery': 'handed_over',
+                'instruction': 'Already completed; retrieve the result with get_result.' if row[4] is not None else 'Perform the scoped task, then call submit_result with this attempt_id.'}
 
     def reserve(self, request_key, claim_key):
         """Reserve one exact task for claim_key without delivering it.

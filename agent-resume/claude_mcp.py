@@ -43,11 +43,15 @@ def outbound_tools():
 
 
 class ClaudeMCP:
-    def __init__(self, tasks, bridge, max_wait=DEFAULT_MAX_WAIT, poll=0.25, progress_interval=10.0):
+    def __init__(self, tasks, bridge, max_wait=DEFAULT_MAX_WAIT, poll=0.25, progress_interval=0, clock=time.monotonic, wait=None):
         if type(max_wait) is not int or not 1 <= max_wait <= MAX_WAIT_CEILING:
             raise ValueError('max_wait must be an integer from 1 to %d' % MAX_WAIT_CEILING)
         self.tasks, self.bridge = tasks, bridge
+        # progress_interval = 0 (default): no progress notification, i.e. no artificial heartbeat.
         self.max_wait, self.poll, self.progress_interval = max_wait, poll, progress_interval
+        self.clock = clock
+        # wait(cancel, seconds): injectable so tests control time without sleeping.
+        self.wait = wait or (lambda cancel, seconds: cancel.wait(seconds) if cancel is not None else time.sleep(seconds))
 
     def await_task(self, store, args, token=None, cancel=None, emit=None):
         """Bounded wait for one exact task. Returns a tool result, or None when the request was cancelled.
@@ -60,9 +64,9 @@ class ClaudeMCP:
         if type(wait) is not int or not 1 <= wait <= self.max_wait:
             raise ValueError('wait_seconds must be an integer from 1 to %d' % self.max_wait)
         request_key, claim_key = args['request_key'], args['claim_key']
-        deadline = time.monotonic() + wait
-        started = time.monotonic()
-        last_progress, count = started, 0
+        started = self.clock()
+        deadline = started + wait
+        last_progress, count, interval = started, 0, self.poll
         while True:
             reserved = store.reserve(request_key, claim_key)
             state = reserved['state']
@@ -86,21 +90,31 @@ class ClaudeMCP:
                                      'instruction': 'Perform the scoped task, then call submit_result with this attempt_id. Do not call await_task again unless the operator asked you to.'})
             if cancel is not None and cancel.is_set():
                 return None
-            now = time.monotonic()
+            now = self.clock()
             if now >= deadline:
                 return tool_content({'status': 'finished', 'idle': True, 'task': False, 'request_key': request_key,
                                      'waited_seconds': round(now - started, 1),
                                      'instruction': 'No task yet for this request_key. Do not call await_task again unless the operator asked you to keep waiting.'})
-            if token is not None and emit is not None and now - last_progress >= self.progress_interval:
+            if token is not None and emit is not None and self.progress_interval and now - last_progress >= self.progress_interval:
                 count += 1
                 last_progress = now
                 emit({'jsonrpc': '2.0', 'method': 'notifications/progress',
                       'params': {'progressToken': token, 'progress': count, 'message': 'Waiting for a Reprise task'}})
-            pause = min(self.poll, max(0.0, deadline - now))
-            if cancel is not None:
-                cancel.wait(pause)
-            else:
-                time.sleep(pause)
+            # Arrival comes from another process (the Quick Apply daemon): a bounded local poll with
+            # backoff is the minimal mechanism. It costs no model turn and sends nothing to the client.
+            self.wait(cancel, min(interval, max(0.0, deadline - now)))
+            interval = min(interval * 2, 1.0)
+
+    def deliver_wait(self, ident, store, params, cancel, write, emit=None):
+        """Run one await_task request and write its single response; False when nothing was written."""
+        token = (params.get('_meta') or {}).get('progressToken')
+        if token is not None and not (isinstance(token, (str, int)) and not isinstance(token, bool)):
+            raise ValueError('Invalid progressToken')
+        result = self.await_task(store, params.get('arguments') or {}, token, cancel, emit)
+        if result is None or cancel.is_set():
+            return False  # cancelled: the protocol expects no response; an attempted delivery stays uncertain
+        write({'jsonrpc': '2.0', 'id': ident, 'result': result})
+        return True
 
     def dispatch(self, message):
         method = message.get('method')
@@ -169,10 +183,12 @@ def main():
     parser.add_argument('--socket')
     parser.add_argument('--max-wait', type=int, default=DEFAULT_MAX_WAIT,
                         help='longest await_task wait in seconds; raise only after proving the client tolerates it')
+    parser.add_argument('--progress-interval', type=float, default=0,
+                        help='seconds between notifications/progress during await_task; 0 (default) sends none')
     args = parser.parse_args()
     tasks = TaskStore(args.state, args.project_root)
     bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.expert_state, allowed_tools=OUTBOUND)
-    facade = ClaudeMCP(tasks, bridge, max_wait=args.max_wait)
+    facade = ClaudeMCP(tasks, bridge, max_wait=args.max_wait, progress_interval=args.progress_interval)
     send_lock = threading.Lock()
     active, workers = {}, []
 
@@ -185,17 +201,13 @@ def main():
         store = None
         try:
             store = TaskStore(args.state, args.project_root)
-            params = message.get('params') or {}
-            token = (params.get('_meta') or {}).get('progressToken')
-            if token is not None and not (isinstance(token, (str, int)) and not isinstance(token, bool)):
-                raise ValueError('Invalid progressToken')
-            result = facade.await_task(store, params.get('arguments') or {}, token, cancel, send)
-            if result is None or cancel.is_set():
-                return  # cancelled: the protocol expects no response
-            send({'jsonrpc': '2.0', 'id': ident, 'result': result})
+            facade.deliver_wait(ident, store, message.get('params') or {}, cancel, send, send)
         except (ValueError, TypeError, KeyError, OSError, sqlite3.Error) as exc:
             if not cancel.is_set():
-                send({'jsonrpc': '2.0', 'id': ident, 'error': error_payload(exc)})
+                try:
+                    send({'jsonrpc': '2.0', 'id': ident, 'error': error_payload(exc)})
+                except OSError:
+                    pass
         finally:
             active.pop(json.dumps(ident), None)
             if store is not None:
