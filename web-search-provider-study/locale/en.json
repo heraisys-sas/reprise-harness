@@ -1,6 +1,0 @@
-{
-  "meta": {
-    "title": "Brave Web Search",
-    "description": "Registers the Brave Search API as the web_search provider: independent index, de-identified queries, free monthly tier. Replaces the built-in DeepSeek search."
-  }
-}
