@@ -5,6 +5,7 @@ balayait le stock : une tâche laissée `needs_review`, `ambiguous` ou `dispatch
 y restait jusqu'à ce qu'un humain demande. Ces tests verrouillent le balayage borné
 et son contrat d'erreur : un échec par clé, jamais une exception globale.
 """
+import re
 import sqlite3
 from pathlib import Path
 import sys
@@ -14,7 +15,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ironclaw_ssh import Endpoint
-from ironclaw_tasks import BUSY_BACKOFF_SECONDS, BUSY_MAX_ATTEMPTS, Tasks, TaskError
+from ironclaw_tasks import BUSY_BACKOFF_SECONDS, BUSY_MAX_ATTEMPTS, MAX_TIMELINE_PAGES, Tasks, TaskError
 
 ID_FILE = '/run/reprise/id'
 TOKEN_FILE = '/run/reprise/token'
@@ -123,6 +124,42 @@ class ReconcileDueTests(unittest.TestCase):
             "SELECT last_error FROM ironclaw_tasks WHERE request_key='key'").fetchone()[0], 'busy: never accepted')
         self.assertEqual(self.db.execute(
             'SELECT next_attempt_at FROM ironclaw_tasks WHERE request_key=?', ('key',)).fetchone()[0], None)
+
+    def test_blocked_busy_with_conflicting_evidence_backs_off_before_raising(self):
+        tasks, _ = self.submit_with_outcome(outcome='rejected_busy')
+        now = time.time()
+        self.timeline = [{'kind': 'user', 'content': 'question', 'turn_run_id': 'run'},
+                         {'kind': 'user', 'content': 'question', 'turn_run_id': 'run2'}]
+        results = tasks.reconcile_due(now=now)
+        self.assertEqual(results[0]['state'], 'unreconciled')
+        self.assertEqual(self.db.execute(
+            "SELECT busy_attempts,next_attempt_at FROM ironclaw_tasks WHERE request_key='key'").fetchone(),
+            (1, now + BUSY_BACKOFF_SECONDS))
+        self.assertEqual(tasks.reconcile_due(now=now), [])
+
+    def test_reconcile_long_thread_resumes_over_sweeps_without_raising(self):
+        tasks = self.leave_ambiguous()
+        pages = [{'messages': [], 'next_cursor': f'c{i + 1}'} for i in range(24)]
+        pages.append({'messages': [{'kind': 'user', 'content': 'question', 'turn_run_id': 'run'}],
+                      'next_cursor': None})
+        requests = []
+
+        def transport(endpoint, method, path, payload=None, **kwargs):
+            if path.endswith('/session'):
+                return {'session_channel_extension_id': 'channel'}
+            if path.endswith('/threads'):
+                return {'thread': {'thread_id': 'thread'}}
+            match = re.search(r'[?&]cursor=([^&]+)', path)
+            cursor = match.group(1) if match else None
+            requests.append(cursor)
+            return pages[0 if cursor is None else int(cursor[1:])]
+        tasks.transport = transport
+        results = tasks.reconcile_due()
+        self.assertEqual(results[0]['state'], 'ambiguous')
+        self.assertEqual(len(requests), MAX_TIMELINE_PAGES)
+        results = tasks.reconcile_due()
+        self.assertEqual(results[0]['state'], 'pending')
+        self.assertEqual(results[0]['run_id'], 'run')
 
     def test_poll_sweeps_backlog_without_touching_the_polled_task(self):
         tasks, busy = self.submit_with_outcome(key='busy', outcome='rejected_busy')

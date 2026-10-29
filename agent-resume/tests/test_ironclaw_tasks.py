@@ -358,6 +358,20 @@ class TasksTests(unittest.TestCase):
         self.assertEqual(requests[MAX_TIMELINE_PAGES], 'c19')
         self.assertIsNone(requests[MAX_TIMELINE_PAGES + 1], 'curseur invalidé : rescan complet depuis la tête')
 
+    def test_repeated_cursor_invalidation_rescans_again_then_degrades(self):
+        self.submit()
+        pages, requests = self.long_timeline(25), []
+        tasks = Tasks(self.db, self.endpoint, self.paged(pages, requests))
+        tasks.poll('key')
+        for mark in (0, 1):
+            pages[19] = {'messages': [{'kind': 'tool_use', 'n': mark}], 'next_cursor': 'c20'}
+            self.assertEqual(tasks.poll('key')['state'], 'pending')
+            self.assertEqual(requests[-(MAX_TIMELINE_PAGES + 1)], 'c19')
+            self.assertIsNone(requests[-MAX_TIMELINE_PAGES], 'invalidation redétectée : rescan complet')
+        pages[19] = {'messages': [{'kind': 'tool_use', 'n': 2}], 'next_cursor': 'c20'}
+        with self.assertRaises(TaskError):
+            tasks.poll('key')
+
     def test_activity_on_next_page_after_finalized_is_not_the_end(self):
         self.submit()
         self.pages = [
