@@ -52,6 +52,7 @@ cible documenté, pas une capacité livrée par ce lot.
 5. `get_task` partage la même barrière : première remise = prompt ; après une tentative de remise par l'un ou l'autre outil, il rend un **reçu sans prompt** (`delivery: attempted`). **Changement de comportement** voulu par le contrat : l'ancien rejeu identique après redémarrage n'existe plus ; en cas de perte de contexte, l'opérateur ré-admet la tâche sous une nouvelle clé.
 6. `submit_result` reste idempotent ; un résultat contradictoire ou d'une autre tentative est refusé ; rien ne rétrograde un résultat validé.
 
+- **Désactivé par défaut** : `await_task` n'apparaît pas dans `tools/list` et est refusé tant que le serveur n'est pas lancé avec `--enable-await`. C'est une décision de l'opérateur par configuration de connecteur (le test d'enregistrement de session de `dev` garantit que l'outil n'est pas exposé sans cela).
 - **Attente bornée** : `wait_seconds` ≤ `--max-wait` du serveur (45 s par défaut, 600 s au plus). Sans tâche : `idle`, avec la consigne de **ne pas** rappeler l'outil sauf demande de l'opérateur (aucun réarmement automatique : chaque retour peut coûter un tour de modèle). Durée plus longue : à prouver d'abord. Aucun battement artificiel : les `notifications/progress` sont désactivées par défaut (`--progress-interval 0`) et ne sont envoyées que si l'opérateur fixe un intervalle et que le client fournit un `progressToken`.
 - **Boucle MCP** : l'attente s'exécute dans un fil dédié avec sa propre connexion SQLite ; `ping` reste servi ; `notifications/cancelled` annule l'attente sans réponse. Pas de génération de connexion persistée : un processus serveur = une connexion stdio ; EOF avant l'intention libère une réservation neuve, EOF après la laisse incertaine.
 - **États** : *chaud* (appel en cours, aucune inférence), *travail* (inférence après la remise, donc quota), *froid* (appel terminé : délai, annulation, chat fermé, redémarrage, limite d'étapes ; Reprise ne peut pas réveiller, armement humain requis), *quota* (l'attente ne consomme rien ; l'épuisement survient pendant le travail). Le réveil à froid, la durée maximale et la reprise après quota **ne sont pas prouvés**.
@@ -66,7 +67,7 @@ Texte d'armement du POC (à coller par l'opérateur) :
 
 > Appelle une seule fois `await_task` avec `request_key` = `<clé exacte>`, `claim_key` = `<identifiant de ce chat>` et `wait_seconds` = 30. Si une tâche arrive, exécute-la dans son périmètre puis appelle `submit_result` avec son `attempt_id`, et arrête-toi. Si la réponse est `idle` ou un reçu, arrête-toi sans rappeler l'outil.
 
-Aucun service ni déploiement n'est modifié par ce lot ; l'outil n'existe dans Claude Desktop qu'après mise à jour du connecteur et autorisation de l'opérateur.
+Aucun service ni déploiement n'est modifié par ce lot ; l'outil n'existe dans Claude Desktop qu'après mise à jour du connecteur **et** ajout de `--enable-await` par l'opérateur.
 
 ## Démon et reprise quota
 
