@@ -9,8 +9,10 @@ starts anything implicitly; each action is explicit.
 """
 from app_paths import state_directory, state_location
 import errno
+import os
 import plistlib
 from pathlib import Path
+import secrets
 import subprocess
 import sys
 
@@ -126,6 +128,17 @@ def daemon_start(socket=None, state=None, daily_limit=8, project_root=None):
                                 stdout=log, stderr=log, stdin=subprocess.DEVNULL,
                                 start_new_session=True)
         _pid_file(state).write_text(str(proc.pid))
+        # Write shutdown token (plain hex, verified by SHA-256 in _shutdown)
+        shutdown_token = secrets.token_hex(32)
+        token_path = Path(state) / 'quick-apply-shutdown.token'
+        # Write token with 0600 permissions
+        tmp = token_path.with_suffix('.tmp')
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, shutdown_token.encode())
+        finally:
+            os.close(fd)
+        tmp.rename(token_path)
         import time
         time.sleep(1.0)  # let a fast failure (e.g. orphan socket) surface
         if server_running():
@@ -137,27 +150,109 @@ def daemon_start(socket=None, state=None, daily_limit=8, project_root=None):
         if log.is_file():
             lines = log.read_text(errors='replace').strip().splitlines()
             detail = lines[-1] if lines else ''
+        # Clean up token on failure
+        try:
+            token_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         return {'ok': False, 'started': False, 'reason': f'Daemon Quick Apply non démarré : {detail or "voir le journal"}'}
     except OSError as error:
         return {'ok': False, 'started': False, 'reason': f'Démarrage impossible : {error}'}
 
 
 def daemon_stop(state=None):
-    """Never signal an unauthenticated PID or claim an unconfirmed stop."""
-    observed = socket_state()
-    if observed == 'stopped':
-        return {'ok': True, 'stopped': False, 'status': 'stopped',
-                'reason': 'Socket claude-desktopd absent ou sans écoute ; aucun arrêt effectué.'}
-    return {'ok': False, 'stopped': False,
-            'status': 'unsupported' if observed == 'running' else 'indeterminate',
-            'reason': 'Arrêt non confirmé : aucun contrôle d’arrêt authentifié disponible. '
-                      'Arrêter claude-desktopd depuis le terminal ou le gestionnaire qui l’a lancé, '
-                      'puis vérifier que la connexion au socket est refusée. '
-                      'L’application liée reste ouverte.'}
+    """Authenticated shutdown: verify token via Client, then verify socket closes.
+
+    Without a valid token and active socket → status 'unsupported'.
+    Token rejected → 'unauthenticated'.
+    After ok: verify socket refuses connect in bounded loop (~10 s) before stopped=True.
+    Token written with 0600 permissions; cleaned up on failure.
+    """
+    import errno
+    import time
+    state = state or str(DEFAULT_STATE)
+    # Read stored token
+    token_path = Path(state) / 'quick-apply-shutdown.token'
+    try:
+        fd = os.open(str(token_path), os.O_RDONLY, 0o600)
+        try:
+            stored_token = os.read(fd, 4096).decode().strip()
+        finally:
+            os.close(fd)
+    except OSError:
+        # Try normal read as fallback
+        try:
+            stored_token = token_path.read_text().strip()
+        except OSError:
+            # No token file — check socket
+            observed = socket_state()
+            if observed == 'stopped':
+                return {'ok': True, 'stopped': False, 'status': 'stopped',
+                        'reason': 'Socket absent ou sans écoute ; aucun arrêt effectué.'}
+            return {'ok': False, 'stopped': False, 'status': 'unsupported',
+                    'reason': 'Aucun jeton d\'arrêt trouvé et socket encore actif.'}
+
+    # Send shutdown command via Client (JSON-RPC over UNIX socket)
+    from claude_desktop_rpc import Client
+    client = Client(str(DEFAULT_SOCKET))
+    try:
+        resp = client.call('shutdown', {'token': stored_token})
+        if not isinstance(resp, dict):
+            return {'ok': False, 'stopped': False, 'status': 'unsupported',
+                    'reason': 'Réponse du serveur invalide.'}
+        if not resp.get('ok'):
+            status_code = resp.get('status', 'unsupported')
+            return {'ok': False, 'stopped': False, 'status': status_code,
+                    'reason': resp.get('reason', 'Arrêt refusé par le serveur')}
+        # Token accepted — now verify the socket actually stops accepting connections
+        deadline = time.monotonic() + 10
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            while time.monotonic() < deadline:
+                try:
+                    sock.connect(str(DEFAULT_SOCKET))
+                    time.sleep(0.2)
+                except (ConnectionRefusedError, FileNotFoundError):
+                    return {'ok': True, 'stopped': True, 'status': 'stopped',
+                            'reason': 'Daemon Quick Apply arrêté par l\'opérateur.'}
+        finally:
+            sock.close()
+        # Timeout: socket still accepting
+        return {'ok': True, 'stopped': False, 'status': 'indeterminate',
+                'reason': 'Le socket reste actif après l\'arrêt du daemon.'}
+    except Exception as exc:
+        return {'ok': False, 'stopped': False, 'status': 'error',
+                'reason': f'Erreur lors de l\'arrêt : {exc}'}
+    finally:
+        client.close()
 
 
 def daemon_status(state=None):
     observed = socket_state()
-    return {'daemon': DAEMON_NAME, 'running': observed == 'running', 'pid': None,
-            'state': observed, 'app_running': app_running(), 'app_version': app_version(),
-            'socket': str(DEFAULT_SOCKET), 'listening': observed == 'running'}
+    running = observed == 'running'
+    result = {
+        'daemon': DAEMON_NAME,
+        'running': running,
+        'pid': None,
+        'state': observed,
+        'app_running': app_running(),
+        'app_version': app_version(),
+        'socket': str(DEFAULT_SOCKET),
+        'listening': running,
+    }
+    # Add CDP status if server is running
+    if running:
+        try:
+            from claude_desktop_rpc import Client
+            client = Client(str(DEFAULT_SOCKET))
+            try:
+                cdp_resp = client.call('cdp/status', {})
+                if isinstance(cdp_resp, dict):
+                    result['cdp'] = cdp_resp
+            except Exception:
+                pass  # cdp/status not available on older daemons
+            finally:
+                client.close()
+        except Exception:
+            pass  # cannot connect
+    return result

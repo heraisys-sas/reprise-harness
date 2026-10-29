@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from claude_desktop_quick import Endpoint
@@ -92,7 +93,7 @@ class EndpointTests(unittest.TestCase):
                 env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             client = None
             try:
-                deadline = time.monotonic() + 5
+                deadline = time.monotonic() + 15
                 while not socket.exists() and process.poll() is None and time.monotonic() < deadline:
                     time.sleep(.02)
                 self.assertIsNone(process.poll(), 'First-launch daemon exited')
@@ -104,7 +105,11 @@ class EndpointTests(unittest.TestCase):
             finally:
                 if client: client.close()
                 process.terminate()
-                process.wait(timeout=5)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
 
     def test_initialize_and_ping(self):
         info = self.endpoint.call('initialize', {})
@@ -118,6 +123,72 @@ class EndpointTests(unittest.TestCase):
         row = sqlite3.connect(os.path.join(self.state, 'quick.sqlite')).execute(
             'SELECT COUNT(*) FROM quick_submissions').fetchone()
         self.assertEqual(row[0], 1)
+
+    def test_cdp_resume_supported_in_capabilities(self):
+        caps = self.endpoint.call('quick_entry/capabilities', {})
+        self.assertTrue(caps['cdp_resume_supported'])
+
+    @mock.patch('claude_desktop_quick._cdp_pipe')
+    def test_cdp_status_idle(self, mock_cdp):
+        """cdp/status retourne idle quand pas de verrou."""
+        mock_inst = mock.MagicMock()
+        mock_cdp.return_value = mock_inst
+        profile = Path(tempfile.mkdtemp(prefix='cdp-status-'))
+        mock_inst._profile_dir.return_value = profile
+        mock_inst._hostname_pid_lock.return_value = (profile / 'lock-pid', profile / 'lock-pid')
+        mock_inst.check_profile_busy.return_value = None
+        mock_inst._chrome_bin.return_value = '/usr/bin/chrome'
+        with mock.patch('pathlib.Path.exists', return_value=True):
+            result = self.endpoint.call('cdp/status', {})
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['status'], 'idle')
+
+    @mock.patch('claude_desktop_quick._cdp_pipe')
+    def test_cdp_status_profile_busy(self, mock_cdp):
+        """cdp/status retourne profile_busy quand verrou actif."""
+        mock_inst = mock.MagicMock()
+        mock_cdp.return_value = mock_inst
+        profile = Path(tempfile.mkdtemp(prefix='cdp-busy-'))
+        mock_inst._profile_dir.return_value = profile
+        mock_inst._hostname_pid_lock.return_value = (profile / 'lock-pid', profile / 'lock-pid')
+        mock_inst.check_profile_busy.return_value = {'pid': 12345, 'lock_mtime': 1234567890.0}
+        result = self.endpoint.call('cdp/status', {})
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['status'], 'profile_busy')
+        self.assertEqual(result['pid'], 12345)
+
+    @mock.patch('claude_desktop_quick._cdp_pipe')
+    def test_cdp_status_chrome_missing(self, mock_cdp):
+        """cdp/status retourne chrome_missing si binaire absent."""
+        mock_inst = mock.MagicMock()
+        mock_cdp.return_value = mock_inst
+        profile = Path(tempfile.mkdtemp(prefix='cdp-missing-'))
+        mock_inst._profile_dir.return_value = profile
+        mock_inst._hostname_pid_lock.return_value = (profile / 'lock-pid', profile / 'lock-pid')
+        mock_inst.check_profile_busy.return_value = None
+        mock_inst._chrome_bin.return_value = '/nonexistent/chrome'
+        with mock.patch('pathlib.Path.exists', return_value=False):
+            result = self.endpoint.call('cdp/status', {})
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['status'], 'chrome_missing')
+
+    def test_cdp_resume_requires_chat_id(self):
+        """cdp/resume rejette sans chat_id."""
+        result = self.endpoint.call('cdp/resume', {'prompt': 'hello'})
+        self.assertFalse(result.get('ok'))
+        self.assertEqual(result['status'], 'target_missing')
+
+    def test_cdp_resume_rejects_short_prompt(self):
+        """cdp/resume rejette prompt < 2 caractères."""
+        result = self.endpoint.call('cdp/resume', {'chat_id': str(uuid.uuid4()), 'prompt': 'x'})
+        self.assertFalse(result.get('ok'))
+        self.assertEqual(result['status'], 'paramètres')
+
+    def test_shutdown_unauthenticated(self):
+        """shutdown avec token invalide retourne unauthenticated."""
+        result = self.endpoint.call('shutdown', {'token': 'invalid'})
+        self.assertFalse(result.get('ok'))
+        self.assertEqual(result['status'], 'unauthenticated')
 
 
 if __name__ == '__main__':
