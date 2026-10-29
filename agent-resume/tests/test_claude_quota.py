@@ -2,7 +2,9 @@ from datetime import datetime
 from pathlib import Path
 import sqlite3
 import sys
+import tempfile
 import unittest
+from unittest import mock
 from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import claude_quota as quota
@@ -179,3 +181,45 @@ class ClaudeQuotaTests(unittest.TestCase):
         readings=iter([self.observation,dict(self.observation,chat_id=OTHER)])
         quota.tick(self.db,lambda:next(readings),lambda *args:self.clicks.append(args),DUE,ZONE)
         self.assertFalse(self.clicks)
+
+    def test_run_native_cdp_transport_idle(self):
+        """run_native avec transport='cdp' et pas de reprise due retourne observed."""
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td)
+            scheduler.put(self.db, 'claude_desktop_transport', 'cdp')
+            with mock.patch('claude_desktop_rpc.Client') as mock_client_cls:
+                mock_client = mock.MagicMock()
+                mock_client_cls.return_value = mock_client
+                mock_client.call.return_value = {'ok': True}
+                result = quota._run_cdp(self.db, str(state), now=DUE + 1)
+                self.assertEqual(result['status'], 'observed')
+                self.assertEqual(result['submitted'], 0)
+                self.assertEqual(result['transport'], 'cdp-pipe')
+
+    def test_run_native_cdp_transport_submits(self):
+        """run_native avec transport='cdp' soumet la reprise due et la marque submitted."""
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td)
+            quota.initialize(self.db)
+            self.db.execute(
+                "INSERT INTO claude_quota_resumes VALUES (?,?,?,?,?,?,?)",
+                ('evt-1', CHAT, NOW, DUE, 'f' * 64, 'p' * 64, 'waiting'))
+            self.db.commit()
+            with mock.patch('claude_desktop_rpc.Client') as mock_client_cls:
+                mock_client = mock.MagicMock()
+                mock_client_cls.return_value = mock_client
+                mock_client.call.side_effect = [
+                    {'ok': True},   # initialize
+                    {'ok': True},   # cdp/status
+                    {'ok': True, 'status': 'submitted', 'stage': 'envoyé', 'chatId': CHAT},
+                ]
+                result = quota._run_cdp(self.db, str(state), now=DUE + 1)
+                self.assertEqual(result['status'], 'observed')
+                self.assertEqual(result['submitted'], 1)
+                status_row = self.db.execute(
+                    "SELECT status FROM claude_quota_resumes WHERE event_key='evt-1'").fetchone()
+                self.assertEqual(status_row[0], 'submitted')
+
+
+if __name__ == '__main__':
+    unittest.main()

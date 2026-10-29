@@ -215,7 +215,7 @@ def main():
     sub.add_parser('desktop-connection-status')
     sub.add_parser('claude-quota-status')
     claude_auto = sub.add_parser('claude-quota-config')
-    claude_auto.add_argument('--transport', choices=('quick-apply', 'accessibility'))
+    claude_auto.add_argument('--transport', choices=('quick-apply', 'accessibility', 'cdp'))
     claude_auto.add_argument('--enabled', choices=('true', 'false'), required=True)
     quota_status = sub.add_parser('quota-status')
     quota_status.add_argument('--engine', choices=[e for e in engines.ENGINES if e != 'codex'], default='codex-server')
@@ -276,7 +276,24 @@ def main():
         import claude_desktop_apply as transport
         port = args.port or int(os.environ.get('CLAUDE_CDP_PORT', '9333'))
         if args.status:
-            print(json.dumps(transport.quota(port), ensure_ascii=False))
+            # Try CDP pipe first (daemon-managed), fall back to direct port
+            try:
+                from claude_desktop_rpc import Client
+                from claude_desktop import DEFAULT_SOCKET
+                client = Client(str(DEFAULT_SOCKET))
+                try:
+                    cdp_status = client.call('cdp/status', {})
+                    print(json.dumps(cdp_status, ensure_ascii=False))
+                    sys.exit(0)
+                except Exception:
+                    pass  # daemon not available, fall through
+                finally:
+                    client.close()
+            except Exception:
+                pass  # cannot connect to daemon
+            result = transport.quota(port)
+            result['deprecated'] = True  # direct port fallback is legacy
+            print(json.dumps(result, ensure_ascii=False))
             sys.exit(0)
         if args.raise_window:
             raised = transport.raise_for_login(port)

@@ -220,7 +220,8 @@ def run_native(db, root, state, now=None):
     import scheduler
     if not scheduler.enabled(db) or scheduler.get(db, 'claude_desktop_auto_enabled', True) is not True:
         return {'status': 'paused', 'submitted': 0}
-    if scheduler.get(db, 'claude_desktop_transport', 'quick-apply') == 'quick-apply':
+    transport = scheduler.get(db, 'claude_desktop_transport', 'quick-apply')
+    if transport == 'quick-apply':
         # The daemon owns native delivery and its session preconditions.
         with (Path(state) / 'claude-quota.lock').open('a') as lock:
             try:
@@ -228,21 +229,80 @@ def run_native(db, root, state, now=None):
             except BlockingIOError:
                 return {'status': 'busy', 'submitted': 0}
             return run_quick(db, time.time() if now is None else now)
-    root = Path(root)
-    helper = root.parent.parent / 'MacOS/ClaudeQuota'
-    with (Path(state) / 'claude-quota.lock').open('a') as lock:
+    if transport == 'cdp':
+        return _run_cdp(db, state, time.time() if now is None else now)
+    if transport == 'accessibility':
+        root = Path(root)
+        helper = root.parent.parent / 'MacOS/ClaudeQuota'
+        with (Path(state) / 'claude-quota.lock').open('a') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {'status': 'busy', 'submitted': 0}
+            observer = native_observer(helper)
+            # Timezone comes from the native desktop, never an implicit UTC daemon locale.
+            initial = observer()
+            zone_name = initial.get('timezone')
+            if not isinstance(zone_name, str):
+                return {'status': initial.get('reason', 'unavailable'), 'submitted': 0}
+            zone = ZoneInfo(zone_name)
+            reads = iter([initial])
+            def read():
+                return next(reads, None) or observer()
+            return tick(db, read, native_clicker(helper), time.time() if now is None else now, zone)
+    # Unknown transport — fail closed, NEVER fall through to accessibility path
+    return {'status': 'unknown_transport', 'submitted': 0, 'transport': transport}
+
+
+def _run_cdp(db, state, now=None):
+    """CDP transport: contact the Quick Apply daemon for resume.
+
+    State lives in claude_quota_resumes (event_key, chat_id, status:
+    waiting/awaiting_observation -> dispatching -> submitted/uncertain).
+    Mirrors run_quick lines 191-211.
+    """
+    import fcntl
+    from claude_desktop_rpc import Client
+    from claude_desktop import DEFAULT_SOCKET
+    initialize(db)
+    with (Path(state) / 'cdp-quota.lock').open('a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {'status': 'busy', 'submitted': 0}
-        observer = native_observer(helper)
-        # Timezone comes from the native desktop, never an implicit UTC daemon locale.
-        initial = observer()
-        zone_name = initial.get('timezone')
-        if not isinstance(zone_name, str):
-            return {'status': initial.get('reason', 'unavailable'), 'submitted': 0}
-        zone = ZoneInfo(zone_name)
-        reads = iter([initial])
-        def read():
-            return next(reads, None) or observer()
-        return tick(db, read, native_clicker(helper), time.time() if now is None else now, zone)
+        client = Client(str(DEFAULT_SOCKET))
+        try:
+            client.call('initialize', {'clientInfo': {'name': 'reprise-scheduler', 'version': '1'}})
+            status_resp = client.call('cdp/status', {})
+            if not isinstance(status_resp, dict) or not status_resp.get('ok'):
+                return {'status': 'cdp_unavailable', 'submitted': 0, 'transport': 'cdp-pipe',
+                        'detail': status_resp.get('reason', 'CDP non disponible')}
+            # Mark any stale dispatching as uncertain first
+            with db:
+                db.execute("UPDATE claude_quota_resumes SET status='uncertain' WHERE status='dispatching'")
+            rows = db.execute(
+                "SELECT event_key,chat_id FROM claude_quota_resumes WHERE due<=? AND status IN ('waiting','awaiting_observation')",
+                (now or time.time(),)).fetchall()
+            submitted = 0
+            for key, chat_id in rows:
+                with db:
+                    changed = db.execute(
+                        "UPDATE claude_quota_resumes SET status='dispatching' WHERE event_key=? AND status IN ('waiting','awaiting_observation')",
+                        (key,)).rowcount
+                if not changed:
+                    continue
+                try:
+                    resp = client.call('cdp/resume', {'chat_id': chat_id, 'prompt': 'retry'})
+                    stage = 'envoyé' if isinstance(resp, dict) and resp.get('ok') else 'incertain'
+                except Exception:
+                    stage = 'incertain'
+                with db:
+                    db.execute('UPDATE claude_quota_resumes SET status=? WHERE event_key=?',
+                               ('submitted' if stage == 'envoyé' else 'uncertain', key))
+                submitted += stage == 'envoyé'
+            return {'status': 'observed', 'submitted': submitted, 'transport': 'cdp-pipe'}
+        except Exception as exc:
+            return {'status': 'error', 'submitted': 0, 'transport': 'cdp-pipe',
+                    'reason': str(exc)}
+        finally:
+            client.close()

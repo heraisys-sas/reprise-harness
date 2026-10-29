@@ -3,6 +3,7 @@ import errno
 from pathlib import Path
 import re
 import sys
+import tempfile
 import unittest
 from unittest.mock import Mock, call, patch
 
@@ -15,7 +16,9 @@ ROOT = Path(__file__).parents[1]
 
 class AuthenticatedStopTests(unittest.TestCase):
     def test_reused_pid_is_never_signalled(self):
-        with patch.object(dm, 'socket_state', return_value='running'), patch('os.kill') as kill:
+        with tempfile.TemporaryDirectory() as td, \
+                patch.object(dm, 'DEFAULT_STATE', Path(td)), \
+                patch.object(dm, 'socket_state', return_value='running'), patch('os.kill') as kill:
             self.assertIsNone(dm.daemon_pid())
             for stop in (dm.stop, dm.daemon_stop):
                 result = stop()
@@ -26,7 +29,10 @@ class AuthenticatedStopTests(unittest.TestCase):
 
     def test_unknown_is_not_success_and_orphan_is_stopped_without_action(self):
         for state, ok in (('unknown', False), ('stopped', True)):
-            with self.subTest(state=state), patch.object(dm, 'socket_state', return_value=state):
+            with self.subTest(state=state), \
+                    tempfile.TemporaryDirectory() as td, \
+                    patch.object(dm, 'DEFAULT_STATE', Path(td)), \
+                    patch.object(dm, 'socket_state', return_value=state):
                 result = dm.daemon_stop()
                 self.assertEqual(result['ok'], ok)
                 self.assertFalse(result['stopped'])

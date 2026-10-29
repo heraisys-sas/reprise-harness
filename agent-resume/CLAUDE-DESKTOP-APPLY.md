@@ -77,3 +77,44 @@ L’attribution compte/pool du journal Desktop reste inconnue : elle ne peut pas
 Les tests Python simulent CDP et les fixtures JavaScript exécutent les expressions réelles sur un DOM synthétique. Ils couvrent notamment cible erronée, brouillons, empreinte, bouton désactivé, réponse perdue, framing et placeholder vide. Le test réel décrit ci-dessus constitue une preuve ponctuelle supplémentaire ; il ne garantit pas les futures versions de claude.ai.
 
 Les sources PR84/85/86 et la revue indépendante sont retracées dans `WORKLOG-DESKTOP-APPLY-DEV.md`, `INTEGRATION-DESKTOP-APPLY-DEV.md` et `REVIEW-DESKTOP-APPLY-DEV.md`. Le plan de découverte, attribution, échéances, interface et orchestration est dans `CLAUDE-SESSION-QUOTA-PLAN.md`. Ces fonctions restent à implémenter et qualifier avant activation automatique.
+
+## Transport par pipe CDP (`claude_cdp_pipe.py`)
+
+Le module `claude_cdp_pipe.py` fournit un transport CCD sur la **paire de descripteurs 3/4** du processus Chrome en mode `--remote-debugging-pipe` : Chrome **lit les commandes sur son fd 3** et **écrit les réponses sur son fd 4** (`devtools_pipe_handler.cc`, chromium main). Les messages JSON sont séparés par NUL (`\0`). Côté parent : un pipe de commandes (le parent écrit, l'enfant lit sur 3) et un pipe de réponses (l'enfant écrit sur 4, le parent lit), passés à l'enfant via `pass_fds=(3, 4)` après un `dup2` autour du spawn ; les fds 3/4 du parent sont sauvegardés (`F_DUPFD`) puis restaurés après le lancement. Ce transport est utilisé par le daemon Quick Apply pour les opérations `cdp/status` et `cdp/resume`.
+
+### Cycle de vie
+
+1. **Lancement paresseux** : `launch_chrome(profile)` démarre Chrome uniquement lors d'un appel `cdp/resume`. `cdp/status` est passif (ne lance rien).
+2. **Singleton** : un verrou PID (`<hostname>-pid`) empêche les doubles lancements. Un processus mort est balayé avant relance.
+3. **Terminaison** : après chaque tentative de reprise, Chrome reçoit SIGTERM → attente bornée → SIGKILL.
+4. **Arrêt authentifié** : `shutdown` exige un token SHA-256 généré au démarrage du daemon.
+
+### Configuration
+
+```sh
+# Choisir le transport CDP
+./resume claude-quota-config --transport cdp --enabled true
+
+# Vérifier le statut CDP
+./resume desktop-apply --status
+# Ou via le daemon :
+./resume desktop-status  # inclut 'cdp' si disponible
+```
+
+### API interne
+
+| Fonction | Rôle |
+|---|---|
+| `PipeTransport` | Classe principale : `_send()`, `_receive()`, `call()`, `evaluate()`, `insert_text()`, `attach_flat()` |
+| `launch_chrome(profile)` | Démarre Chrome avec pipe sur fds 3/4, retourne `(transport, proc)` |
+| `terminate_chrome(proc, timeout)` | SIGTERM → wait → SIGKILL |
+| `sweep_dead_lock(lock_path)` | Supprime le verrou PID si le processus est mort |
+| `check_profile_busy(lock_path)` | Retourne `{'ok': False, ...}` ou `None` |
+| `write_lock(lock_path, pid)` | Écrit le PID courant |
+| `test_bidirectional()` | Test unitaire sans Chrome (utilise `cat`) |
+
+### Sécurité
+
+- Domaines CDP restreints : `Target.getTargets`, `Target.attachToTarget {flatten:true}`, `Runtime.evaluate` (returnByValue/awaitPromise), `Input.insertText`, `Page.*` minimal.
+- Aucun domain enable, aucun isolated world, aucun script injecté globalement.
+- Page unique attendue : `/chat/<UUID>` sur `claude.ai`.

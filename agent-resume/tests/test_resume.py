@@ -1,6 +1,8 @@
 import importlib.machinery
 import importlib.util
 from pathlib import Path
+import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -408,6 +410,20 @@ class AutomaticSchedulerTests(unittest.TestCase):
         self.assertIn('forced_login_method="chatgpt"', args)
         self.assertIn('model_provider="openai"', args)
         self.assertIn('workspace-write', args)
+
+
+    def test_claude_quota_config_accepts_cdp_transport(self):
+        """claude-quota-config --transport cdp est accepté."""
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = Path(folder) / 'tasks.db'
+            script = str(Path(__file__).parents[1] / 'resume')
+            result = subprocess.run(
+                [script, 'claude-quota-config', '--transport', 'cdp', '--enabled', 'true'],
+                env=dict(os.environ, HOME=folder),
+                cwd=folder, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertTrue(data['claude_desktop_auto_enabled'])
 
 if __name__ == '__main__':
     unittest.main()

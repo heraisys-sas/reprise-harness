@@ -28,6 +28,15 @@ import claude_desktop
 from claude_desktop import build_payload, validate_chat_id
 from delegation_store import Store, file_evidence
 
+# Lazy imports for CDP path — avoids importing subprocess at module level
+_claude_cdp_pipe = None
+def _cdp_pipe():
+    global _claude_cdp_pipe
+    if _claude_cdp_pipe is None:
+        import claude_cdp_pipe as mod
+        _claude_cdp_pipe = mod
+    return _claude_cdp_pipe
+
 SERVER_NAME = 'reprise-claude-desktop-quick'
 VERSION = Path(__file__).with_name('VERSION').read_text().strip()
 
@@ -129,7 +138,8 @@ class Endpoint:
                     'task_return_supported': self.tasks is not None,
                     'project_root': self.tasks.scope if self.tasks else None,
                     'state_sha256': hashlib.sha256(str(self.state.resolve()).encode()).hexdigest(),
-                    'reason': 'Native Quick Apply dispatch driver not connected; admission alone does not send a turn.'}
+                    'reason': 'Native Quick Apply dispatch driver not connected; admission alone does not send a turn.',
+                    'cdp_resume_supported': Path(_cdp_pipe()._chrome_bin()).exists()}
         if name == 'quick_entry/get_result':
             if not self.tasks or args.keys() - {'request_key', 'acknowledge', 'view', 'offset', 'max_chars', 'result_sha256'} or 'request_key' not in args:
                 raise ValueError('Project-scoped result lookup required')
@@ -140,7 +150,147 @@ class Endpoint:
             return self.requests.lookup(args)
         if name == 'quick_entry/submit':
             return self.submit(args)
+        if name == 'cdp/status':
+            return self._cdp_status()
+        if name == 'cdp/resume':
+            return self._cdp_resume(args)
+        if name == 'shutdown':
+            return self._shutdown(args)
         raise ValueError('Méthode Quick Apply non prise en charge')
+
+    # -- CDP methods ---------------------------------------------------------
+
+    def _cdp_status(self):
+        """Passive CDP status: returns running:false if no Chrome process."""
+        cdp = _cdp_pipe()
+        profile = cdp._profile_dir()
+        lock_path, _ = cdp._hostname_pid_lock(profile)
+        busy = cdp.check_profile_busy(lock_path)
+        if busy is not None:
+            return {'ok': False, 'status': 'profile_busy', 'pid': busy['pid'],
+                    'lock_mtime': busy['lock_mtime']}
+        if not Path(cdp._chrome_bin()).exists():
+            return {'ok': False, 'status': 'chrome_missing'}
+        return {'ok': True, 'status': 'idle', 'cdp_resume_supported': Path(_cdp_pipe()._chrome_bin()).exists()}
+
+    def _cdp_resume(self, args):
+        """Resume via CDP pipe: spawn lazy, target unique page, deposit+click."""
+        if not isinstance(args, dict):
+            raise ValueError('Objet de soumission CDP requis')
+        chat_id = args.get('chat_id') or args.get('chatId')
+        prompt = args.get('prompt')
+        try:
+            chat_uuid = validate_chat_id(chat_id)
+        except ValueError:
+            chat_uuid = None
+        if not chat_id or not chat_uuid:
+            return {'ok': False, 'status': 'target_missing', 'reason': 'chat_id invalide ou absent'}
+        if not prompt or len(prompt.strip()) < 2:
+            return {'ok': False, 'status': 'paramètres', 'reason': 'prompt requis (≥2 caractères)'}
+        if len(prompt) > 12000:
+            return {'ok': False, 'status': 'paramètres', 'reason': 'prompt trop long'}
+
+        cdp_mod = _cdp_pipe()
+        profile = cdp_mod._profile_dir()
+        lock_path, _ = cdp_mod._hostname_pid_lock(profile)
+
+        busy = cdp_mod.check_profile_busy(lock_path)
+        if busy is not None:
+            return {'ok': False, 'status': 'profile_busy', 'pid': busy['pid'],
+                    'lock_mtime': busy['lock_mtime']}
+
+        if not Path(cdp_mod._chrome_bin()).exists():
+            return {'ok': False, 'status': 'chrome_missing'}
+
+        try:
+            transport, proc = cdp_mod.launch_chrome(profile)
+        except RuntimeError as exc:
+            return {'ok': False, 'status': 'session', 'reason': str(exc)}
+
+        try:
+            # Single pick-and-attach: getTargets → select /chat/<uuid> → attachToTarget flatten
+            transport.pick_and_attach(chat_uuid)
+        except Exception as exc:
+            cdp_mod.terminate_chrome(proc)
+            return {'ok': False, 'status': 'session', 'reason': str(exc)}
+
+        try:
+            compose_check = transport.evaluate(
+                "(function(){const el=document.querySelector('[data-testid=compose-textarea]');return el?{hasText:!!el.innerText,textLength:el.innerText.length}:null})()")
+            if compose_check and compose_check.get("textLength", 0) > 0:
+                stage = 'brouillon'
+                cdp_mod.terminate_chrome(proc)
+                return {'ok': False, 'status': 'brouillon', 'stage': 'brouillon',
+                        'detail': 'Contenu préexistant dans le composeur'}
+
+            # Focus the composer BEFORE inserting text (proven sequence from claude_desktop_apply.py ~447)
+            transport.evaluate(
+                "(function(){const el=document.querySelector('[data-testid=compose-textarea]');if(el){el.focus();if(el.isContentEditable)el.dispatchEvent(new Event('input',{bubbles:true}));else el.focus()}return true})()")
+
+            transport.insert_text(prompt)
+            stage = 'envoyé'
+        except Exception as exc:
+            cdp_mod.terminate_chrome(proc)
+            return {'ok': False, 'status': 'send_failed', 'reason': str(exc)}
+
+        try:
+            click_result = transport.evaluate(
+                "(function(){const btn=document.querySelector('[data-testid=chat-input-send]');if(!btn)return null;btn.click();return{clicked:true}})()")
+            if not click_result or not click_result.get("clicked"):
+                stage = 'incertain'
+        except Exception:
+            stage = 'incertain'
+        finally:
+            cdp_mod.terminate_chrome(proc)
+
+        return {
+            'ok': True, 'status': 'submitted', 'stage': stage,
+            'chatId': chat_uuid, 'submitted': 1,
+            'transport': 'cdp-pipe',
+            'detail': 'Envoyé' if stage == 'envoyé' else stage}
+
+    def _shutdown(self, args):
+        """Authenticated shutdown: verify token, terminate Chrome, close socket."""
+        if not isinstance(args, dict):
+            raise ValueError('Objet de soumission requis')
+        token = args.get('token', '')
+        if not isinstance(token, str) or len(token) != 64:
+            return {'ok': False, 'status': 'unauthenticated'}
+
+        shutdown_token_path = self.state / 'quick-apply-shutdown.token'
+        try:
+            stored = shutdown_token_path.read_text().strip()
+        except OSError:
+            return {'ok': False, 'status': 'unauthenticated'}
+
+        if hashlib.sha256(token.encode()).hexdigest() != hashlib.sha256(stored.encode()).hexdigest():
+            return {'ok': False, 'status': 'unauthenticated'}
+
+        result = {'ok': True}
+
+        cdp_mod = _cdp_pipe()
+        profile = cdp_mod._profile_dir()
+        lock_path, _ = cdp_mod._hostname_pid_lock(profile)
+        try:
+            pid = int(lock_path.read_text().strip())
+            os.kill(pid, signal.SIGTERM)
+            # Bounded loop: wait for process to die, never block forever
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.1)
+        except (ValueError, OSError):
+            pass
+
+        try:
+            shutdown_token_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+        return result
 
 
 def _serve(conn, endpoint):
@@ -158,11 +308,18 @@ def _serve(conn, endpoint):
                 continue
             result = endpoint.call(message.get('method'), message.get('params') or {})
             reply = {'jsonrpc': '2.0', 'id': ident, 'result': result}
+            stream.write((json.dumps(reply, ensure_ascii=False)+'\n').encode())
+            stream.flush()
+            # After a successful shutdown response, exit the loop to close socket and endpoint
+            if isinstance(result, dict) and result.get('ok') and message.get('method') == 'shutdown':
+                raise SystemExit(0)
+        except SystemExit:
+            raise
         except (ValueError, TypeError, KeyError, OSError, sqlite3.Error) as error:
             reply = {'jsonrpc': '2.0', 'id': ident,
                      'error': {'code': -32602, 'message': str(error) or 'Requête refusée ; aucune relance automatique.'}}
-        stream.write((json.dumps(reply, ensure_ascii=False)+'\n').encode())
-        stream.flush()
+            stream.write((json.dumps(reply, ensure_ascii=False)+'\n').encode())
+            stream.flush()
     stream.close()
 
 
@@ -232,6 +389,19 @@ def main():
     args = parser.parse_args()
     endpoint = Endpoint(args.state, args.daily_limit, args.project_root)
     def terminate(signum, frame):
+        # Terminate Chrome if a PID lock exists
+        try:
+            import claude_cdp_pipe as _cdp
+            _profile = _cdp._profile_dir()
+            _lock_path, _ = _cdp._hostname_pid_lock(_profile)
+            if _lock_path.exists():
+                _pid = int(_lock_path.read_text().strip())
+                try:
+                    os.kill(_pid, signal.SIGTERM)
+                except OSError:
+                    pass
+        except Exception:
+            pass
         raise SystemExit(128 + signum)
     previous = signal.signal(signal.SIGTERM, terminate)
     try:
