@@ -20,7 +20,8 @@ class TaskStoreTests(unittest.TestCase):
             with self.assertRaises(ValueError): store.result('k', True)
             store.close()
             store = TaskStore(root/'state', root/'a')
-            self.assertEqual(store.claim('k', 'caller'), receipt)
+            replay = store.claim('k', 'caller')  # contract: after a delivery attempt the replay carries no payload
+            self.assertEqual((replay['attempt_id'], replay['delivery'], 'prompt' in replay), (receipt['attempt_id'], 'attempted', False))
             with self.assertRaises(ValueError): store.submit('k', 'wrong', 'answer')
             store.submit('k', receipt['attempt_id'], 'answer')
             store.submit('k', receipt['attempt_id'], 'answer')

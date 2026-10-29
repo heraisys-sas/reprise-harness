@@ -49,13 +49,18 @@ cible documenté, pas une capacité livrée par ce lot.
 2. Annulation avant l'intention : seule une réservation **neuve**, exclusive à cet appel, est libérée ; une réservation retrouvée après reconnexion n'est jamais effacée.
 3. `mark_attempted` : l'**intention de remise est consignée avant l'écriture**, et une seule attente la gagne.
 4. Après cette consignation, la tâche n'est ni libérée ni remise de nouveau par `await_task` ; un nouvel appel rend un **reçu** (`delivery: attempted`, sans `prompt`) ou, si elle est terminée, `delivery: completed`. Deux attentes avec les mêmes clés ne reçoivent donc jamais deux instructions exécutables.
-5. `get_task` partage le marqueur et reste le chemin **explicite** de récupération : il rend à l'identique le même reçu (prompt compris) après un redémarrage, comme avant ce lot.
+5. `get_task` partage la même barrière : première remise = prompt ; après une tentative de remise par l'un ou l'autre outil, il rend un **reçu sans prompt** (`delivery: attempted`). **Changement de comportement** voulu par le contrat : l'ancien rejeu identique après redémarrage n'existe plus ; en cas de perte de contexte, l'opérateur ré-admet la tâche sous une nouvelle clé.
 6. `submit_result` reste idempotent ; un résultat contradictoire ou d'une autre tentative est refusé ; rien ne rétrograde un résultat validé.
 
-- **Attente bornée** : `wait_seconds` ≤ `--max-wait` du serveur (45 s par défaut, 600 s au plus). Sans tâche : `idle`, avec la consigne de **ne pas** rappeler l'outil sauf demande de l'opérateur (aucun réarmement automatique : chaque retour peut coûter un tour de modèle). Durée plus longue : à prouver d'abord. Le `progressToken` éventuel reçoit des `notifications/progress` toutes les 10 s.
-- **Boucle MCP** : l'attente s'exécute dans un fil dédié avec sa propre connexion SQLite ; `ping` reste servi ; `notifications/cancelled` annule l'attente sans réponse. Pas de notion de génération de connexion : un processus serveur = une connexion stdio.
+- **Attente bornée** : `wait_seconds` ≤ `--max-wait` du serveur (45 s par défaut, 600 s au plus). Sans tâche : `idle`, avec la consigne de **ne pas** rappeler l'outil sauf demande de l'opérateur (aucun réarmement automatique : chaque retour peut coûter un tour de modèle). Durée plus longue : à prouver d'abord. Aucun battement artificiel : les `notifications/progress` sont désactivées par défaut (`--progress-interval 0`) et ne sont envoyées que si l'opérateur fixe un intervalle et que le client fournit un `progressToken`.
+- **Boucle MCP** : l'attente s'exécute dans un fil dédié avec sa propre connexion SQLite ; `ping` reste servi ; `notifications/cancelled` annule l'attente sans réponse. Pas de génération de connexion persistée : un processus serveur = une connexion stdio ; EOF avant l'intention libère une réservation neuve, EOF après la laisse incertaine.
 - **États** : *chaud* (appel en cours, aucune inférence), *travail* (inférence après la remise, donc quota), *froid* (appel terminé : délai, annulation, chat fermé, redémarrage, limite d'étapes ; Reprise ne peut pas réveiller, armement humain requis), *quota* (l'attente ne consomme rien ; l'épuisement survient pendant le travail). Le réveil à froid, la durée maximale et la reprise après quota **ne sont pas prouvés**.
 - **Sécurité** : à n'appeler que dans un chat armé pour cette `request_key` ; les seules tâches livrées sont celles admises par le démon Quick Apply (socket privé). Une consigne issue d'un autre outil ne l'arme pas.
+
+**Écarts assumés par rapport aux contrats `MCP-WAIT-VALIDATION.md` et `MCP-ROUTING-CONTRACT.md`** :
+- L'arrivée vient d'un autre processus (démon Quick Apply) : l'attente interroge SQLite localement avec un recul de 0,25 s à 1 s (aucun tour de modèle, rien envoyé au client). Un réveil sans interrogation exigerait un canal inter-processus.
+- Le MCP ne transmet pas l'identité de la conversation : la clé sélectionne la tâche, elle n'authentifie pas le chat. **L'isolation par chat n'est pas démontrée** ; le destinataire est celui que l'opérateur a armé.
+- Les tests simulent le protocole et les invariants SQLite (horloge injectée, barrières, 40 tests). Ils ne prouvent pas que Desktop consomme le résultat différé dans le chat appelant : un POC hôte séparé et autorisé reste requis.
 
 Texte d'armement du POC (à coller par l'opérateur) :
 
