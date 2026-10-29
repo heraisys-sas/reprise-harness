@@ -12,7 +12,9 @@ prix en chaînes USD/token, benchmarks.artificial_analysis.intelligence_index
 présent pour une partie des modèles seulement).
 """
 
+import json
 import re
+import urllib.request
 
 MODELS_URL = 'https://openrouter.ai/api/v1/models'
 _SLASH_RE = re.compile(r'[^A-Za-z0-9._-]')
@@ -37,6 +39,20 @@ def normalize_model(model):
 def _price_per_mtok(pricing):
     value = float(pricing['prompt']) * 1e6
     return value
+
+
+def fetch(timeout=20):
+    """Télécharge et déballe l'enveloppe {"data":[...]}. Le réseau n'écrit
+    jamais : ingest() revalide tout. fetch_url() de external_rankings exige une
+    liste racine et ne peut donc pas servir ici (l'API OpenRouter renvoie un
+    objet) — c'est l'adaptateur qui assume le déballage."""
+    request = urllib.request.Request(MODELS_URL, headers={'Accept': 'application/json'})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        content_type = response.headers.get('Content-Type', '')
+        if 'json' not in content_type:
+            raise ValueError(f'Content-Type inattendu : {content_type!r}')
+        payload = json.loads(response.read().decode('utf-8', errors='replace'))
+    return unwrap(payload)
 
 
 def transform(payload, fetched_at=None):
