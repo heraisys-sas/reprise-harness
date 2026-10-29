@@ -177,6 +177,14 @@ class RunStatusesTests(unittest.TestCase):
         self.assertEqual(run_statuses(self.endpoint, 'thread'), {'run-b': 'queued'})
 
     @patch('ironclaw_ssh.subprocess.run')
+    def test_terminal_status_wins_over_later_transient_frame(self, run):
+        snapshot = {'state': {'items': [{'run_status': {'run_id': 'run', 'status': 'failed'}}]}}
+        update = {'state': {'items': [{'run_status': {'run_id': 'run', 'status': 'running'}}]}}
+        run.return_value = self.sse(('projection_snapshot', json.dumps(snapshot)),
+                                    ('projection_update', json.dumps(update)))
+        self.assertEqual(run_statuses(self.endpoint, 'thread'), {'run': 'failed'})
+
+    @patch('ironclaw_ssh.subprocess.run')
     def test_transport_failure_raises_sanitized_error(self, run):
         run.return_value = subprocess.CompletedProcess([], 255, '', 'private-test-value')
         with self.assertRaises(ProbeError):

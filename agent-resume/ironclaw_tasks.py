@@ -320,12 +320,17 @@ class Tasks:
 
     def _provider_failed(self, thread, run):
         """Provider evidence via the read-only SSE projection. Unreadable or absent
-        status is not a failure: the timeline heuristic stays the sole fallback."""
+        status is not a failure: the timeline heuristic stays the sole fallback, and
+        a reader defect is persisted so a persistent integration fault is visible."""
         if self.status_reader is None:
             return False
         try:
             statuses = self.status_reader(self.endpoint, thread)
-        except (ProbeError, OSError, ValueError, AttributeError):
+        except (ProbeError, OSError, ValueError, AttributeError) as exc:
+            detail = f'run_status: {type(exc).__name__}: {exc}'[:500]
+            with self.db:
+                self.db.execute("UPDATE ironclaw_tasks SET last_error=? "
+                                "WHERE run_id=? AND state IN ('pending','deferred') AND last_error IS NULL", (detail, run))
             return False
         return statuses.get(run) == 'failed'
 
