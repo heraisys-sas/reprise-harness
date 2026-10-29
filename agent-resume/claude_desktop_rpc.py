@@ -25,7 +25,7 @@ class Client:
         except OSError as error:
             self.sock.close()
             raise Unavailable('engine_unavailable',
-                              'Endpoint Quick Entry injoignable ; aucun serveur de remplacement lancé.') from error
+                              'Endpoint Quick Apply injoignable ; aucun serveur de remplacement lancé.') from error
 
     def close(self):
         try:
@@ -36,7 +36,7 @@ class Client:
     def send(self, message):
         data = json.dumps(message, ensure_ascii=False).encode()
         if len(data) > self.LIMIT:
-            raise ValueError('Requête Quick Entry trop volumineuse')
+            raise ValueError('Requête Quick Apply trop volumineuse')
         try:
             self.sock.sendall(data + b'\n')
         except OSError as error:
@@ -52,7 +52,7 @@ class Client:
                                   'Connexion au endpoint interrompue ; résultat inconnu, aucune relance automatique.')
             buffer.extend(chunk)
             if len(buffer) > self.LIMIT:
-                raise ValueError('Réponse Quick Entry trop volumineuse')
+                raise ValueError('Réponse Quick Apply trop volumineuse')
         line, _ = buffer.split(b'\n', 1)
         try:
             message = json.loads(line.decode())

@@ -140,7 +140,7 @@ class Endpoint:
             return self.requests.lookup(args)
         if name == 'quick_entry/submit':
             return self.submit(args)
-        raise ValueError('Méthode Quick Entry non prise en charge')
+        raise ValueError('Méthode Quick Apply non prise en charge')
 
 
 def _serve(conn, endpoint):
