@@ -126,6 +126,20 @@ class IronClawConnectionTests(unittest.TestCase):
         self.assertNotIn('reçu durable', message)
         self.assertNotIn('tâche incertaine', message)
 
+    def test_fail_is_reachable_from_resume_cli_dispatch(self):
+        # Issue #91 : le dispatch de `resume` doit router ironclaw-fail vers le module,
+        # pas répondre « invalid choice » (argparse) avant d'y arriver.
+        import subprocess
+        state_install.initialize(self.state)
+        process = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve().parents[1] / 'resume'), 'ironclaw-fail'],
+            input='{"request_key": "key", "reason": "sortie operateur"}',
+            capture_output=True, text=True, timeout=60,
+            env={**os.environ, 'AGENT_RESUME_STATE': str(self.state)})
+        self.assertEqual(process.returncode, 1)
+        self.assertNotIn('invalid choice', process.stderr)
+        self.assertIn('Décision opérateur', json.loads(process.stdout)['message'])
+
     def test_inspect_missing_config_has_no_side_effect_or_network(self):
         with patch.object(connection, 'probe') as probe, patch('builtins.print') as output:
             self.assertEqual(connection.main(self.base, ['ironclaw-inspect']), 0)
