@@ -28,20 +28,21 @@ Ce bloc est destiné à compléter les instructions de l’agent (`AGENTS.md`, `
 - Après refus, conserver la cause et l’échéance puis tenter la reprise à l’échéance sans mesure préalable obligatoire. Une nouvelle session avec checkpoint est permise lorsque pertinente ; suspendre les rotations qui répètent les mêmes échecs sans progrès. Aucun repli payant implicite. Voir le contrat HARNESS-ROLES-CONTRACT.md (rôles, reprise et archivage proposé dans l’interface).
 - Exécuter des contrôles proportionnés, puis les vérifications requises avant publication. Après leur réussite, ne les répéter qu’après un changement pertinent ou une nouvelle incertitude. Garder un checkpoint bref et traiter les messages utilisateur avant le lot suivant.
 
-## Secrets, credentials et vérification
+## Secrets et credentials
 
-- Ne jamais afficher, journaliser ni transmettre une valeur de secret, même partiellement, y compris dans un prompt, un diff, un message de commit ou un rapport d’agent. Comparer une valeur par empreinte (SHA-256 tronquée) plutôt que par lecture.
-- Sauvegarder le fichier de credentials avant toute écriture et écrire avec des permissions restrictives. Ne pas déplacer un secret vers un stockage que son consommateur ne lit pas : le bon emplacement est celui du composant qui l’utilise, pas celui qui paraît le plus pratique.
-- Après une saisie ou une rotation de clé, vérifier par un appel réel qui l’utilise. Une clé « présente » ou un fichier écrit ne prouve pas une authentification réussie ; distinguer configuré, exécuté et réussi.
-- Une valeur qui échoue alors qu’elle est bien enregistrée mérite un diagnostic avant remplacement : établir quelle référence le consommateur résout réellement, plutôt que de réécrire la clé au hasard.
+- La valeur d’un secret ne se restitue pas : ni à l’écran, ni dans un journal, un diff, un commit ou un rapport, et jamais partiellement. Une vérification doit établir l’identité ou la présence d’un secret sans le révéler ; le moyen dépend du harnais.
+- Un secret vit là où son consommateur le lit réellement. Un emplacement plus commode mais non lu par ce consommateur n’est pas un progrès, même s’il paraît plus centralisé.
+- Toute écriture sur un stockage de credentials est une opération sensible : elle reste réversible et son effet est constatable après coup.
+- La présence d’un secret n’est pas une preuve qu’il fonctionne. Distinguer configuré, exécuté et réussi ; un échec d’authentification se diagnostique avant de remplacer la valeur.
 
 ## Compatibilité et périmètre
 
-- Épingler une version exacte d’un composant hôte fait rompre une extension à chaque préversion. Préférer une plage de compatibilité explicite quand l’écosystème la lit, et n’élargir cette plage qu’après avoir vérifié que le contrat réellement consommé n’a pas changé.
-- Avant d’accuser une extension, établir la cause : lire le contrôle qui la refuse ou son message exact, plutôt que de rejouer la même installation.
-- Distinguer migration et duplication : déplacer une configuration partagée peut casser un consommateur qui en dépend encore. En cas de dépendance résiduelle, dupliquer, documenter les deux copies et la divergence attendue, et prévoir la fusion quand la dépendance tombe.
-- Un livrable de personnalisation ou d’outillage ne se dépose pas dans le dépôt du produit qu’il outille, ni l’inverse. En cas de doute sur le dépôt cible, demander avant d’écrire.
-- Un état « poussé » se vérifie auprès de la source (SHA du dépôt distant), pas seulement sur les références locales ; et un fichier distribué à empreinte suivie se met à jour par son propre mécanisme, pas par une édition manuelle.
+- La compatibilité d’une extension avec son hôte est une propriété à établir, pas à supposer : une contrainte trop étroite rompt l’extension à la première évolution de l’hôte, une contrainte trop large masque une rupture réelle. Le format de cette contrainte appartient à l’hôte.
+- Face à un refus ou à une incompatibilité, la cause se lit dans le contrôle qui refuse — ou dans son message — avant toute nouvelle tentative. Rejouer une installation inchangée n’instruit rien.
+- Une extension n’est déclarée fonctionnelle qu’après un usage réel réussi de la capacité concernée ; une installation acceptée ne suffit pas.
+- Déplacer une ressource partagée n’est pas neutre : si un consommateur en dépend encore, la duplication documentée est préférable à un déplacement qui casse. Une divergence entre copies est un état assumé, à rendre visible et à résorber quand la dépendance disparaît.
+- Un livrable d’outillage ou de personnalisation ne s’ajoute pas au dépôt du produit qu’il outille, ni l’inverse. En cas de doute sur le dépôt cible, demander avant d’écrire.
+- Un état déclaré publié, distribué ou à jour se vérifie à sa source, pas sur une copie locale. Une ressource dont l’intégrité ou la version est suivie par un mécanisme se met à jour par ce mécanisme, jamais par une substitution manuelle.
 
 ## Paramètres propres à l’installation
 
