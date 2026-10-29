@@ -170,6 +170,21 @@ class StateInstallTests(unittest.TestCase):
         self.assertFalse(self.target.exists())
         self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 9999)
 
+    def test_import_accepts_current_schema_version(self):
+        db = self.fixture()
+        db.execute(f'PRAGMA user_version={state_install.SUPPORTED_SCHEMA_VERSION}')
+        db.commit()
+        state_install.import_state(self.source, self.target, source_stopped=True)
+        self.assertTrue(self.target.exists())
+
+    def test_import_rejects_version_just_above_support(self):
+        db = self.fixture()
+        db.execute(f'PRAGMA user_version={state_install.SUPPORTED_SCHEMA_VERSION + 1}')
+        db.commit()
+        with self.assertRaises(ValueError):
+            state_install.import_state(self.source, self.target, source_stopped=True)
+        self.assertFalse(self.target.exists())
+
     def test_import_aborts_when_source_changes_during_copy(self):
         self.fixture()
         original = state_install._copy

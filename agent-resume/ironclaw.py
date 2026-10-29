@@ -112,9 +112,45 @@ def submit(program, values, question, *, timeout=180):
         answer = _clean_answer(proc.stdout or '')
         if not answer:
             raise Unavailable('needs_review', 'Pas de réponse détectée dans la sortie distante.')
-        return {'status': 'finished', 'response': answer, 'model': 'ironclaw-distant'}
+        # Le moteur n'est pas devine par le transport : engine() l'interroge.
+        return {'status': 'finished', 'response': answer}
     finally:
         cleanup()
+
+
+def engine(program, values, *, timeout=30):
+    """Moteur d'inférence réellement configuré côté distant (lecture seule).
+
+    IronClaw expose un unique moteur par slot `[llm.<nom>]` dans
+    config.toml. On lit la section `[llm.default]` (source de vérité du slot
+    principal) sans appeler de modèle. Retourne {'provider': ..., 'model': ...}
+    ou None si la configuration est illisible — jamais de valeur inventée.
+    """
+    host, port, user, key = validate_values(values)
+    keyfile, cleanup = _key_material(key)
+    # Sed ciblé : on n'extrait que provider_id/model de [llm.default], jamais
+    # d'éventuels secrets présents ailleurs dans le fichier.
+    command = _ssh_base(program, keyfile, host, port, user) + [
+        "awk '/^\\[llm\\.default\\]/{f=1;next} /^\\[/{f=0} "
+        "f&&/^(provider_id|model)[[:space:]]*=/{print}' "
+        "/data/ironclaw-reborn/config.toml 2>/dev/null"]
+    try:
+        proc = _run(command, timeout)
+    except subprocess.TimeoutExpired:
+        return None
+    finally:
+        cleanup()
+    if proc.returncode != 0:
+        return None
+    found = {}
+    for line in (proc.stdout or '').splitlines():
+        if '=' not in line:
+            continue
+        key_name, _, value = line.partition('=')
+        value = value.strip().strip('"').strip("'")
+        if key_name.strip() in ('provider_id', 'model') and value:
+            found[key_name.strip()] = value
+    return found or None
 
 
 def health(program, values, *, timeout=30):
@@ -156,8 +192,14 @@ def review(program, values, root, question, *, kind='expertise', level='standard
     prompt = question + context_files(root, paths)
     result = {'status': 'needs_review', 'resumable': False, 'project_root': str(root),
               'kind': kind, 'level': level, 'quota_remaining': None,
-              'model': 'ironclaw-distant', 'billing': 'Remote IronClaw runtime (morph backend)',
-              'automatic_fallback': False}
+              'model': None, 'billing': None, 'automatic_fallback': False}
+    try:  # la découverte du moteur ne doit jamais empêcher une délégation
+        discovered = engine(program, values)
+    except (ValueError, OSError):
+        discovered = None
+    if discovered:
+        result['model'] = discovered.get('model')
+        result['billing'] = f"Remote IronClaw runtime ({discovered.get('provider')} backend)"
     try:
         submitted = submit(program, values, prompt, timeout=timeout)
         return result | {'status': 'finished', 'response': submitted['response'],

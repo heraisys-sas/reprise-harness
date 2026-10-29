@@ -32,9 +32,17 @@ def probe(program, path, session=None):
         if not program:
             raise engines.Unavailable('engine_unavailable', 'Exécutable Codex introuvable.')
         client = Client(program, values, timeout=5)
+    except engines.Unavailable as error:
+        return {'connected': False, 'model_called': False, 'socket_state': 'unreachable', 'reason': error.reason}
+    except (OSError, ValueError, TimeoutError):
+        # La construction du Client couvre le lancement du proxy et le handshake :
+        # un échec ici signifie qu'aucune requête n'a pu partir → injoignable.
+        return {'connected': False, 'model_called': False, 'socket_state': 'unreachable',
+                'reason': 'Serveur Codex injoignable ; aucun tour déclenché.'}
+    try:
         client.call('initialize', {'clientInfo': {'name': 'reprise-connection', 'version': '0.1.0'}})
         client.send({'method': 'initialized'})
-        result = {'connected': True, 'model_called': False,
+        result = {'connected': True, 'model_called': False, 'socket_state': 'responsive',
                   'reason': 'Connexion confirmée. La propriété des sessions Desktop reste à vérifier.'}
         if session:
             session = engines.validate_session('codex-cli', session)
@@ -46,9 +54,11 @@ def probe(program, path, session=None):
                                 'Le serveur ne confirme pas que cette session est chargée chez lui.')
         return result
     except engines.Unavailable as error:
-        return {'connected': False, 'model_called': False, 'reason': error.reason}
+        return {'connected': False, 'model_called': False, 'socket_state': 'unreachable', 'reason': error.reason}
     except (OSError, ValueError, TimeoutError):
-        return {'connected': False, 'model_called': False,
+        # La connexion a réussi mais initialize/thread/read n'aboutit pas :
+        # socket vivant, protocole muet ou incompatible (#52).
+        return {'connected': False, 'model_called': False, 'socket_state': 'protocol_muted',
                 'reason': 'Le serveur ne répond pas au protocole Codex attendu.'}
     finally:
         if client:

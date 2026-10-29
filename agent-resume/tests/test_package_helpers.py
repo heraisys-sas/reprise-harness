@@ -10,12 +10,18 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from app_paths import native_binary, state_directory
-from package_helpers import package
+from package_helpers import ASSETS, package
 
 SOURCE = Path(__file__).parents[1]
 
 
 class PackageHelpersTests(unittest.TestCase):
+    def test_desktop_apply_assets_preserve_current_packaging(self):
+        for name in ('CLAUDE-DESKTOP-APPLY.md', 'claude_desktop_apply.py',
+                     'claude_quota_log.py', 'websocket_transport.py', 'claude_session_store.py', 'claude_session_observer.py', 'managed_update.py',
+                     'delegation_reconcile.py'):
+            self.assertIn(name, ASSETS)
+
     def test_moved_payload_runs_without_source_and_keeps_state_outside_bundle(self):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary).resolve()
@@ -27,7 +33,7 @@ class PackageHelpersTests(unittest.TestCase):
             root = moved / 'Contents/Resources/helpers'
             manifest = json.loads((root / 'payload-manifest.json').read_text())
             self.assertEqual(manifest['runtime'], 'external-python-required')
-            imported = subprocess.run([sys.executable, '-c', 'import codex_expert_mcp'],
+            imported = subprocess.run([sys.executable, '-c', 'import codex_expert_mcp, claude_desktop_apply, websocket_transport, claude_session_store, claude_session_observer'],
                                       cwd=root, capture_output=True, text=True)
             self.assertEqual(imported.returncode, 0, imported.stderr)
             self.assertTrue((root / 'install-ux-review.py').is_file())
@@ -47,8 +53,12 @@ class PackageHelpersTests(unittest.TestCase):
             self.assertEqual(native_binary(root, 'Vault'), moved / 'Contents/MacOS/Vault')
             # Repackaging must remove stale resources without touching user state.
             (root / 'stale.py').write_text('')
+            for retired in ('proxy_service.py', 'asi1_planner_proxy.py', 'PROXY-SERVICE.md'):
+                (root / retired).write_text('retired fixture')
             package(SOURCE, moved)
             self.assertFalse((root / 'stale.py').exists())
+            for retired in ('proxy_service.py', 'asi1_planner_proxy.py', 'PROXY-SERVICE.md'):
+                self.assertFalse((root / retired).exists())
 
     def test_bundled_explicit_initialization_without_environment_bypass(self):
         with tempfile.TemporaryDirectory() as temporary:

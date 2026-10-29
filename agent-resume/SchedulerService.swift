@@ -30,7 +30,6 @@ extension App {
         }
     }
 }
-
 struct SchedulerService: View {
     @ObservedObject var app: App
     func flag(_ key: String) -> String {
