@@ -44,13 +44,15 @@ def outbound_tools():
 
 
 class ClaudeMCP:
-    def __init__(self, tasks, bridge, max_wait=DEFAULT_MAX_WAIT, poll=0.25, progress_interval=0, clock=time.monotonic, wait=None):
+    def __init__(self, tasks, bridge, max_wait=DEFAULT_MAX_WAIT, poll=0.25, progress_interval=0, clock=time.monotonic, wait=None, enable_await=False):
         if type(max_wait) is not int or not 1 <= max_wait <= MAX_WAIT_CEILING:
             raise ValueError('max_wait must be an integer from 1 to %d' % MAX_WAIT_CEILING)
         self.tasks, self.bridge = tasks, bridge
         # progress_interval = 0 (default): no progress notification, i.e. no artificial heartbeat.
         self.max_wait, self.poll, self.progress_interval = max_wait, poll, progress_interval
         self.clock = clock
+        # await_task is an operator decision per connector configuration: hidden and refused by default.
+        self.enable_await = bool(enable_await)
         # wait(cancel, seconds): injectable so tests control time without sleeping.
         self.wait = wait or (lambda cancel, seconds: cancel.wait(seconds) if cancel is not None else time.sleep(seconds))
 
@@ -128,13 +130,13 @@ class ClaudeMCP:
         if method == 'ping':
             return {}
         if method == 'tools/list':
-            return {'tools': INBOX_TOOLS + outbound_tools()}
+            return {'tools': [item for item in INBOX_TOOLS if item['name'] != 'await_task' or self.enable_await] + outbound_tools()}
         if method != 'tools/call' or not isinstance(params, dict):
             raise ValueError('Unsupported MCP method')
         name, args = params.get('name'), params.get('arguments', {})
         if not isinstance(args, dict):
             raise ValueError('Object arguments required')
-        definitions = {item['name']: item for item in INBOX_TOOLS}
+        definitions = {item['name']: item for item in INBOX_TOOLS if item['name'] != 'await_task' or self.enable_await}
         if name in definitions:
             expected = set(definitions[name]['inputSchema']['properties'])
             required = set(definitions[name]['inputSchema']['required'])
@@ -186,12 +188,14 @@ def main():
     parser.add_argument('--socket')
     parser.add_argument('--max-wait', type=int, default=DEFAULT_MAX_WAIT,
                         help='longest await_task wait in seconds; raise only after proving the client tolerates it')
+    parser.add_argument('--enable-await', action='store_true',
+                        help='expose await_task (hidden and refused by default; an operator decision per connector configuration)')
     parser.add_argument('--progress-interval', type=float, default=0,
                         help='seconds between notifications/progress during await_task; 0 (default) sends none')
     args = parser.parse_args()
     tasks = TaskStore(args.state, args.project_root)
     bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.expert_state, allowed_tools=OUTBOUND)
-    facade = ClaudeMCP(tasks, bridge, max_wait=args.max_wait, progress_interval=args.progress_interval)
+    facade = ClaudeMCP(tasks, bridge, max_wait=args.max_wait, progress_interval=args.progress_interval, enable_await=args.enable_await)
     send_lock = threading.Lock()
     active, workers = {}, []
 
@@ -234,7 +238,7 @@ def main():
                     continue
                 ident = message['id']
                 params = message.get('params') or {}
-                if message.get('method') == 'tools/call' and isinstance(params, dict) and params.get('name') == 'await_task':
+                if facade.enable_await and message.get('method') == 'tools/call' and isinstance(params, dict) and params.get('name') == 'await_task':
                     arguments = params.get('arguments', {})
                     definition = next(item for item in INBOX_TOOLS if item['name'] == 'await_task')
                     if not isinstance(arguments, dict) or arguments.keys() - set(definition['inputSchema']['properties']) or not {'request_key', 'claim_key'} <= arguments.keys():

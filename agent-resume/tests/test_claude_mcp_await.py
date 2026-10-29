@@ -183,7 +183,7 @@ class AwaitTaskTests(Workspace):
     def setUp(self):
         super().setUp()
         self.time = FakeTime()
-        self.facade = ClaudeMCP(self.store, Mock(), max_wait=3, clock=self.time.clock, wait=self.time.wait)
+        self.facade = ClaudeMCP(self.store, Mock(), max_wait=3, clock=self.time.clock, wait=self.time.wait, enable_await=True)
 
     def await_(self, **args):
         return call(self.facade, 'await_task', dict({'request_key': 'k', 'claim_key': 'w1'}, **args))
@@ -193,6 +193,17 @@ class AwaitTaskTests(Workspace):
         self.assertEqual(tool['inputSchema']['required'], ['request_key', 'claim_key'])
         self.assertIn('explicit project task', tool['description'])
         self.assertIn('stop unless the operator asked', tool['description'])
+
+    def test_tool_is_hidden_and_refused_unless_the_operator_enables_it(self):
+        default = ClaudeMCP(self.store, Mock(), max_wait=3, clock=self.time.clock, wait=self.time.wait)
+        self.assertFalse(default.enable_await)
+        self.assertNotIn('await_task', {item['name'] for item in default.dispatch({'method': 'tools/list'})['tools']})
+        self.store.admit('k', 'p')
+        with self.assertRaises(ValueError):
+            call(default, 'await_task', {'request_key': 'k', 'claim_key': 'w1'})
+        self.assertIsNone(self.row('k')[0])  # nothing reserved, nothing delivered
+        self.assertEqual(self.time.waits, [])
+        self.assertIn('await_task', {item['name'] for item in self.facade.dispatch({'method': 'tools/list'})['tools']})
 
     def test_exact_task_is_handed_over_immediately_and_only_that_one(self):
         self.store.admit('older', 'not me')
@@ -268,7 +279,7 @@ class AwaitTaskTests(Workspace):
 
         def waiter():
             local = TaskStore(self.tmp, self.tmp)
-            facade = ClaudeMCP(local, Mock(), max_wait=3)
+            facade = ClaudeMCP(local, Mock(), max_wait=3, enable_await=True)
             try:
                 barrier.wait()
                 results.append(facade.await_task(local, {'request_key': 'k', 'claim_key': 'w1', 'wait_seconds': 1}))
@@ -379,7 +390,7 @@ class AwaitTaskTests(Workspace):
         self.assertEqual(sent, [])
 
     def test_progress_is_opt_in_and_needs_a_token(self):
-        facade = ClaudeMCP(self.store, Mock(), max_wait=3, progress_interval=0.4, clock=self.time.clock, wait=self.time.wait)
+        facade = ClaudeMCP(self.store, Mock(), max_wait=3, progress_interval=0.4, clock=self.time.clock, wait=self.time.wait, enable_await=True)
         sent = []
         facade.await_task(self.store, {'request_key': 'k', 'claim_key': 'w', 'wait_seconds': 2}, token='tok', emit=sent.append)
         self.assertGreaterEqual(len(sent), 2)
@@ -414,7 +425,7 @@ class StdioProcessTests(unittest.TestCase):
         self.state = self.tmp / 'state'
         self.process = subprocess.Popen(
             [sys.executable, str(ROOT / 'claude_mcp.py'), '--project-root', str(self.tmp / 'project'),
-             '--state', str(self.state), '--expert-state', str(self.tmp / 'expert'), '--max-wait', '2'],
+             '--state', str(self.state), '--expert-state', str(self.tmp / 'expert'), '--max-wait', '2', '--enable-await'],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=ROOT, text=True)
         self.lines = queue.Queue()
         threading.Thread(target=lambda: [self.lines.put(json.loads(line)) for line in self.process.stdout], daemon=True).start()
@@ -469,6 +480,24 @@ class StdioProcessTests(unittest.TestCase):
         self.assertEqual(self.reply(2)['id'], 8)
         with self.assertRaises(queue.Empty):  # the wait window is 1 s: no response may follow the cancellation
             self.lines.get(timeout=2)
+
+    def test_server_started_without_the_flag_refuses_await_task(self):
+        self.process.stdin.close()
+        self.process.wait(timeout=5)
+        plain = subprocess.Popen(
+            [sys.executable, str(ROOT / 'claude_mcp.py'), '--project-root', str(self.tmp / 'project'),
+             '--state', str(self.tmp / 'plain'), '--expert-state', str(self.tmp / 'plain-expert')],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=ROOT, text=True)
+        self.addCleanup(plain.stdout.close)
+        self.addCleanup(plain.wait)
+        plain.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                                      'params': {'name': 'await_task', 'arguments': {'request_key': 'k', 'claim_key': 'w'}}}) + '\n')
+        plain.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'}) + '\n')
+        plain.stdin.flush()
+        plain.stdin.close()
+        refused, listing = json.loads(plain.stdout.readline()), json.loads(plain.stdout.readline())
+        self.assertIn('error', refused)
+        self.assertNotIn('await_task', {item['name'] for item in listing['result']['tools']})
 
     def test_eof_while_waiting_stops_the_waiter_and_reserves_nothing(self):
         self.tool(9, 'await_task', {'request_key': 'never', 'claim_key': 'w1', 'wait_seconds': 2})
