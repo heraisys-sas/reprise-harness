@@ -59,10 +59,10 @@
         apiKeyEnv: ASI_API_KEY
         models:
           - id: asi1-mini
-            contextWindow: 160000
+            contextWindow: 100000
             maxTokens: 4096
           - id: asi1
-            contextWindow: 300000
+            contextWindow: 100000
             maxTokens: 4096
             reasoningEfforts:
               low: low
