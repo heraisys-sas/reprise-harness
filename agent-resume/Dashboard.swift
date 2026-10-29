@@ -3,7 +3,96 @@ import SwiftUI
 
 struct Surface<Content: View>: View {
     @ViewBuilder var content: Content
-    var body: some View { content.padding(22).frame(maxWidth: .infinity, alignment: .leading).background(.background, in: RoundedRectangle(cornerRadius: 18)).overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(.primary.opacity(0.06))) }
+    var body: some View {
+        content
+            .padding(22)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .glassEffect(.regular, in: .rect(cornerRadius: 18))
+            .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(.primary.opacity(0.07)))
+    }
+}
+
+// A settings block answers "what does this do?" before showing the controls.
+// The state badge lands on the title line so a screen can be scanned without
+// reading any body text.
+struct SettingsCard<Content: View>: View {
+    var title: String
+    var summary: String?
+    var status: String?
+    var ok: Bool = true
+    @ViewBuilder var content: Content
+    var body: some View {
+        Surface {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(title).font(.headline)
+                    Spacer(minLength: 8)
+                    if let status {
+                        Label(status, systemImage: ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(ok ? Color.green : Color.orange)
+                            .accessibilityLabel(title + " : " + status)
+                    }
+                }
+                if let summary { Text(summary).font(.callout).foregroundStyle(.secondary) }
+                content
+            }
+        }
+    }
+}
+
+// A control keeps one visible line of consequence; the long justification is
+// preserved verbatim behind a disclosure instead of running beside every switch.
+struct SettingsHint: View {
+    var text: String
+    var detail: String?
+    var detailLabel: String = "Détail"
+    var body: some View {
+        if let detail {
+            DisclosureGroup {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 6)
+                    .textSelection(.enabled)
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(text).font(.caption).foregroundStyle(.secondary)
+                    Text(detailLabel).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityLabel(text + " " + detailLabel + " disponible.")
+        } else {
+            Text(text).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+// Screen-level verdict, placed before any control: the only question asked when
+// opening a settings screen is "is anything wrong right now?".
+struct SettingsBanner: View {
+    var ok: Bool
+    var title: String
+    var detail: String
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: ok ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                .font(.title2)
+                .foregroundStyle(ok ? Color.green : Color.orange)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.headline)
+                Text(detail).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background((ok ? Color.green : Color.orange).opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title + ". " + detail)
+    }
 }
 
 // Inline progress / result line for long-running actions: the busy flag runs the
@@ -505,153 +594,169 @@ struct Dashboard: View {
     }
 
     var connection: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Surface {
-                VStack(alignment: .leading, spacing: 14) {
-                    Label("Mode partagé avec Desktop", systemImage: "desktopcomputer").font(.headline)
-                    Text("Préparez le service codexd, lancez Desktop puis vérifiez un chat. La préparation manuelle met les reprises automatiques en pause pendant le test.").font(.callout).foregroundStyle(.secondary)
-                    HStack {
-                        Button("1. Préparer le service codexd") { app.sharedAction("prepare") }.disabled(app.sharedBusy)
-                        Button("2. Démarrer l’appli liée") { app.sharedAction("launch") }
-                            .disabled(app.sharedBusy || app.running.contains("com.openai.codex"))
-                        if app.sharedBusy { InlineStatus(busy: true, message: app.sharedNote) }
-                    }
-                    if app.running.contains("com.openai.codex") { Text("Desktop est ouvert. Fermez-le normalement avant l’étape 2 ; Reprise reste ouvert.").font(.caption).foregroundStyle(.secondary) }
-                    HStack {
-                        TextField("Identifiant ou lien du chat à vérifier", text: $app.sharedSession).textFieldStyle(.roundedBorder)
-                        Button("3. Vérifier le chat") { app.sharedAction("check") }.disabled(app.sharedBusy || app.sharedSession.isEmpty)
-                    }
-                    if !app.sharedNote.isEmpty { Text(app.sharedNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Text("Après validation, choisissez le socket codexd ci-dessous et réactivez les reprises depuis leur vue.").font(.caption).foregroundStyle(.secondary)
-                    Text("Le contrôle confirme le chat chargé. Vérifiez aussi les outils de Desktop avant d’activer le lancement automatique.").font(.caption).foregroundStyle(.secondary)
-                    Divider()
-                    HStack {
-                        Button("Arrêter le service codexd") { app.sharedAction("stop") }
-                            .disabled(app.sharedBusy || app.running.contains("com.openai.codex"))
-                        Text("Fermez Desktop d’abord. Les reprises seront mises en pause ; une session active empêche l’arrêt.").font(.caption).foregroundStyle(.secondary)
-                    }
-                    let shared = app.connection["shared"] as? [String: Any] ?? [:]
-                    Toggle("Lancer ce mode à l’ouverture de Reprise", isOn: Binding(get: { app.sharedStartup }, set: { app.setSharedStartup($0) }))
-                        .disabled(app.sharedBusy || (shared["startup_eligible"] as? Bool != true && !app.sharedStartup))
-                    Text("Disponible après un test réussi avec cette version de Desktop. Une mise à jour nécessite une nouvelle validation. Ce réglage concerne le lancement de Reprise, pas les éléments d’ouverture macOS.").font(.caption).foregroundStyle(.secondary)
+        let shared = app.connection["shared"] as? [String: Any] ?? [:]
+        let customSocket = app.connection["mode"] as? String == "server"
+        return VStack(alignment: .leading, spacing: 18) {
+            SettingsBanner(
+                ok: !app.connection.isEmpty,
+                title: app.connection.isEmpty ? "Configuration indisponible" : "Service codexd joignable",
+                detail: app.connection.isEmpty ? "Lancez une actualisation pour lire l’état du service."
+                    : customSocket ? "Socket personnalisé enregistré." : "Détection automatique du socket local ou de la CLI.")
+            SettingsCard(title: "Partage avec Codex Desktop",
+                         status: shared["startup_eligible"] as? Bool == true ? "Validé" : "À valider",
+                         ok: shared["startup_eligible"] as? Bool == true) {
+                HStack(spacing: 10) {
+                    Button("1. Préparer codexd") { app.sharedAction("prepare") }.disabled(app.sharedBusy)
+                    Button("2. Démarrer l’appli liée") { app.sharedAction("launch") }
+                        .disabled(app.sharedBusy || app.running.contains("com.openai.codex"))
+                    Spacer()
+                    if app.sharedBusy { InlineStatus(busy: true, message: app.sharedNote) }
+                }
+                if app.running.contains("com.openai.codex") {
+                    Label("Desktop est ouvert : fermez-le normalement avant l’étape 2. Reprise reste ouvert.", systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                HStack(spacing: 10) {
+                    TextField("Identifiant ou lien du chat à vérifier", text: $app.sharedSession).textFieldStyle(.roundedBorder)
+                    Button("3. Vérifier le chat") { app.sharedAction("check") }.disabled(app.sharedBusy || app.sharedSession.isEmpty)
+                }
+                if !app.sharedNote.isEmpty { InlineStatus(busy: false, message: app.sharedNote) }
+                SettingsHint(
+                    text: "Après validation, choisissez le socket et réactivez les reprises depuis leur vue.",
+                    detail: "La vérification confirme que le chat est bien chargé dans Desktop. Vérifiez aussi les outils de Desktop lui-même avant d’activer le lancement automatique. Les reprises restent en pause jusqu’à leur réactivation manuelle.")
+                Toggle("Lancer ce mode à l’ouverture de Reprise", isOn: Binding(get: { app.sharedStartup }, set: { app.setSharedStartup($0) }))
+                    .disabled(app.sharedBusy || (shared["startup_eligible"] as? Bool != true && !app.sharedStartup))
+                SettingsHint(
+                    text: "Disponible seulement après un test réussi avec cette version de Desktop.",
+                    detail: "Une mise à jour de Desktop impose une nouvelle validation. Ce réglage concerne le lancement de Reprise, pas la liste des éléments d’ouverture de macOS.")
+                Divider()
+                HStack(spacing: 10) {
+                    Button("Arrêter codexd") { app.sharedAction("stop") }
+                        .disabled(app.sharedBusy || app.running.contains("com.openai.codex"))
+                    Text("Fermez Desktop d’abord ; une session active empêche l’arrêt.").font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Surface {
-                VStack(alignment: .leading, spacing: 14) {
-                    Label("Transport des reprises Codex", systemImage: "point.3.connected.trianglepath.dotted").font(.headline)
-                    Text(app.connection.isEmpty ? "Configuration indisponible" : app.connection["mode"] as? String == "server" ? "Socket personnalisé enregistré" : "Détection automatique · socket local ou CLI").font(.callout)
-                    if let path = app.connection["configured_socket"] as? String { Text(path).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Text("Une connexion réussie confirme le service codexd, pas sa capacité à reprendre les sessions ouvertes dans Desktop.").font(.callout).foregroundStyle(.secondary)
+            SettingsCard(title: "Socket de codexd",
+                         status: app.connectionVerified ? "Testé" : (customSocket ? "Personnalisé" : "Automatique"),
+                         ok: app.connectionVerified || !customSocket) {
+                if let path = app.connection["configured_socket"] as? String {
+                    Text(path).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
                 }
-            }
-            Surface {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("Sockets disponibles").font(.headline)
-                    ForEach(Array((app.connection["candidates"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, candidate in
-                        HStack(alignment: .top, spacing: 12) {
-                            SocketCandidateMark(detected: candidate["detected"] as? Bool == true)
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(candidate["label"] as? String ?? "Socket").font(.callout.weight(.semibold))
-                                Text(candidate["detected"] as? Bool == true ? "● Socket détecté · connexion à tester" : "○ Socket indisponible").font(.caption).foregroundStyle(.secondary).accessibilityLabel(candidate["detected"] as? Bool == true ? "Socket détecté, connexion à tester" : "Socket indisponible")
-                                Text(candidate["path"] as? String ?? "").font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
-                            }
-                            Spacer()
-                            Button("Choisir") {
+                ForEach(Array((app.connection["candidates"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, candidate in
+                    HStack(alignment: .top, spacing: 12) {
+                        SocketCandidateMark(detected: candidate["detected"] as? Bool == true)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(candidate["label"] as? String ?? "Socket").font(.callout.weight(.semibold))
+                            Text(candidate["path"] as? String ?? "").font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
+                        Spacer()
+                        if candidate["detected"] as? Bool == true {
+                            Button("Utiliser") {
                                 app.socketPath = candidate["path"] as? String ?? ""
                                 app.connectionVerified = false
                                 app.connectionNote = "Chemin sélectionné. Testez la connexion avant de l’enregistrer."
                             }.disabled(app.connectionBusy)
+                        } else {
+                            Text("Indisponible").font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
-            }
-            Surface {
-                VStack(alignment: .leading, spacing: 14) {
-                    TextField("Chemin absolu du socket", text: $app.socketPath).textFieldStyle(.roundedBorder).disabled(app.connectionBusy)
-                    HStack {
-                        Button("Tester la connexion") { app.testConnection() }.disabled(app.connectionBusy || app.socketPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        Button("Enregistrer ce socket") { app.testConnection(save: true) }
-                            .disabled(app.connectionBusy || !app.connectionVerified || app.testedSocket != app.socketPath.trimmingCharacters(in: .whitespacesAndNewlines))
-                        Spacer()
-                        if app.connectionBusy { InlineStatus(busy: true, message: app.connectionNote) }
-                    }
-                    if !app.connectionNote.isEmpty { Text(app.connectionNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Text("Le test initialise uniquement le protocole. Aucun appel au modèle, aucune reprise de session.").font(.caption).foregroundStyle(.secondary)
-                    Divider()
-                    Button("Rétablir la détection automatique") { app.restoreConnectionDetection() }.disabled(app.connectionBusy || app.connection["mode"] as? String != "server")
+                if (app.connection["candidates"] as? [[String: Any]] ?? []).isEmpty {
+                    Text("Aucun socket détecté sur ce Mac.").font(.callout).foregroundStyle(.secondary)
                 }
+                Divider()
+                TextField("Chemin absolu du socket", text: $app.socketPath).textFieldStyle(.roundedBorder).disabled(app.connectionBusy)
+                HStack(spacing: 10) {
+                    Button("Tester") { app.testConnection() }.disabled(app.connectionBusy || app.socketPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Enregistrer") { app.testConnection(save: true) }
+                        .disabled(app.connectionBusy || !app.connectionVerified || app.testedSocket != app.socketPath.trimmingCharacters(in: .whitespacesAndNewlines))
+                    Spacer()
+                    if app.connectionBusy { InlineStatus(busy: true, message: app.connectionNote) }
+                }
+                if !app.connectionNote.isEmpty { InlineStatus(busy: false, message: app.connectionNote) }
+                SettingsHint(
+                    text: "Un test réussi confirme le service, pas la reprise des sessions ouvertes dans Desktop.",
+                    detail: "Le test initialise uniquement le protocole du socket : aucun appel au modèle, aucune reprise de session. La capacité à reprendre un chat ouvert dans Desktop dépend d’un contrôle distinct.")
+                Button("Rétablir la détection automatique") { app.restoreConnectionDetection() }
+                    .disabled(app.connectionBusy || !customSocket)
             }
         }
     }
     var desktopConnection: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Surface {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("Service claude-desktopd et application liée").font(.headline)
-                    Text("Le service claude-desktopd valide et route la charge utile ; la soumission réelle nécessite Claude Desktop en cours d’exécution.").font(.callout).foregroundStyle(.secondary)
-                    HStack {
-                        Button("1. Démarrer l’appli liée") { app.desktopAction("launch") }.disabled(app.desktopBusy)
-                        Button("2. Démarrer le service claude-desktopd") { app.desktopAction("start") }.disabled(app.desktopBusy)
-                        Button("Arrêter le service claude-desktopd") { app.desktopAction("stop") }.disabled(app.desktopBusy)
-                        if app.desktopBusy { InlineStatus(busy: true, message: app.desktopNote) }
-                    }
-                    if !app.desktopNote.isEmpty { Text(app.desktopNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Toggle("Démarrer l’appli liée et le service claude-desktopd à l’ouverture de Reprise", isOn: Binding(get: { app.desktopStartup }, set: { app.setDesktopStartup($0) }))
-                        .disabled(app.desktopBusy)
-                    Text("Ces actions ouvrent ou arrêtent explicitement ; rien n’est lancé implicitement.").font(.caption).foregroundStyle(.secondary)
+        let customSocket = app.desktopConnection["mode"] as? String == "server"
+        return VStack(alignment: .leading, spacing: 18) {
+            SettingsBanner(
+                ok: !app.desktopConnection.isEmpty,
+                title: app.desktopConnection.isEmpty ? "Configuration indisponible" : "Service claude-desktopd prêt",
+                detail: app.desktopConnection.isEmpty ? "Lancez une actualisation pour lire l’état du service."
+                    : customSocket ? "Socket personnalisé enregistré." : "Détection automatique du socket local.")
+            SettingsCard(title: "Service et application liée",
+                         status: app.desktopStartup ? "Lancement auto" : "Manuel",
+                         ok: true) {
+                HStack(spacing: 10) {
+                    Button("1. Démarrer l’appli liée") { app.desktopAction("launch") }.disabled(app.desktopBusy)
+                    Button("2. Démarrer claude-desktopd") { app.desktopAction("start") }.disabled(app.desktopBusy)
+                    Button("Arrêter claude-desktopd") { app.desktopAction("stop") }.disabled(app.desktopBusy)
+                    if app.desktopBusy { InlineStatus(busy: true, message: app.desktopNote) }
                 }
+                if !app.desktopNote.isEmpty { InlineStatus(busy: false, message: app.desktopNote) }
+                Toggle("Démarrer l’appli liée et claude-desktopd à l’ouverture de Reprise", isOn: Binding(get: { app.desktopStartup }, set: { app.setDesktopStartup($0) }))
+                    .disabled(app.desktopBusy)
+                SettingsHint(
+                    text: "Rien n’est lancé implicitement : ces actions sont explicites.",
+                    detail: "Le démarrage automatique n’ouvre que l’application liée et son service au lancement de Reprise. Aucun autre élément d’ouverture macOS n’est modifié.")
             }
-            Surface {
-                VStack(alignment: .leading, spacing: 14) {
-                    TextField("Chemin absolu du socket", text: $app.desktopSocketPath).textFieldStyle(.roundedBorder).disabled(app.desktopConnectionBusy)
-                    HStack {
-                        Button("Tester la connexion") { app.testDesktopConnection() }.disabled(app.desktopConnectionBusy || app.desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        Button("Enregistrer ce socket") { app.testDesktopConnection(save: true) }
-                            .disabled(app.desktopConnectionBusy || !app.desktopConnectionVerified || app.desktopTestedSocket != app.desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines))
+            SettingsCard(title: "Socket de claude-desktopd",
+                         status: app.desktopConnectionVerified ? "Testé" : (customSocket ? "Personnalisé" : "Automatique"),
+                         ok: app.desktopConnectionVerified || !customSocket) {
+                if let path = app.desktopConnection["configured_socket"] as? String {
+                    Text(path).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                ForEach(Array((app.desktopConnection["candidates"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, candidate in
+                    HStack(alignment: .top, spacing: 12) {
+                        SocketCandidateMark(detected: candidate["detected"] as? Bool == true)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(candidate["label"] as? String ?? "Socket").font(.callout.weight(.semibold))
+                            Text(candidate["path"] as? String ?? "").font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
                         Spacer()
-                        if app.desktopConnectionBusy { InlineStatus(busy: true, message: app.desktopConnectionNote) }
-                    }
-                    if !app.desktopConnectionNote.isEmpty { Text(app.desktopConnectionNote).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Text("Le test initialise uniquement le protocole Quick Apply. Aucun envoi de prompt, aucun appel au modèle.").font(.caption).foregroundStyle(.secondary)
-                    Divider()
-                    Button("Rétablir la détection automatique") { app.restoreDesktopConnectionDetection() }.disabled(app.desktopConnectionBusy || app.desktopConnection["mode"] as? String != "server")
-                }
-            }
-            Surface {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("Sockets claude-desktopd").font(.headline)
-                    ForEach(Array((app.desktopConnection["candidates"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, candidate in
-                        HStack(alignment: .top, spacing: 12) {
-                            SocketCandidateMark(detected: candidate["detected"] as? Bool == true)
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(candidate["label"] as? String ?? "Socket").font(.callout.weight(.semibold))
-                                Text(candidate["detected"] as? Bool == true ? "● Socket détecté · connexion à tester" : "○ Socket indisponible").font(.caption).foregroundStyle(.secondary).accessibilityLabel(candidate["detected"] as? Bool == true ? "Socket détecté, connexion à tester" : "Socket indisponible")
-                                Text(candidate["path"] as? String ?? "").font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
-                            }
-                            Spacer()
-                            Button("Choisir") {
+                        if candidate["detected"] as? Bool == true {
+                            Button("Utiliser") {
                                 app.desktopSocketPath = candidate["path"] as? String ?? ""
                                 app.desktopConnectionVerified = false
                                 app.desktopConnectionNote = "Chemin sélectionné. Testez la connexion avant de l’enregistrer."
                             }.disabled(app.desktopConnectionBusy)
+                        } else {
+                            Text("Indisponible").font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
-            }
-            Surface {
-                VStack(alignment: .leading, spacing: 14) {
-                    Label("Transport Quick Apply — Claude Desktop", systemImage: "desktopcomputer").font(.headline)
-                    Text(app.desktopConnection.isEmpty ? "Configuration indisponible" : app.desktopConnection["mode"] as? String == "server" ? "Socket personnalisé enregistré" : "Détection automatique · socket local").font(.callout)
-                    if let path = app.desktopConnection["configured_socket"] as? String { Text(path).font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Text("Une connexion réussie confirme le service claude-desktopd, pas la soumission dans l’overlay Desktop.").font(.callout).foregroundStyle(.secondary)
+                if (app.desktopConnection["candidates"] as? [[String: Any]] ?? []).isEmpty {
+                    Text("Aucun socket détecté sur ce Mac.").font(.callout).foregroundStyle(.secondary)
                 }
+                Divider()
+                TextField("Chemin absolu du socket", text: $app.desktopSocketPath).textFieldStyle(.roundedBorder).disabled(app.desktopConnectionBusy)
+                HStack(spacing: 10) {
+                    Button("Tester") { app.testDesktopConnection() }.disabled(app.desktopConnectionBusy || app.desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Enregistrer") { app.testDesktopConnection(save: true) }
+                        .disabled(app.desktopConnectionBusy || !app.desktopConnectionVerified || app.desktopTestedSocket != app.desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines))
+                    Spacer()
+                    if app.desktopConnectionBusy { InlineStatus(busy: true, message: app.desktopConnectionNote) }
+                }
+                if !app.desktopConnectionNote.isEmpty { InlineStatus(busy: false, message: app.desktopConnectionNote) }
+                SettingsHint(
+                    text: "Un test réussi confirme le service, pas la soumission dans Desktop.",
+                    detail: "Le test initialise uniquement le protocole Quick Apply : aucun envoi de prompt, aucun appel au modèle. La soumission réelle dans l’overlay de Desktop dépend des autorisations macOS décrites plus bas.")
+                Button("Rétablir la détection automatique") { app.restoreDesktopConnectionDetection() }
+                    .disabled(app.desktopConnectionBusy || !customSocket)
             }
             claudeObserverPanel
-            Surface {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Soumission Quick Apply").font(.headline)
-                    Text("La soumission réelle dans l’overlay Quick Apply exige les autorisations macOS (Accessibilité, Capture d’écran) accordées par l’opérateur. Reprise valide et route la charge utile ; elle ne pilote pas l’interface Desktop.").font(.callout).foregroundStyle(.secondary)
-                }
+            SettingsCard(title: "Soumission Quick Apply",
+                         status: "Autorisations requises",
+                         ok: true) {
+                SettingsHint(
+                    text: "Accessibilité et Capture d’écran doivent être accordées par vous.",
+                    detail: "La soumission réelle dans l’overlay Quick Apply exige les autorisations macOS Accessibilité et Capture d’écran, accordées par l’opérateur dans Réglages Système. Reprise valide et achemine la demande ; elle ne pilote pas l’interface de Claude Desktop à votre place.")
             }
         }
     }
@@ -660,51 +765,58 @@ struct Dashboard: View {
         let route = status["route"] as? [String: Any] ?? [:]
         let binding = status["binding"] as? [String: Any] ?? [:]
         let sessions = status["sessions"] as? [[String: Any]] ?? []
-        return Surface {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Observation des sessions Claude Desktop").font(.headline)
-                Text("L’association est déclarée par l’opérateur. L’observation CDP est en lecture seule, limitée aux onglets ouverts et ne prouve ni admission du message ni retour MCP.").font(.callout).foregroundStyle(.secondary)
-                Toggle("Activer l’observation CDP opt-in", isOn: $app.claudeObserverEnabledDraft)
+        let capabilities = status["capabilities"] as? [String: Any] ?? [:]
+        let lastRead = (route["last_refresh_at"] as? Double).flatMap { $0.isFinite && $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
+        return SettingsCard(title: "Observation des sessions Claude Desktop",
+                            status: app.claudeObserverEnabledDraft ? "Active" : "Inactive",
+                            ok: app.claudeObserverEnabledDraft) {
+            Toggle("Activer l’observation (opt-in)", isOn: $app.claudeObserverEnabledDraft)
+                .disabled(app.claudeSessionsBusy)
+            HStack(spacing: 12) {
+                Text("Port CDP local").font(.caption).foregroundStyle(.secondary)
+                TextField("9222", text: $app.claudeObserverPort).frame(width: 90).textFieldStyle(.roundedBorder)
+                Text("Intervalle (s)").font(.caption).foregroundStyle(.secondary)
+                TextField("60", text: $app.claudeObserverInterval).frame(width: 90).textFieldStyle(.roundedBorder)
+                Button("Enregistrer") { app.configureClaudeObserver(enabled: app.claudeObserverEnabledDraft) }
                     .disabled(app.claudeSessionsBusy)
-                HStack(spacing: 12) {
-                    TextField("Port CDP local", text: $app.claudeObserverPort).frame(width: 140).textFieldStyle(.roundedBorder)
-                    TextField("Intervalle en secondes (15–3 600)", text: $app.claudeObserverInterval).frame(width: 260).textFieldStyle(.roundedBorder)
-                    Button("Enregistrer") { app.configureClaudeObserver(enabled: app.claudeObserverEnabledDraft) }
-                        .disabled(app.claudeSessionsBusy)
-                    if app.claudeSessionsBusy { ProgressView().controlSize(.small) }
-                }
-                let lastRead = (route["last_refresh_at"] as? Double).flatMap { $0.isFinite && $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
-                Text("État : \(route["refresh_status"] as? String ?? status["status"] as? String ?? "inconnu") · instance : \(route["instance_status"] as? String ?? "inconnue") · couverture : \(route["coverage"] as? String ?? "open_tabs_only")").font(.caption).foregroundStyle(.secondary)
-                Text("État du rattachement local : \(binding["status"] as? String ?? "inconnu")").font(.caption).foregroundStyle(.secondary)
-                if let lastRead { Text("Dernière lecture de la route : \(localDateTime(lastRead))").font(.caption).foregroundStyle(.secondary) }
-                if let next = route["next_refresh_at"] as? Double, next.isFinite, next > 0 {
-                    Text("Prochaine observation au plus tôt : \(localDateTime(Date(timeIntervalSince1970: next)))").font(.caption).foregroundStyle(.secondary)
-                }
-                Divider()
-                Text("Associer un chat déjà ouvert dans Claude Desktop").font(.callout.weight(.semibold))
-                TextField("UUID du chat", text: $app.claudeSessionChatID).textFieldStyle(.roundedBorder)
-                Toggle("Je confirme que ce chat correspond à une session ouverte dans Claude Desktop", isOn: $app.claudeSessionConfirmed)
+                if app.claudeSessionsBusy { ProgressView().controlSize(.small) }
+            }
+            SettingsHint(
+                text: "Une session associée ne prouve ni l’admission du message ni le retour MCP.",
+                detail: "L’association est déclarée par vous. L’observation est limitée aux onglets ouverts et reste en lecture seule. État de la route : "
+                    + (route["refresh_status"] as? String ?? status["status"] as? String ?? "inconnu")
+                    + " · instance : " + (route["instance_status"] as? String ?? "inconnue")
+                    + " · couverture : " + (route["coverage"] as? String ?? "onglets ouverts uniquement")
+                    + " · rattachement local : " + (binding["status"] as? String ?? "inconnu")
+                    + (lastRead.map { "\nDernière lecture : " + localDateTime($0) } ?? "")
+                    + ((route["next_refresh_at"] as? Double).flatMap { $0.isFinite && $0 > 0 ? "\nProchaine observation au plus tôt : " + localDateTime(Date(timeIntervalSince1970: $0)) : nil } ?? ""),
+                detailLabel: "État détaillé")
+            Divider()
+            Text("Associer un chat déjà ouvert").font(.callout.weight(.semibold))
+            HStack(spacing: 10) {
+                TextField("Identifiant du chat (UUID)", text: $app.claudeSessionChatID).textFieldStyle(.roundedBorder)
+                Button("Actualiser") { app.refreshClaudeSessions() }.disabled(app.claudeSessionsBusy)
+            }
+            Toggle("Je confirme que ce chat est ouvert dans Claude Desktop", isOn: $app.claudeSessionConfirmed)
+                .disabled(app.claudeSessionsBusy)
+            HStack(spacing: 10) {
+                Button("Associer") { app.registerClaudeSession() }
+                    .disabled(app.claudeSessionsBusy || !app.claudeSessionConfirmed)
+                Button("Retirer l’association") { app.registerClaudeSession(remove: true) }
                     .disabled(app.claudeSessionsBusy)
-                HStack {
-                    Button("Associer la session") { app.registerClaudeSession() }
-                        .disabled(app.claudeSessionsBusy || !app.claudeSessionConfirmed)
-                    Button("Retirer l’association") { app.registerClaudeSession(remove: true) }
-                        .disabled(app.claudeSessionsBusy)
-                    Button("Actualiser maintenant") { app.refreshClaudeSessions() }
-                        .disabled(app.claudeSessionsBusy)
+            }
+            if !app.claudeSessionsNote.isEmpty { InlineStatus(busy: false, message: app.claudeSessionsNote) }
+            if sessions.isEmpty {
+                Text("Aucune session associée.").font(.callout).foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(sessions.enumerated()), id: \.offset) { _, session in
+                    claudeSessionSummary(session)
                 }
-                if !app.claudeSessionsNote.isEmpty { Text(app.claudeSessionsNote).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-                if sessions.isEmpty {
-                    Text("Aucune session enregistrée.").font(.callout).foregroundStyle(.secondary)
-                } else {
-                    ForEach(Array(sessions.enumerated()), id: \.offset) { _, session in
-                        claudeSessionSummary(session)
-                    }
-                }
-                let capabilities = status["capabilities"] as? [String: Any] ?? [:]
-                if capabilities["action_eligible"] as? Bool != true {
-                    Text("Aucune action de reprise n’est proposée : la pilotabilité, l’admission et le retour MCP restent des capacités distinctes.").font(.caption).foregroundStyle(.secondary)
-                }
+            }
+            if capabilities["action_eligible"] as? Bool != true {
+                SettingsHint(
+                    text: "Aucune reprise n’est proposée depuis cet écran.",
+                    detail: "La pilotabilité, l’admission du message et le retour MCP sont trois capacités distinctes. L’observation ne les prouve pas ; une reprise n’est donc proposée que lorsqu’elles sont toutes vérifiées.")
             }
         }
     }
@@ -738,119 +850,118 @@ struct Dashboard: View {
             ? (app.healthCheckedAt == nil ? "Santé indisponible · contrôle requis" : "Santé périmée · nouveau contrôle requis")
             : (actionCount == 0 ? "✓ Sain · aucun élément à examiner" : "⚠ \(actionCount) élément(s) à examiner")
         return VStack(alignment: .leading, spacing: 18) {
-            Surface {
-                HStack {
-                    Label(summary,
-                          systemImage: verified && actionCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .font(.headline)
-                        .foregroundStyle(verified && actionCount == 0 ? .green : .orange)
-                        .accessibilityLabel(summary)
+            SettingsBanner(
+                ok: verified && actionCount == 0,
+                title: verified ? (actionCount == 0 ? "Tout est sain" : "\(actionCount) élément(s) à examiner")
+                                : (app.healthCheckedAt == nil ? "Contrôle requis" : "Contrôle périmé"),
+                detail: verified && actionCount == 0
+                    ? "Aucune action nécessaire après la dernière mise à jour."
+                    : app.healthCheckedAt.map { "Dernier contrôle réussi : " + localDateTime($0) + "." } ?? "Aucun contrôle vérifié pour l’instant.")
+            SettingsCard(title: "Redémarrer les services",
+                         status: app.chainSupported ? "Disponible" : "Indisponible",
+                         ok: app.chainSupported) {
+                HStack(spacing: 10) {
+                    Button("Tout redémarrer") { app.restartChain() }.disabled(app.chainBusy || !app.chainSupported)
                     Spacer()
+                    if app.chainBusy { InlineStatus(busy: true, message: app.chainNote) }
                 }
-                .accessibilityElement(children: .combine)
-                if let date = app.healthCheckedAt {
-                    Text("Dernier contrôle réussi : " + localDateTime(date)).font(.caption).foregroundStyle(.secondary)
+                if !app.chainNote.isEmpty { InlineStatus(busy: false, message: app.chainNote) }
+                SettingsHint(
+                    text: "Aucune application liée n’est arrêtée de force.",
+                    detail: app.chainSupported
+                        ? "La relance redémarre Reprise, le service claude-desktopd et le service codexd, puis relit leur état. Les applications liées ne sont jamais terminées de force."
+                        : "Le redémarrage groupé est indisponible dans cette distribution (runtime embarqué ou script absent).")
+            }
+            SettingsCard(title: "Éléments à examiner",
+                         status: verified ? (actionCount == 0 ? "Rien à faire" : "\(actionCount) point(s)") : "Non vérifié",
+                         ok: verified && actionCount == 0) {
+                if actions.isEmpty {
+                    Text(verified ? "Rien à examiner pour l’instant." : "Aucune conclusion possible sans contrôle vérifié.")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
+                        Label(action, systemImage: "hand.point.right").font(.callout)
+                    }
+                }
+                if !relaunch.isEmpty || !stale.isEmpty {
+                    SettingsHint(
+                        text: "Détails techniques du contrôle.",
+                        detail: [
+                            relaunch.isEmpty ? nil : "Processus à relancer : " + relaunch.joined(separator: ", "),
+                            stale.isEmpty ? nil : "Signatures de journaux obsolètes : " + stale.joined(separator: ", ")
+                        ].compactMap { $0 }.joined(separator: "\n"),
+                        detailLabel: "Détail")
                 }
             }
-            Surface {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Label("Redémarrer la chaîne de dépendances", systemImage: "arrow.clockwise.circle").font(.headline)
+            SettingsCard(title: "Versions détectées",
+                         status: versions.isEmpty ? "Aucune" : "\(versions.count) application(s)",
+                         ok: !versions.isEmpty) {
+                if versions.isEmpty { Text("Aucune version lue.").font(.callout).foregroundStyle(.secondary) }
+                ForEach(Array(versions.keys.sorted()), id: \.self) { key in
+                    let item = versions[key] as? [String: Any] ?? [:]
+                    let fields = key == "codex" ? ["desktop_version", "desktop_build", "cli_version"] : ["desktop_version", "desktop_build"]
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(key).font(.callout.weight(.semibold))
+                        ForEach(fields, id: \.self) { field in
+                            let status = item[field == "cli_version" ? "cli_status" : (key == "codex" ? "desktop_status" : "status")] as? String
+                            let fallback = status == "absent" ? "Non installé" : (status == "unreadable" ? "Lecture impossible" : "Non renseigné")
+                            let legacy = field == "desktop_version" ? versions[key] as? String : nil
+                            let label = field == "cli_version" ? "CLI" : (field == "desktop_build" ? "Build Desktop" : "Desktop")
+                            Text(label + " : " + (item[field] as? String ?? legacy ?? fallback))
+                        }
+                        if let path = item["desktop_plist"] as? String ?? item["plist_path"] as? String {
+                            Text(path).font(.caption).textSelection(.enabled)
+                        }
+                        if let path = item["cli_path"] as? String { Text(path).font(.caption).textSelection(.enabled) }
+                    }.font(.callout.monospaced()).foregroundStyle(.secondary)
+                }
+                SettingsHint(
+                    text: "Les versions ne disent pas si une reprise fonctionne.",
+                    detail: "Reprise lit les versions et les composants de Claude Desktop et de Codex (Desktop et CLI), signale les relances nécessaires et vérifie les signatures des journaux Claude après une mise à jour et une activité pertinente.")
+            }
+            SettingsCard(title: "Claude Desktop · soumission Quick Apply",
+                         status: featureChecks.isEmpty ? "Aucun relevé" : "Vérifié",
+                         ok: !featureChecks.isEmpty) {
+                ForEach(Array(featureChecks.keys.sorted()), id: \.self) { key in
+                    let item = featureChecks[key] as? [String: Any] ?? [:]
+                    HStack(spacing: 8) {
+                        PresenceCheckLabel(present: item["present"] as? Bool == true, item: item["label"] as? String ?? key)
+                        Text(item["label"] as? String ?? key).font(.callout)
                         Spacer()
-                        Button("Tout redémarrer") { app.restartChain() }.disabled(app.chainBusy || !app.chainSupported)
-                        if app.chainBusy { InlineStatus(busy: true, message: app.chainNote) }
-                    }
-                    Text("Relance Reprise, le service claude-desktopd et le service codexd, puis vérifie l’état. N’arrête jamais de force les applications liées.").font(.callout).foregroundStyle(.secondary)
-                    if !app.chainSupported { Text("Redémarrage groupé indisponible dans cette distribution.").font(.caption).foregroundStyle(.secondary) }
-                    if !app.chainNote.isEmpty { Text(app.chainNote).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-                }
-            }
-            Surface {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Éléments à examiner").font(.headline)
-                    if actions.isEmpty {
-                        Text(verified ? "Aucun élément à examiner pour l’instant." : "Aucune conclusion disponible sans contrôle vérifié.").font(.callout).foregroundStyle(.secondary)
-                    } else {
-                        ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
-                            Label(action, systemImage: "hand.point.right").font(.callout)
-                        }
-                    }
-                    if !relaunch.isEmpty { Text("Processus à relancer : " + relaunch.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary) }
-                    if !stale.isEmpty { Text("Signatures de logs obsolètes : " + stale.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary) }
-                }
-            }
-            Surface {
-                VStack(alignment: .leading, spacing: 12) {
-                    Label("Santé après mise à jour", systemImage: "heart.text.square").font(.headline)
-                    Text("Surveille les versions et composants de Claude Desktop et de Codex (Desktop et CLI), indique les relances nécessaires et vérifie les signatures des journaux Claude après une mise à jour et une activité pertinente.").font(.callout).foregroundStyle(.secondary)
-                    ForEach(Array(versions.keys.sorted()), id: \.self) { key in
-                        let item = versions[key] as? [String: Any] ?? [:]
-                        let fields = key == "codex" ? ["desktop_version", "desktop_build", "cli_version"] : ["desktop_version", "desktop_build"]
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(key).font(.callout.weight(.semibold))
-                            ForEach(fields, id: \.self) { field in
-                                let status = item[field == "cli_version" ? "cli_status" : (key == "codex" ? "desktop_status" : "status")] as? String
-                                let fallback = status == "absent" ? "Non installé" : (status == "unreadable" ? "Lecture impossible" : "Non renseigné")
-                                let legacy = field == "desktop_version" ? versions[key] as? String : nil
-                                let label = field == "cli_version" ? "CLI" : (field == "desktop_build" ? "Build Desktop" : "Desktop")
-                                Text(label + " : " + (item[field] as? String ?? legacy ?? fallback))
-                            }
-                            if let path = item["desktop_plist"] as? String ?? item["plist_path"] as? String {
-                                Text(path).font(.caption).textSelection(.enabled)
-                            }
-                            if let path = item["cli_path"] as? String { Text(path).font(.caption).textSelection(.enabled) }
-                        }.font(.callout.monospaced()).foregroundStyle(.secondary)
                     }
                 }
-            }
-            Surface {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Fonctionnalités Claude Desktop (Quick Apply)").font(.headline)
-                    Text("Présence des composants dont dépend la soumission Quick Apply ; vérification déterministe.").font(.callout).foregroundStyle(.secondary)
-                    ForEach(Array(featureChecks.keys.sorted()), id: \.self) { key in
-                        let item = featureChecks[key] as? [String: Any] ?? [:]
-                        HStack {
-                            let present = (item["present"] as? Bool == true)
-                            PresenceCheckLabel(present: present, item: item["label"] as? String ?? key)
-                            Text(item["label"] as? String ?? key).font(.callout)
-                            Spacer()
-                        }
-                    }
-                    if let shortcuts = featureChecks["preferences"] as? [String: Any], let sc = shortcuts["shortcuts"] as? [String: Any] {
-                        Text("Raccourcis : " + ((sc["quickEntryShortcut"] as? String) ?? "—") + " · dictée " + ((sc["quickEntryDictationShortcut"] as? String) ?? "—")).font(.caption).foregroundStyle(.secondary)
-                    }
-                    let anomalies = (features["anomalies"] as? [String: Any])?["anomalies"] as? [[String: Any]] ?? []
-                    if !anomalies.isEmpty {
-                        Divider()
-                        Text("Anomalies post-update").font(.headline)
-                        ForEach(Array(anomalies.enumerated()), id: \.offset) { _, a in
-                            Label("⚠ " + (a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
-                                .font(.callout).foregroundStyle(.orange)
-                        }
-                    }
-                    Text("La synthèse Apple Intelligence est dans l’onglet Analyse locale.").font(.caption).foregroundStyle(.secondary)
+                if let shortcuts = featureChecks["preferences"] as? [String: Any], let sc = shortcuts["shortcuts"] as? [String: Any] {
+                    Text("Raccourcis : " + ((sc["quickEntryShortcut"] as? String) ?? "—") + " · dictée : " + ((sc["quickEntryDictationShortcut"] as? String) ?? "—"))
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-            }
-            Surface {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Fonctionnalités Codex (interaction Reprise)").font(.headline)
-                    Text("Présence des composants dont dépend l’interaction Codex après une mise à jour ; vérification déterministe.").font(.callout).foregroundStyle(.secondary)
-                    ForEach(Array(codexChecks.keys.sorted()), id: \.self) { key in
-                        let item = codexChecks[key] as? [String: Any] ?? [:]
-                        HStack {
-                            let present = (item["present"] as? Bool == true)
-                            PresenceCheckLabel(present: present, item: item["label"] as? String ?? key)
-                            Text(item["label"] as? String ?? key).font(.callout)
-                            Spacer()
-                        }
+                let anomalies = (features["anomalies"] as? [String: Any])?["anomalies"] as? [[String: Any]] ?? []
+                if !anomalies.isEmpty {
+                    Divider()
+                    ForEach(Array(anomalies.enumerated()), id: \.offset) { _, a in
+                        Label((a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
+                            .font(.callout).foregroundStyle(.orange)
                     }
-                    if !codexAnomalies.isEmpty {
-                        Divider()
-                        Text("Anomalies post-update Codex").font(.headline)
-                        ForEach(Array(codexAnomalies.enumerated()), id: \.offset) { _, a in
-                            Label("⚠ " + (a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
-                                .font(.callout).foregroundStyle(.orange)
-                        }
+                }
+                SettingsHint(
+                    text: "La synthèse Apple Intelligence se trouve dans Analyse locale.",
+                    detail: "La présence de ces composants est vérifiée de façon déterministe, sans inférence. Elle ne prouve pas qu’une soumission aboutira : Desktop doit être ouvert et les autorisations macOS accordées.")
+            }
+            SettingsCard(title: "Codex · interaction avec Reprise",
+                         status: codexChecks.isEmpty ? "Aucun relevé" : "Vérifié",
+                         ok: !codexChecks.isEmpty) {
+                ForEach(Array(codexChecks.keys.sorted()), id: \.self) { key in
+                    let item = codexChecks[key] as? [String: Any] ?? [:]
+                    HStack(spacing: 8) {
+                        PresenceCheckLabel(present: item["present"] as? Bool == true, item: item["label"] as? String ?? key)
+                        Text(item["label"] as? String ?? key).font(.callout)
+                        Spacer()
+                    }
+                }
+                if !codexAnomalies.isEmpty {
+                    Divider()
+                    ForEach(Array(codexAnomalies.enumerated()), id: \.offset) { _, a in
+                        Label((a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
+                            .font(.callout).foregroundStyle(.orange)
                     }
                 }
             }
@@ -858,15 +969,38 @@ struct Dashboard: View {
     }
     var privacy: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Surface { VStack(alignment: .leading, spacing: 16) { Label("Index et analyses chiffrés", systemImage: "lock.shield").font(.headline); Text("AES-256-GCM avec CryptoKit. La clé dédiée reste dans le Trousseau macOS. Les données de recherche sont déchiffrées en mémoire."); Divider(); Label("Sans publication Spotlight", systemImage: "eye.slash"); Label("Modèles Apple sur l’appareil", systemImage: "desktopcomputer"); Label("Purge quotidienne après sept jours", systemImage: "calendar") } }
-            Surface { VStack(alignment: .leading, spacing: 12) { Text("Cache de recherche").font(.headline); Text("Vider l’index conserve les sessions. La prochaine recherche reconstruit les éléments récents.").foregroundStyle(.secondary); Button("Vider l’index") { app.clearIndex() }.disabled(app.searching); if app.searchNote.contains("Index vidé") { Text(app.searchNote).font(.caption).foregroundStyle(.secondary) } } }
-            Surface { VStack(alignment: .leading, spacing: 12) {
-                Text("Accès au Trousseau").font(.headline)
-                Text("En arrière-plan, un refus suspend le cache sans afficher de dialogue. Ce bouton permet de demander volontairement l’autorisation macOS ; il ne change pas les permissions des autres applications.").foregroundStyle(.secondary)
-                Button(app.vaultBusy ? "Autorisation…" : "Autoriser l’accès au cache") { app.authorizeVault() }.disabled(app.vaultBusy)
-                Text(app.vaultNote).font(.callout).foregroundStyle(.secondary)
-            } }
-            Text("Le chiffrement concerne l’index et le cache d’analyse. Les instructions du scheduler, ses journaux et ses archives ZIP ne sont pas chiffrés par ce mécanisme. Les sources des autres applications restent inchangées.").font(.caption).foregroundStyle(.secondary)
+            SettingsCard(title: "Chiffrement local",
+                         status: "Chiffré", ok: true) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("AES-256-GCM (CryptoKit), clé dans le Trousseau macOS", systemImage: "lock.shield")
+                    Label("Aucune publication dans Spotlight", systemImage: "eye.slash")
+                    Label("Traitement Apple Intelligence sur l’appareil", systemImage: "desktopcomputer")
+                    Label("Purge quotidienne après sept jours", systemImage: "calendar")
+                }.font(.callout)
+            }
+            SettingsCard(title: "Cache de recherche",
+                         status: app.searching ? "En cours" : "Prêt", ok: true) {
+                HStack(spacing: 10) {
+                    Button("Vider l’index") { app.clearIndex() }.disabled(app.searching)
+                    if app.searching { ProgressView().controlSize(.small) }
+                }
+                if app.searchNote.contains("Index vidé") { InlineStatus(busy: false, message: app.searchNote) }
+                SettingsHint(
+                    text: "La recherche suivante reconstruit les éléments récents.",
+                    detail: "Le cache ne contient que des données dérivées : les sessions, leurs journaux et les fichiers des autres applications ne sont pas modifiés par cette action.")
+            }
+            SettingsCard(title: "Accès au Trousseau",
+                         status: app.vaultBusy ? "Autorisation…" : "À la demande", ok: true) {
+                Button(app.vaultBusy ? "Autorisation en cours…" : "Autoriser l’accès au cache") { app.authorizeVault() }
+                    .disabled(app.vaultBusy)
+                if !app.vaultNote.isEmpty { InlineStatus(busy: false, message: app.vaultNote) }
+                SettingsHint(
+                    text: "Un refus suspend le cache sans afficher de dialogue.",
+                    detail: "En arrière-plan, un refus d’accès au Trousseau met simplement le cache en pause. Ce bouton demande volontairement l’autorisation macOS ; il ne modifie les permissions d’aucune autre application.")
+            }
+            SettingsHint(
+                text: "Le chiffrement ne couvre ni les journaux du planificateur ni ses archives.",
+                detail: "Le chiffrement concerne l’index de recherche et le cache d’analyse. Les instructions du planificateur, ses journaux et ses archives ZIP ne sont pas chiffrés par ce mécanisme. Les sources des autres applications restent inchangées.")
         }
     }
     func empty(_ title: String, icon: String, detail: String) -> some View {

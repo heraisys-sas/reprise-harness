@@ -71,7 +71,7 @@ extension App {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
         panel.showsHiddenFiles = !project
-        panel.message = project ? "Choisissez le projet accessible au pont Reprise." : "Choisissez le dossier de configuration Harness."
+        panel.message = project ? "Choisissez le projet auquel Reprise pourra accéder." : "Choisissez le dossier de configuration Harness."
         if panel.runModal() == .OK, let url = panel.url {
             if project { integrationProject = url.path } else { integrationHome = url.path; integrationProfiles = [] }
             invalidateIntegrationPlan()
@@ -152,142 +152,183 @@ struct Integrations: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            SchedulerService(app: app)
-            Text("L’installation écrit la configuration et les consignes du profil choisi. Elle ne démarre aucun service et n’effectue aucune inférence.").foregroundStyle(.secondary)
-            GroupBox("Clé API Artificial Analysis") {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        SecureField("Clé (masquée)", text: $app.aaKey)
-                        Button("Enregistrer") { app.saveAAKey() }.disabled(app.setupBusy || app.aaKey.trimmingCharacters(in: .whitespaces).isEmpty)
+            SettingsCard(title: "Profil Harness",
+                         status: hasProfile ? "Profil : " + app.integrationProfile : "Aucun profil",
+                         ok: hasProfile) {
+                HStack {
+                    path("Dossier Harness", app.integrationHome)
+                    Spacer()
+                    Button("Choisir le dossier…") { app.chooseIntegrationDirectory(project: false) }
+                }
+                HStack(spacing: 10) {
+                    TextField("Profil Harness", text: $app.integrationProfile).frame(maxWidth: 260)
+                    if !app.integrationProfiles.isEmpty {
+                        Picker("Profils détectés", selection: $app.integrationProfile) {
+                            ForEach(app.integrationProfiles, id: \.self) { profile in Text(profile).tag(profile) }
+                        }.labelsHidden().frame(maxWidth: 220)
                     }
-                    if !app.aaNote.isEmpty { Text(app.aaNote).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-                    Text("Écrite hors dépôt (REPRISE_SUPPORT/credentials/artificial-analysis.key, permissions 0600, sauvegarde .bak avant écrasement). Vérifiée par empreinte SHA-256 ; jamais affichée ni journalisée.").font(.caption).foregroundStyle(.secondary)
-                }.padding(6)
+                    Spacer()
+                    Button("Relire la configuration") { app.inspectIntegration() }
+                }
+                SettingsHint(
+                    text: "Reprise lit ce dossier pour connaître votre configuration ; elle ne l’applique pas.",
+                    detail: "L’inspection n’écrit rien et ne lance aucune inférence. Elle relève les profils présents, les outils déjà exposés et le dernier plan éventuellement en attente.")
             }
-            VStack(alignment: .leading, spacing: 10) {
-            Text("Cible explicite").font(.headline)
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack { path("Dossier Harness", app.integrationHome); Spacer(); Button("Choisir Harness…") { app.chooseIntegrationDirectory(project: false) } }
-                    HStack {
-                        TextField("Profil Harness", text: $app.integrationProfile)
-                        if !app.integrationProfiles.isEmpty {
-                            Menu("Profils détectés") { ForEach(app.integrationProfiles, id: \.self) { profile in Button(profile) { app.integrationProfile = profile } } }
-                        }
-                    }
-                    HStack { path("Projet du pont", app.integrationProject); Spacer(); Button("Choisir le projet…") { app.chooseIntegrationDirectory(project: true) } }
-                    Toggle("Exposer aussi les outils de délégation", isOn: $app.integrationDelegate)
-                    Toggle("Autoriser Codex à modifier le projet sélectionné", isOn: $app.integrationCodexWorkspaceWrite).disabled(!app.integrationDelegate)
-                    Text("Le mode implémentation permet les modifications et vérifications locales dans ce projet. Les revues restent en lecture seule. Les approbations natives restent requises ; cette option n’autorise pas implicitement push, fusion ou déploiement.").font(.caption).foregroundStyle(.secondary)
-                    Toggle("Continuer après une limite de tokens de sortie", isOn: $app.integrationOutputResume)
-                    if app.integrationOutputResume { TextField("Projet de continuation (vide : projet du pont)", text: $app.integrationOutputResumeProject) }
-                    Text("Autorise une continuation dans le même chat Harness, après max-tokens confirmé ; deux continuations consécutives maximum. La pause automatique de Reprise reste prioritaire.").font(.caption).foregroundStyle(.secondary)
-                    Toggle("Effort bas pour le mode asi1-orchestrator", isOn: $app.integrationAsi1Effort)
-                    Text("Déclare asi1 raisonneur, ajoute les champs compat et insère le plugin dans le preset asi1-orchestrator pour forcer reasoning_effort=low. La route asi-cloud/asi1 et le preset doivent déjà exister. Ne change pas le modèle par défaut ; recharger le profil Harness pour charger une nouvelle version du plugin.").font(.caption).foregroundStyle(.secondary)
+            SettingsCard(title: "Délégation vers un expert externe",
+                         status: app.integrationDelegate ? "Exposée" : "Désactivée",
+                         ok: true) {
+                Toggle("Exposer les outils de délégation", isOn: $app.integrationDelegate)
+                SettingsHint(
+                    text: "Par défaut, seuls l’observation et les reçus sont exposés. La délégation peut consommer du quota.",
+                    detail: "Autoriser l’exposition n’exécute aucune inférence : c’est le client qui décide d’appeler. Configurer un outil ne vaut pas autorisation de l’utiliser.")
+                Toggle("Autoriser l’écriture dans le projet sélectionné", isOn: $app.integrationCodexWorkspaceWrite)
+                    .disabled(!app.integrationDelegate)
+                SettingsHint(
+                    text: "Les revues restent en lecture seule ; seul le mode implémentation écrit.",
+                    detail: "Le mode implémentation autorise les modifications et vérifications locales dans ce projet. Les approbations natives restent requises ; cette option n’autorise pas implicitement un push, une fusion ou un déploiement.")
+                Toggle("Reprendre après une limite de tokens de sortie", isOn: $app.integrationOutputResume)
+                if app.integrationOutputResume {
+                    TextField("Projet de reprise (vide : projet du connecteur)", text: $app.integrationOutputResumeProject)
+                }
+                SettingsHint(
+                    text: "Deux reprises consécutives au maximum.",
+                    detail: "Une reprise poursuit le même chat après une limite de tokens de sortie confirmée. La pause automatique de Reprise reste prioritaire et s’applique d’abord.")
+                Toggle("Forcer un effort de raisonnement bas pour asi1", isOn: $app.integrationAsi1Effort)
+                SettingsHint(
+                    text: "S’applique au profil asi1-orchestrator uniquement.",
+                    detail: "Déclare asi1 comme modèle raisonneur, ajoute les champs de compatibilité et insère le greffon dans le preset asi1-orchestrator pour forcer reasoning_effort=low. La route asi-cloud/asi1 et le preset doivent déjà exister. Le modèle par défaut n’est pas modifié ; rechargez le profil Harness pour charger une nouvelle version du greffon.")
+                HStack(spacing: 10) {
+                    Text("Rôle de l’agent").font(.callout)
                     Picker("Rôle de l’agent", selection: $app.integrationAgentRole) {
                         Text("Standard").tag("standard")
                         Text("Coordinateur").tag("coordinator")
-                    }
-                    Text("Coordinateur : rôle attribué par vos soins, indépendant du modèle. N’accorde aucun droit de délégation supplémentaire.").font(.caption).foregroundStyle(.secondary)
-                    Text("Par défaut : outils d’observation et reçus. Activer la délégation autorise leur exposition au client ; la délégation peut consommer du quota. Activer la configuration ne vaut pas autorisation d’inférence.").font(.caption).foregroundStyle(.secondary)
-                    Button("Inspecter") { app.inspectIntegration() }
-                }.padding(6)
-            }
-            GroupBox("Connecteur reprise-harness · Claude Desktop") {
-                VStack(alignment: .leading, spacing: 8) {
-                    path("Projet autorisé", app.integrationProject)
-                    Button("Choisir le projet Claude…") { app.chooseIntegrationDirectory(project: true) }
-                    Text("Un seul connecteur : recevoir les tâches, rendre les résultats et demander une expertise aux autres harness configurés. Runtime inclus ; aucun Python système requis.").font(.caption).foregroundStyle(.secondary)
-                    Toggle("Remplacer l’ancien probe Reprise reconnu (sauvegardé)", isOn: $app.claudeReplaceProbe)
-                    HStack {
-                        Button("Inspecter") { app.inspectClaudeIntegration() }
-                        Button("Installer / mettre à jour…") { app.previewClaudeIntegration("install") }.disabled(app.integrationProject.isEmpty)
-                        Button("Retirer…") { app.previewClaudeIntegration("remove") }.disabled(app.integrationProject.isEmpty)
-                        Button("Vérifier") { app.verifyClaudeIntegration() }
-                    }
-                    if let plan = app.claudeIntegrationPlan {
-                        Text(planDetail(plan)).font(.caption.monospaced()).textSelection(.enabled)
-                        Toggle("J’ai vérifié le projet et les changements du connecteur Claude", isOn: $app.claudeIntegrationAcknowledged)
-                        Button("Appliquer le plan Claude") { app.applyClaudeIntegration() }.disabled(!app.claudeIntegrationAcknowledged)
-                    }
-                    if !app.claudeIntegrationResult.isEmpty { Text(planDetail(app.claudeIntegrationResult)).font(.caption).textSelection(.enabled) }
-                    Text("Dans Claude, autorisez les outils du connecteur reprise-harness pour recevoir les tâches, rendre les résultats et déléguer. Reprise ne peut pas accorder ces autorisations à votre place. Claude devra recharger sa configuration. Reprise ne l’arrête pas automatiquement. Une sonde de release ne prouve pas le chargement dans Claude ; le déclenchement Quick Apply reste une capacité distincte.").font(.caption).foregroundStyle(.secondary)
-                }.padding(6)
-            }.disabled(app.setupBusy)
-            GroupBox("Reprise après quota Claude Desktop") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Toggle("Continuer le chat après le reset gratuit", isOn: Binding(
-                        get: { app.claudeQuotaState["enabled"] as? Bool ?? true },
-                        set: { app.configureClaudeQuota($0) }))
-                    Picker("Canal de continuation", selection: Binding(
-                        get: { app.claudeQuotaState["transport"] as? String ?? "quick-apply" },
-                        set: { app.configureClaudeQuota(app.claudeQuotaState["enabled"] as? Bool ?? true, transport: $0) })) {
-                        Text("Quick Apply · claude-desktopd").tag("quick-apply")
-                        Text("Accessibilité macOS · option explicite").tag("accessibility")
-                    }
-                    Text("Quick Apply utilise le même démon que les autres harness et exige une capacité d’émission vérifiée. L’autre canal requiert l’autorisation Accessibilité macOS. Reprise vérifie le dernier message du chat affiché et son bouton Continuer, sans saisir de prompt. La pause globale reste prioritaire.").font(.caption).foregroundStyle(.secondary)
-                    if let events = app.claudeQuotaState["events"] as? [[String: Any]], let latest = events.first,
-                       let due = latest["due"] as? Double {
-                        Text("Échéance : " + Date(timeIntervalSince1970: due).formatted(date: .abbreviated, time: .shortened))
-                        Text("État : " + (latest["status"] as? String ?? "inconnu"))
-                    }
-                    if let observation = app.claudeQuotaState["observation"] as? [String: Any], let state = observation["status"] as? String {
-                        Text("Observation : " + state).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Button("Actualiser le suivi Claude") { app.refreshClaudeQuota() }
-                }.padding(6)
-            }.disabled(app.setupBusy).onAppear { app.refreshClaudeQuota() }
-            Text(app.integrationMessage).textSelection(.enabled)
-            if app.setupBusy { ProgressView("Opération en cours…") }
-            HStack {
-                Button("Prévisualiser installation ou réparation") { app.previewIntegration(action: "install") }
-                Button("Prévisualiser le retrait") { app.previewIntegration(action: "remove") }
-            }.disabled(!hasProfile || app.integrationProject.isEmpty)
-            if let plan = app.integrationPlan {
-                VStack(alignment: .leading, spacing: 10) {
-            Text("Modifications prévues ou à reprendre").font(.headline)
-                    VStack(alignment: .leading, spacing: 10) {
-                        path("Action", plan["action"] as? String ?? "")
-                        path("Dossier Harness du plan", plan["home"] as? String ?? "")
-                        path("Profil du plan", plan["profile"] as? String ?? "")
-                        path("Projet du plan", plan["project"] as? String ?? "")
-                        Text("Rôle : " + ((plan["agent_role"] as? String == "coordinator") ? "Coordinateur" : "Standard"))
-                        if let project = plan["output_resume_project"] as? String { path("Projet de continuation", project) }
-                        Text("Continuation après limite de sortie : " + ((plan["output_resume"] as? Bool == true) ? "autorisée" : "désactivée"))
-                        Text("Effort ASI1 bas : " + ((plan["asi1_effort"] as? Bool == true) ? "installé" : "non installé"))
-                        Text("Délégation : " + ((plan["delegate"] as? Bool == true) ? "exposée" : "non exposée"))
-                        ForEach(Array((plan["changes"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, change in
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text((change["action"] as? String ?? "Modification") + " : " + (change["path"] as? String ?? "Chemin inconnu")).bold()
-                                Text("Avant : " + (change["before_sha256"] as? String ?? "absent"))
-                                Text("Après : " + (change["after_sha256"] as? String ?? "absent"))
-                            }.font(.caption)
-                        }
-                        if let release = plan["release"] { DisclosureGroup("Version et chemins du bundle") { Text(planDetail(release)).font(.caption).frame(maxWidth: .infinity, alignment: .leading) } }
-                        if let state = plan["state"] { DisclosureGroup("État utilisé par le pont") { Text(planDetail(state)).font(.caption).frame(maxWidth: .infinity, alignment: .leading) } }
-                        Text("Empreinte : " + (plan["fingerprint"] as? String ?? "Indisponible")).font(.caption)
-                        Toggle("J’autorise explicitement les modifications de ce plan sur le profil affiché.", isOn: $app.integrationAcknowledged)
-                        Button("Appliquer ou reprendre ce plan") { app.applyIntegration() }.disabled(!app.integrationAcknowledged)
-                    }.padding(6).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                    }.labelsHidden().frame(maxWidth: 200)
+                    Spacer()
                 }
+                SettingsHint(
+                    text: "Le rôle est un label que vous attribuez ; il ne change pas le modèle.",
+                    detail: "Coordinateur désigne l’agent qui répartit le travail. Ce rôle est indépendant du modèle utilisé et n’accorde aucun droit de délégation supplémentaire.")
             }
-            if let result = app.integrationResult {
-                if let backup = result["backup"] as? String { path("Sauvegarde", backup) }
-                ForEach(result["backups"] as? [String] ?? [], id: \.self) { path("Sauvegarde", $0) }
+            SettingsCard(title: "Clé Artificial Analysis",
+                         status: app.aaNote.contains("empreinte") ? "Enregistrée" : "Non vérifiée",
+                         ok: app.aaNote.contains("empreinte")) {
+                HStack {
+                    SecureField("Clé (masquée)", text: $app.aaKey)
+                    Button("Enregistrer") { app.saveAAKey() }.disabled(app.setupBusy || app.aaKey.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if !app.aaNote.isEmpty { Text(app.aaNote).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+                SettingsHint(
+                    text: "Écrite hors dépôt, permissions 0600, sauvegarde avant écrasement.",
+                    detail: "Emplacement : REPRISE_SUPPORT/credentials/artificial-analysis.key. La clé est vérifiée par empreinte SHA-256 et n’est jamais affichée ni journalisée.")
             }
-            Button("Vérifier la configuration et sonder le pont sans inférence") { app.verifyIntegration() }.disabled(!hasProfile)
-            if let verification = app.integrationVerification {
-                VStack(alignment: .leading, spacing: 10) {
-            Text("Bornes de preuve").font(.headline)
+            SchedulerService(app: app)
+            SettingsCard(title: "Connecteur Claude Desktop",
+                         status: app.claudeIntegrationResult["status"] as? String == "completed" ? "Installé" : "État inconnu",
+                         ok: app.claudeIntegrationResult["status"] as? String == "completed") {
+                HStack {
+                    path("Projet autorisé", app.integrationProject)
+                    Spacer()
+                    Button("Choisir le projet…") { app.chooseIntegrationDirectory(project: true) }
+                }
+                HStack(spacing: 10) {
+                    Button("Relire l’état") { app.inspectClaudeIntegration() }
+                    Button("Installer ou mettre à jour…") { app.previewClaudeIntegration("install") }.disabled(app.integrationProject.isEmpty)
+                    Button("Retirer…") { app.previewClaudeIntegration("remove") }.disabled(app.integrationProject.isEmpty)
+                    Button("Vérifier") { app.verifyClaudeIntegration() }
+                }
+                SettingsHint(
+                    text: "Les autorisations se donnent dans Claude, pas ici.",
+                    detail: "Un seul connecteur suffit : il reçoit les tâches, rend les résultats et demande une expertise aux autres harness configurés. L’exécution Python est incluse ; aucun Python système n’est requis. Dans Claude, autorisez les outils du connecteur reprise-harness. Reprise ne peut pas accorder ces autorisations à votre place et n’arrête pas Claude : la nouvelle configuration y est chargée après un rechargement. Une vérification de version ne prouve pas le chargement dans Claude ; le déclenchement Quick Apply reste une capacité distincte.",
+                    detailLabel: "Autorisations et limites")
+                Toggle("Remplacer le connecteur Reprise déjà reconnu (sauvegardé)", isOn: $app.claudeReplaceProbe)
+                if let plan = app.claudeIntegrationPlan {
+                    SettingsHint(text: "Un plan est prêt ; il attend votre accord.",
+                                 detail: planDetail(plan), detailLabel: "Plan exact du connecteur")
+                    Toggle("J’ai vérifié le projet et les changements du connecteur", isOn: $app.claudeIntegrationAcknowledged)
+                    Button("Appliquer le plan") { app.applyClaudeIntegration() }.disabled(!app.claudeIntegrationAcknowledged)
+                }
+                if !app.claudeIntegrationResult.isEmpty {
+                    SettingsHint(text: app.claudeIntegrationResult["message"] as? String ?? "Dernier résultat du connecteur.",
+                                 detail: planDetail(app.claudeIntegrationResult), detailLabel: "Réponse complète")
+                }
+            }.disabled(app.setupBusy)
+            SettingsCard(title: "Reprise après quota Claude Desktop",
+                         status: app.claudeQuotaState["enabled"] as? Bool == true ? "Active" : "En pause",
+                         ok: true) {
+                Toggle("Poursuivre le chat après le renouvellement gratuit", isOn: Binding(
+                    get: { app.claudeQuotaState["enabled"] as? Bool ?? true },
+                    set: { app.configureClaudeQuota($0) }))
+                Picker("Canal de reprise", selection: Binding(
+                    get: { app.claudeQuotaState["transport"] as? String ?? "quick-apply" },
+                    set: { app.configureClaudeQuota(app.claudeQuotaState["enabled"] as? Bool ?? true, transport: $0) })) {
+                    Text("Quick Apply (claude-desktopd)").tag("quick-apply")
+                    Text("Accessibilité macOS (autorisation requise)").tag("accessibility")
+                }
+                SettingsHint(
+                    text: "La pause globale reste prioritaire.",
+                    detail: "Quick Apply passe par le même service que les autres harness et exige une capacité d’émission vérifiée. L’autre canal demande l’autorisation Accessibilité de macOS. Dans les deux cas, Reprise examine le dernier message du chat affiché et son bouton Continuer, sans saisir de texte à votre place.")
+                if let events = app.claudeQuotaState["events"] as? [[String: Any]], let latest = events.first,
+                   let due = latest["due"] as? Double {
+                    HStack(spacing: 16) {
+                        Text("Prochaine tentative : " + Date(timeIntervalSince1970: due).formatted(date: .abbreviated, time: .shortened))
+                        Text("État : " + (latest["status"] as? String ?? "inconnu")).foregroundStyle(.secondary)
+                    }.font(.caption)
+                }
+                if let observation = app.claudeQuotaState["observation"] as? [String: Any], let state = observation["status"] as? String {
+                    Text("Observation : " + state).font(.caption).foregroundStyle(.secondary)
+                }
+                Button("Actualiser le suivi") { app.refreshClaudeQuota() }
+            }.disabled(app.setupBusy).onAppear { app.refreshClaudeQuota() }
+            if app.setupBusy { InlineStatus(busy: true, message: "Opération en cours…") }
+            SettingsCard(title: "Appliquer la configuration",
+                         status: app.integrationPlan == nil ? "Aucun plan en attente" : "Plan en attente",
+                         ok: app.integrationPlan == nil) {
+                HStack(spacing: 10) {
+                    Button("Prévisualiser l’installation…") { app.previewIntegration(action: "install") }
+                    Button("Prévisualiser le retrait…") { app.previewIntegration(action: "remove") }
+                    Spacer()
+                }.disabled(!hasProfile || app.integrationProject.isEmpty)
+                if let plan = app.integrationPlan {
+                    Divider()
+                    HStack(spacing: 24) {
+                        path("Action", plan["action"] as? String ?? "")
+                        path("Profil", plan["profile"] as? String ?? "")
+                    }
+                    Text("Rôle : " + ((plan["agent_role"] as? String == "coordinator") ? "Coordinateur" : "Standard"))
+                    SettingsHint(
+                        text: "Les modifications ci-dessous sont exactes et réversibles.",
+                        detail: planDetail((plan["changes"] as? [[String: Any]] ?? [])), detailLabel: "Fichiers avant / après")
+                    if let project = plan["output_resume_project"] as? String { path("Projet de reprise", project) }
+                    Text("Reprise après limite de sortie : " + ((plan["output_resume"] as? Bool == true) ? "autorisée" : "désactivée"))
+                    Text("Effort ASI1 bas : " + ((plan["asi1_effort"] as? Bool == true) ? "installé" : "non installé"))
+                    Text("Délégation : " + ((plan["delegate"] as? Bool == true) ? "exposée" : "non exposée"))
+                    if let release = plan["release"], let state = plan["state"] {
+                        SettingsHint(text: "Version et état utilisés par le connecteur.",
+                                     detail: planDetail(release) + "\n\n" + planDetail(state), detailLabel: "Détail technique")
+                    }
+                    Text("Empreinte du plan : " + (plan["fingerprint"] as? String ?? "indisponible")).font(.caption)
+                    Toggle("J’autorise les modifications de ce plan sur le profil affiché.", isOn: $app.integrationAcknowledged)
+                    Button("Appliquer ce plan") { app.applyIntegration() }.disabled(!app.integrationAcknowledged)
+                }
+                if let result = app.integrationResult {
+                    if let backup = result["backup"] as? String { path("Sauvegarde", backup) }
+                    ForEach(result["backups"] as? [String] ?? [], id: \.self) { path("Sauvegarde", $0) }
+                }
+                Divider()
+                Button("Vérifier la configuration sans inférence") { app.verifyIntegration() }.disabled(!hasProfile)
+                if let verification = app.integrationVerification {
                     let levels = verification["levels"] as? [String: Any] ?? [:]
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Configuration écrite : " + ((levels["configuration_written"] as? Bool == true) ? "vérifiée" : "non confirmée"))
-                        Text("Intégration chargée par Harness : inconnue")
-                        Text("Outils découverts par le client : inconnu")
-                        Text("Échange confirmé avec le client : inconnu")
-                        if let tools = verification["bridge_tools"] as? [String], !tools.isEmpty { Text("Outils annoncés par la sonde du pont : " + tools.joined(separator: ", ")) }
-                        Text("La sonde du pont ne prouve pas le chargement par Harness ni un échange depuis le client.").font(.caption).foregroundStyle(.secondary)
-                        Text("Le profil complet et ses éventuelles surcharges restent à valider dans Harness.").font(.caption).foregroundStyle(.secondary)
-                    }.padding(6).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                    SettingsHint(
+                        text: "Ce qui est prouvé, et ce qui reste à confirmer.",
+                        detail: [
+                            "Configuration écrite : " + ((levels["configuration_written"] as? Bool == true) ? "vérifiée" : "non confirmée"),
+                            "Intégration chargée par Harness : inconnue",
+                            "Outils découverts par le client : inconnu",
+                            "Échange confirmé avec le client : inconnu",
+                            (verification["bridge_tools"] as? [String]).map { "Outils annoncés : " + $0.joined(separator: ", ") } ?? "",
+                            "Le test de version ne prouve pas le chargement par Harness ni un échange depuis le client. Le profil complet et ses surcharges restent à valider dans Harness."
+                        ].filter { !$0.isEmpty }.joined(separator: "\n"),
+                        detailLabel: "Bornes de preuve")
                 }
             }
         }
