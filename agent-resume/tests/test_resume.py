@@ -63,6 +63,36 @@ class SchedulerTests(unittest.TestCase):
                 self.assertFalse(any('state/' in n for n in z.namelist()))
                 self.assertNotIn('private prompt', z.read('agent-resume/prompt.example.txt').decode())
 
+    def test_add_accepts_z_suffix_and_offsets_but_rejects_missing_timezone(self):
+        with tempfile.TemporaryDirectory() as folder:
+            import os
+            script = str(Path(__file__).parents[1] / 'resume')
+            prompt = Path(folder) / 'prompt'
+            prompt.write_text('continue')
+            env = dict(os.environ, AGENT_RESUME_STATE=folder + '/state')
+            common = ['add', '--session', '12345678-1234-1234-1234-123456789abc',
+                      '--cwd', folder, '--prompt-file', str(prompt)]
+            for instant in ('2030-01-01T00:00:00Z', '2030-01-01T00:00:00z',
+                            '2030-01-01T00:00:00+02:00'):
+                result = subprocess.run([script, *common, '--at', instant], env=env,
+                                         cwd=folder, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            result = subprocess.run([script, *common, '--at', '2030-01-01T00:00:00'],
+                                    env=env, cwd=folder, text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('--at exige un fuseau horaire', result.stderr)
+
+    def test_desktop_apply_cli_help_is_available_without_transport(self):
+        with tempfile.TemporaryDirectory() as folder:
+            import os
+            script = str(Path(__file__).parents[1] / 'resume')
+            result = subprocess.run([script, 'desktop-apply', '--help'],
+                                    env=dict(os.environ, HOME=folder), cwd=folder,
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('--status', result.stdout)
+            self.assertIn('--chat', result.stdout)
+
 
 class AutomaticSchedulerTests(unittest.TestCase):
     def setUp(self):

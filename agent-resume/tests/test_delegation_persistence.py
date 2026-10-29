@@ -125,7 +125,10 @@ class DurableTests(unittest.TestCase):
             with self.subTest(status=status), patch('codex_expert_mcp.review', return_value={'status': status}) as run:
                 bridge = self.bridge()
                 bridge.call('reprise_delegate', self.args('first-' + status, question='Question ' + status))
-                self.assertEqual(bridge.call('reprise_requests', {'request_key': 'first-' + status})['state'], 'indeterminate')
+                # Issue #53 arbitration: blocked_permission persists as awaiting_human,
+                # a dedicated reconcilable state; equivalence locking is unchanged.
+                expected_state = 'awaiting_human' if status == 'blocked_permission' else 'indeterminate'
+                self.assertEqual(bridge.call('reprise_requests', {'request_key': 'first-' + status})['state'], expected_state)
                 self.assertEqual(bridge.call('reprise_delegate', self.args('second-' + status, question='Question ' + status))['status'], 'indeterminate')
                 self.assertEqual(run.call_count, 1)
 

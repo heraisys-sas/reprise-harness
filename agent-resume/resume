@@ -12,9 +12,23 @@ import subprocess
 import sys
 import uuid
 import zipfile
+
+
+def parse_instant(value):
+    """Parse un instant ISO 8601 avec fuseau, y compris le suffixe Z."""
+    text = value.strip()
+    if text.endswith(('Z', 'z')):
+        text = text[:-1] + '+00:00'
+    return dt.datetime.fromisoformat(text)
+
+
 if len(sys.argv) > 1 and sys.argv[1] in ('ironclaw-inspect', 'ironclaw-configure', 'ironclaw-probe', 'ironclaw-submit', 'ironclaw-poll', 'ironclaw-result', 'ironclaw-requests', 'ironclaw-reconcile', 'ironclaw-followup'):
     import ironclaw_connection
     sys.exit(ironclaw_connection.main(Path(__file__).resolve().parent, sys.argv[1:]))
+
+if len(sys.argv) > 1 and sys.argv[1] in ('claude-sessions-status', 'claude-observer-config', 'claude-session-register', 'claude-session-remove'):
+    import claude_session_observer
+    sys.exit(claude_session_observer.main(Path(__file__).resolve().parent, sys.argv[1:]))
 
 if len(sys.argv) > 1 and sys.argv[1] == 'vault-authorize':
     if len(sys.argv) != 2:
@@ -31,10 +45,6 @@ if len(sys.argv) > 1 and sys.argv[1] == 'vault-authorize':
 if len(sys.argv) > 1 and sys.argv[1].startswith('claude-integration-'):
     import claude_integration
     sys.exit(claude_integration.main(Path(__file__).resolve().parent, sys.argv[1:]))
-
-if len(sys.argv) > 1 and sys.argv[1].startswith('proxy-service-'):
-    import proxy_service
-    sys.exit(proxy_service.main(Path(__file__).resolve().parent, sys.argv[1:]))
 
 if len(sys.argv) > 1 and sys.argv[1].startswith('scheduler-service-'):
     import scheduler_service
@@ -70,7 +80,7 @@ LABEL = 'local.agent-resume'
 
 def share_files():
     from package_helpers import ASSETS
-    extra = ('app_paths.py', 'package_helpers.py', 'resume', 'VERSION', 'scheduler.py', 'presentation.py', 'connection.py', 'shared_mode.py', 'ROADMAP.md', 'quota.py', 'quota_knowledge.py', 'delegation_store.py', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'run_status.py', 'runtime.py', 'engines.py', 'engine_events.py', 'codex_rpc.py', 'owner_route.py', 'task_archive.py', 'codex_expert.py', 'claude_expert.py', 'claude_quota.py', 'claude_mcp.py', 'desktop_task_store.py', 'claude_integration.py', 'codex_expert_mcp.py', 'install-expertise.py', 'reprise-delegation.md', 'CODEX-INTEGRATION.md', 'CLAUDE-INTEGRATION.md', 'CACHE-POLICY.md', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'restart-chain', 'claude_desktop.py', 'claude_desktop_quick.py', 'claude_desktop_rpc.py', 'claude_desktop_cli.py', 'desktop_mode.py', 'reprise_logs.py', 'reprise_health.py', 'FoundationExplain.swift', 'install-quick-entry.py', 'ux_review_probe.py', 'harness-events.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'ClaudeQuota.swift', 'vault.py')
+    extra = ('claude_session_store.py', 'claude_session_observer.py', 'websocket_transport.py', 'app_paths.py', 'package_helpers.py', 'resume', 'VERSION', 'scheduler.py', 'presentation.py', 'connection.py', 'shared_mode.py', 'ROADMAP.md', 'quota.py', 'quota_knowledge.py', 'delegation_store.py', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'run_status.py', 'runtime.py', 'engines.py', 'engine_events.py', 'routing_events.py', 'external_rankings.py', 'openrouter_adapter.py', 'artificial_analysis_adapter.py', 'codex_rpc.py', 'owner_route.py', 'task_archive.py', 'codex_expert.py', 'claude_expert.py', 'claude_quota.py', 'claude_mcp.py', 'desktop_task_store.py', 'claude_integration.py', 'codex_expert_mcp.py', 'install-expertise.py', 'reprise-delegation.md', 'CODEX-INTEGRATION.md', 'CLAUDE-INTEGRATION.md', 'CACHE-POLICY.md', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'restart-chain', 'claude_desktop.py', 'claude_desktop_quick.py', 'claude_desktop_rpc.py', 'claude_desktop_cli.py', 'desktop_mode.py', 'reprise_logs.py', 'reprise_health.py', 'FoundationExplain.swift', 'install-quick-entry.py', 'ux_review_probe.py', 'harness-events.cjs', 'asi1-orchestrator-effort.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'ClaudeQuota.swift', 'vault.py')
     build = ('native_contract.py', 'package_runtime.py', 'StateSetup.swift',
              'Integrations.swift', 'SchedulerService.swift', 'IronClawConnection.swift')
     return tuple(dict.fromkeys(ASSETS + extra + build))
@@ -200,6 +210,16 @@ def main():
     quota_status.add_argument('--refresh', action='store_true', help='Read native quota metadata; never starts a turn')
     quota_status.add_argument('--profile')
     quota_status.add_argument('--socket')
+    desktop_apply = sub.add_parser('desktop-apply',
+                                   help='prototype expérimental CDP, non raccordé au daemon Quick Apply')
+    desktop_apply.add_argument('--text')
+    desktop_apply.add_argument('--prompt-file')
+    desktop_apply.add_argument('--chat')
+    desktop_apply.add_argument('--raise-on-login', action='store_true')
+    desktop_apply.add_argument('--status', action='store_true')
+    desktop_apply.add_argument('--port', type=int)
+    desktop_apply.add_argument('--raise', dest='raise_window', action='store_true',
+                               help='rendre la fenêtre visible pour la connexion')
     sub.add_parser('reprise-health')
     sub.add_parser('restart-chain')
     sub.add_parser('quick-apply-daemon-start')
@@ -240,10 +260,28 @@ def main():
             row = db.execute("SELECT options FROM engine_settings WHERE engine='codex'").fetchone()
         settings = (json.loads(row[0]) if row else {}) | {key: getattr(args, key) for key in ('profile', 'socket') if getattr(args, key) is not None}
         print(json.dumps(quota_knowledge.status(db, args.engine, settings, refresh=args.refresh), ensure_ascii=False))
+    elif args.action == 'desktop-apply':
+        import claude_desktop_apply as transport
+        port = args.port or int(os.environ.get('CLAUDE_CDP_PORT', '9333'))
+        if args.status:
+            print(json.dumps(transport.quota(port), ensure_ascii=False))
+            sys.exit(0)
+        if args.raise_window:
+            raised = transport.raise_for_login(port)
+            print(json.dumps({'ok': raised, 'stage': 'session', 'raised': raised},
+                             ensure_ascii=False))
+            sys.exit(0 if raised else 1)
+        text = args.text or ''
+        if args.prompt_file:
+            text = Path(args.prompt_file).read_text()
+        result = transport.apply(text, args.chat, port=port,
+                                 on_login='raise' if args.raise_on_login else 'fail')
+        print(json.dumps(result, ensure_ascii=False))
+        sys.exit(0 if result.get('ok') else 1)
     elif args.action == 'add':
         args.session = engines.validate_session(args.engine, args.session)
         settings = engines.options(args.engine, {k: getattr(args, k) for k in ('profile', 'socket', 'parent') if getattr(args, k) is not None})
-        when = dt.datetime.fromisoformat(args.at)
+        when = parse_instant(args.at)
         if when.tzinfo is None:
             parser.error('--at exige un fuseau horaire')
         cwd = Path(args.cwd).expanduser().resolve(strict=True)

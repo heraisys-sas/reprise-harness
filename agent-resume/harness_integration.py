@@ -18,7 +18,7 @@ from state_install import initialized, _sync_directory
 
 START = '# BEGIN REPRISE MANAGED INTEGRATION'
 END = '# END REPRISE MANAGED INTEGRATION'
-DOCS = ('REPRISE-AGENTS.template.md', 'CODEX-EXECUTION-CONTRACT.md', 'ASI1-ORCHESTRATOR.template.md', 'HANDOFF-CONTRACT.md', 'HARNESS-ROLES-CONTRACT.md', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'HARNESS-SUPERVISION-ARCHITECTURE.md', 'HARNESS-INTEGRATION.md', 'CLARIFICATION-CONTRACT.md')
+DOCS = ('REPRISE-AGENTS.template.md', 'CODEX-EXECUTION-CONTRACT.md', 'ASI1-ORCHESTRATOR.template.md', 'ASI1-ORCHESTRATION-CONTRACT.md', 'HANDOFF-CONTRACT.md', 'HARNESS-ROLES-CONTRACT.md', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'HARNESS-SUPERVISION-ARCHITECTURE.md', 'HARNESS-INTEGRATION.md', 'CLARIFICATION-CONTRACT.md')
 OBSERVE = ('reprise_backends', 'reprise_requests', 'reprise_quotas')
 DELEGATE = ('reprise_delegate', 'reprise_followup', 'reprise_reconcile')
 
@@ -114,6 +114,62 @@ def split_block(text):
     return text[:match.start()] + text[match.end():], match.group()
 
 
+_BLOCK_REFUSAL = 'Bloc Reprise personnalisé ou non géré ; aucune réécriture.'
+_BLOCK_ILLISIBLE = 'Bloc Reprise illisible ; réconciliation impossible.'
+
+
+def block_entries(block_text):
+    # Le bloc géré est du YAML minimal produit ici : une seule clé `insert`
+    # portant le JSON des entries, en ligne ou ré-indenté sur les lignes suivantes.
+    lines = block_text.splitlines()
+    index = next((i for i, line in enumerate(lines) if re.match(r'^- insert:', line)), None)
+    if index is None:
+        raise ValueError(_BLOCK_ILLISIBLE)
+    inline = lines[index][len('- insert:'):].strip()
+    if inline:
+        payload = inline
+    else:
+        collected = []
+        indent = None
+        for line in lines[index + 1:]:
+            if not line.strip():
+                continue
+            if not line.startswith(' '):
+                break
+            if indent is None:
+                indent = re.match(r' *', line).end()
+            collected.append(line[indent:])
+        payload = ' '.join(collected)
+    try:
+        entries = json.loads(payload)
+    except json.JSONDecodeError:
+        raise ValueError(_BLOCK_ILLISIBLE)
+    if not isinstance(entries, list):
+        raise ValueError(_BLOCK_ILLISIBLE)
+    return entries
+
+
+def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, codex_workspace_write=False):
+    program = release / 'Contents/Resources/runtime/bin/python3'
+    args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/codex_expert_mcp.py'),
+            '--project-root', project, '--state', state, '--tools', ','.join(tools)]
+    if codex_workspace_write:
+        args.append('--codex-workspace-write')
+    entries = [
+        {'id': 'reprise-codex-expert', 'name': '@deepseek-ai/dsh-mcp-client', 'config': {
+            'transport': 'stdio', 'serverName': 'reprise_codex', 'command': str(program), 'args': args,
+            'toolCallTimeoutMs': 330000, 'failOnStartupError': False, 'reconnect': {'enabled': False}}},
+        {'id': 'reprise-skill-filesystem', 'name': '@deepseek-ai/dsh-skill-filesystem', 'config': {
+            'providerName': 'reprise-' + profile, 'includeDefaultRoots': False,
+            'customSkillDirs': [str(managed / 'skills')], 'watch': False}}]
+    if output_resume:
+        entries.append({'id': 'reprise-output-resume', 'name': str(release / 'Contents/Resources/helpers/harness-output-resume.cjs'),
+                        'config': {'enabled': True, 'projectRoot': output_resume_project or project,
+                                   'stateDirectory': str(Path(state) / 'harness-output-resume'),
+                                   'maxConsecutive': 2}})
+    return entries
+
+
 def tree_files(root):
     result = {}
     for entry in sorted(root.rglob('*')):
@@ -201,6 +257,7 @@ def inspect(home, profile=None):
             result['project'] = old.get('project')
             result['output_resume'] = old.get('output_resume', False)
             result['output_resume_project'] = old.get('output_resume_project', old.get('project'))
+            result['asi1_effort'] = old.get('asi1_effort', False)
             result['delegate'] = 'reprise_delegate' in old.get('tools', [])
             result['agent_role'] = old.get('agent_role', 'standard')
         result['codex_workspace_write'] = (old or {}).get('codex_workspace_write', False)
@@ -214,7 +271,258 @@ def inspect(home, profile=None):
     return result
 
 
-def desired(root, home, profile, project, action, delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False):
+ASI1_START = '# BEGIN REPRISE ASI1 EFFORT'
+ASI1_END = '# END REPRISE ASI1 EFFORT'
+ASI1_PLUGIN_START = '# BEGIN REPRISE ASI1 EFFORT PLUGIN'
+ASI1_PLUGIN_END = '# END REPRISE ASI1 EFFORT PLUGIN'
+ASI1_ROUTES = ('asi-cloud',)
+ASI1_PLUGIN = 'asi1-orchestrator-effort.cjs'
+
+
+def _indent(line):
+    return len(line) - len(line.lstrip(' '))
+
+
+def _route_bounds(lines, route):
+    target = '      ' + route + ':'
+    for index, line in enumerate(lines):
+        if line.rstrip('\n') == target:
+            end = index + 1
+            while end < len(lines):
+                raw = lines[end].rstrip('\n')
+                if raw.strip() and _indent(raw) <= 6 and not raw.lstrip().startswith('#'):
+                    break
+                end += 1
+            return index, end
+    return None
+
+
+def _model_bounds(lines, start, end):
+    for index in range(start, end):
+        if lines[index].rstrip('\n') == '          - id: asi1':
+            stop = index + 1
+            while stop < end:
+                raw = lines[stop].rstrip('\n')
+                if raw.strip() and _indent(raw) == 10 and raw.lstrip().startswith('- '):
+                    break
+                stop += 1
+            return index, stop
+    return None
+
+
+def _compat_bounds(lines, start, end):
+    for index in range(start, end):
+        if lines[index].rstrip('\n') == '        compat:':
+            stop = index + 1
+            while stop < end:
+                raw = lines[stop].rstrip('\n')
+                if raw.strip() and _indent(raw) <= 8:
+                    break
+                stop += 1
+            return index, stop
+    return None
+
+
+def _marker_blocks(lines):
+    blocks = []
+    index = 0
+    while index < len(lines):
+        if lines[index].strip() == ASI1_START:
+            stop = index + 1
+            while stop < len(lines) and lines[stop].strip() != ASI1_END:
+                stop += 1
+            if stop == len(lines):
+                raise ValueError('Bloc ASI1 sans délimiteur de fin ; réconciliation requise.')
+            blocks.append((index, stop + 1))
+            index = stop + 1
+        else:
+            index += 1
+    return blocks
+
+
+def _strip_asi1_blocks(text, expected):
+    lines = text.splitlines(keepends=True)
+    blocks = _marker_blocks(lines)
+    if blocks:
+        if expected is None:
+            raise ValueError('Marqueurs ASI1 non gérés ; aucune réécriture.')
+        observed = sorted(digest(''.join(lines[start:stop]).encode()) for start, stop in blocks)
+        if observed != sorted(expected):
+            raise ValueError('Bloc ASI1 personnalisé ; aucune réécriture.')
+        for start, stop in reversed(blocks):
+            del lines[start:stop]
+    elif expected:
+        raise ValueError('Bloc ASI1 géré absent ; réparation explicite requise.')
+    return ''.join(lines)
+
+
+def apply_asi1_effort(text, old, enable):
+    """Add or remove only marker-owned ASI:One reasoning declarations."""
+    expected = None
+    if old and old.get('asi1_effort'):
+        expected = old.get('asi1_effort_blocks', [])
+    text = _strip_asi1_blocks(text, expected)
+    if not enable:
+        return text, [], False
+    lines = text.splitlines(keepends=True)
+    blocks = []
+    preexisting = False
+    direct = _route_bounds(lines, 'asi-cloud')
+    if direct is None or _model_bounds(lines, *direct) is None:
+        raise ValueError('Configuration ASI1 absente : route asi-cloud et modèle asi1 requis.')
+    for route in ASI1_ROUTES:
+        bounds = _route_bounds(lines, route)
+        if bounds is None:
+            continue
+        start, end = bounds
+        model = _model_bounds(lines, start, end)
+        if model is None:
+            continue
+        model_start, model_end = model
+        model_lines = lines[model_start:model_end]
+        effort_names = [line for line in model_lines if line.strip().startswith('reasoningEfforts:')]
+        if effort_names:
+            if not any(line.strip().startswith('low:') for line in model_lines):
+                raise ValueError(f'Route {route} : reasoningEfforts existant sans niveau low.')
+            preexisting = True
+        else:
+            block = [
+                '            ' + ASI1_START + '\n',
+                '            reasoningEfforts:\n',
+                '              low: low\n',
+                '              medium: medium\n',
+                '              high: high\n',
+                '            ' + ASI1_END + '\n',
+            ]
+            anchor = next((i for i in range(model_start, model_end)
+                           if lines[i].strip().startswith('maxTokens:')), model_start)
+            lines[anchor + 1:anchor + 1] = block
+            blocks.append(''.join(block))
+        compat = _compat_bounds(lines, *_route_bounds(lines, route))
+        if compat is None:
+            route_end = _route_bounds(lines, route)[1]
+            block = [
+                '        ' + ASI1_START + '\n',
+                '        compat:\n',
+                '          supportsReasoningEffort: true\n',
+                '          supportsDeveloperRole: false\n',
+                '        ' + ASI1_END + '\n',
+            ]
+            lines[route_end:route_end] = block
+            blocks.append(''.join(block))
+        else:
+            compat_start, compat_end = compat
+            names = [line.strip().split(':', 1)[0] for line in lines[compat_start + 1:compat_end] if ':' in line]
+            missing = []
+            if 'supportsReasoningEffort' not in names:
+                missing.append('          supportsReasoningEffort: true\n')
+            elif not any(line.strip() == 'supportsReasoningEffort: true' for line in lines[compat_start + 1:compat_end]):
+                raise ValueError(f'Route {route} : supportsReasoningEffort doit être true.')
+            if 'supportsDeveloperRole' not in names:
+                missing.append('          supportsDeveloperRole: false\n')
+            elif not any(line.strip() == 'supportsDeveloperRole: false' for line in lines[compat_start + 1:compat_end]):
+                raise ValueError(f'Route {route} : supportsDeveloperRole doit être false.')
+            if missing:
+                block = ['          ' + ASI1_START + '\n'] + missing + ['          ' + ASI1_END + '\n']
+                lines[compat_end:compat_end] = block
+                blocks.append(''.join(block))
+            else:
+                preexisting = True
+    return ''.join(lines), sorted(digest(block.encode()) for block in blocks), preexisting
+
+
+def _plugin_blocks(lines):
+    blocks = []
+    index = 0
+    while index < len(lines):
+        if lines[index].strip() == ASI1_PLUGIN_START:
+            stop = index + 1
+            while stop < len(lines) and lines[stop].strip() != ASI1_PLUGIN_END:
+                stop += 1
+            if stop == len(lines):
+                raise ValueError('Bloc plugin ASI1 sans délimiteur de fin ; réconciliation requise.')
+            blocks.append((index, stop + 1))
+            index = stop + 1
+        else:
+            index += 1
+    return blocks
+
+
+def _strip_asi1_preset(text, expected):
+    lines = text.splitlines(keepends=True)
+    blocks = _plugin_blocks(lines)
+    if blocks:
+        if expected is None:
+            raise ValueError('Marqueurs de preset ASI1 non gérés ; aucune réécriture.')
+        observed = sorted(digest(''.join(lines[start:stop]).encode()) for start, stop in blocks)
+        if observed != sorted(expected):
+            raise ValueError('Preset ASI1 personnalisé ; aucune réécriture.')
+        for start, stop in reversed(blocks):
+            del lines[start:stop]
+    elif expected:
+        raise ValueError('Preset ASI1 géré absent ; réparation explicite requise.')
+    return ''.join(lines)
+
+
+def apply_asi1_preset(text, old, enable, plugin_path):
+    """Insert or remove the preset-scoped plugin row with explicit ownership."""
+    expected = None
+    if old and old.get('asi1_effort'):
+        expected = old.get('asi1_preset_blocks', [])
+    text = _strip_asi1_preset(text, expected)
+    if not enable:
+        return text, [], False
+    lines = text.splitlines(keepends=True)
+    start = None
+    base_indent = 0
+    for index, line in enumerate(lines):
+        match = re.match(r'^(\s*)- id: preset-asi1-orchestrator\s*$', line)
+        if match:
+            start, base_indent = index, len(match.group(1))
+            break
+    if start is None:
+        raise ValueError('Preset asi1-orchestrator absent ; créer le preset avant l’option ASI1.')
+    end = start + 1
+    while end < len(lines):
+        raw = lines[end].rstrip('\n')
+        if raw.strip() and _indent(raw) <= base_indent and not raw.lstrip().startswith('#'):
+            break
+        end += 1
+    plugins = next((index for index in range(start, end) if lines[index].strip() == 'plugins:'), None)
+    if plugins is None or lines[plugins].strip() != 'plugins:':
+        raise ValueError('Preset asi1-orchestrator sans liste plugins ; forme non prise en charge.')
+    plugins_indent = _indent(lines[plugins])
+    list_end = plugins + 1
+    item_indent = None
+    while list_end < end:
+        raw = lines[list_end].rstrip('\n')
+        if raw.strip() and _indent(raw) <= plugins_indent:
+            break
+        if item_indent is None and raw.lstrip().startswith('- '):
+            item_indent = _indent(raw)
+        list_end += 1
+    if any(_indent(lines[index]) == item_indent
+           and re.match(r'^\s*- id: asi1-orchestrator-effort\s*$', lines[index])
+           for index in range(plugins + 1, list_end)):
+        return ''.join(lines), [], True
+    indent = ' ' * (item_indent if item_indent is not None else plugins_indent + 2)
+    block = [
+        indent + ASI1_PLUGIN_START + '\n',
+        indent + '- id: asi1-orchestrator-effort\n',
+        indent + '  name: ' + plugin_path + '\n',
+        indent + '  config:\n',
+        indent + '    effort: low\n',
+        indent + '    providers:\n',
+        indent + '      - asi-cloud\n',
+        indent + '    models:\n',
+        indent + '      - asi1\n',
+        indent + ASI1_PLUGIN_END + '\n',
+    ]
+    lines[list_end:list_end] = block
+    return ''.join(lines), [digest(''.join(block).encode())], False
+
+
+def desired(root, home, profile, project, action, delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False):
     home, folder, managed = context(home, profile)
     old = manifest(managed)
     project = str(Path(project).expanduser().resolve(strict=True))
@@ -226,13 +534,19 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
     file_hash(config)
     original = config.read_bytes().decode('utf-8')
     base, block = split_block(original)
-    if block is not None and (not old or old.get('status') != 'installed' or digest(block.encode()) != old.get('block_sha256')):
-        raise ValueError('Bloc Reprise personnalisé ou non géré ; aucune réécriture.')
+    base, asi1_blocks, asi1_preexisting = apply_asi1_effort(base, old, asi1_effort and action == 'install')
+    base, asi1_preset_blocks, asi1_preset_preexisting = apply_asi1_preset(
+        base, old, asi1_effort and action == 'install', str(managed / 'plugins' / ASI1_PLUGIN))
+    mismatched_block = block is not None and (not old or old.get('status') != 'installed' or digest(block.encode()) != old.get('block_sha256'))
+    # Réconciliation install uniquement : l'équivalence se juge sur les entries régénérées plus bas.
+    if mismatched_block and action != 'install':
+        raise ValueError(_BLOCK_REFUSAL)
     if any(token in base for token in ('reprise-codex-expert', 'reprise_codex', 'reprise-skill-filesystem', '# BEGIN REPRISE EXPERTISE')):
         raise ValueError('Ancienne intégration ou définition Reprise non gérée : réconciliation requise, aucun écrasement.')
     for relative, expected in (old or {}).get('managed_files', {}).items():
         path = folder / relative
-        if Path(relative).is_absolute() or '..' in Path(relative).parts or not path.is_relative_to(managed / 'skills'):
+        allowed = (managed / 'skills', managed / 'plugins')
+        if Path(relative).is_absolute() or '..' in Path(relative).parts or not any(path.is_relative_to(directory) for directory in allowed):
             raise ValueError('Manifeste de fichiers gérés hors périmètre.')
         safe_profile_path(path, folder)
         if file_hash(path) not in (None, expected):
@@ -245,6 +559,8 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
     if not Path(resume_project).is_dir():
         raise ValueError('Projet de continuation : dossier existant requis.')
     files = {}
+    reconciliation = None
+    reconciled_from = None
     release = None
     state = str(state_location(root).absolute())
     if not bundled(root) and Path(state).resolve().is_relative_to(Path(root).resolve()):
@@ -254,24 +570,21 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
             raise ValueError('Préparer l’état Reprise avant installation ; aucun registre neuf implicite.')
         helpers, runtime, identity = bundle_info(root)
         release = Path(state).parent / 'integration-releases' / identity
-        program = release / 'Contents/Resources/runtime/bin/python3'
         tools = OBSERVE + (DELEGATE if delegate else ())
-        args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/codex_expert_mcp.py'),
-                '--project-root', project, '--state', state, '--tools', ','.join(tools)]
-        if codex_workspace_write:
-            args.append('--codex-workspace-write')
-        entries = [{'id': 'reprise-codex-expert', 'name': '@deepseek-ai/dsh-mcp-client', 'config': {
-            'transport': 'stdio', 'serverName': 'reprise_codex', 'command': str(program), 'args': args,
-            'toolCallTimeoutMs': 330000, 'failOnStartupError': False, 'reconnect': {'enabled': False}}},
-            {'id': 'reprise-skill-filesystem', 'name': '@deepseek-ai/dsh-skill-filesystem', 'config': {
-                'providerName': 'reprise-' + profile, 'includeDefaultRoots': False,
-                'customSkillDirs': [str(managed / 'skills')], 'watch': False}}]
-        if output_resume:
-            entries.append({'id': 'reprise-output-resume', 'name': str(release / 'Contents/Resources/helpers/harness-output-resume.cjs'),
-                            'config': {'enabled': True, 'projectRoot': resume_project,
-                                       'stateDirectory': str(Path(state) / 'harness-output-resume'),
-                                       'maxConsecutive': 2}})
+        entries = _bridge_entries(release, state, tools, project, profile, managed,
+                                  output_resume, resume_project, codex_workspace_write)
+        if mismatched_block:
+            try:
+                parsed = block_entries(block)
+            except ValueError:
+                raise ValueError(_BLOCK_REFUSAL)
+            if parsed != entries:
+                raise ValueError(_BLOCK_REFUSAL)
+            # Bloc reformatté équivalent : réécriture canonique tracée dans le manifeste.
+            reconciled_from = digest(block.encode())
         new_block = START + '\n- insert: ' + json.dumps(entries, ensure_ascii=False) + '\n' + END + '\n'
+        if reconciled_from:
+            reconciliation = {'from_sha256': reconciled_from, 'to_sha256': digest(new_block.encode())}
         empty_before = (old or {}).get('empty_before')
         empty_after = (old or {}).get('empty_after')
         if empty_array:
@@ -288,6 +601,8 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         files[skill_folder / 'SKILL.md'] = skill
         for name in DOCS:
             files[skill_folder / name] = (helpers / name).read_text()
+        if asi1_effort:
+            files[managed / 'plugins' / ASI1_PLUGIN] = (helpers / ASI1_PLUGIN).read_text()
         owned = {str(path.relative_to(folder)): digest(text.encode()) for path, text in files.items() if path != config}
         next_manifest = {'format': 1, 'interface_validated_against': 'Harness 0.2.1-rc.2', 'status': 'installed', 'project': project, 'profile': profile,
                          'state': state, 'release': str(release), 'tools': list(tools),
@@ -296,8 +611,19 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         if output_resume:
             next_manifest['output_resume'] = True
             next_manifest['output_resume_project'] = resume_project
+        if asi1_effort:
+            next_manifest['asi1_effort'] = True
+            next_manifest['asi1_effort_blocks'] = asi1_blocks
+            next_manifest['asi1_effort_preexisting'] = asi1_preexisting
+            next_manifest['asi1_preset_blocks'] = asi1_preset_blocks
+            next_manifest['asi1_preset_preexisting'] = asi1_preset_preexisting
         if codex_workspace_write:
             next_manifest['codex_workspace_write'] = True
+        if reconciled_from:
+            next_manifest['reconciled_from_sha256'] = reconciled_from
+        elif old and 'reconciled_from_sha256' in old:
+            # Preuve conservée : le manifeste régénéré doit rester identique au manifeste en place.
+            next_manifest['reconciled_from_sha256'] = old['reconciled_from_sha256']
         if agent_role != 'standard':
             next_manifest['agent_role'] = agent_role
     else:
@@ -317,15 +643,18 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         safe_profile_path(path, folder)
         if path not in (config, managed / 'managed.json') and path.exists() and str(path.relative_to(folder)) not in (old or {}).get('managed_files', {}):
             raise ValueError(f'Fichier préexistant non géré : {path}. Aucun écrasement ni adoption implicite.')
-    return files, {'release': str(release) if release else (old or {}).get('release'), 'state': state}, next_manifest
+    extra = {'release': str(release) if release else (old or {}).get('release'), 'state': state}
+    if reconciliation:
+        extra['block_reconciled'] = reconciliation
+    return files, extra, next_manifest
 
 
-def plan(root, home, profile, project, action='install', delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False):
-    if action not in ('install', 'remove') or type(delegate) is not bool or agent_role not in ('standard', 'coordinator') or type(output_resume) is not bool or type(codex_workspace_write) is not bool or (codex_workspace_write and not delegate):
+def plan(root, home, profile, project, action='install', delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False):
+    if action not in ('install', 'remove') or type(delegate) is not bool or agent_role not in ('standard', 'coordinator') or type(output_resume) is not bool or type(codex_workspace_write) is not bool or type(asi1_effort) is not bool or (codex_workspace_write and not delegate):
         raise ValueError('Action ou capacité invalide.')
     if inspect(home, profile).get('pending_plan'):
         raise ValueError('Reprendre l’opération partielle conservée avant de créer un autre plan.')
-    files, extra, _ = desired(root, home, profile, project, action, delegate, agent_role, output_resume, output_resume_project, codex_workspace_write)
+    files, extra, _ = desired(root, home, profile, project, action, delegate, agent_role, output_resume, output_resume_project, codex_workspace_write, asi1_effort)
     changes = []
     for path, text in files.items():
         before, after = file_hash(path), digest(text.encode()) if text is not None else None
@@ -343,6 +672,10 @@ def plan(root, home, profile, project, action='install', delegate=False, agent_r
     if output_resume:
         result['output_resume'] = True
         result['output_resume_project'] = str(Path(output_resume_project or project).expanduser().resolve(strict=True))
+    if asi1_effort and action == 'install':
+        result['asi1_effort'] = True
+    if 'block_reconciled' in extra:
+        result['block_reconciled'] = extra['block_reconciled']
     result['fingerprint'] = digest(encoded(result).encode())
     return result
 
@@ -373,12 +706,12 @@ def apply(root, public):
             if journal['plan'] != public:
                 raise ValueError('Un autre plan est en attente ; reprendre ce plan sans écrasement.')
         else:
-            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False))
+            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False))
             if current != public:
                 raise ValueError('Entrées modifiées depuis la prévisualisation. Refaire le plan.')
             if not public['changes']:
                 return {'status': 'completed', 'changed': False, 'message': 'Configuration identique ; aucune écriture.'}
-            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False))
+            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False))
             if public['action'] == 'install':
                 helpers, runtime, _ = bundle_info(root)
                 stage_release(helpers, runtime, Path(public['release']))
@@ -459,9 +792,24 @@ def verify(home, profile, root=None):
     old = manifest(managed)
     if not old or old.get('status') != 'installed':
         raise ValueError('Aucune intégration installée gérée dans ce profil.')
-    _, block = split_block((folder / 'cordis.patch.yml').read_bytes().decode('utf-8'))
+    config_text = (folder / 'cordis.patch.yml').read_bytes().decode('utf-8')
+    base, block = split_block(config_text)
+    reconciled = None
     if block is None or digest(block.encode()) != old['block_sha256']:
-        raise ValueError('Configuration Reprise absente ou modifiée.')
+        expected = _bridge_entries(Path(old['release']), old['state'], old['tools'], old['project'],
+                                   old['profile'], managed, old.get('output_resume', False),
+                                   old.get('output_resume_project'), old.get('codex_workspace_write', False))
+        if block is None or block_entries(block) != expected:
+            raise ValueError('Configuration Reprise absente ou modifiée.')
+        # Bloc reformatté équivalent : accepté sans réécriture ici.
+        reconciled = digest(block.encode())
+    if old.get('asi1_effort'):
+        checked, _, _ = apply_asi1_effort(base, old, True)
+        if checked != base:
+            raise ValueError('Configuration ASI1 gérée absente ou modifiée.')
+        checked, _, _ = apply_asi1_preset(base, old, True, str(managed / 'plugins' / ASI1_PLUGIN))
+        if checked != base:
+            raise ValueError('Preset ASI1 géré absent ou modifié.')
     for relative, expected in old['managed_files'].items():
         safe_profile_path(folder / relative, folder)
         if file_hash(folder / relative) != expected:
@@ -505,13 +853,17 @@ def verify(home, profile, root=None):
     message = 'Bloc géré et consignes vérifiés ; pont sondé directement sans inférence. Chargement par Harness non observé.'
     if update_required:
         message += ' Mise à jour de l’intégration requise ; rechargement du client à coordonner séparément.'
-    return {'status': 'verified', 'message': message,
+    result = {'status': 'verified', 'message': message,
             'selected_release': selected_release, 'update_required': update_required,
             'bridge_capabilities': capabilities, 'missing_result_capabilities': missing,
             'output_resume': {'configured': old.get('output_resume', False), 'client_loaded': 'unknown'},
+            'asi1_effort': {'configured': old.get('asi1_effort', False), 'client_loaded': 'unknown'},
             'levels': {'configuration_written': True, 'integration_loaded': 'unknown', 'client_tools_discovered': 'unknown', 'exchange_confirmed': 'unknown'},
             'full_profile_syntax': 'not_checked', 'bridge_tools': names, 'bridge_version': initialized_reply['serverInfo']['version'],
             'bridge_source_sha256': initialized_reply['serverInfo'].get('source_sha256')}
+    if reconciled:
+        result['block_reconciled'] = reconciled
+    return result
 
 
 def main(root, argv=None):
@@ -527,6 +879,7 @@ def main(root, argv=None):
             command.add_argument('--delegate', action='store_true')
             command.add_argument('--output-resume-project', help='Explicit project for native continuation; defaults to bridge project')
             command.add_argument('--output-resume', action='store_true', help='Explicitly authorize same-session continuation after output-token limit')
+            command.add_argument('--asi1-effort', action='store_true', help='Installer l’effort ASI1 bas pour le preset asi1-orchestrator')
             command.add_argument('--codex-workspace-write', action='store_true', help='Autoriser les implémentations Codex dans le projet sélectionné')
             command.add_argument('--agent-role', choices=('standard', 'coordinator'), default='standard')
     sub.add_parser('integration-apply')
@@ -537,7 +890,7 @@ def main(root, argv=None):
             result = inspect(args.home, args.profile)
         elif args.command == 'integration-plan':
             result = {'status': 'planned', 'message': 'Plan sans écriture. L’installation n’autorise ni inférence ni activation automatique.',
-                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role, args.output_resume, args.output_resume_project, args.codex_workspace_write)}
+                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role, args.output_resume, args.output_resume_project, args.codex_workspace_write, args.asi1_effort)}
         elif args.command == 'integration-apply':
             public = json.loads(sys.stdin.read(1024 * 1024))['plan']
             result = apply(root, public)

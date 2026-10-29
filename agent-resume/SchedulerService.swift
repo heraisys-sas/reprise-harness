@@ -30,7 +30,6 @@ extension App {
         }
     }
 }
-
 struct SchedulerService: View {
     @ObservedObject var app: App
     func flag(_ key: String) -> String {
@@ -76,70 +75,5 @@ struct SchedulerService: View {
         }
         .disabled(app.setupBusy || !app.stateReady)
         .onChange(of: app.schedulerServiceActivate) { _, _ in app.schedulerServicePlan = nil; app.schedulerServiceAcknowledged = false }
-    }
-}
-
-extension App {
-    func inspectProxyService() {
-        setupCommand(["proxy-service-inspect"]) { result in
-            self.proxyService = result
-            self.proxyServiceMessage = result["message"] as? String ?? "État inconnu."
-        }
-    }
-    func planProxyService(_ action: String) {
-        var args = ["proxy-service-plan", "--action", action]
-        if action == "install" {
-            if proxyServiceActivate { args.append("--activate") }
-            if proxyServiceAdopt { args.append("--adopt") }
-        }
-        setupCommand(args) { result in
-            self.proxyServicePlan = result["plan"] as? [String: Any]
-            self.proxyServiceAcknowledged = false
-            self.proxyServiceMessage = result["message"] as? String ?? "Plan indisponible."
-        }
-    }
-    func applyProxyService() {
-        guard proxyServiceAcknowledged, let plan = proxyServicePlan else { return }
-        setupCommand(["proxy-service-apply"], input: ["plan": plan]) { result in
-            self.proxyServiceAcknowledged = false
-            self.proxyServiceMessage = result["message"] as? String ?? "État non confirmé."
-            if result["status"] as? String == "completed" {
-                self.proxyServicePlan = nil
-                self.proxyService = result
-            }
-        }
-    }
-}
-
-struct ProxyService: View {
-    @ObservedObject var app: App
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Proxy ASI1").font(.headline)
-            Text("launchd exécute le démon ; Reprise l’installe et le gère. Les harness utilisent le proxy comme clients.").font(.caption).foregroundStyle(.secondary)
-            Button("Inspecter le proxy") { app.inspectProxyService() }
-            Text("Utilise le runtime Python embarqué de Reprise, sans dépendance Node.").font(.caption)
-            Toggle("Adopter explicitement le proxy installé par la procédure #74", isOn: $app.proxyServiceAdopt)
-            Toggle("Activer le service après installation", isOn: $app.proxyServiceActivate)
-            HStack {
-                Button("Préparer l’installation / mise à jour…") { app.planProxyService("install") }
-                Button("Démarrer…") { app.planProxyService("start") }
-                Button("Arrêter…") { app.planProxyService("stop") }
-            }
-            Text(app.proxyServiceMessage).textSelection(.enabled)
-            if !app.proxyService.isEmpty {
-                Text(SchedulerService(app: app).detail(app.proxyService)).font(.caption).textSelection(.enabled)
-            }
-            if let plan = app.proxyServicePlan {
-                DisclosureGroup("Plan d’installation et de gestion") {
-                    Text(SchedulerService(app: app).detail(plan)).font(.caption).textSelection(.enabled)
-                }
-                Toggle("J’autorise l’action indiquée dans ce plan.", isOn: $app.proxyServiceAcknowledged)
-                Button("Appliquer le plan") { app.applyProxyService() }.disabled(!app.proxyServiceAcknowledged)
-            }
-        }
-        .disabled(app.setupBusy)
-        .onChange(of: app.proxyServiceAdopt) { _, _ in app.proxyServicePlan = nil }
-        .onChange(of: app.proxyServiceActivate) { _, _ in app.proxyServicePlan = nil }
     }
 }

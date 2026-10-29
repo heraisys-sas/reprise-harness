@@ -25,6 +25,7 @@ def schema(properties, required=None):
 
 
 INBOX_TOOLS = [
+    {'name': 'register_session', 'description': 'Associate an existing chat initiated in Claude Desktop. Origin and UUID are declarations, not native attestation; never authorizes a resume.', 'inputSchema': schema({'chat_id': TEXT})},
     {'name': 'get_task', 'description': 'Claim an explicitly identified project task. Persist claim_key before calling; reuse after restart.', 'inputSchema': schema({'request_key': TEXT, 'claim_key': TEXT})},
     {'name': 'await_task', 'description': 'Wait (bounded, no inference) for one explicit project task admitted through Quick Apply, then hand it over once. Call it only in a chat the operator armed for that exact request_key. When idle, stop unless the operator asked you to keep waiting. A task already handed over is never handed over again by this tool.', 'inputSchema': schema({'request_key': TEXT, 'claim_key': TEXT, 'wait_seconds': {'type': 'integer', 'minimum': 1, 'maximum': MAX_WAIT_CEILING}}, ['request_key', 'claim_key'])},
     {'name': 'submit_result', 'description': 'Complete a claimed task. Only this operation marks completion; identical retries are idempotent.', 'inputSchema': schema({'request_key': TEXT, 'attempt_id': TEXT, 'answer': {'type': 'string', 'minLength': 1, 'maxLength': 2_000_000}})},
@@ -149,6 +150,8 @@ class ClaudeMCP:
                 return answer
             if name == 'get_task':
                 result = self.tasks.claim(**args)
+            elif name == 'register_session':
+                result = self.tasks.register_session(**args)
             elif name == 'submit_result':
                 result = self.tasks.submit(**args)
             else:

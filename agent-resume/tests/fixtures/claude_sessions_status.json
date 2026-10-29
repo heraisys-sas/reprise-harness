@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "status": "ok",
+  "project_root": "/fixture/project",
+  "binding": {
+    "status": "explicit",
+    "quick_state": "/fixture/quick",
+    "state_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "route": {
+    "enabled": true,
+    "transport": "cdp-web",
+    "port": 9333,
+    "interval_seconds": 60,
+    "route_key": "d7a903fc87bcaf8bd3358be3a0723c18ecf7e66f27e8c71900bea9752694e6fb",
+    "instance_status": "observed",
+    "instance_key": "1111111111111111111111111111111111111111111111111111111111111111",
+    "refresh_status": "refreshed",
+    "last_refresh_at": 1793142000,
+    "next_refresh_at": 1793142060,
+    "coverage": "open_tabs_only"
+  },
+  "capabilities": {
+    "dispatch_supported": false,
+    "admission_confirmed": false,
+    "mcp_return_supported": false,
+    "automatic_resume_supported": false,
+    "action_eligible": false
+  },
+  "sessions": [
+    {
+      "chat_id": "00000000-0000-0000-0000-000000000001",
+      "session_key": "b68c65cde6b665c3ad0582d7f872045d9477697dda6397789cf2915a3536d3ac",
+      "registration": {
+        "origin": "claude-desktop",
+        "source": "operator_desktop_confirmed",
+        "identity_status": "declared",
+        "attested": false,
+        "registered_at": 1793141900
+      },
+      "observation": {
+        "presence": "open",
+        "target_count": 1,
+        "last_seen_at": 1793142000
+      },
+      "action_eligible": false,
+      "quota": {
+        "schema_version": 1,
+        "engine": "claude-desktop",
+        "provider": "anthropic",
+        "route_key": "d7a903fc87bcaf8bd3358be3a0723c18ecf7e66f27e8c71900bea9752694e6fb",
+        "session_key": "b68c65cde6b665c3ad0582d7f872045d9477697dda6397789cf2915a3536d3ac",
+        "account_key": null,
+        "profile_key": null,
+        "identity_status": "unknown",
+        "account_identity_source": null,
+        "knowledge": "unknown",
+        "source": "claude_cdp.visible_quota_notice",
+        "source_observed_at": null,
+        "observed_at": 1793142000,
+        "observation_status": "observed",
+        "confidence": "explicit_text",
+        "blocked": true,
+        "reset_status": "known",
+        "displayed_reset_time": "14:40",
+        "failure": null,
+        "coverage": "partial",
+        "issues": [
+          "account_unattributed",
+          "pool_unattributed",
+          "quantity_unreported"
+        ],
+        "ordinary_usage_allowed_observed": null,
+        "effective_remaining_percent": null,
+        "usage_totals": null,
+        "user_budget": null,
+        "local_daily_cap": null,
+        "pools": [
+          {
+            "limit_id": null,
+            "quota_pool_key": null,
+            "scope": "session_observation",
+            "windows": [
+              {
+                "name": "reported",
+                "used_percent": null,
+                "remaining_percent": null,
+                "duration_minutes": null,
+                "resets_at": 1793281200.0
+              }
+            ]
+          }
+        ],
+        "observation_id": 1,
+        "freshness": "recent_read",
+        "age_seconds": 0,
+        "max_age_seconds": 300,
+        "historical_reset": null
+      }
+    }
+  ]
+}

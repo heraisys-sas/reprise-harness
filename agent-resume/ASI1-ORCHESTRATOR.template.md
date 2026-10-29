@@ -1,5 +1,9 @@
 # Mode orchestrateur ASI1 — coordination plein-périmètre
 
+Transport et paramètres : suivre le [contrat ASI1](ASI1-ORCHESTRATION-CONTRACT.md).
+La boucle d'outils locale fonctionne sans proxy ; mini offre pensée on/off,
+tandis qu'asi1 expose low/medium/high. Le preset ne sélectionne pas le moteur.
+
 Complément au profil coordinator ([REPRISE-AGENTS.template.md](REPRISE-AGENTS.template.md)) pour les sessions dont le moteur est ASI1. Activation double : l'opérateur a posé `agent_role: coordinator` ET l'opérateur a choisi ASI1 comme moteur de la session. Ni l'installation de ce fichier, ni le nom du modèle, n'activent le mode ; aucune preuve de supériorité n'est déduite de son usage. Ne pas extrapoler ses instructions aux autres agents. Les noms d'outils et de routes cités s'appuient sur ce que le harness expose réellement (`reprise_backends`, `list_subagent_models`, catalogue des skills) : un nom absent des capacités découvertes n'est pas utilisé.
 
 Ce mode définit la discipline « plein-périmètre » : chaque surface d'orchestration disponible a un usage déclaré, chaque délégation a un canal, un niveau et une sortie bornée, et le coordinateur ne conserve que ce qui exige sa position (Git, décisions, intégration, publication).

@@ -40,6 +40,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var claudeQuotaState: [String: Any] = [:]
     @Published var integrationOutputResume = false
     @Published var integrationOutputResumeProject = ""
+    @Published var integrationAsi1Effort = false
     @Published var integrationAgentRole = "standard"
     @Published var integrationAcknowledged = false
     @Published var integrationProfiles: [String] = []
@@ -54,12 +55,6 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var ironclawIdentity = ""
     @Published var ironclawTokenFile = ""
     @Published var ironclawNote = "Configurez un accès SSH explicite ; aucune clé ni aucun jeton n’est copié."
-    @Published var proxyService: [String: Any] = [:]
-    @Published var proxyServicePlan: [String: Any]? = nil
-    @Published var proxyServiceActivate = false
-    @Published var proxyServiceAdopt = false
-    @Published var proxyServiceAcknowledged = false
-    @Published var proxyServiceMessage = "launchd exécute le proxy ; Reprise le gère."
     @Published var schedulerService: [String: Any] = [:]
     @Published var schedulerServicePlan: [String: Any]? = nil
     @Published var schedulerServiceMessage = "Inspectez le planificateur avant de préparer une modification."
@@ -68,6 +63,18 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var scheduler: [String: Any] = [:]
     @Published var quotaKnowledge: [String: Any] = [:]
     @Published var quotaBusy = false
+    @Published var claudeSessionsStatus: [String: Any] = [:]
+    @Published var claudeSessionsBusy = false
+    @Published var claudeSessionsNote = ""
+    @Published var claudeObserverEnabledDraft = false
+    @Published var claudeObserverPort = ""
+    @Published var claudeObserverInterval = "60"
+    @Published var claudeSessionChatID = ""
+    @Published var claudeSessionConfirmed = false
+    var claudeSessionsRefreshInFlight = false
+    var claudeSessionsCacheReadInFlight = false
+    var claudeObserverSettingsLoaded = false
+    var claudeSessionsGeneration: UInt64 = 0
     @Published var snapshot: [String: Any] = [:]
     @Published var navigationNote = ""
     @Published var page = "overview"
@@ -209,6 +216,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         guard stateReady else { return }
         running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
         if busy { refreshPending = true; return }; busy = true
+        refreshClaudeSessionsCache()
         DispatchQueue.global(qos: .utility).async {
             let result = self.execute(["detect"])
             let scheduler = self.execute(["scheduler-status"])
@@ -253,6 +261,104 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                 else { self.snapshot["error"] = self.runtimeError ?? "Actualisation indisponible. Les dernières informations restent affichées." }
                 self.item.button?.title = self.counters.map { "\($0.1) \($0.3.map(String.init) ?? "—")" }.joined(separator: " · ")
                 if self.refreshPending { self.refreshPending = false; self.refresh() }
+            }
+        }
+    }
+    func refreshClaudeSessionsCache() {
+        guard !claudeSessionsCacheReadInFlight, !claudeSessionsRefreshInFlight, !claudeSessionsBusy else { return }
+        claudeSessionsCacheReadInFlight = true
+        let generation = claudeSessionsGeneration
+        DispatchQueue.global(qos: .utility).async {
+            let result = self.execute(["claude-sessions-status"])
+            DispatchQueue.main.async {
+                self.claudeSessionsCacheReadInFlight = false
+                guard generation == self.claudeSessionsGeneration else { return }
+                if let result {
+                    self.claudeSessionsStatus = result
+                    let route = result["route"] as? [String: Any] ?? [:]
+                    if !self.claudeObserverSettingsLoaded, result["status"] as? String == "ok" {
+                        self.claudeObserverEnabledDraft = route["enabled"] as? Bool ?? false
+                        self.claudeObserverPort = (route["port"] as? Int).map(String.init) ?? ""
+                        self.claudeObserverInterval = String(route["interval_seconds"] as? Int ?? 60)
+                        self.claudeObserverSettingsLoaded = true
+                    }
+                    self.refreshClaudeSessionsIfDue(generation: generation)
+                }
+            }
+        }
+    }
+    func refreshClaudeSessionsIfDue(generation: UInt64) {
+        guard generation == claudeSessionsGeneration,
+              !claudeSessionsRefreshInFlight, !claudeSessionsBusy,
+              (claudeSessionsStatus["route"] as? [String: Any])?["enabled"] as? Bool == true else { return }
+        claudeSessionsRefreshInFlight = true
+        DispatchQueue.global(qos: .utility).async {
+            let result = self.execute(["claude-sessions-status", "--refresh-if-due"])
+            DispatchQueue.main.async {
+                self.claudeSessionsRefreshInFlight = false
+                guard generation == self.claudeSessionsGeneration else { return }
+                if let result { self.claudeSessionsStatus = result }
+            }
+        }
+    }
+    func refreshClaudeSessions() {
+        guard !claudeSessionsBusy else { return }
+        runClaudeSessionsCommand(["claude-sessions-status", "--refresh"], note: "Lecture explicite des sessions…")
+    }
+    func configureClaudeObserver(enabled: Bool) {
+        guard !claudeSessionsBusy else { return }
+        let portText = claudeObserverPort.trimmingCharacters(in: .whitespacesAndNewlines)
+        let port = portText.isEmpty ? nil : Int(portText)
+        guard (portText.isEmpty || port.map { (1...65535).contains($0) } == true),
+              !enabled || port != nil,
+              let interval = Int(claudeObserverInterval), (15...3600).contains(interval) else {
+            claudeSessionsNote = "Pour activer, saisissez un port CDP valide (1–65 535) et un intervalle de 15 à 3 600 s."
+            return
+        }
+        var args = ["claude-observer-config", "--enabled", enabled ? "true" : "false"]
+        if let port { args += ["--port", String(port)] }
+        args += ["--interval-seconds", String(interval)]
+        runClaudeSessionsCommand(args, note: enabled ? "Activation de l’observation…" : "Désactivation de l’observation…")
+    }
+    func registerClaudeSession(remove: Bool = false) {
+        guard !claudeSessionsBusy else { return }
+        let chatID = claudeSessionChatID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard UUID(uuidString: chatID) != nil else {
+            claudeSessionsNote = "Saisissez l’identifiant UUID d’un chat déjà ouvert dans Claude Desktop."
+            return
+        }
+        guard remove || claudeSessionConfirmed else {
+            claudeSessionsNote = "Confirmez que ce chat correspond à une session ouverte dans Claude Desktop."
+            return
+        }
+        let args = remove ? ["claude-session-remove", "--chat", chatID] : ["claude-session-register", "--chat", chatID]
+        runClaudeSessionsCommand(args, note: remove ? "Retrait de l’association…" : "Enregistrement déclaratif…")
+    }
+    private func runClaudeSessionsCommand(_ args: [String], note: String) {
+        claudeSessionsGeneration &+= 1
+        let generation = claudeSessionsGeneration
+        claudeSessionsBusy = true
+        claudeSessionsNote = note
+        DispatchQueue.global(qos: .utility).async {
+            let result = self.execute(args)
+            DispatchQueue.main.async {
+                self.claudeSessionsBusy = false
+                guard generation == self.claudeSessionsGeneration else { return }
+                if let result {
+                    self.claudeSessionsStatus = result
+                    let route = result["route"] as? [String: Any] ?? [:]
+                    let status = result["status"] as? String ?? "inconnu"
+                    if status == "ok" {
+                        self.claudeObserverEnabledDraft = route["enabled"] as? Bool ?? false
+                        self.claudeObserverPort = (route["port"] as? Int).map(String.init) ?? ""
+                        self.claudeObserverInterval = String(route["interval_seconds"] as? Int ?? 60)
+                        self.claudeObserverSettingsLoaded = true
+                    }
+                    self.claudeSessionsNote = status == "ok" ? "État Claude actualisé." : "Opération terminée · état : \(status)."
+                    if !((result["route"] as? [String: Any])?["enabled"] as? Bool ?? false) { self.claudeSessionConfirmed = false }
+                } else {
+                    self.claudeSessionsNote = "Commande Claude indisponible ; l’état précédent est conservé."
+                }
             }
         }
     }
