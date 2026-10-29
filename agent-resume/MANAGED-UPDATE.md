@@ -29,7 +29,7 @@ Le code est aussi embarqué : utiliser le Python du paquet avec `-E -s -B`
 et le chemin `Contents/Resources/helpers/managed_update.py`.
 
 Le plan conserve projets, scopes, rôle, droits d’implémentation, options de
-continuation DSH, PATH et intervalle du scheduler. L’activation du scheduler
+continuation DSH, option de raisonnement ASI1 du preset, PATH et intervalle du scheduler. L’activation du scheduler
 est explicite : sans `--activate-scheduler`, son remplacement le laisse arrêté.
 La pause d’automatisation enregistrée dans SQLite n’est jamais modifiée.
 Un changement implicite du registre principal ou Quick Apply du connecteur

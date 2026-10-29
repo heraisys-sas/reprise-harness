@@ -19,13 +19,28 @@ import ironclaw
 import reprise_logs
 import reprise_health
 import shutil
-from engines import executable, options
+from engines import Unavailable, executable, options
 
 
 def error_payload(exc):
     detail = f'{type(exc).__name__}: {exc}'[:200]
-    return {'code': -32602, 'message': 'Request refused or unavailable; no automatic retry.',
-            'data': {'error': detail}}
+    kind, code = 'refused', -32602
+    if isinstance(exc, Unavailable):
+        # Backend/engine down is an availability failure, not a caller mistake.
+        kind, code = 'unavailable', -32000
+    elif isinstance(exc, BlockingIOError):
+        # Bridge lock held by another active expertise.
+        kind, code = 'busy', -32000
+    elif isinstance(exc, sqlite3.OperationalError) and ('locked' in str(exc).lower() or 'busy' in str(exc).lower()):
+        # Concurrent store write during a lock-free read path; retry later, nothing was refused.
+        kind, code = 'busy', -32000
+    elif isinstance(exc, sqlite3.Error):
+        kind = 'storage_error'
+    elif isinstance(exc, OSError):
+        # I/O failure (disk, socket path); not a caller mistake.
+        kind = 'storage_error'
+    return {'code': code, 'message': 'Request refused or unavailable; no automatic retry.',
+            'data': {'kind': kind, 'error': detail}}
 
 BACKEND_MODELS = {
     'codex': ('gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'),
@@ -186,8 +201,26 @@ class Bridge:
         self.db.execute('CREATE TABLE IF NOT EXISTS expert_routes(scope TEXT,id TEXT,model TEXT,effort TEXT,PRIMARY KEY(scope,id))')
         self.db.execute('CREATE TABLE IF NOT EXISTS claude_expert_routes(scope TEXT,id TEXT,program TEXT,model TEXT,effort TEXT,PRIMARY KEY(scope,id))')
         self.db.execute('CREATE TABLE IF NOT EXISTS expert_thread_modes(scope TEXT,id TEXT,mode TEXT NOT NULL,PRIMARY KEY(scope,id))')
+        import routing_events
+        routing_events.setup(self.db)
+        routing_events.seed_local(self.db)
         self.db.commit()
         self.requests = Store(self.db, str(self.root))
+
+    def _account_key(self, backend):
+        """Clé de compte hachée depuis les observations quota (codex seulement,
+        source unique quota_knowledge ; sal partagé avec routing_events)."""
+        if backend not in ('codex', 'codex-cli', 'codex-server', 'codex-parent'):
+            return None
+        try:
+            import quota_knowledge
+            row = self.db.execute("SELECT value FROM quota_identity_meta WHERE key='local_salt'").fetchone()
+            if not row:
+                return None
+            data = quota_knowledge.Registry(self.db, initialize=False).latest(backend, self.values)
+        except (ValueError, OSError, KeyError, sqlite3.OperationalError):
+            return None
+        return (data or {}).get('account_key')
 
     def execution_mode(self, name, args):
         mode = args.get('mode', 'expertise')
@@ -443,18 +476,49 @@ class Bridge:
             return {'status': 'engine_unavailable', 'backend': backend, 'reason': 'Requested executable not configured', 'automatic_fallback': False}
         if backend == 'claude-code' and not self.claude_subscription_only:
             return {'status': 'billing_unverified', 'backend': backend, 'reason': 'Operator must confirm paid usage credits disabled before enabling Claude.', 'automatic_fallback': False}
+        import routing_events
+        # Admissibilité (lot ②) : la route demandée est explicite (consentement
+        # porté par l'appel) ; les remplacements automatiques restent gelés, et
+        # admissible(automatic=True) n'est jamais appelée ici.
+        allowed, billing = routing_events.admissible(self.db, backend, automatic=False)
+        if not allowed:
+            return {'status': 'admissibility_refused', 'backend': backend, 'billing_class': billing,
+                    'reason': f'Route {backend} inadmissible (billing_class={billing}) ; aucune substitution automatique.', 'automatic_fallback': False}
         if preflight:
             return
+        # Journal additif de la décision de routage (contrat §7.5 révisé §7.6) ;
+        # aucune substitution n'est produite : le type routing_substituted reste réservé.
+        import routing_events
+        requested = {}
+        if isinstance(args.get('model'), str):
+            requested['model'] = args['model']
+        elif name == 'reprise_followup' and backend == 'claude-code' and routing:
+            requested = dict(routing)
+        elif ident and backend == 'codex' and self.db.execute(
+                'SELECT model,effort FROM expert_routes WHERE scope=? AND id=?', (self.scope, ident)).fetchone():
+            requested = dict(routing)
+        journal_type = 'explicit' if requested else 'routed'
+        served = {k: routing[k] for k in routing} if routing else ({'backend': backend} if backend != 'codex' else None)
+        if journal_type == 'explicit':
+            served = dict(routing) if routing else served
+        event_id = routing_events.record(self.db, journal_type, name, backend,
+                                         requested=requested or None, served=served,
+                                         level=args.get('level'), request_key=args.get('request_key'),
+                                         thread_id=ident,
+                                         account_key=self._account_key(backend),
+                                         admissibility='granted')
         if backend == 'ironclaw':
             result = ironclaw.review(self.ironclaw_program, self.ironclaw_values, self.root, question,
                                      kind=args.get('kind', 'expertise'), level=args.get('level', 'standard'),
                                      paths=args.get('paths'), timeout=300)
+            routing_events.finalize(self.db, event_id, str(result.get('status') or 'unknown'))
             return result | {'backend': backend, 'automatic_fallback': False}
         if backend == 'claude-desktop':
             result = claude_desktop.review(self.root, question, kind=args.get('kind', 'expertise'),
                                           level=args.get('level', 'standard'), paths=args.get('paths'),
                                           chat_id=args.get('chatId'), file_paths=args.get('filePaths'),
                                           program=self.desktop_program, values=self.desktop_values, request_key=self.requests.active_key)
+            routing_events.finalize(self.db, event_id, str(result.get('status') or 'unknown'))
             return result | {'backend': backend, 'automatic_fallback': False, 'admission_only': True, 'response': None}
         if backend == 'claude-code':
             result = claude_review(self.claude_program, self.root, question, paths=args.get('paths'),
@@ -463,6 +527,7 @@ class Bridge:
                 with self.db:
                     self.db.execute('INSERT OR REPLACE INTO claude_expert_routes VALUES (?,?,?,?,?)',
                                     (self.scope, result['thread_id'], self.claude_program, result['model'], routing['effort']))
+            routing_events.finalize(self.db, event_id, str(result.get('status') or 'unknown'))
             return result | {'backend': backend, 'automatic_fallback': False}
         def persist_turn(event):
             if on_turn:
@@ -492,6 +557,7 @@ class Bridge:
                 if routing:
                     self.db.execute('INSERT OR REPLACE INTO expert_routes VALUES (?,?,?,?)',
                                     (self.scope, result['thread_id'], routing['model'], routing['effort']))
+        routing_events.finalize(self.db, event_id, str(result.get('status') or 'unknown'))
         return result
 
     def _reconcile(self, args):

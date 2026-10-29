@@ -191,10 +191,22 @@ class BridgeTests(RequestCalls, unittest.TestCase):
     def test_error_payload_details_and_bounds_refusals(self):
         payload = error_payload(ValueError('chatId and filePaths are only valid with backend claude-desktop'))
         self.assertEqual(payload['code'], -32602)
+        self.assertEqual(payload['data']['kind'], 'refused')
         self.assertEqual(payload['message'], 'Request refused or unavailable; no automatic retry.')
         self.assertTrue(payload['data']['error'].startswith('ValueError: '))
         self.assertIn('claude-desktop', payload['data']['error'])
         self.assertLessEqual(len(error_payload(OSError('x' * 500))['data']['error']), 200)
+
+    def test_error_payload_distinguishes_busy_from_unavailable(self):
+        from engines import Unavailable
+        busy = error_payload(BlockingIOError('lock held'))
+        self.assertEqual(busy['code'], -32000)
+        self.assertEqual(busy['data']['kind'], 'busy')
+        unavailable = error_payload(Unavailable('engine_unavailable', 'Exécutable Codex introuvable.'))
+        self.assertEqual(unavailable['code'], -32000)
+        self.assertEqual(unavailable['data']['kind'], 'unavailable')
+        # A refused request keeps its own code: the three cases stay machine-distinguishable (#53).
+        self.assertNotEqual(busy['code'], error_payload(ValueError('bad args'))['code'])
 
     def test_padded_oversized_followup_rejected_before_budget(self):
         self.bridge.db.execute('INSERT INTO expert_threads VALUES (?,?)', (self.bridge.scope, ID))
@@ -604,13 +616,19 @@ class CompactReceiptTests(unittest.TestCase):
             run.assert_not_called()
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0], 0)
         self.bridge.requests.begin('key', {'question': 'A'})
-        for result in (None, {'status': 'running'}, {'status': 'needs_review'},
-                       {'status': 'blocked_permission'}):
+        for result in (None, {'status': 'running'}, {'status': 'needs_review'}):
             if result is not None:
                 self.bridge.requests.finish('key', result)
             with self.subTest(result=result), self.assertRaises(ValueError):
                 self.dispatch('reprise_requests', {
                     'request_key': 'key', 'view': 'receipt', 'acknowledge': True})
+        # Issue #53 arbitration: an awaiting_human receipt (blocked_permission) is
+        # reconcilable by acknowledgement, which records it and resets acknowledged.
+        self.bridge.requests.finish('key', {'status': 'blocked_permission'})
+        receipt = self.dispatch('reprise_requests', {
+            'request_key': 'key', 'view': 'receipt', 'acknowledge': True})
+        self.assertEqual(receipt['state'], 'recorded')
+        self.assertTrue(self.bridge.requests.lookup({'request_key': 'key'})['acknowledged'])
         self.bridge.requests.finish('key', {'status': 'finished'})
         with self.assertRaises(ValueError):
             self.dispatch('reprise_requests', {

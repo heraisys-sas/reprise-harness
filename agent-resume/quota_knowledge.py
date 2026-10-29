@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import time
+from datetime import datetime, timezone
 
 import engines
 
@@ -25,8 +26,14 @@ def token(value):
 
 
 class Registry:
-    def __init__(self, db):
+    def __init__(self, db, *, initialize=True):
         self.db = db
+        if initialize:
+            self._setup()
+        self.salt = bytes.fromhex(db.execute("SELECT value FROM quota_identity_meta WHERE key='local_salt'").fetchone()[0])
+
+    def _setup(self):
+        db = self.db
         with db:
             db.execute('CREATE TABLE IF NOT EXISTS quota_identity_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
             db.execute("INSERT OR IGNORE INTO quota_identity_meta VALUES ('local_salt',?)", (os.urandom(32).hex(),))
@@ -34,7 +41,6 @@ class Registry:
                 id INTEGER PRIMARY KEY, route_key TEXT NOT NULL, observed_at REAL NOT NULL,
                 data TEXT NOT NULL)''')
             db.execute('CREATE INDEX IF NOT EXISTS quota_route_observation ON quota_observations(route_key,id)')
-        self.salt = bytes.fromhex(db.execute("SELECT value FROM quota_identity_meta WHERE key='local_salt'").fetchone()[0])
 
     def opaque(self, kind, value):
         if value is None:
@@ -162,6 +168,91 @@ class Registry:
                     max_age_seconds=max_age, knowledge=knowledge,
                     effective_remaining_percent=None,
                     note='Observation only; no admission or recovery decision. A recent read does not prove provider-side freshness.')
+
+
+    def claude_route(self, project, port):
+        return self.route('claude-desktop', {'project_root': project, 'transport': 'cdp-web', 'port': port})
+
+    def record_claude(self, project, port, session_key, observation, *, observed_at):
+        if not number(observed_at) or not isinstance(session_key, str):
+            raise ValueError('Valid session and observation time required')
+        raw = observation if isinstance(observation, dict) else {}
+        confidence = raw.get('confidence')
+        confidence = confidence if confidence in ('unknown', 'heuristic', 'explicit_text', 'structured') else 'unknown'
+        status = raw.get('observation_status')
+        status = status if status in ('observed', 'unavailable', 'invalid') else 'unavailable'
+        reset = raw.get('resets_at')
+        reset = reset if number(reset, minimum=1) else None
+        if reset is not None:
+            try:
+                datetime.fromtimestamp(reset, timezone.utc)
+            except (ValueError, OverflowError, OSError):
+                reset = None
+        reason = raw.get('failure')
+        reasons = {'notice_absent', 'source_unavailable', 'session_not_open', 'target_ambiguous',
+                   'instance_changed', 'unrecognized_notice', 'budget_exhausted', 'route_changed'}
+        reason = reason if reason in reasons else None
+        displayed = raw.get('displayed_reset_time')
+        if not isinstance(displayed, str) or not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', displayed):
+            displayed = None
+        blocked = True if raw.get('blocked') is True and confidence in ('explicit_text', 'structured') and status == 'observed' else None
+        data = {'schema_version': 1, 'engine': 'claude-desktop', 'provider': 'anthropic',
+                'route_key': self.claude_route(project, port), 'session_key': session_key,
+                'account_key': None, 'profile_key': None, 'identity_status': 'unknown',
+                'account_identity_source': None, 'knowledge': 'unknown',
+                'source': 'claude_cdp.visible_quota_notice' if status == 'observed' else None,
+                'source_observed_at': None, 'observed_at': observed_at,
+                'observation_status': status, 'confidence': confidence, 'blocked': blocked,
+                'reset_status': 'known' if reset is not None else 'ambiguous' if displayed else 'unknown',
+                'displayed_reset_time': displayed, 'failure': reason, 'coverage': 'partial',
+                'issues': ['account_unattributed', 'pool_unattributed', 'quantity_unreported'],
+                'ordinary_usage_allowed_observed': None, 'effective_remaining_percent': None,
+                'usage_totals': None, 'user_budget': None, 'local_daily_cap': None,
+                'pools': [{'limit_id': None, 'quota_pool_key': None, 'scope': 'session_observation',
+                           'windows': [{'name': 'reported', 'used_percent': None,
+                                        'remaining_percent': None, 'duration_minutes': None,
+                                        'resets_at': reset}]}] if status == 'observed' else []}
+        with self.db:
+            row = self.db.execute('INSERT INTO quota_observations(route_key,observed_at,data) VALUES (?,?,?)',
+                                  (data['route_key'], observed_at, json.dumps(data, allow_nan=False)))
+        return row.lastrowid
+
+    def latest_claude(self, project, port, session_key, *, now, registered_at=0, max_age=DEFAULT_MAX_AGE):
+        if not number(now) or not number(max_age, minimum=1):
+            raise ValueError('Finite clock and positive max_age required')
+        route = self.claude_route(project, port)
+        row = self.db.execute("SELECT id,data FROM quota_observations WHERE route_key=? AND observed_at>=? "
+                              "AND json_extract(data,'$.session_key')=? ORDER BY id DESC LIMIT 1",
+                              (route, registered_at, session_key)).fetchone()
+        if row is None:
+            return {'engine': 'claude-desktop', 'provider': 'anthropic', 'route_key': route,
+                    'session_key': session_key, 'account_key': None, 'identity_status': 'unknown',
+                    'knowledge': 'unknown', 'source': None, 'observed_at': None, 'source_observed_at': None,
+                    'observation_status': 'unavailable', 'freshness': 'unobserved', 'confidence': 'unknown',
+                    'blocked': None, 'reset_status': 'unknown', 'displayed_reset_time': None,
+                    'pools': [], 'issues': ['account_unattributed', 'pool_unattributed', 'quantity_unreported'],
+                    'historical_reset': None, 'failure': None}
+        data = json.loads(row[1])
+        age = now - data['observed_at']
+        freshness = 'recent_read' if 0 <= age <= max_age else 'clock_skew' if age < 0 else 'stale'
+        reset = next((w['resets_at'] for p in data['pools'] for w in p['windows'] if w['resets_at'] is not None), None)
+        if reset is not None and reset <= now:
+            data['reset_status'] = 'elapsed'
+            freshness = 'reset_elapsed' if freshness == 'recent_read' else freshness
+        if freshness != 'recent_read':
+            data['blocked'] = None
+        historical = self.db.execute("SELECT data FROM quota_observations WHERE route_key=? AND observed_at>=? "
+                                     "AND json_extract(data,'$.session_key')=? AND id<? "
+                                     "AND json_extract(data,'$.reset_status')='known' ORDER BY id DESC LIMIT 1",
+                                     (route, registered_at, session_key, row[0])).fetchone()
+        history = None
+        if historical and reset is None:
+            old = json.loads(historical[0])
+            history = {'resets_at': old['pools'][0]['windows'][0]['resets_at'], 'source': old['source'],
+                       'observed_at': old['observed_at'], 'source_observed_at': old['source_observed_at'],
+                       'historical_only': True}
+        return dict(data, observation_id=row[0], freshness=freshness, age_seconds=age,
+                    max_age_seconds=max_age, historical_reset=history)
 
 
 def collect(engine, settings, program):

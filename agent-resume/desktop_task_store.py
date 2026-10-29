@@ -30,6 +30,11 @@ class TaskStore:
             self.db.execute('ALTER TABLE desktop_tasks ADD COLUMN delivery TEXT')  # NULL | reserved | attempted
         self.db.commit()
 
+    def register_session(self, chat_id):
+        from claude_session_store import SessionStore
+        session = SessionStore(self.db, self.scope).register(chat_id, source='desktop_mcp_declared')
+        return {'status': 'registered', **session}
+
     def close(self):
         self.db.close()
 

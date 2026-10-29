@@ -225,6 +225,52 @@ class ManagedUpdateTests(unittest.TestCase):
                                  self.state.parent/'quick-state')
             self.assertEqual(os.environ['AGENT_RESUME_STATE'],str(self.state))
 
+    def test_harness_update_preserves_asi1_effort_without_enabling_it(self):
+        helpers=self.source/'Contents/Resources/helpers'
+        (self.state/'tasks.sqlite').touch()
+        config=(
+            '- id: llm-pi-ai\n'
+            "  name: '@deepseek-ai/dsh-llm-pi-ai'\n"
+            '  config:\n'
+            '    providers:\n'
+            '      asi-cloud:\n'
+            '        models:\n'
+            '          - id: asi1\n'
+            '            maxTokens: 4096\n'
+            '- insert:\n'
+            '    - id: preset-asi1-orchestrator\n'
+            "      name: '@deepseek-ai/dsh-agent-preset'\n"
+            '      config:\n'
+            '        id: asi1-orchestrator\n'
+            '        plugins:\n'
+            '          - id: persona\n'
+            "            name: '@deepseek-ai/dsh-persona'\n"
+        )
+        for name,option in (('enabled',True),('disabled',False),('absent',None)):
+            with self.subTest(option=option):
+                profile=self.home/'.dsh/profiles'/name
+                profile.mkdir(parents=True)
+                (profile/'cordis.patch.yml').write_text(config)
+                with update.settings(self.state):
+                    initial=integration.plan(helpers,self.home/'.dsh',name,self.base,
+                                             asi1_effort=option is True)
+                    integration.apply(helpers,initial)
+                manifest=profile/'.reprise/managed.json'
+                if option is False:
+                    stored=json.loads(manifest.read_text())
+                    stored['asi1_effort']=False
+                    manifest.write_text(json.dumps(stored))
+                before=integration.tree_files(profile)
+                value=self.plan(components=('harness',),profiles=(name,))
+                selected=value['nested']['harness'][0]
+                self.assertEqual(selected.get('asi1_effort',False),option is True)
+                # Explicit false may normalize to an absent manifest field.
+                self.assertTrue(all(change['path'] == str(manifest) for change in selected['changes']))
+                if option is True:
+                    text=(profile/'cordis.patch.yml').read_text()
+                    self.assertLess(text.index('        compat:'),text.index('- insert:'))
+                self.assertEqual(integration.tree_files(profile),before)
+
     def test_plan_refuses_any_implicit_claude_registry_change(self):
         old={'status':'installed','state':str(self.state),'quick_state':str(self.state.parent/'quick-state'),'project':str(self.base)}
         # This is a custom state under the actual HOME, so its implicit quick
