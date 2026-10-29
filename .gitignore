@@ -29,6 +29,3 @@
 
 # Immutable local standalone builds and publication staging
 /agent-resume/builds/
-
-# pnpm store créé à la racine par l'installation liée du bundle web-search-provider-study
-/.pnpm-store/
