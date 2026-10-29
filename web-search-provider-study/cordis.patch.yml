@@ -1,0 +1,13 @@
+# Bundle dsh-web-search-brave-local : remplace le provider de recherche par défaut.
+# La surcharge de la ligne `web` RESTITUE la config complète de la ligne de base
+# (searchProvider + fetchProvider) : `config` remplace en bloc, jamais deep-merge.
+- id: web
+  name: '@deepseek-ai/dsh-web'
+  config:
+    searchProvider: brave
+    fetchProvider: http
+- insert:
+    - id: web-search-brave
+      name: dsh-web-search-brave-local
+      config:
+        apiKeyRef: BRAVE_SEARCH_API_KEY
