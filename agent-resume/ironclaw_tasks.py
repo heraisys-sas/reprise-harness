@@ -7,7 +7,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from urllib.parse import quote
-from ironclaw_ssh import request
+from ironclaw_ssh import ProbeError, request
 
 # Schéma des identités de tâche. Toute évolution de `_identity()` doit incrémenter ce
 # numéro : `_ensure_binding()` compare l'identité recalculée à celle stockée, et sans
@@ -44,8 +44,11 @@ def _id(value):
 
 
 class Tasks:
-    def __init__(self, db, endpoint=None, transport=request, expire_after=None):
+    def __init__(self, db, endpoint=None, transport=request, expire_after=None, status_reader=None):
         self.db, self.endpoint, self.transport = db, endpoint, transport
+        # Lecteur optionnel de la projection SSE (`run_statuses`) : câblé en production
+        # uniquement, les tests restent hors réseau et l'heuristique timeline seule.
+        self.status_reader = status_reader
         self.expire_after = expire_after
         with db:
             db.execute('''CREATE TABLE IF NOT EXISTS ironclaw_tasks(
@@ -295,6 +298,14 @@ class Tasks:
             # Budget de pages épuisé : le curseur atteint est persisté, l'état reste inchangé.
             return self.get(key)
         final = None if state['activity_after'] else state['final']
+        if final is None and self._provider_failed(thread, run):
+            # Preuve fournisseur d'un run terminé en échec (projection SSE `run_status`) :
+            # clôture locale sans rejeu, jamais inventée depuis la timeline seule.
+            with self.db:
+                self.db.execute("UPDATE ironclaw_tasks SET state='failed',result=? WHERE request_key=? AND state IN ('pending','deferred')",
+                                (json.dumps({'provider_run_status': 'failed'}, ensure_ascii=False), key))
+                self.db.execute('DELETE FROM ironclaw_timeline_cursors WHERE thread_id=? AND run_id=?', (thread, run))
+            return self.get(key)
         if final is None and self._expired(key):
             with self.db:
                 self.db.execute("UPDATE ironclaw_tasks SET state='expired' WHERE request_key=? AND state IN ('pending','deferred')", (key,))
@@ -306,6 +317,17 @@ class Tasks:
                 self.db.execute('DELETE FROM ironclaw_timeline_cursors WHERE thread_id=? AND run_id=?', (thread, run))
 
         return self.get(key)
+
+    def _provider_failed(self, thread, run):
+        """Provider evidence via the read-only SSE projection. Unreadable or absent
+        status is not a failure: the timeline heuristic stays the sole fallback."""
+        if self.status_reader is None:
+            return False
+        try:
+            statuses = self.status_reader(self.endpoint, thread)
+        except (ProbeError, OSError, ValueError, AttributeError):
+            return False
+        return statuses.get(run) == 'failed'
 
     def fail(self, key, reason):
         """Operator exit for gated, ambiguous, review or busy tasks. Local-only; no replay."""

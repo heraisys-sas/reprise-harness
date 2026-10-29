@@ -517,3 +517,64 @@ class TasksTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+class ProviderRunStatusTests(unittest.TestCase):
+    """Issue #90 : un `run_status` fournisseur `failed` clôt la tâche sans rejeu ;
+    sans lecteur ou sans statut, l'heuristique timeline reste la seule source."""
+
+    def setUp(self):
+        self.db = sqlite3.connect(':memory:')
+        self.addCleanup(self.db.close)
+        self.endpoint = Endpoint('host.example', 'agent', 22, '/tmp/key', '/tmp/token')
+        self.pages = [{'messages': [], 'next_cursor': None}]
+        self.statuses = {}
+        self.reader_calls = []
+        self.tasks = Tasks(self.db, self.endpoint, self.transport, status_reader=self.reader)
+
+    def transport(self, endpoint, method, path, payload=None, **kwargs):
+        if path.endswith('/session'): return {'session_channel_extension_id': 'channel'}
+        if path.endswith('/threads'): return {'thread': {'thread_id': 'thread'}}
+        if path.endswith('/messages'): return {'thread_id': 'thread', 'run_id': 'run', 'status': 'queued'}
+        return self.pages.pop(0)
+
+    def reader(self, endpoint, thread):
+        self.reader_calls.append(thread)
+        return self.statuses
+
+    def test_provider_failed_status_closes_pending_task(self):
+        self.tasks.submit('key', 'question', allow_submit=True)
+        self.statuses = {'run': 'failed'}
+        result = self.tasks.poll('key')
+        self.assertEqual(result['state'], 'failed')
+        self.assertEqual(result['result'], {'provider_run_status': 'failed'})
+        self.assertEqual(self.reader_calls, ['thread'])
+        # Aucune reprise possible : état terminal, un nouveau poll ne relit rien.
+        self.assertEqual(len(self.reader_calls), 1)
+        self.assertEqual(self.tasks.poll('key')['state'], 'failed')
+        self.assertEqual(len(self.reader_calls), 1)
+
+    def test_non_terminal_provider_status_keeps_timeline_heuristic(self):
+        self.tasks.submit('key', 'question', allow_submit=True)
+        self.statuses = {'run': 'running'}
+        self.assertEqual(self.tasks.poll('key')['state'], 'pending')
+
+    def test_reader_failure_is_not_a_failure_and_poll_stays_pending(self):
+        self.tasks.submit('key', 'question', allow_submit=True)
+        def broken(endpoint, thread):
+            raise OSError('transport down')
+        self.tasks.status_reader = broken
+        self.assertEqual(self.tasks.poll('key')['state'], 'pending')
+
+    def test_without_status_reader_only_timeline_decides(self):
+        self.tasks.status_reader = None
+        self.tasks.submit('key', 'question', allow_submit=True)
+        self.assertEqual(self.tasks.poll('key')['state'], 'pending')
+        self.assertEqual(self.reader_calls, [])
+
+    def test_provider_failed_needs_operator_gate_is_not_auto_closed(self):
+        self.tasks.submit('key', 'question', allow_submit=True)
+        with self.db:
+            self.db.execute("UPDATE ironclaw_tasks SET state='needs_operator' WHERE request_key='key'")
+        self.statuses = {'run': 'failed'}
+        self.assertEqual(self.tasks.poll('key')['state'], 'needs_operator')
