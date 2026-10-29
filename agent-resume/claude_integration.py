@@ -86,16 +86,29 @@ def inspect(root, home=None):
             'configuration_written': entry is not None,
             'managed': bool(old and entry is not None and old.get('entry_sha256') == entry_hash(entry)),
             'project': old.get('project') if old else None,
+            'enable_await': manifest_enable_await(old) if old and old.get('status') == 'installed' else False,
             'client_loaded': 'unknown', 'message': 'Inspection locale ; aucun client chargé ni redémarré.'}
 
 
-def desired(root, home, project, replace_probe, action='install'):
+def manifest_enable_await(manifest):
+    value = manifest.get('enable_await', False)
+    if type(value) is not bool:
+        raise ValueError('Option enable_await invalide dans le manifeste.')
+    return value
+
+
+def desired(root, home, project, replace_probe, action='install', enable_await=None):
     home, config, managed = paths(home)
     project = Path(project).expanduser().resolve(strict=True)
-    if not project.is_dir() or type(replace_probe) is not bool:
-        raise ValueError('Projet existant et option explicite requis.')
+    if not project.is_dir() or type(replace_probe) is not bool or (enable_await is not None and type(enable_await) is not bool):
+        raise ValueError('Projet existant et options valides requises.')
     original = read_config(config)
     old = metadata(managed)
+    if enable_await is None:
+        preserve_removed_setting = action == 'remove' and old and old.get('status') == 'removed'
+        effective_enable_await = manifest_enable_await(old) if old and (old.get('status') == 'installed' or preserve_removed_setting) else False
+    else:
+        effective_enable_await = enable_await
     servers = dict(original.get('mcpServers', {}))
     name = managed_name(servers, old)
     existing = servers.get(name)
@@ -111,7 +124,7 @@ def desired(root, home, project, replace_probe, action='install'):
         if old.get('project') != str(project):
             raise ValueError('Projet sélectionné différent du connecteur géré.')
         servers.pop(name, None)
-        manifest = dict(old, status='removed', entry_sha256=None)
+        manifest = dict(old, status='removed', entry_sha256=None, enable_await=effective_enable_await)
         return home, config, managed, dict(original, mcpServers=servers), manifest, None, None
     replaced_probe = (old or {}).get('replaced_probe')
     probe = servers.get('reprise_quick_probe')
@@ -134,9 +147,12 @@ def desired(root, home, project, replace_probe, action='install'):
     quick_state = state_location(root, 'quick-state').absolute()
     release = main_state.parent / 'integration-releases' / identity
     program = release / 'Contents/Resources/runtime/bin/python3'
-    entry = {'command': str(program), 'args': ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/claude_mcp.py'),
-             '--project-root', str(project), '--state', str(quick_state), '--expert-state', str(main_state),
-             '--socket', str(home / '.codex/app-server-control/app-server-control.sock')]}
+    args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/claude_mcp.py'),
+            '--project-root', str(project), '--state', str(quick_state), '--expert-state', str(main_state),
+            '--socket', str(home / '.codex/app-server-control/app-server-control.sock')]
+    if effective_enable_await:
+        args.append('--enable-await')
+    entry = {'command': str(program), 'args': args}
     if name != CONNECTOR_NAME:
         if CONNECTOR_NAME in servers:
             raise ValueError('Entrée reprise-harness déjà présente ; migration refusée.')
@@ -145,20 +161,24 @@ def desired(root, home, project, replace_probe, action='install'):
     configured = dict(original, mcpServers=servers)
     manifest = {'format': 1, 'status': 'installed', 'connector_name': CONNECTOR_NAME, 'project': str(project),
                 'state': str(main_state), 'quick_state': str(quick_state),
-                'entry_sha256': entry_hash(entry), 'release': str(release), 'release_identity': identity}
+                'entry_sha256': entry_hash(entry), 'release': str(release), 'release_identity': identity,
+                'enable_await': effective_enable_await}
     if replaced_probe is not None:
         manifest['replaced_probe'] = replaced_probe
     return home, config, managed, configured, manifest, helpers, runtime
 
 
-def plan(root, home, project, replace_probe=False, action='install'):
-    home, config, managed, configured, manifest, _, _ = desired(root, home, project, replace_probe, action)
+def plan(root, home, project, replace_probe=False, action='install', enable_await=None):
+    if enable_await is not None and type(enable_await) is not bool:
+        raise ValueError('Option enable_await booléenne ou absente requise.')
+    home, config, managed, configured, manifest, _, _ = desired(root, home, project, replace_probe, action, enable_await)
     changes = []
     for target, value in ((config, configured), (managed / 'managed.json', manifest)):
         before, after = file_hash(target), digest(encoded(value).encode())
         if before != after:
             changes.append({'path': str(target), 'before_sha256': before, 'after_sha256': after})
     public = {'format': 1, 'action': action, 'home': str(home), 'project': manifest['project'], 'replace_probe': replace_probe,
+              'enable_await': manifest_enable_await(manifest),
               'config_sha256': file_hash(config), 'manifest_sha256': file_hash(managed / 'managed.json'),
               'release': manifest['release'], 'release_identity': manifest['release_identity'], 'changes': changes}
     public['fingerprint'] = digest(encoded(public).encode())
@@ -186,11 +206,14 @@ def apply(root, public):
         raise ValueError('Plan modifié ; refaire la prévisualisation.')
     home, config, managed = paths(public['home'])
     with locked(managed, home):
-        if plan(root, home, public['project'], public['replace_probe'], public['action']) != public:
+        enable_await = public.get('enable_await')
+        if type(enable_await) is not bool:
+            raise ValueError('Option enable_await booléenne requise.')
+        if plan(root, home, public['project'], public['replace_probe'], public['action'], enable_await) != public:
             raise ValueError('Configuration ou bundle modifié ; refaire le plan.')
         if not public['changes']:
             return {'status': 'completed', 'changed': False, 'client_loaded': 'unknown'}
-        _, _, _, configured, manifest, helpers, runtime = desired(root, home, public['project'], public['replace_probe'], public['action'])
+        _, _, _, configured, manifest, helpers, runtime = desired(root, home, public['project'], public['replace_probe'], public['action'], enable_await)
         if public['action'] == 'install':
             stage_release(helpers, runtime, Path(public['release']))
             release_check(Path(public['release']))
@@ -245,10 +268,16 @@ def verify(root, home=None):
     servers = read_config(config).get('mcpServers', {})
     name = managed_name(servers, old)
     entry = servers.get(name)
-    if not old or old.get('status') != 'installed' or entry is None or entry_hash(entry) != old.get('entry_sha256'):
+    if not old or old.get('status') != 'installed' or entry is None:
         raise ValueError('Connecteur géré absent ou modifié.')
     if name != CONNECTOR_NAME or old.get('connector_name') != name:
         raise ValueError('Nom du connecteur incohérent ; migration gérée requise avant vérification.')
+    enable_await = manifest_enable_await(old)
+    args = entry.get('args') if isinstance(entry, dict) else None
+    if not isinstance(args, list) or args.count('--enable-await') != int(enable_await):
+        raise ValueError('Option await du manifeste et de la configuration divergente.')
+    if entry_hash(entry) != old.get('entry_sha256'):
+        raise ValueError('Connecteur géré absent ou modifié.')
     selected_state = state_location(root).resolve()
     release = Path(old['release'])
     if (old.get('state') != str(selected_state) or release.parent.resolve() != (selected_state.parent / 'integration-releases').resolve()
@@ -258,6 +287,8 @@ def verify(root, home=None):
     release_check(release)
     command = [str(release / 'Contents/Resources/runtime/bin/python3'), '-E', '-s', '-B',
                str(release / 'Contents/Resources/helpers/claude_mcp.py'), '--project-root', old['project']]
+    if enable_await:
+        command.append('--enable-await')
     requests = [{'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {}},
                 {'jsonrpc': '2.0', 'method': 'notifications/initialized'},
                 {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list', 'params': {}}]
@@ -273,6 +304,8 @@ def verify(root, home=None):
     names = sorted(tool['name'] for tool in tools)
     if not {'get_task', 'submit_result', 'reprise_backends', 'reprise_requests', 'reprise_delegate', 'reprise_followup'}.issubset(names):
         raise ValueError('Outils du connecteur unifié incomplets.')
+    if ('await_task' in names) != enable_await:
+        raise ValueError('Exposition await_task différente de l’option installée.')
     daemon = {'binding': 'unknown', 'dispatch_supported': 'unknown', 'capabilities_observed': False}
     client = None
     try:
@@ -292,6 +325,7 @@ def verify(root, home=None):
         if client:
             client.close()
     return {'status': 'verified', 'daemon': daemon, 'bridge_tools': names, 'bridge_version': info['version'],
+            'enable_await': enable_await, 'await_tool_exposed': 'await_task' in names,
             'client_loaded': 'unknown', 'inference_executed': False,
             'next_step': 'Recharger Claude lorsque son travail le permet et démarrer le claude-desktopd de cette release ; vérifier le rattachement projet/état.',
             'message': 'Release vérifié par initialize/tools/list ; chargement par Claude Desktop non observé.'}
@@ -307,6 +341,12 @@ def main(root, argv=None):
             command.add_argument('--project', required=True)
             command.add_argument('--replace-probe', action='store_true')
             command.add_argument('--action', choices=('install', 'remove'), default='install')
+            await_group = command.add_mutually_exclusive_group()
+            await_group.add_argument('--enable-await', dest='enable_await', action='store_const', const=True,
+                                     help='exposer await_task dans la configuration gérée')
+            await_group.add_argument('--disable-await', dest='enable_await', action='store_const', const=False,
+                                     help='désactiver await_task dans la configuration gérée')
+            command.set_defaults(enable_await=None)
     sub.add_parser('claude-integration-apply')
     args = parser.parse_args(argv)
     os.umask(0o077)
@@ -314,7 +354,9 @@ def main(root, argv=None):
         if args.command.endswith('-inspect'):
             result = inspect(root, args.home)
         elif args.command.endswith('-plan'):
-            result = {'status': 'planned', 'plan': plan(root, args.home, args.project, args.replace_probe, args.action)}
+            if args.action == 'remove' and args.enable_await is not None:
+                raise ValueError('Les options await ne s’appliquent pas au retrait.')
+            result = {'status': 'planned', 'plan': plan(root, args.home, args.project, args.replace_probe, args.action, args.enable_await)}
         elif args.command.endswith('-apply'):
             result = apply(root, json.loads(sys.stdin.read(1024 * 1024))['plan'])
         else:
