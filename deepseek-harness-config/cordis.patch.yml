@@ -2,6 +2,7 @@
   config:
     thinking: enabled
     reasoningEffort: low
+    models: []
 - id: llm-deepseek-account
   config:
     thinking: enabled
@@ -22,6 +23,10 @@
         model: deepseek-flash
       - provider: deepseek-account
         model: deepseek-v4-pro
+      - provider: morph
+        model: morph-dsv41flash-1017
+      - provider: morph
+        model: morph-glm53-744b
       - provider: openai-codex
         model: gpt-6-luna
       - provider: openai-codex
@@ -36,47 +41,17 @@
         model: openai/gpt-oss-20b
       - provider: asi-cloud
         model: deepseek/deepseek-v4-flash-0731
-      - provider: morph
-        model: morph-dsv41flash-1017
-      - provider: morph
-        model: morph-glm53flash
-      - provider: morph
-        model: morph-glm53-744b
+      - provider: xiaomi
+        model: mimo-v2.6-flash
+      - provider: xiaomi
+        model: mimo-v2.6-pro
+      - provider: xiaomi-token-plan-ams
+        model: mimo-v2.6-flash
+      - provider: xiaomi-token-plan-ams
+        model: mimo-v2.6-pro
 - id: llm-pi-ai
   config:
     providers:
-      openai-codex:
-        reasoning: medium
-        models:
-          - id: gpt-6-luna
-          - id: gpt-6-sol
-          - id: gpt-6-astra
-        retryPolicy:
-          mode: normal
-          maxRetries: 2
-      morph:
-        displayName: Morph
-        api: openai-completions
-        baseURL: https://api.morphllm.com/v1
-        apiKeyEnv: MORPH_API_KEY
-        compat:
-          supportsUsageInStreaming: true
-          supportsStore: false
-          supportsReasoningEffort: false
-        models:
-          - id: morph-dsv41flash-1017
-            contextWindow: 1048576
-            maxTokens: 32768
-            input: [text, image]
-          - id: morph-glm53flash
-            contextWindow: 1048576
-            maxTokens: 32768
-          - id: morph-glm53-744b
-            contextWindow: 1048576
-            maxTokens: 32768
-        retryPolicy:
-          mode: normal
-          maxRetries: 0
       asi-cloud:
         displayName: ASI:Cloud — test
         api: openai-completions
@@ -84,10 +59,10 @@
         apiKeyEnv: ASI_API_KEY
         models:
           - id: asi1-mini
-            contextWindow: 128000
+            contextWindow: 160000
             maxTokens: 4096
           - id: asi1
-            contextWindow: 128000
+            contextWindow: 300000
             maxTokens: 4096
             reasoningEfforts:
               low: low
@@ -107,12 +82,66 @@
           supportsStore: false
           supportsReasoningEffort: true
           supportsDeveloperRole: false
-          supportsReasoningEffort: true
-          supportsDeveloperRole: false
+      xiaomi:
+        displayName: Xiaomi MiMo — API
+        apiKeyEnv: MIMO_API_KEY
+        models:
+          - id: mimo-v2.6-flash
+          - id: mimo-v2.6-pro
+        retryPolicy:
+          mode: normal
+          maxRetries: 0
+      xiaomi-token-plan-ams:
+        displayName: Xiaomi MiMo — Token Plan AMS
+        apiKeyEnv: MIMO_TOKEN_PLAN_AMS_API_KEY
+        models:
+          - id: mimo-v2.6-flash
+          - id: mimo-v2.6-pro
+        retryPolicy:
+          mode: normal
+          maxRetries: 0
+      morph:
+        displayName: Morph
+        baseURL: https://api.morphllm.com/v1
+        models:
+          - id: morph-dsv41flash-1017
+            name: morph-dsv41flash-1017
+            contextWindow: 1000000
+            maxTokens: 384000
+            input:
+              - text
+              - image
+          - id: morph-glm53-744b
+            name: morph-glm53-744b
+          - id: morph-deepseek-v4-pro
+            name: morph-deepseek-v4-pro
+            contextWindow: 1000000
+            maxTokens: 384000
+            input:
+              - text
+          - id: morph-dsv41flash-abliterated
+            name: morph-dsv41flash-abliterated
+          - id: morph-kimik3
+            name: morph-kimik3
+          - id: morph-kimik3-fast
+            name: morph-kimik3-fast
+          - id: morph-computer-use-v1
+            name: morph-computer-use-v1
+        apiKeyEnv: MORPH_API_KEY
+        api: openai-responses
+      openai-codex:
+        reasoning: medium
+        models:
+          - id: gpt-6-luna
+          - id: gpt-6-sol
+          - id: gpt-6-astra
+        retryPolicy:
+          mode: normal
+          maxRetries: 2
 - id: ui-chat
   name: '@deepseek-ai/dsh-client-ui-chat'
   config:
-    transcriptView: standard
+    transcriptView: detailed
     performanceUsage: detailed
 - id: ui-settings
   name: '@deepseek-ai/dsh-client-ui-settings'
@@ -128,6 +157,16 @@
     purpose: null
     process: standard
     completion: api-key
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: asi-cloud
+    model: asi1
+
+- id: session-log-deepseek
+  name: "@deepseek-ai/dsh-session-log-deepseek"
+  config:
+    enabled: false
 - insert:
     - id: preset-asi1-orchestrator
       name: '@deepseek-ai/dsh-agent-preset'
@@ -261,3 +300,75 @@
           - id: tool-plugin-market
             name: '@deepseek-ai/dsh-plugin-market/tools'
             disabled: true
+
+- id: agent-preset-registry
+  name: "@deepseek-ai/dsh-agent-preset-registry"
+  config:
+    default: standard
+    selectedDefault: asi1-orchestrator
+# BEGIN REPRISE MANAGED INTEGRATION
+- insert:
+    [
+      {
+          "id": "reprise-codex-expert",
+          "name": "@deepseek-ai/dsh-mcp-client",
+          "config":
+            {
+              "transport": "stdio",
+              "serverName": "reprise_codex",
+              "command": "/Users/olivierhz/Library/Application
+                Support/Reprise/integration-releases/2ef1be09a177b3644479234652\
+                49429c5852fbfff4b3cada156580afda78cb1a/Contents/Resources/runti\
+                me/bin/python3",
+              "args":
+                [
+                  "-E",
+                  "-s",
+                  "-B",
+                  "/Users/olivierhz/Library/Application
+                    Support/Reprise/integration-releases/2ef1be09a177b364447923\
+                    465249429c5852fbfff4b3cada156580afda78cb1a/Contents/Resourc\
+                    es/helpers/codex_expert_mcp.py",
+                  "--project-root",
+                  "/Users/olivierhz/Documents/ChatGPT/productivité",
+                  "--state",
+                  "/Users/olivierhz/Library/Application Support/Reprise/state",
+                  "--tools",
+                  "reprise_backends,reprise_requests,reprise_quotas,reprise_d\
+                    elegate,reprise_followup,reprise_reconcile"
+                ],
+              "toolCallTimeoutMs": 330000,
+              "failOnStartupError": false,
+              "reconnect": { "enabled": false }
+            }
+        },
+      {
+          "id": "reprise-skill-filesystem",
+          "name": "@deepseek-ai/dsh-skill-filesystem",
+          "config":
+            {
+              "providerName": "reprise-desktop",
+              "includeDefaultRoots": false,
+              "customSkillDirs": [ "/Users/olivierhz/.dsh/profiles/desktop/.reprise/skills" ],
+              "watch": false
+            }
+        },
+      {
+          "id": "reprise-output-resume",
+          "name": "/Users/olivierhz/Library/Application
+            Support/Reprise/integration-releases/2ef1be09a177b36444792346524942\
+            9c5852fbfff4b3cada156580afda78cb1a/Contents/Resources/helpers/harne\
+            ss-output-resume.cjs",
+          "config":
+            {
+              "enabled": true,
+              "projectRoot": "/Users/olivierhz/Documents/deepseek-harness/default-workspace/r\
+                eprise-harness",
+              "stateDirectory": "/Users/olivierhz/Library/Application
+                Support/Reprise/state/harness-output-resume",
+              "maxConsecutive": 2
+            }
+        }
+    ]
+
+# END REPRISE MANAGED INTEGRATION
