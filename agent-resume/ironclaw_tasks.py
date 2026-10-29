@@ -24,6 +24,9 @@ POLL_SWEEP_LIMIT = 5
 # Pages lues au plus par appel de `poll()` ; au-delà, le curseur atteint est persisté et la
 # reprise se fait à l'appel suivant.
 MAX_TIMELINE_PAGES = 20
+# Rescans complets consécutifs tolérés quand le curseur de reprise est invalidé ; au-delà,
+# dégradation en erreur plutôt que boucle coût à chaque tour.
+MAX_TIMELINE_RESCANS = 2
 
 
 class TaskError(Exception):
@@ -333,31 +336,47 @@ class Tasks:
             raise TaskError('Invalid timeline cursor')
         return messages, next_cursor
 
-    def _timeline(self, thread):
-        cursor, seen = None, set()
-        for _ in range(MAX_TIMELINE_PAGES):
+    def _timeline_matches(self, thread, key, content):
+        """Budgeted fold of the matching user messages; the cursor is persisted so the
+        next call resumes instead of failing, like `_scan()`. `complete` is False when
+        the page budget ran out."""
+        row = self.db.execute('SELECT page_cursor,folded FROM ironclaw_timeline_cursors '
+                              'WHERE thread_id=? AND run_id=?', (thread, key)).fetchone()
+        cursor = row[0] if row else None
+        folded = json.loads(row[1]) if row and row[1] else {'matches': []}
+        budget, seen = MAX_TIMELINE_PAGES, set()
+        while budget:
             messages, next_cursor = self._timeline_page(thread, cursor)
-            yield messages
+            budget -= 1
+            folded['matches'] += [_id(m['turn_run_id']) for m in messages
+                                  if isinstance(m, dict) and m.get('kind') in ('user', 'user_message')
+                                  and m.get('content') == content]
+            # Le curseur du tour suivant est le `next_cursor` : aucune page de recouvrement,
+            # les correspondances s'accumulent sans double comptage.
+            with self.db:
+                self.db.execute('INSERT OR REPLACE INTO ironclaw_timeline_cursors'
+                                '(thread_id,run_id,page_cursor,boundary,folded,updated_at) VALUES(?,?,?,?,?,?)',
+                                (thread, key, next_cursor, None, json.dumps(folded), time.time()))
             if next_cursor is None:
-                return
+                return folded['matches'], True
             if next_cursor in seen:
                 raise TaskError('Invalid timeline cursor')
             seen.add(next_cursor)
             cursor = next_cursor
-        raise TaskError('Timeline page limit reached')
+        return folded['matches'], False
 
     def _load_scan(self, thread, run):
         row = self.db.execute('SELECT page_cursor,boundary,folded FROM ironclaw_timeline_cursors '
                               'WHERE thread_id=? AND run_id=?', (thread, run)).fetchone()
         if not row:
-            return {'page_cursor': None, 'boundary': None, 'final': None, 'activity_after': False}
+            return {'page_cursor': None, 'boundary': None, 'final': None, 'activity_after': False, 'rescans': 0}
         folded = json.loads(row[2]) if row[2] else {}
-        return {'page_cursor': row[0], 'boundary': row[1],
+        return {'page_cursor': row[0], 'boundary': row[1], 'rescans': folded.get('rescans', 0),
                 'final': folded.get('final'), 'activity_after': bool(folded.get('activity_after'))}
 
     def _save_scan(self, thread, run, state):
-        folded = json.dumps({'final': state['final'], 'activity_after': state['activity_after']},
-                            ensure_ascii=False)
+        folded = json.dumps({'final': state['final'], 'activity_after': state['activity_after'],
+                             'rescans': state['rescans']}, ensure_ascii=False)
         with self.db:
             self.db.execute('INSERT OR REPLACE INTO ironclaw_timeline_cursors'
                             '(thread_id,run_id,page_cursor,boundary,folded,updated_at) VALUES(?,?,?,?,?,?)',
@@ -377,27 +396,33 @@ class Tasks:
                 # user turn) was intermediate, not the end of the run.
                 activity_after = True
         return {'page_cursor': state['page_cursor'], 'boundary': state['boundary'],
-                'final': final, 'activity_after': activity_after}
+                'final': final, 'activity_after': activity_after, 'rescans': state['rescans']}
 
     def _scan(self, thread, run):
         """Folds the timeline incrementally; `complete` is False when the page budget ran out."""
         state = self._load_scan(thread, run)
-        cursor, budget, seen, first = state['page_cursor'], MAX_TIMELINE_PAGES, set(), True
+        cursor, budget, seen = state['page_cursor'], MAX_TIMELINE_PAGES, set()
         while budget:
             messages, next_cursor = self._timeline_page(thread, cursor)
             fingerprint = _fingerprint(messages)
-            if first and cursor is not None and state['boundary'] is not None and fingerprint != state['boundary']:
-                # Curseur opaque invalidé par le serveur : un seul rescan complet, puis reprise.
-                state = {'page_cursor': None, 'boundary': None, 'final': None, 'activity_after': False}
-                cursor, first = None, False
+            if cursor is not None and cursor == state['page_cursor'] and state['boundary'] is not None \
+                    and fingerprint != state['boundary']:
+                # Curseur opaque invalidé au point de reprise : rescan complet, borné et
+                # répétable d'un tour à l'autre tant que le plafond n'est pas atteint.
+                if state['rescans'] >= MAX_TIMELINE_RESCANS:
+                    raise TaskError('Invalid timeline cursor')
+                state = {'page_cursor': None, 'boundary': None, 'final': None,
+                         'activity_after': False, 'rescans': state['rescans'] + 1}
+                cursor, seen = None, set()
                 continue
-            first = False
             budget -= 1
             if cursor is None:
                 # Lecture depuis la tête : l'état repart de zéro, sans page de recouvrement.
                 state = dict(state, final=None, activity_after=False)
             state = self._fold(state, messages, run)
             state['page_cursor'], state['boundary'] = cursor, fingerprint
+            if next_cursor is None:
+                state['rescans'] = 0
             self._save_scan(thread, run, state)
             if next_cursor is None:
                 return state, True
@@ -416,14 +441,19 @@ class Tasks:
         if task['state'] not in ('needs_review', 'ambiguous', 'dispatching', 'blocked_busy') or not task['thread_id']:
             raise TaskError('Task is not eligible for read-only reconciliation')
         content = self.db.execute('SELECT content FROM ironclaw_tasks WHERE request_key=?', (key,)).fetchone()[0]
-        matches = []
-        for messages in self._timeline(task['thread_id']):
-            for message in messages:
-                if isinstance(message, dict) and message.get('kind') in ('user', 'user_message') and message.get('content') == content:
-                    matches.append(_id(message.get('turn_run_id')))
+        matches, complete = self._timeline_matches(task['thread_id'], key, content)
+        if not complete:
+            # Budget de pages épuisé : curseur persisté, la réconciliation reprendra au tour suivant.
+            return self.get(key)
+        with self.db:
+            self.db.execute('DELETE FROM ironclaw_timeline_cursors WHERE thread_id=? AND run_id=?',
+                            (task['thread_id'], key))
         if task['state'] == 'blocked_busy' and not matches:
             return self._busy_backoff(key, now)
         if len(matches) != 1:
+            if task['state'] == 'blocked_busy':
+                # Même politique que busy : retest espacé au lieu d'un retraitement à chaque sweep.
+                self._busy_backoff(key, now)
             raise TaskError('Reconciliation requires exactly one matching user message')
         if task['run_id'] is not None and task['run_id'] != matches[0]:
             raise TaskError('Reconciliation run conflicts with saved acknowledgement')
