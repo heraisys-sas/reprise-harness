@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Recherche web Brave",
+    "description": "Enregistre l'API Brave Search comme provider de web_search : index indépendant, requêtes dé-identifiées, palier gratuit mensuel. Remplace la recherche DeepSeek intégrée."
+  }
+}
