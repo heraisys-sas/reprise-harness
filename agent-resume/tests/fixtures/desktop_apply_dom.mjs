@@ -1,7 +1,7 @@
 // Synthetic DOM only: never imports a browser driver or opens a connection.
 import assert from 'node:assert/strict';
 import {webcrypto} from 'node:crypto';
-import {readFile} from 'node:fs/promises';
+import {readFileSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
 import vm from 'node:vm';
 
@@ -144,5 +144,5 @@ export async function runFixtures(scripts) {
 }
 
 if (typeof process !== 'undefined' && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  console.log(JSON.stringify(await runFixtures(JSON.parse(await readFile(0, 'utf8')))));
+  console.log(JSON.stringify(await runFixtures(JSON.parse(readFileSync(0, 'utf8')))));
 }
