@@ -220,6 +220,66 @@ class ClaudeQuotaTests(unittest.TestCase):
                     "SELECT status FROM claude_quota_resumes WHERE event_key='evt-1'").fetchone()
                 self.assertEqual(status_row[0], 'submitted')
 
+    def test_run_native_cdp_transport_uncertain_stage(self):
+        """run_native avec stage 'incertain' (ok=True) marque uncertain et ne compte pas submitted."""
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td)
+            quota.initialize(self.db)
+            self.db.execute(
+                "INSERT INTO claude_quota_resumes VALUES (?,?,?,?,?,?,?)",
+                ('evt-1', CHAT, NOW, DUE, 'f' * 64, 'p' * 64, 'waiting'))
+            self.db.commit()
+            with mock.patch('claude_desktop_rpc.Client') as mock_client_cls:
+                mock_client = mock.MagicMock()
+                mock_client_cls.return_value = mock_client
+                mock_client.call.side_effect = [
+                    {'ok': True},   # initialize
+                    {'ok': True},   # cdp/status
+                    {'ok': True, 'status': 'submitted', 'stage': 'incertain', 'chatId': CHAT},
+                ]
+                result = quota._run_cdp(self.db, str(state), now=DUE + 1)
+                self.assertEqual(result['status'], 'observed')
+                self.assertEqual(result['submitted'], 0)
+                status_row = self.db.execute(
+                    "SELECT status FROM claude_quota_resumes WHERE event_key='evt-1'").fetchone()
+                self.assertEqual(status_row[0], 'uncertain')
+
+    def test_run_native_cdp_status_non_dict_reply(self):
+        """Réponse cdp/status non dict : cdp_unavailable avec détail, pas 'error' générique."""
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td)
+            scheduler.put(self.db, 'claude_desktop_transport', 'cdp')
+            with mock.patch('claude_desktop_rpc.Client') as mock_client_cls:
+                mock_client = mock.MagicMock()
+                mock_client_cls.return_value = mock_client
+                mock_client.call.side_effect = [
+                    {'ok': True},   # initialize
+                    'pas un dict',  # cdp/status
+                ]
+                result = quota._run_cdp(self.db, str(state), now=DUE + 1)
+                self.assertEqual(result['status'], 'cdp_unavailable')
+                self.assertEqual(result['detail'], 'CDP non disponible')
+                self.assertNotIn('daemon_status', result)
+                self.assertEqual(result['submitted'], 0)
+
+    def test_run_native_cdp_status_daemon_status_passthrough(self):
+        """cdp/status non ok avec clé status : daemon_status et reason transmis."""
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td)
+            scheduler.put(self.db, 'claude_desktop_transport', 'cdp')
+            with mock.patch('claude_desktop_rpc.Client') as mock_client_cls:
+                mock_client = mock.MagicMock()
+                mock_client_cls.return_value = mock_client
+                mock_client.call.side_effect = [
+                    {'ok': True},   # initialize
+                    {'ok': False, 'status': 'chrome_dead', 'reason': 'Chrome terminé'},
+                ]
+                result = quota._run_cdp(self.db, str(state), now=DUE + 1)
+                self.assertEqual(result['status'], 'cdp_unavailable')
+                self.assertEqual(result['daemon_status'], 'chrome_dead')
+                self.assertEqual(result['detail'], 'Chrome terminé')
+                self.assertEqual(result['submitted'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -192,5 +192,35 @@ class TestBuildChromeArgs(unittest.TestCase):
             self.assertIn('--no-default-browser-check', args)
 
 
+class TestPipeTimeout(unittest.TestCase):
+    """Vérifier le timeout CDP et l'état mort du transport après expiration."""
+
+    @staticmethod
+    def _close_quiet(handle):
+        try:
+            handle.close()
+        except OSError:
+            pass
+
+    def test_call_times_out_then_transport_is_dead(self):
+        """Aucune réponse : TimeoutError borné, puis RuntimeError sur réutilisation."""
+        from claude_cdp_pipe import PipeTransport
+        r_read, w_keep = os.pipe()   # le transport lit r_read ; w_keep reste ouvert
+        r_keep, w_write = os.pipe()  # le transport écrit w_write ; r_keep reste ouvert
+        self.addCleanup(os.close, w_keep)
+        self.addCleanup(os.close, r_keep)
+        transport = PipeTransport(mock.MagicMock(), r_read, w_write, timeout=0.5)
+        self.addCleanup(self._close_quiet, transport._writer)
+        self.addCleanup(self._close_quiet, transport._reader)
+
+        start = time.monotonic()
+        with self.assertRaises(TimeoutError):
+            transport.call('Target.getTargets', {})
+        self.assertLess(time.monotonic() - start, 5, 'timeout non appliqué')
+
+        with self.assertRaisesRegex(RuntimeError, 'dead'):
+            transport.call('Target.getTargets', {})
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -320,6 +320,13 @@ def _serve(conn, endpoint):
                      'error': {'code': -32602, 'message': str(error) or 'Requête refusée ; aucune relance automatique.'}}
             stream.write((json.dumps(reply, ensure_ascii=False)+'\n').encode())
             stream.flush()
+        except Exception as error:
+            # Unexpected endpoint failure (CDP RuntimeError, id mismatch...):
+            # reply as internal error instead of killing the single-threaded loop.
+            reply = {'jsonrpc': '2.0', 'id': ident,
+                     'error': {'code': -32603, 'message': str(error) or 'Erreur interne ; aucune relance automatique.'}}
+            stream.write((json.dumps(reply, ensure_ascii=False)+'\n').encode())
+            stream.flush()
     stream.close()
 
 
