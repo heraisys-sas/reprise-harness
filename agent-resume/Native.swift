@@ -37,7 +37,17 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var claudeIntegrationResult: [String: Any] = [:]
     @Published var claudeIntegrationAcknowledged = false
     @Published var claudeReplaceProbe = false
+    @Published var claudeAwaitChoice = "preserve"
+    @Published var claudeInboxTasks: [[String: Any]] = []
+    @Published var claudeInboxSelection = ""
+    @Published var claudeInboxResult: [String: Any] = [:]
+    @Published var claudeInboxStatus = "Actualisez les tâches du projet autorisé pour commencer."
+    @Published var claudeInboxResultProject = ""
+    @Published var claudeInboxResultSelection = ""
+    var claudeInboxGeneration: UInt64 = 0
     @Published var claudeQuotaState: [String: Any] = [:]
+    @Published var claudeQuotaSourceObservation: [String: Any] = [:]
+    @Published var claudeQuotaSourceStatus = "Aucune lecture du journal Claude effectuée."
     @Published var integrationOutputResume = false
     @Published var integrationOutputResumeProject = ""
     @Published var integrationAsi1Effort = false

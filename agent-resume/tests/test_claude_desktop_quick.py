@@ -1,8 +1,10 @@
 import json
 import os
 import sqlite3
+import socket
 import sys
 import tempfile
+import threading
 import unittest
 import uuid
 from pathlib import Path
@@ -59,6 +61,52 @@ class EndpointTests(unittest.TestCase):
             result = endpoint.call('quick_entry/get_result', {'request_key': key, 'view': 'full'})
             self.assertEqual(result['answer'], 'Verified result')
             self.assertFalse(endpoint.call('quick_entry/capabilities', {})['dispatch_supported'])
+
+    def test_project_scoped_listing_is_metadata_only_and_does_not_acknowledge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            endpoint = Endpoint(directory, project_root=directory)
+            self.addCleanup(endpoint.close)
+            endpoint.tasks.admit('inbox-key', 'private prompt')
+            claimed = endpoint.tasks.claim('inbox-key', 'private-claim')
+            listed = endpoint.call('quick_entry/list_tasks', {'limit': 10})
+            self.assertEqual(listed['tasks'], [{'request_key': 'inbox-key', 'state': 'attempted',
+                'result_available': False, 'acknowledged': False}])
+            self.assertNotIn('private prompt', json.dumps(listed))
+            endpoint.tasks.submit('inbox-key', claimed['attempt_id'], 'private answer')
+            listed = endpoint.call('quick_entry/list_tasks', {})
+            self.assertEqual(listed['tasks'][0]['state'], 'recorded')
+            self.assertFalse(listed['tasks'][0]['acknowledged'])
+            with self.assertRaises(ValueError):
+                endpoint.call('quick_entry/list_tasks', {'scope': directory})
+
+    def test_non_object_list_params_get_error_and_same_socket_still_serves_ping(self):
+        from claude_desktop_quick import _serve
+        with tempfile.TemporaryDirectory() as directory:
+            endpoint = Endpoint(directory, project_root=directory)
+            server, client = socket.socketpair()
+            worker = threading.Thread(target=_serve, args=(server, endpoint))
+            worker.start()
+            try:
+                invalid_params = [[], None, False, 0, '']
+                messages = [{'jsonrpc': '2.0', 'id': index + 1,
+                    'method': 'quick_entry/list_tasks', 'params': params}
+                    for index, params in enumerate(invalid_params)]
+                messages.append({'jsonrpc': '2.0', 'id': len(messages) + 1,
+                    'method': 'ping', 'params': {}})
+                client.sendall((''.join(json.dumps(message) + '\n' for message in messages)).encode())
+                client.shutdown(socket.SHUT_WR)
+                reader = client.makefile('rb')
+                replies = [json.loads(reader.readline()) for _ in messages]
+                reader.close()
+                self.assertEqual([reply['id'] for reply in replies], list(range(1, len(messages) + 1)))
+                self.assertTrue(all(reply['error']['code'] == -32602 for reply in replies[:-1]))
+                self.assertEqual(replies[-1]['result'], {})
+            finally:
+                client.close()
+                worker.join(timeout=5)
+                server.close()
+                endpoint.close()
+            self.assertFalse(worker.is_alive())
 
     def test_changed_project_cannot_replay_other_project_admission(self):
         with tempfile.TemporaryDirectory() as directory:

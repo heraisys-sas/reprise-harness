@@ -58,6 +58,13 @@ if len(sys.argv) > 1 and sys.argv[1].startswith('claude-integration-'):
     import claude_integration
     sys.exit(claude_integration.main(Path(__file__).resolve().parent, sys.argv[1:]))
 
+if len(sys.argv) > 1 and sys.argv[1] in ('claude-inbox-list', 'claude-inbox-read', 'claude-inbox-ack'):
+    import claude_inbox
+    operation = {'claude-inbox-list': 'list', 'claude-inbox-read': 'read',
+                 'claude-inbox-ack': 'ack'}[sys.argv[1]]
+    sys.exit(claude_inbox.main(Path(__file__).resolve().parent,
+                               [operation, *sys.argv[2:]]))
+
 if len(sys.argv) > 1 and sys.argv[1].startswith('scheduler-service-'):
     import scheduler_service
     sys.exit(scheduler_service.main(Path(__file__).resolve().parent, sys.argv[1:]))
@@ -213,7 +220,9 @@ def main():
     desktop_check.add_argument('--socket')
     desktop_check.add_argument('--session')
     sub.add_parser('desktop-connection-status')
-    sub.add_parser('claude-quota-status')
+    claude_quota_status = sub.add_parser('claude-quota-status')
+    claude_quota_status.add_argument('--observe-renderer-log', action='store_true',
+                                     help='Read a bounded local Claude renderer-log observation')
     claude_auto = sub.add_parser('claude-quota-config')
     claude_auto.add_argument('--transport', choices=('quick-apply', 'accessibility', 'cdp'))
     claude_auto.add_argument('--enabled', choices=('true', 'false'), required=True)
@@ -465,7 +474,14 @@ def main():
         print(json.dumps({'claude_desktop_auto_enabled': args.enabled == 'true'}))
     elif args.action == 'claude-quota-status':
         import claude_quota
-        print(json.dumps({'enabled': scheduler.get(db, 'claude_desktop_auto_enabled', True), 'events': claude_quota.status(db), 'transport': scheduler.get(db, 'claude_desktop_transport', 'quick-apply'), 'observation': scheduler.get(db, 'claude_desktop_last_observation')}, ensure_ascii=False))
+        result = {'enabled': scheduler.get(db, 'claude_desktop_auto_enabled', True),
+                  'events': claude_quota.status(db),
+                  'transport': scheduler.get(db, 'claude_desktop_transport', 'quick-apply'),
+                  'observation': scheduler.get(db, 'claude_desktop_last_observation')}
+        if args.observe_renderer_log:
+            import claude_quota_log
+            result['source_observation'] = claude_quota_log.source_observation()
+        print(json.dumps(result, ensure_ascii=False))
     elif args.action == 'tick':
         from private_search import cleanup
         with db:

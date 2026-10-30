@@ -1,5 +1,7 @@
 import importlib.machinery
 import importlib.util
+import contextlib
+import io
 from pathlib import Path
 import json
 import os
@@ -12,6 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import scheduler
+import claude_quota_log
 
 loader = importlib.machinery.SourceFileLoader('resume', str(Path(__file__).parents[1] / 'resume'))
 spec = importlib.util.spec_from_loader(loader.name, loader)
@@ -84,6 +87,19 @@ class SchedulerTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('--at exige un fuseau horaire', result.stderr)
 
+    def test_claude_inbox_cli_dispatches_each_operation_without_manifest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            script = str(Path(__file__).parents[1] / 'resume')
+            for operation, args in (('list', []), ('read', ['--request-key', 'request-1']),
+                                    ('ack', ['--request-key', 'request-1', '--result-sha256', '0' * 64,
+                                             '--total-length', '10', '--confirm-viewed'])):
+                with self.subTest(operation=operation):
+                    result = subprocess.run([script, f'claude-inbox-{operation}', '--project', folder, *args],
+                                            env=dict(os.environ, HOME=folder), cwd=folder,
+                                            text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertEqual(json.loads(result.stdout)['status'], 'manifest_unavailable')
+
     def test_desktop_apply_cli_help_is_available_without_transport(self):
         with tempfile.TemporaryDirectory() as folder:
             import os
@@ -94,6 +110,47 @@ class SchedulerTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('--status', result.stdout)
             self.assertIn('--chat', result.stdout)
+
+
+class ClaudeQuotaStatusCLITests(unittest.TestCase):
+    def _run(self, args, source_reader):
+        with tempfile.TemporaryDirectory() as folder:
+            output = io.StringIO()
+            with patch.object(module, 'STATE', Path(folder)), \
+                 patch.object(module, 'codex_executable', return_value=None), \
+                 patch.object(sys, 'argv', ['resume', 'claude-quota-status', *args]), \
+                 patch.object(claude_quota_log, 'source_observation', source_reader), \
+                 contextlib.redirect_stdout(output):
+                module.main()
+            return json.loads(output.getvalue())
+
+    def test_quota_status_without_flag_preserves_shape_and_never_reads_renderer_log(self):
+        reader = unittest.mock.Mock(side_effect=AssertionError('renderer log must not be read'))
+        result = self._run([], reader)
+        self.assertEqual(set(result), {'enabled', 'events', 'transport', 'observation'})
+        reader.assert_not_called()
+
+    def test_quota_status_opt_in_returns_only_normalized_source_observation(self):
+        fixture = {
+            'schema_version': 1, 'engine': 'claude-desktop',
+            'source': 'claude.renderer_log', 'source_status': 'readable',
+            'event_status': 'recognized', 'observation_status': 'observed',
+            'observed_at': 1793065700.0, 'source_observed_at': None,
+            'source_timezone': None, 'source_timestamp_status': 'unknown_timezone',
+            'event_type': 'exceeded_limit', 'event_age_seconds': None,
+            'event_freshness': 'unknown', 'resets_at': 1793065800.0,
+            'reset_relation': 'future_at_read', 'current_quota_status': 'unknown',
+            'current_blocked': None, 'current_available': None,
+            'account_id': None, 'chat_id': None, 'used_percent': None,
+            'issues': ['account_unattributed', 'chat_unattributed', 'current_quota_unknown'],
+        }
+        reader = unittest.mock.Mock(return_value=fixture)
+        result = self._run(['--observe-renderer-log'], reader)
+        reader.assert_called_once_with()
+        self.assertEqual(result['source_observation'], fixture)
+        self.assertEqual(result['source_observation']['event_freshness'], 'unknown')
+        self.assertNotIn('diagnostic text', json.dumps(result))
+        self.assertNotIn('account name', json.dumps(result))
 
 
 class AutomaticSchedulerTests(unittest.TestCase):
