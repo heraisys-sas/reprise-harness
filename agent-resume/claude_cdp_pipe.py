@@ -11,12 +11,17 @@ enable call is ever sent.
 import fcntl
 import json
 import os
+import select
 import signal
 import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+# Per-response wait bound: a CDP command that gets no response frame within
+# this many seconds raises TimeoutError and the transport is marked dead.
+DEFAULT_CDP_TIMEOUT = 15.0
 
 
 # ---------------------------------------------------------------------------
@@ -26,7 +31,7 @@ from pathlib import Path
 class PipeTransport:
     """Speak CDP over a pair of file descriptors framed by NUL."""
 
-    def __init__(self, child_proc, read_fd, write_fd):
+    def __init__(self, child_proc, read_fd, write_fd, timeout=DEFAULT_CDP_TIMEOUT):
         """Wrap a Popen plus the parent's pipe ends, passed as parameters.
 
         In --remote-debugging-pipe mode Chrome reads commands from fd 3 and
@@ -38,7 +43,12 @@ class PipeTransport:
         self._proc = child_proc
         self._id = 0
         self._session_id = None
-        self._reader = os.fdopen(read_fd, 'rb')
+        self._timeout = timeout
+        self._dead = False
+        # Reader must be unbuffered: with a BufferedReader, read(1) can be
+        # served from bytes already buffered while the fd itself is empty,
+        # which would defeat the select() gate below.
+        self._reader = os.fdopen(read_fd, 'rb', buffering=0)
         self._writer = os.fdopen(write_fd, 'wb')
 
     # -- framing -------------------------------------------------------------
@@ -52,12 +62,23 @@ class PipeTransport:
     def _receive(self):
         """Read one NUL-delimited JSON frame. Skip notifications (no 'id').
 
-        Reads byte-by-byte (buffered read(1)) until a NUL is found, avoiding
-        blocking up to 64 KiB on buffered readers.
+        Reads byte-by-byte (unbuffered read(1)) until a NUL is found. Each
+        byte read is gated by select(), so the total wait for one response
+        frame is bounded by *timeout*. Past the deadline the position in the
+        frame stream is unknown: the transport is marked dead and
+        TimeoutError is raised. Never reuse the transport after a timeout.
         """
+        if self._dead:
+            raise RuntimeError("CDP pipe transport dead after a previous timeout")
+        deadline = time.monotonic() + self._timeout
         while True:
             raw = bytearray()
             while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not select.select([self._reader.fileno()], [], [], remaining)[0]:
+                    self._dead = True
+                    raise TimeoutError(
+                        f"No CDP response within {self._timeout:g}s; transport marked dead")
                 chunk = self._reader.read(1)
                 if not chunk:
                     raise EOFError("Pipe closed by Chrome")
@@ -103,6 +124,8 @@ class PipeTransport:
 
     def call(self, method, params=None):
         """Send a CDP command and return the result dict."""
+        if self._dead:
+            raise RuntimeError("CDP pipe transport dead after a previous timeout")
         self._id += 1
         msg_id = self._id
         cmd = {"id": msg_id, "method": method, "params": params or {}}

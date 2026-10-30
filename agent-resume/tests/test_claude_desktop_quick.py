@@ -191,5 +191,51 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(result['status'], 'unauthenticated')
 
 
+class _FakeStream:
+    """Double de makefile('rwb') : lit les lignes fournies, capture les écritures à part."""
+
+    def __init__(self, lines):
+        self._lines = lines
+        self.written = []
+
+    def __iter__(self):
+        return iter(self._lines)
+
+    def write(self, data):
+        self.written.append(data)
+
+    def flush(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class ServeCatchAllTests(unittest.TestCase):
+    """_serve répond -32603 à une panne inattendue sans tuer la boucle mono-tâche."""
+
+    def test_runtime_error_replies_internal_error_and_loop_survives(self):
+        from claude_desktop_quick import _serve
+        requests = [
+            {'jsonrpc': '2.0', 'id': 7, 'method': 'cdp/resume',
+             'params': {'chat_id': 'x', 'prompt': 'continuer'}},
+            {'jsonrpc': '2.0', 'id': 8, 'method': 'cdp/resume',
+             'params': {'chat_id': 'x', 'prompt': 'continuer'}},
+        ]
+        stream = _FakeStream([(json.dumps(request) + '\n').encode() for request in requests])
+        conn = mock.MagicMock()
+        conn.makefile.return_value = stream
+        endpoint = mock.MagicMock()
+        endpoint.call.side_effect = [RuntimeError('CDP boom'), ValueError('paramètre')]
+
+        _serve(conn, endpoint)
+
+        replies = [json.loads(line) for line in b''.join(stream.written).splitlines()]
+        self.assertEqual([reply['id'] for reply in replies], [7, 8])
+        self.assertEqual(replies[0]['error']['code'], -32603)
+        self.assertIn('CDP boom', replies[0]['error']['message'])
+        self.assertEqual(replies[1]['error']['code'], -32602)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -275,8 +275,15 @@ def _run_cdp(db, state, now=None):
             client.call('initialize', {'clientInfo': {'name': 'reprise-scheduler', 'version': '1'}})
             status_resp = client.call('cdp/status', {})
             if not isinstance(status_resp, dict) or not status_resp.get('ok'):
-                return {'status': 'cdp_unavailable', 'submitted': 0, 'transport': 'cdp-pipe',
-                        'detail': status_resp.get('reason', 'CDP non disponible')}
+                # A non-dict reply (protocol violation) must not crash into the
+                # generic 'error' branch and lose the cdp_unavailable verdict.
+                detail = (status_resp.get('reason') if isinstance(status_resp, dict) else None) \
+                    or 'CDP non disponible'
+                out = {'status': 'cdp_unavailable', 'submitted': 0, 'transport': 'cdp-pipe',
+                       'detail': detail}
+                if isinstance(status_resp, dict) and status_resp.get('status'):
+                    out['daemon_status'] = status_resp['status']
+                return out
             # Mark any stale dispatching as uncertain first
             with db:
                 db.execute("UPDATE claude_quota_resumes SET status='uncertain' WHERE status='dispatching'")
@@ -293,9 +300,14 @@ def _run_cdp(db, state, now=None):
                     continue
                 try:
                     resp = client.call('cdp/resume', {'chat_id': chat_id, 'prompt': 'retry'})
-                    stage = 'envoyé' if isinstance(resp, dict) and resp.get('ok') else 'incertain'
                 except Exception:
-                    stage = 'incertain'
+                    resp = None
+                # Trust the daemon's own stage when present: ok=True with
+                # stage='incertain' (send click failed) must not read as sent.
+                if isinstance(resp, dict) and resp.get('stage') in ('envoyé', 'incertain'):
+                    stage = resp['stage']
+                else:
+                    stage = 'envoyé' if isinstance(resp, dict) and resp.get('ok') else 'incertain'
                 with db:
                     db.execute('UPDATE claude_quota_resumes SET status=? WHERE event_key=?',
                                ('submitted' if stage == 'envoyé' else 'uncertain', key))

@@ -105,7 +105,7 @@ Le module `claude_cdp_pipe.py` fournit un transport CCD sur la **paire de descri
 
 | Fonction | Rôle |
 |---|---|
-| `PipeTransport` | Classe principale : `_send()`, `_receive()`, `call()`, `evaluate()`, `insert_text()`, `attach_flat()` |
+| `PipeTransport` | Classe principale : `_send()`, `_receive()`, `call()`, `evaluate()`, `insert_text()`, `pick_and_attach()` |
 | `launch_chrome(profile)` | Démarre Chrome avec pipe sur fds 3/4, retourne `(transport, proc)` |
 | `terminate_chrome(proc, timeout)` | SIGTERM → wait → SIGKILL |
 | `sweep_dead_lock(lock_path)` | Supprime le verrou PID si le processus est mort |
