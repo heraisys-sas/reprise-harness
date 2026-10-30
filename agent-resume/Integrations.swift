@@ -1,6 +1,138 @@
 import Cocoa
 import SwiftUI
 
+private enum IntegrationDateTime {
+    private static let formatter: DateFormatter = {
+        let value = DateFormatter()
+        value.locale = Locale(identifier: "fr_FR")
+        value.timeZone = .current
+        value.dateFormat = "dd/MM HH:mm"
+        return value
+    }()
+
+    static func string(from date: Date) -> String {
+        formatter.string(from: date)
+    }
+}
+
+private struct ClaudeInboxTaskOption: View {
+    let key: String
+    let state: String
+    let resultAvailable: Bool
+    let acknowledged: Bool
+
+    init(task: [String: Any]) {
+        key = task["request_key"] as? String ?? "Identifiant indisponible"
+        state = task["state"] as? String ?? "état inconnu"
+        resultAvailable = task["result_available"] as? Bool == true
+        acknowledged = task["acknowledged"] as? Bool == true
+    }
+
+    private var label: String {
+        var value = key + " · " + state
+        value += resultAvailable ? " · résultat disponible" : " · en attente"
+        if acknowledged { value += " · acquitté" }
+        return value
+    }
+
+    var body: some View {
+        Text(label).tag(key)
+    }
+}
+
+private struct ClaudeQuotaRendererObservation: View {
+    let observation: [String: Any]
+    let fallbackStatus: String
+
+    private var sourceStatusLabel: String {
+        switch observation["source_status"] as? String ?? "unavailable" {
+        case "readable": "lisible"
+        case "absent": "absent"
+        case "unreadable": "illisible"
+        default: "indisponible"
+        }
+    }
+
+    private var eventStatusLabel: String {
+        switch observation["event_status"] as? String ?? "not_checked" {
+        case "recognized": "événement quota reconnu"
+        case "no_event": "aucun événement quota reconnu"
+        case "no_event_in_tail": "aucun événement reconnu dans la partie lue (journal tronqué)"
+        case "not_checked": "événement non vérifié"
+        default: "événement indisponible"
+        }
+    }
+
+    private var eventStatus: String {
+        observation["event_status"] as? String ?? "not_checked"
+    }
+
+    private var resetLabel: String? {
+        guard let timestamp = observation["resets_at"] as? Double else { return nil }
+        let date = IntegrationDateTime.string(from: Date(timeIntervalSince1970: timestamp))
+        switch observation["reset_relation"] as? String {
+        case "elapsed_at_read":
+            return "Échéance déclarée passée au moment de la lecture : " + date + ". Cela n’établit ni le quota actuel ni la reprise."
+        case "future_at_read":
+            return "Échéance déclarée future, non attribuée : " + date + "."
+        default:
+            return "Échéance déclarée, relation temporelle inconnue : " + date + "."
+        }
+    }
+
+    private var readAtLabel: String? {
+        guard let timestamp = observation["observed_at"] as? Double else { return nil }
+        let prefix = (observation["source_status"] as? String == "readable")
+            ? "Journal lu : " : "Tentative de lecture : "
+        return prefix + IntegrationDateTime.string(from: Date(timeIntervalSince1970: timestamp))
+    }
+
+    private var freshnessLabel: String {
+        switch observation["event_freshness"] as? String ?? "unknown" {
+        case "recent": "récente (fuseau source attesté)"
+        case "stale": "ancienne (fuseau source attesté)"
+        case "clock_skew": "inconnue (horodatages incohérents)"
+        default: "inconnue (fuseau d’écriture non attesté)"
+        }
+    }
+
+    private var resetView: some View {
+        Group {
+            if let resetLabel {
+                Text(resetLabel).font(.caption)
+            } else if eventStatus == "recognized" {
+                Text("Événement reconnu sans échéance exploitable.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var readAtView: some View {
+        Group {
+            if let readAtLabel {
+                Text(readAtLabel).font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text(fallbackStatus).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    var body: some View {
+        Group {
+            Text("Source de réinitialisation : journal renderer Claude Desktop")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("Lecture : \(sourceStatusLabel) · \(eventStatusLabel)")
+                .font(.caption).foregroundStyle(.secondary)
+            resetView
+            readAtView
+            Text("Fraîcheur de l’événement : \(freshnessLabel)")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("Quota actuel, quantité et attribution compte/chat : inconnus.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
 extension App {
     func inspectClaudeIntegration() {
         guard stateReady, !setupBusy else { return }
@@ -12,7 +144,14 @@ extension App {
     func previewClaudeIntegration(_ action: String) {
         guard stateReady, !setupBusy else { return }
         var args = ["claude-integration-plan", "--project", integrationProject, "--action", action]
-        if claudeReplaceProbe { args.append("--replace-probe") }
+        if action == "install" {
+            if claudeReplaceProbe { args.append("--replace-probe") }
+            switch claudeAwaitChoice {
+            case "enable": args.append("--enable-await")
+            case "disable": args.append("--disable-await")
+            default: break
+            }
+        }
         setupCommand(args) { result in
             self.claudeIntegrationResult = result
             self.claudeIntegrationPlan = result["plan"] as? [String: Any]
@@ -22,14 +161,160 @@ extension App {
     func applyClaudeIntegration() {
         guard stateReady, !setupBusy, claudeIntegrationAcknowledged, let plan = claudeIntegrationPlan else { return }
         setupCommand(["claude-integration-apply"], input: ["plan": plan]) { result in
-            self.claudeIntegrationResult = result
+            var displayedResult = result
+            displayedResult["action"] = plan["action"]
+            displayedResult["project"] = plan["project"]
+            displayedResult["enable_await"] = plan["enable_await"]
+            self.claudeIntegrationResult = displayedResult
             self.claudeIntegrationAcknowledged = false
-            if result["status"] as? String == "completed" { self.claudeIntegrationPlan = nil }
+            if result["status"] as? String == "completed" {
+                self.claudeIntegrationPlan = nil
+                self.claudeAwaitChoice = "preserve"
+                if plan["action"] as? String == "remove" {
+                    self.invalidateClaudeInbox()
+                    self.claudeInboxStatus = "Connecteur retiré ; les tâches du registre ne sont plus accessibles depuis Reprise."
+                }
+            }
         }
     }
     func verifyClaudeIntegration() {
         guard stateReady, !setupBusy else { return }
         setupCommand(["claude-integration-verify"]) { self.claudeIntegrationResult = $0 }
+    }
+
+    func invalidateClaudeInbox(clearTasks: Bool = true) {
+        claudeInboxGeneration &+= 1
+        if clearTasks {
+            claudeInboxTasks = []
+            claudeInboxSelection = ""
+        }
+        claudeInboxResult = [:]
+        claudeInboxResultProject = ""
+        claudeInboxResultSelection = ""
+        claudeInboxStatus = "Actualisez les tâches du projet autorisé pour commencer."
+    }
+
+    func invalidateClaudeInboxSelection() {
+        claudeInboxGeneration &+= 1
+        claudeInboxResult = [:]
+        claudeInboxResultProject = ""
+        claudeInboxResultSelection = ""
+        claudeInboxStatus = claudeInboxSelection.isEmpty
+            ? "Sélectionnez une tâche avec un résultat disponible."
+            : "Sélection modifiée ; relisez le résultat avant tout acquittement."
+    }
+
+    func refreshClaudeInbox() {
+        guard stateReady, !setupBusy else { return }
+        let project = integrationProject.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !project.isEmpty else {
+            invalidateClaudeInbox()
+            claudeInboxStatus = "Choisissez d’abord le projet autorisé du connecteur."
+            return
+        }
+        claudeInboxGeneration &+= 1
+        let generation = claudeInboxGeneration
+        claudeInboxTasks = []
+        claudeInboxSelection = ""
+        claudeInboxResult = [:]
+        claudeInboxResultProject = ""
+        claudeInboxResultSelection = ""
+        claudeInboxStatus = "Vérification du projet et lecture du registre…"
+        setupCommand(["claude-inbox-list", "--project", project]) { result in
+            guard generation == self.claudeInboxGeneration,
+                  project == self.integrationProject.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+            guard result["status"] as? String == "ok",
+                  result["project"] is String,
+                  let tasks = result["tasks"] as? [[String: Any]] else {
+                self.claudeInboxTasks = []
+                self.claudeInboxStatus = (result["message"] as? String ?? "Registre indisponible ou liaison projet non confirmée.")
+                    + " État actuel : " + (result["status"] as? String ?? "indisponible") + "."
+                return
+            }
+            self.claudeInboxTasks = tasks
+            self.claudeInboxStatus = tasks.isEmpty
+                ? "Aucune tâche dans le registre de ce projet."
+                : "\(tasks.count) tâche(s) du projet vérifié. Aucun prompt ni secret n’est affiché."
+        }
+    }
+
+    func readClaudeInboxResult() {
+        guard stateReady, !setupBusy else { return }
+        let project = integrationProject.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = claudeInboxSelection
+        guard !project.isEmpty, !key.isEmpty,
+              claudeInboxTasks.contains(where: {
+                  $0["request_key"] as? String == key && $0["result_available"] as? Bool == true
+              }) else {
+            claudeInboxStatus = "Sélectionnez une tâche affichée comme résultat disponible."
+            return
+        }
+        claudeInboxGeneration &+= 1
+        let generation = claudeInboxGeneration
+        claudeInboxResult = [:]
+        claudeInboxResultProject = ""
+        claudeInboxResultSelection = ""
+        claudeInboxStatus = "Lecture intégrale et vérification SHA-256…"
+        setupCommand(["claude-inbox-read", "--project", project, "--request-key", key]) { result in
+            guard generation == self.claudeInboxGeneration,
+                  project == self.integrationProject.trimmingCharacters(in: .whitespacesAndNewlines),
+                  key == self.claudeInboxSelection else { return }
+            guard result["status"] as? String == "ok",
+                  result["project"] is String,
+                  result["request_key"] as? String == key,
+                  result["answer"] is String,
+                  result["result_sha256"] is String,
+                  result["total_length"] is Int else {
+                self.claudeInboxStatus = (result["message"] as? String ?? "Résultat indisponible ou changé pendant la collecte.")
+                    + " État actuel : " + (result["status"] as? String ?? "indisponible") + "."
+                return
+            }
+            self.claudeInboxResult = result
+            self.claudeInboxResultProject = project
+            self.claudeInboxResultSelection = key
+            self.claudeInboxStatus = "Résultat intégral collecté et vérifié ; examinez-le avant acquittement."
+        }
+    }
+
+    func acknowledgeClaudeInboxResult() {
+        guard stateReady, !setupBusy,
+              claudeInboxResultProject == integrationProject.trimmingCharacters(in: .whitespacesAndNewlines),
+              claudeInboxResultSelection == claudeInboxSelection,
+              let sha = claudeInboxResult["result_sha256"] as? String,
+              let length = claudeInboxResult["total_length"] as? Int,
+              claudeInboxResult["acknowledged"] as? Bool != true else {
+            claudeInboxStatus = "Relisez le résultat sélectionné avant de l’acquitter."
+            return
+        }
+        let project = claudeInboxResultProject
+        let key = claudeInboxResultSelection
+        claudeInboxGeneration &+= 1
+        let generation = claudeInboxGeneration
+        claudeInboxStatus = "Vérification du même SHA puis acquittement explicite…"
+        setupCommand(["claude-inbox-ack", "--project", project, "--request-key", key,
+                      "--result-sha256", sha, "--total-length", String(length), "--confirm-viewed"]) { result in
+            guard generation == self.claudeInboxGeneration,
+                  project == self.integrationProject.trimmingCharacters(in: .whitespacesAndNewlines),
+                  key == self.claudeInboxSelection else { return }
+            guard result["status"] as? String == "ok",
+                  result["result_sha256"] as? String == sha,
+                  result["total_length"] as? Int == length,
+                  result["acknowledged"] as? Bool == true else {
+                self.claudeInboxStatus = (result["message"] as? String ?? "Acquittement non confirmé ; relisez et actualisez le résultat.")
+                    + " État actuel : " + (result["status"] as? String ?? "indisponible") + "."
+                if result["status"] as? String == "result_changed" {
+                    self.claudeInboxResult = [:]
+                    self.claudeInboxResultProject = ""
+                    self.claudeInboxResultSelection = ""
+                }
+                return
+            }
+            self.claudeInboxResult["acknowledged"] = true
+            for index in self.claudeInboxTasks.indices where self.claudeInboxTasks[index]["request_key"] as? String == key {
+                self.claudeInboxTasks[index]["acknowledged"] = true
+            }
+            self.claudeInboxStatus = "Résultat consulté et acquitté explicitement."
+        }
     }
 
     func saveAAKey() {
@@ -48,7 +333,29 @@ extension App {
 
     func refreshClaudeQuota() {
         guard stateReady, !setupBusy else { return }
-        setupCommand(["claude-quota-status"]) { self.claudeQuotaState = $0 }
+        guard runtimeError == nil else {
+            claudeQuotaSourceObservation = [:]
+            claudeQuotaSourceStatus = runtimeError ?? "Runtime indisponible."
+            return
+        }
+        // Clear first so a failed refresh never leaves an older reset looking current.
+        claudeQuotaSourceObservation = [:]
+        claudeQuotaSourceStatus = "Lecture bornée du journal renderer Claude…"
+        setupCommand(["claude-quota-status", "--observe-renderer-log"]) { result in
+            var quotaState = result
+            let sourceObservation = quotaState.removeValue(forKey: "source_observation") as? [String: Any]
+            self.claudeQuotaState = quotaState
+            guard let sourceObservation,
+                  sourceObservation["schema_version"] as? Int == 1,
+                  sourceObservation["source"] as? String == "claude.renderer_log" else {
+                self.claudeQuotaSourceObservation = [:]
+                self.claudeQuotaSourceStatus = (result["message"] as? String)
+                    ?? "Lecture du journal indisponible ; aucune observation récente n’est affichée."
+                return
+            }
+            self.claudeQuotaSourceObservation = sourceObservation
+            self.claudeQuotaSourceStatus = "Observation locale reçue."
+        }
     }
     func configureClaudeQuota(_ enabled: Bool, transport: String? = nil) {
         guard stateReady, !setupBusy else { return }
@@ -65,6 +372,14 @@ extension App {
         integrationAcknowledged = false
         integrationResult = nil
         integrationVerification = nil
+    }
+    func invalidateClaudeIntegrationPlan() {
+        claudeIntegrationPlan = nil
+        claudeIntegrationAcknowledged = false
+        let status = claudeIntegrationResult["status"] as? String
+        if !["completed", "verified", "inspected"].contains(status ?? "") {
+            claudeIntegrationResult = [:]
+        }
     }
     func chooseIntegrationDirectory(project: Bool) {
         guard stateReady, !setupBusy else { return }
@@ -223,8 +538,10 @@ struct Integrations: View {
             }
             SchedulerService(app: app)
             SettingsCard(title: "Connecteur Claude Desktop",
-                         status: app.claudeIntegrationResult["status"] as? String == "completed" ? "Installé" : "État inconnu",
-                         ok: app.claudeIntegrationResult["status"] as? String == "completed") {
+                         status: app.claudeIntegrationResult["status"] as? String == "verified" ? "Release vérifiée" :
+                             app.claudeIntegrationResult["status"] as? String == "completed" ?
+                                 ((app.claudeIntegrationResult["action"] as? String == "remove") ? "Retrait appliqué" : "Plan appliqué") : "État inconnu",
+                         ok: ["completed", "verified"].contains(app.claudeIntegrationResult["status"] as? String ?? "")) {
                 HStack {
                     path("Projet autorisé", app.integrationProject)
                     Spacer()
@@ -241,15 +558,115 @@ struct Integrations: View {
                     detail: "Un seul connecteur suffit : il reçoit les tâches, rend les résultats et demande une expertise aux autres harness configurés. L’exécution Python est incluse ; aucun Python système n’est requis. Dans Claude, autorisez les outils du connecteur reprise-harness. Reprise ne peut pas accorder ces autorisations à votre place et n’arrête pas Claude : la nouvelle configuration y est chargée après un rechargement. Une vérification de version ne prouve pas le chargement dans Claude ; le déclenchement Quick Apply reste une capacité distincte.",
                     detailLabel: "Autorisations et limites")
                 Toggle("Remplacer le connecteur Reprise déjà reconnu (sauvegardé)", isOn: $app.claudeReplaceProbe)
+                if app.claudeIntegrationPlan?["action"] as? String != "remove" {
+                    Picker("Outil d’attente await_task", selection: $app.claudeAwaitChoice) {
+                        Text("Conserver le réglage actuel").tag("preserve")
+                        Text("Activer").tag("enable")
+                        Text("Désactiver").tag("disable")
+                    }
+                    SettingsHint(
+                        text: "Le choix s’applique à l’installation ou à la mise à jour du connecteur.",
+                        detail: "Conserver préserve le réglage géré actuel ; pour une nouvelle installation, await_task reste désactivé. Cette option ne change pas get_task, submit_result ni get_result.",
+                        detailLabel: "Réglage await_task")
+                } else {
+                    SettingsHint(text: "Le retrait du connecteur n’utilise pas le réglage await_task.")
+                }
                 if let plan = app.claudeIntegrationPlan {
                     SettingsHint(text: "Un plan est prêt ; il attend votre accord.",
                                  detail: planDetail(plan), detailLabel: "Plan exact du connecteur")
+                    if plan["action"] as? String == "install" {
+                        let awaitLabel = plan["enable_await"] as? Bool == true ? "activé" : "désactivé"
+                        let preview = "Aperçu : await_task est " + awaitLabel + " dans cette configuration."
+                        Text(preview).font(.caption)
+                    } else {
+                        Text("Aperçu : l’entrée gérée sera retirée ; le réglage await_task ne s’applique pas.").font(.caption)
+                    }
                     Toggle("J’ai vérifié le projet et les changements du connecteur", isOn: $app.claudeIntegrationAcknowledged)
                     Button("Appliquer le plan") { app.applyClaudeIntegration() }.disabled(!app.claudeIntegrationAcknowledged)
+                }
+                if app.claudeIntegrationResult["status"] as? String == "completed" {
+                    let changed = app.claudeIntegrationResult["changed"] as? Bool == true
+                    let action = app.claudeIntegrationResult["action"] as? String ?? "install"
+                    let enabled = app.claudeIntegrationResult["enable_await"] as? Bool == true
+                    if action == "remove" {
+                        SettingsHint(text: changed ? "Connecteur retiré de la configuration locale." : "Le connecteur était déjà retiré.",
+                                     detail: "Le réglage await_task n’a pas été utilisé. Chargement par Claude Desktop : non observé.",
+                                     detailLabel: "Dernier résultat")
+                    } else {
+                        SettingsHint(text: changed ? "Configuration locale écrite ; await_task est " + (enabled ? "activé." : "désactivé.")
+                                                   : "Configuration locale déjà conforme ; aucune écriture. await_task est " + (enabled ? "activé." : "désactivé."),
+                                     detail: "Ce résultat concerne le dernier plan appliqué. Chargement par Claude Desktop : non observé ; recharger Claude et vérifier l’outil dans le client.",
+                                     detailLabel: "Dernier résultat")
+                    }
+                } else if app.claudeIntegrationResult["status"] as? String == "verified" {
+                    let exposed = app.claudeIntegrationResult["await_tool_exposed"] as? Bool == true
+                    SettingsHint(text: "Vérification locale : await_task " + (exposed ? "exposé" : "désactivé") + " dans la release testée.",
+                                 detail: "La release a répondu à initialize/tools/list sans inférence. Chargement par Claude Desktop : non observé ; recharger Claude et vérifier l’outil dans le client.",
+                                 detailLabel: "Dernière vérification")
+                } else if app.claudeIntegrationResult["status"] as? String == "inspected" {
+                    if app.claudeIntegrationResult["managed"] as? Bool == true {
+                        let enabled = app.claudeIntegrationResult["enable_await"] as? Bool == true
+                        SettingsHint(text: "Réglage géré actuel : await_task " + (enabled ? "activé." : "désactivé."),
+                                     detail: "Inspection de la configuration locale ; chargement par Claude Desktop non observé.",
+                                     detailLabel: "Dernière inspection")
+                    } else {
+                        SettingsHint(text: "Aucun connecteur géré actif ; une nouvelle installation reste désactivée si vous choisissez Conserver.",
+                                     detailLabel: "Dernière inspection")
+                    }
                 }
                 if !app.claudeIntegrationResult.isEmpty {
                     SettingsHint(text: app.claudeIntegrationResult["message"] as? String ?? "Dernier résultat du connecteur.",
                                  detail: planDetail(app.claudeIntegrationResult), detailLabel: "Réponse complète")
+                }
+                Divider()
+                Text("Collecter un résultat").font(.headline)
+                SettingsHint(
+                    text: "La collecte lit le registre du socket déjà actif ; elle ne démarre ni service ni client Claude.",
+                    detail: "Reprise compare le projet sélectionné et l’empreinte d’état du socket au manifeste géré avant chaque opération. Cela vérifie le rattachement local, pas le chargement du connecteur dans Claude.",
+                    detailLabel: "Portée et preuve")
+                Button("Actualiser les tâches du projet") { app.refreshClaudeInbox() }
+                    .disabled(app.setupBusy || app.integrationProject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if !app.claudeInboxTasks.isEmpty {
+                    Picker("Tâche", selection: Binding(
+                        get: { app.claudeInboxSelection },
+                        set: { value in
+                            guard value != app.claudeInboxSelection else { return }
+                            app.claudeInboxSelection = value
+                            app.invalidateClaudeInboxSelection()
+                        })) {
+                        Text("Choisir une tâche…").tag("")
+                        ForEach(Array(app.claudeInboxTasks.enumerated()), id: \.offset) { entry in
+                            ClaudeInboxTaskOption(task: entry.element)
+                        }
+                    }
+                    Button("Lire intégralement et vérifier") { app.readClaudeInboxResult() }
+                        .disabled(app.setupBusy || app.claudeInboxSelection.isEmpty ||
+                                  !app.claudeInboxTasks.contains(where: {
+                                      $0["request_key"] as? String == app.claudeInboxSelection && $0["result_available"] as? Bool == true
+                                  }))
+                }
+                Text(app.claudeInboxStatus).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                if app.claudeInboxResultProject == app.integrationProject.trimmingCharacters(in: .whitespacesAndNewlines),
+                   app.claudeInboxResultSelection == app.claudeInboxSelection,
+                   let answer = app.claudeInboxResult["answer"] as? String,
+                   let sha = app.claudeInboxResult["result_sha256"] as? String,
+                   let length = app.claudeInboxResult["total_length"] as? Int {
+                    Text("Résultat complet · \(length) caractères dans la représentation vérifiée")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("SHA-256 : " + sha).font(.caption.monospaced()).textSelection(.enabled)
+                    ScrollView {
+                        Text(answer).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 260)
+                    .padding(8)
+                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                    if app.claudeInboxResult["acknowledged"] as? Bool == true {
+                        SettingsHint(text: "Ce résultat a été acquitté.")
+                    } else {
+                        Button("Acquitter après consultation") { app.acknowledgeClaudeInboxResult() }
+                            .disabled(app.setupBusy)
+                    }
                 }
             }.disabled(app.setupBusy)
             SettingsCard(title: "Reprise après quota Claude Desktop",
@@ -275,9 +692,12 @@ struct Integrations: View {
                     }.font(.caption)
                 }
                 if let observation = app.claudeQuotaState["observation"] as? [String: Any], let state = observation["status"] as? String {
-                    Text("Observation : " + state).font(.caption).foregroundStyle(.secondary)
+                    Text("Observation de reprise : " + state).font(.caption).foregroundStyle(.secondary)
                 }
-                Button("Actualiser le suivi") { app.refreshClaudeQuota() }
+                ClaudeQuotaRendererObservation(
+                    observation: app.claudeQuotaSourceObservation,
+                    fallbackStatus: app.claudeQuotaSourceStatus)
+                Button("Actualiser le suivi et lire le journal") { app.refreshClaudeQuota() }
             }.disabled(app.setupBusy).onAppear { app.refreshClaudeQuota() }
             if app.setupBusy { InlineStatus(busy: true, message: "Opération en cours…") }
             SettingsCard(title: "Appliquer la configuration",
@@ -339,5 +759,11 @@ struct Integrations: View {
         .onChange(of: app.integrationAgentRole) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationCodexWorkspaceWrite) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationDelegate) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.integrationProject) { _, _ in
+            app.invalidateClaudeIntegrationPlan()
+            app.invalidateClaudeInbox()
+        }
+        .onChange(of: app.claudeAwaitChoice) { _, _ in app.invalidateClaudeIntegrationPlan() }
+        .onChange(of: app.claudeReplaceProbe) { _, _ in app.invalidateClaudeIntegrationPlan() }
     }
 }

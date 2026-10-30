@@ -18,14 +18,19 @@ retour `None` plutôt qu'une valeur approximative.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import math
 import os
 import re
 from hashlib import sha256
+import stat
+from time import time as _now
+from zoneinfo import ZoneInfo
 
 LOG_PATH = os.path.expanduser("~/Library/Logs/Claude/claude.ai-web.log")
+MAX_LOG_BYTES = 2_000_000
+DEFAULT_EVENT_MAX_AGE = 300
 
 _LINE = re.compile(
     r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+\[error\]\s+\[COMPLETION\]")
@@ -37,17 +42,41 @@ _QUOTA_TYPES = {"exceeded_limit", "rate_limit"}
 CLIENT_SIDE_NOTE = "bouton d'envoi désactivé avec texte présent, aucun rejet serveur"
 
 
-def read_tail(path: str = LOG_PATH, max_bytes: int = 2_000_000) -> list[str]:
-    """Dernières lignes du journal, sans relire 4 Mo à chaque appel."""
+def _read_source(path: str, max_bytes: int):
+    """Bounded read with an explicit source status; never returns a path or raw text."""
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 1:
+        raise ValueError('Positive byte limit required')
+    max_bytes = min(max_bytes, MAX_LOG_BYTES)
+    descriptor = None
     try:
-        size = os.path.getsize(path)
-        with open(path, "rb") as handle:
+        flags = os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_CLOEXEC', 0)
+        descriptor = os.open(path, flags)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return 'unreadable', [], False, 'unsupported_file_type'
+        handle = os.fdopen(descriptor, "rb")
+        descriptor = None  # The file object now owns the descriptor.
+        with handle:
+            size = os.fstat(handle.fileno()).st_size
+            truncated = size > max_bytes
+            budget = max_bytes
             if size > max_bytes:
                 handle.seek(size - max_bytes)
-                handle.readline()  # ligne tronquée par la fenêtre
-            return handle.read().decode("utf-8", "replace").splitlines()
+                skipped = handle.readline(budget)  # Drop a partial first line, still bounded.
+                budget -= len(skipped)
+            raw = handle.read(budget)
+        return 'readable', raw.decode("utf-8", "replace").splitlines(), truncated, None
+    except FileNotFoundError:
+        return 'absent', [], False, 'source_absent'
     except OSError:
-        return []
+        return 'unreadable', [], False, 'source_unavailable'
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def read_tail(path: str = LOG_PATH, max_bytes: int = MAX_LOG_BYTES) -> list[str]:
+    """Backwards-compatible bounded tail reader; absent/unreadable maps to []."""
+    return _read_source(path, max_bytes)[1]
 
 
 def _is_quota_type(value) -> bool:
@@ -78,50 +107,167 @@ def _completion_payload(line: str, start: int) -> dict | None:
     return nested if isinstance(nested, dict) and _is_quota_type(nested.get("type")) else None
 
 
-def latest(path: str = LOG_PATH, now: float | None = None) -> dict | None:
-    """Dernier événement quota reconnu, sans exposer le contenu du journal.
+def _valid_source_datetime(value):
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    except (OverflowError, OSError, ValueError):
+        return None
 
-    Les erreurs sans type quota ne lèvent pas un événement quota antérieur.
-    `blocked` n'est qu'un indice historique avec reset futur; compte, pool et
-    état courant restent inconnus.
-    """
-    from time import time as _now
 
-    current = _now() if now is None else now
-    for line in reversed(read_tail(path)):
+def _source_epoch(value, source_zone):
+    """Resolve a timezone-less producer timestamp only with an attested IANA zone."""
+    local = _valid_source_datetime(value)
+    if local is None:
+        return None, 'invalid'
+    if not isinstance(source_zone, ZoneInfo):
+        return None, 'unknown_timezone'
+    candidates = set()
+    for fold in (0, 1):
+        aware = local.replace(tzinfo=source_zone, fold=fold)
+        try:
+            epoch = aware.timestamp()
+            roundtrip = datetime.fromtimestamp(epoch, source_zone).replace(tzinfo=None)
+        except (OverflowError, OSError, ValueError):
+            continue
+        if roundtrip == local:
+            candidates.add(epoch)
+    if not candidates:
+        return None, 'nonexistent_local_time'
+    if len(candidates) != 1:
+        return None, 'ambiguous_local_time'
+    return next(iter(candidates)), 'known'
+
+
+def _valid_reset(value):
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    try:
+        epoch = float(value)
+        if not math.isfinite(epoch) or epoch <= 0:
+            return None
+        datetime.fromtimestamp(epoch, timezone.utc)
+        return epoch
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _finite_number(value):
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _latest_from_lines(lines, current, source_zone=None):
+    for line in reversed(lines):
         match = _LINE.match(line)
         if not match:
             continue
         payload = _completion_payload(line, match.end())
         if payload is None:
             continue
-        kind = payload.get("type")
-        reset = payload.get("resetsAt")
-        epoch = None
-        if isinstance(reset, (int, float)) and not isinstance(reset, bool):
-            try:
-                candidate = float(reset)
-                if math.isfinite(candidate):
-                    # Ensure downstream datetime conversions can represent it.
-                    datetime.fromtimestamp(candidate)
-                    epoch = candidate
-            except (OverflowError, OSError, ValueError):
-                pass
-        try:
-            observed = datetime.strptime(
-                match.group("ts"), "%Y-%m-%d %H:%M:%S").timestamp()
-        except (OverflowError, OSError, ValueError):
+        # Invalid wall-clock text is not ordered evidence; an unknown timezone is.
+        source_local = _valid_source_datetime(match.group('ts'))
+        if source_local is None:
             continue
-        expired = epoch is not None and epoch <= current
+        source_observed_at, source_timestamp_status = _source_epoch(match.group('ts'), source_zone)
+        reset = _valid_reset(payload.get('resetsAt'))
+        expired = reset is not None and reset <= current
         return {
-            "type": kind,
-            "resets_at": epoch,
-            "observed_at": observed,
-            "expired": expired if epoch is not None else None,
-            "blocked": True if epoch is not None and epoch > current else None,
+            "type": payload.get("type"),
+            "resets_at": reset,
+            # Legacy alias retained. It is None until the producer timezone is attested.
+            "observed_at": source_observed_at,
+            "source_observed_at": source_observed_at,
+            "source_timestamp_status": source_timestamp_status,
+            "expired": expired if reset is not None else None,
+            "blocked": True if reset is not None and reset > current else None,
             "evidence_sha256": sha256(line.encode("utf-8", "replace")).hexdigest(),
         }
-    return None
+
+
+def latest(path: str = LOG_PATH, now: float | None = None,
+           source_zone=None) -> dict | None:
+    """Dernier événement quota reconnu, sans exposer le contenu du journal.
+
+    Les erreurs sans type quota ne lèvent pas un événement quota antérieur.
+    `blocked` n'est qu'un indice historique avec reset futur; compte, pool et
+    état courant restent inconnus.
+    """
+    current = _now() if now is None else now
+    return _latest_from_lines(read_tail(path), current, source_zone)
+
+
+def source_observation(path: str = LOG_PATH, now: float | None = None,
+                       source_zone=None, max_bytes: int = MAX_LOG_BYTES,
+                       event_max_age: float = DEFAULT_EVENT_MAX_AGE) -> dict:
+    """Explicit, normalized renderer-log observation; never establishes current quota.
+
+    ``source_zone`` is accepted only when the producer's IANA timezone is attested.
+    The local machine timezone is deliberately not inferred as the producer timezone.
+    ``observed_at`` is this read time; ``source_observed_at`` is the event time, if
+    unambiguous. No line text, account, chat, pool, percentage, or current availability
+    is returned.
+    """
+    read_at = _now() if now is None else now
+    if not _finite_number(read_at):
+        raise ValueError('Finite read timestamp required')
+    if not _finite_number(event_max_age) or event_max_age < 1:
+        raise ValueError('Positive finite event age required')
+    read_status, lines, truncated, failure = _read_source(path, max_bytes)
+    zone_name = source_zone.key if isinstance(source_zone, ZoneInfo) else None
+    result = {
+        'schema_version': 1, 'engine': 'claude-desktop', 'source': 'claude.renderer_log',
+        'source_status': read_status, 'event_status': 'not_checked',
+        'observation_status': read_status, 'observed_at': float(read_at),
+        'source_observed_at': None, 'source_timezone': zone_name,
+        'source_timestamp_status': 'unknown_timezone' if zone_name is None else 'unknown',
+        'event_type': None, 'event_age_seconds': None, 'event_freshness': 'unknown',
+        'event_max_age_seconds': float(event_max_age), 'resets_at': None,
+        'reset_relation': 'unknown', 'current_quota_status': 'unknown',
+        'current_blocked': None, 'current_available': None,
+        'account_id': None, 'account_key': None, 'chat_id': None, 'session_key': None,
+        'pool_id': None, 'quota_pool_key': None, 'used_percent': None,
+        'remaining_percent': None, 'duration_minutes': None,
+        'truncated': truncated,
+        'issues': ['account_unattributed', 'chat_unattributed', 'pool_unattributed',
+                   'quantity_unreported', 'current_quota_unknown'],
+    }
+    if read_status != 'readable':
+        result['event_status'] = 'not_checked'
+        result['failure'] = failure
+        return result
+    if truncated:
+        result['issues'].append('tail_truncated')
+    entry = _latest_from_lines(lines, float(read_at), source_zone)
+    if entry is None:
+        result['event_status'] = 'no_event_in_tail' if truncated else 'no_event'
+        result['observation_status'] = result['event_status']
+        return result
+    source_time = entry['source_observed_at']
+    age = float(read_at) - source_time if source_time is not None else None
+    if age is None:
+        freshness = 'unknown'
+    elif age < 0:
+        freshness = 'clock_skew'
+    elif age > event_max_age:
+        freshness = 'stale'
+    else:
+        freshness = 'recent'
+    reset = entry['resets_at']
+    result.update(event_status='recognized', observation_status='observed',
+        source_observed_at=source_time,
+        source_timestamp_status=entry['source_timestamp_status'],
+        event_type=entry['type'], event_age_seconds=age, event_freshness=freshness,
+        resets_at=reset,
+        reset_relation=('future_at_read' if reset > read_at else 'elapsed_at_read') if reset is not None else 'unknown')
+    if source_time is None:
+        result['issues'].append(entry['source_timestamp_status'])
+    if reset is None:
+        result['issues'].append('reset_unreported_or_invalid')
+    return result
 
 
 def hhmm_from_text(text: str) -> str | None:
@@ -142,14 +288,15 @@ def corroborates(resets_at: float, text: str, zone) -> bool:
     return f"{hour:02d}:{minute:02d}" == expected
 
 
-def observe(path: str = LOG_PATH, now: float | None = None, zone=None) -> dict:
+def observe(path: str = LOG_PATH, now: float | None = None, zone=None,
+            source_zone=None) -> dict:
     """Vue unifiée : ce que le journal permet d'affirmer, et à quelle heure.
 
     `source` vaut « journal » quand un événement quota reconnu est trouvé.
     Aucune heure n'est déduite d'un « HH:MM » sans date : cette ambiguïté
     (aujourd'hui ou demain ?) est précisément ce que `parse_pause` refusait.
     """
-    entry = latest(path, now)
+    entry = latest(path, now, source_zone=source_zone)
     if entry is None:
         return {"source": "aucun", "blocked": None,
                 "detail": "journal illisible ou sans événement quota reconnu"}
@@ -164,14 +311,14 @@ def observe(path: str = LOG_PATH, now: float | None = None, zone=None) -> dict:
 
 
 def observation(path: str = LOG_PATH, now: float | None = None,
-                engine: str = "claude-desktop") -> dict | None:
-    """Événement de quota au format attendu par `quota_knowledge`.
+                engine: str = "claude-desktop", source_zone=None) -> dict | None:
+    """Legacy event payload retained for compatibility; not a current quota status.
 
     `used_percent` reste **None** : le journal ne le publie pas, et l'inconnu
-    n'est pas zéro. Seule l'échéance est certaine, ce qui est précisément ce qui
-    manquait aux fenêtres Codex.
+    n'est pas zéro. New integrations should use `source_observation`, which also
+    separates read time from event time and does not expose a current blocked flag.
     """
-    entry = latest(path, now)
+    entry = latest(path, now, source_zone=source_zone)
     if entry is None:
         return None
     issues = ["used_percent_unreported", "source_renderer_log", "attribution_unknown"]
@@ -206,11 +353,10 @@ def observation(path: str = LOG_PATH, now: float | None = None,
 
 
 if __name__ == "__main__":
-    from datetime import timezone
     import argparse
 
     parser = argparse.ArgumentParser(description="Quota Claude Desktop depuis le journal.")
     parser.add_argument("--path", default=LOG_PATH)
     args = parser.parse_args()
-    print(json.dumps(observe(args.path, zone=timezone.utc), ensure_ascii=False, indent=2,
+    print(json.dumps(source_observation(args.path), ensure_ascii=False, indent=2,
                      default=str))

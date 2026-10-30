@@ -144,6 +144,10 @@ class Endpoint:
             if not self.tasks or args.keys() - {'request_key', 'acknowledge', 'view', 'offset', 'max_chars', 'result_sha256'} or 'request_key' not in args:
                 raise ValueError('Project-scoped result lookup required')
             return self.tasks.result(**args)
+        if name == 'quick_entry/list_tasks':
+            if not self.tasks or args.keys() - {'limit', 'cursor'}:
+                raise ValueError('Project-scoped task listing required')
+            return self.tasks.list_tasks(**args)
         if name == 'ping':
             return {}
         if name == 'quick_entry/requests':
@@ -306,7 +310,11 @@ def _serve(conn, endpoint):
             ident = message.get('id')
             if 'id' not in message:
                 continue
-            result = endpoint.call(message.get('method'), message.get('params') or {})
+            method = message.get('method')
+            params = message.get('params', {})
+            if method == 'quick_entry/list_tasks' and not isinstance(params, dict):
+                raise ValueError('Project-scoped task listing requires object params')
+            result = endpoint.call(method, params or {})
             reply = {'jsonrpc': '2.0', 'id': ident, 'result': result}
             stream.write((json.dumps(reply, ensure_ascii=False)+'\n').encode())
             stream.flush()

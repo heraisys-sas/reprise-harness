@@ -1,10 +1,15 @@
 """Project-scoped durable Desktop inbox. Admission is never proof of dispatch."""
 import hashlib
+import base64
+import binascii
+import json
 from pathlib import Path
 import sqlite3
 import uuid
 
 from delegation_store import receipt_view, validate_lookup
+
+SQLITE_INT_MAX = (1 << 63) - 1
 
 
 def bounded(value, name, maximum):
@@ -36,6 +41,26 @@ class TaskStore:
                 # Old rows do not record whether a claim was actually handed over. Treat
                 # any persisted claim/attempt/result as uncertain and never redeliver it.
                 self.db.execute("UPDATE desktop_tasks SET delivery='attempted' WHERE claim_key IS NOT NULL OR attempt_id IS NOT NULL OR answer IS NOT NULL")
+            order_table_exists = self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='desktop_task_order'").fetchone() is not None
+            order_trigger_exists = self.db.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='desktop_tasks_order_after_insert'").fetchone() is not None
+            self.db.execute('''CREATE TABLE IF NOT EXISTS desktop_task_order(
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope TEXT NOT NULL, request_key TEXT NOT NULL,
+                UNIQUE(scope,request_key))''')
+            self.db.execute('CREATE INDEX IF NOT EXISTS desktop_task_order_scope_seq ON desktop_task_order(scope,seq)')
+            if not order_table_exists or not order_trigger_exists:
+                # Legacy tasks have no trustworthy creation timestamp. Give them a
+                # deterministic registry order; this does not claim historical chronology.
+                self.db.execute('''INSERT OR IGNORE INTO desktop_task_order(scope,request_key)
+                    SELECT scope,request_key FROM desktop_tasks ORDER BY scope,request_key''')
+            # Older Reprise daemons still write desktop_tasks directly. Keep their
+            # inserts visible in the registry after the migration has committed.
+            self.db.execute('''CREATE TRIGGER IF NOT EXISTS desktop_tasks_order_after_insert
+                AFTER INSERT ON desktop_tasks
+                BEGIN
+                    INSERT OR IGNORE INTO desktop_task_order(scope,request_key)
+                    VALUES(NEW.scope,NEW.request_key);
+                END''')
             self.db.commit()
         except Exception:
             self.db.rollback()
@@ -52,6 +77,76 @@ class TaskStore:
 
     def _row(self, key):
         return self.db.execute('SELECT prompt,chat_id,claim_key,attempt_id,answer,acknowledged,delivery FROM desktop_tasks WHERE scope=? AND request_key=?', (self.scope,key)).fetchone()
+
+    def list_tasks(self, limit=50, cursor=None):
+        """List metadata for this project using a stable insertion watermark.
+
+        Cursors are opaque pagination tokens, not authenticated security boundaries.
+        Project authorization comes from the bound TaskStore scope and private socket.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError('Limit must be an integer from 1 to 100')
+        scope_hash = hashlib.sha256(self.scope.encode()).hexdigest()
+        high_water = None
+        before_seq = None
+        if cursor is not None:
+            if not isinstance(cursor, str) or len(cursor) > 1024:
+                raise ValueError('Invalid task cursor')
+            try:
+                token = cursor.encode('ascii')
+                padded = token + b'=' * (-len(token) % 4)
+                raw = base64.b64decode(padded, altchars=b'-_', validate=True)
+                if base64.urlsafe_b64encode(raw).rstrip(b'=') != token:
+                    raise ValueError('Non-canonical task cursor')
+                def unique_object(pairs):
+                    result = {}
+                    for key, value in pairs:
+                        if key in result:
+                            raise ValueError('Duplicate task cursor key')
+                        result[key] = value
+                    return result
+                decoded = json.loads(raw, object_pairs_hook=unique_object)
+                if (not isinstance(decoded, dict) or set(decoded) != {'v', 'scope', 'high', 'before'} or
+                        type(decoded.get('v')) is not int or decoded.get('v') != 1 or
+                        decoded.get('scope') != scope_hash or
+                        isinstance(decoded.get('high'), bool) or not isinstance(decoded.get('high'), int) or
+                        isinstance(decoded.get('before'), bool) or not isinstance(decoded.get('before'), int) or
+                        decoded['high'] < 0 or decoded['high'] > SQLITE_INT_MAX or
+                        decoded['before'] < 1 or decoded['before'] > decoded['high']):
+                    raise ValueError
+                high_water, before_seq = decoded['high'], decoded['before']
+            except (ValueError, TypeError, UnicodeError, binascii.Error) as error:
+                raise ValueError('Invalid or foreign task cursor') from error
+        try:
+            # A deferred read transaction preserves one high-water snapshot without
+            # taking SQLite's writer reservation while tasks are being listed.
+            self.db.execute('BEGIN')
+            if high_water is None:
+                high_water = self.db.execute('SELECT COALESCE(MAX(seq),0) FROM desktop_task_order WHERE scope=?', (self.scope,)).fetchone()[0]
+                before_seq = None
+            rows = self.db.execute('''SELECT o.seq,o.request_key,t.delivery,(t.answer IS NOT NULL),t.acknowledged
+                FROM desktop_task_order o JOIN desktop_tasks t
+                ON t.scope=o.scope AND t.request_key=o.request_key
+                WHERE o.scope=? AND o.seq<=? AND (? IS NULL OR o.seq<?)
+                ORDER BY o.seq DESC LIMIT ?''', (self.scope,high_water,before_seq,before_seq,limit + 1)).fetchall()
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        items = []
+        for seq, request_key, delivery, result_available, acknowledged in rows:
+            state = 'recorded' if result_available else (delivery or 'admitted')
+            items.append({'request_key': request_key, 'state': state,
+                          'result_available': bool(result_available),
+                          'acknowledged': bool(acknowledged)})
+        next_cursor = None
+        if has_more:
+            payload = json.dumps({'v': 1, 'scope': scope_hash, 'high': high_water,
+                                  'before': rows[-1][0]}, separators=(',', ':')).encode()
+            next_cursor = base64.urlsafe_b64encode(payload).decode().rstrip('=')
+        return {'tasks': items, 'next_cursor': next_cursor, 'high_water': high_water}
 
     def admit(self, request_key, prompt, chat_id=None):
         bounded(request_key, 'request_key', 128)

@@ -18,7 +18,7 @@ SOURCE = Path(__file__).parents[1]
 class PackageHelpersTests(unittest.TestCase):
     def test_desktop_apply_assets_preserve_current_packaging(self):
         for name in ('CLAUDE-DESKTOP-APPLY.md', 'claude_desktop_apply.py',
-                     'claude_quota_log.py', 'websocket_transport.py', 'claude_session_store.py', 'claude_session_observer.py', 'managed_update.py',
+                     'claude_quota_log.py', 'claude_cdp_pipe.py', 'claude_inbox.py', 'websocket_transport.py', 'claude_session_store.py', 'claude_session_observer.py', 'managed_update.py',
                      'delegation_reconcile.py'):
             self.assertIn(name, ASSETS)
 
@@ -33,7 +33,7 @@ class PackageHelpersTests(unittest.TestCase):
             root = moved / 'Contents/Resources/helpers'
             manifest = json.loads((root / 'payload-manifest.json').read_text())
             self.assertEqual(manifest['runtime'], 'external-python-required')
-            imported = subprocess.run([sys.executable, '-c', 'import codex_expert_mcp, claude_desktop_apply, websocket_transport, claude_session_store, claude_session_observer'],
+            imported = subprocess.run([sys.executable, '-c', 'import codex_expert_mcp, claude_desktop_apply, claude_inbox, websocket_transport, claude_session_store, claude_session_observer'],
                                       cwd=root, capture_output=True, text=True)
             self.assertEqual(imported.returncode, 0, imported.stderr)
             self.assertTrue((root / 'install-ux-review.py').is_file())
