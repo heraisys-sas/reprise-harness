@@ -37,7 +37,7 @@ python3 -m unittest discover -s agent-resume/tests -q
 
 Le serveur `agent-resume/claude_desktop_quick.py` accepte, sur un socket UNIX privé, des charges utiles Quick Entry validées (prompt, images, fichiers, chat cible) sans plafond quotidien local de soumissions. Il ne pilote pas l’interface de Claude Desktop : la soumission réelle dans l’overlay Quick Entry exige des autorisations macOS (Accessibilité, Capture d’écran) accordées par l’opérateur, et reste du ressort d’un pilote supervisé.
 
-L’installateur historique écrit le LaunchAgent `com.example.reprise.quick-entry`. Sans `RunAtLoad`, `KeepAlive` ou déclencheur, son chargement seul ne programme pas un démarrage au login. L’écriture du plist ne démarre aucun daemon. Pour démarrer explicitement le daemon, utiliser `python3 agent-resume/resume quick-apply-daemon-start` ; vérifier avec `quick-apply-daemon-status`. Les identifiants historiques `quick-entry` restent utilisés dans les chemins et le protocole.
+L’installateur historique écrit le LaunchAgent `com.example.reprise.quick-entry`. Sans `RunAtLoad`, `KeepAlive` ou déclencheur, son chargement seul ne programme pas un démarrage au login. L’écriture du plist ne démarre aucun daemon. Pour démarrer explicitement le daemon, utiliser `python3 agent-resume/reprise quick-apply-daemon-start` ; vérifier avec `quick-apply-daemon-status`. Les identifiants historiques `quick-entry` restent utilisés dans les chemins et le protocole.
 
 Installation (écriture du plist uniquement, sans démarrage) :
 
@@ -73,7 +73,7 @@ Reprise lit les journaux locaux de Claude Desktop (aucune permission d’écran,
 
 Une couche **générative optionnelle** (`FoundationExplain.swift`, API Foundation Models sur l’appareil) explique l’activité et les actions humaines. Elle se désactive proprement si le modèle est indisponible ; la couche déterministe reste la source de vérité. Aucun de ces composants ne pilote l’interface ni n’automatise la soumission Quick Entry — cela exige des autorisations macOS accordées séparément par l’opérateur.
 
-Exposition : outils MCP `reprise_resume`, `reprise_history`, `reprise_health` ; sous-commandes CLI `./resume reprise-resume|reprise-history|reprise-health|health-watch` ; onglet **Santé post-update** dans l’application.
+Exposition : outils MCP `reprise_resume`, `reprise_history`, `reprise_health` ; sous-commandes CLI `./reprise reprise-resume|reprise-history|reprise-health|health-watch` ; onglet **Santé post-update** dans l’application.
 
 ## Redémarrage de la chaîne
 

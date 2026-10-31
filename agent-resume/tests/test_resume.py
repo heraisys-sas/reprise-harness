@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 import scheduler
 import claude_quota_log
 
-loader = importlib.machinery.SourceFileLoader('resume', str(Path(__file__).parents[1] / 'resume'))
+loader = importlib.machinery.SourceFileLoader('reprise', str(Path(__file__).parents[1] / 'reprise'))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 module = importlib.util.module_from_spec(spec)
 loader.exec_module(module)
@@ -50,7 +50,7 @@ class SchedulerTests(unittest.TestCase):
             import json
             import zipfile
             env = dict(os.environ, AGENT_RESUME_STATE=folder + '/first')
-            script = str(Path(__file__).parents[1] / 'resume')
+            script = str(Path(__file__).parents[1] / 'reprise')
             prompt = Path(folder) / 'prompt'
             prompt.write_text('private prompt')
             def run(*args):
@@ -71,7 +71,7 @@ class SchedulerTests(unittest.TestCase):
     def test_add_accepts_z_suffix_and_offsets_but_rejects_missing_timezone(self):
         with tempfile.TemporaryDirectory() as folder:
             import os
-            script = str(Path(__file__).parents[1] / 'resume')
+            script = str(Path(__file__).parents[1] / 'reprise')
             prompt = Path(folder) / 'prompt'
             prompt.write_text('continue')
             env = dict(os.environ, AGENT_RESUME_STATE=folder + '/state')
@@ -89,7 +89,7 @@ class SchedulerTests(unittest.TestCase):
 
     def test_claude_inbox_cli_dispatches_each_operation_without_manifest(self):
         with tempfile.TemporaryDirectory() as folder:
-            script = str(Path(__file__).parents[1] / 'resume')
+            script = str(Path(__file__).parents[1] / 'reprise')
             for operation, args in (('list', []), ('read', ['--request-key', 'request-1']),
                                     ('ack', ['--request-key', 'request-1', '--result-sha256', '0' * 64,
                                              '--total-length', '10', '--confirm-viewed'])):
@@ -103,7 +103,7 @@ class SchedulerTests(unittest.TestCase):
     def test_desktop_apply_cli_help_is_available_without_transport(self):
         with tempfile.TemporaryDirectory() as folder:
             import os
-            script = str(Path(__file__).parents[1] / 'resume')
+            script = str(Path(__file__).parents[1] / 'reprise')
             result = subprocess.run([script, 'desktop-apply', '--help'],
                                     env=dict(os.environ, HOME=folder), cwd=folder,
                                     text=True, capture_output=True)
@@ -118,7 +118,7 @@ class ClaudeQuotaStatusCLITests(unittest.TestCase):
             output = io.StringIO()
             with patch.object(module, 'STATE', Path(folder)), \
                  patch.object(module, 'codex_executable', return_value=None), \
-                 patch.object(sys, 'argv', ['resume', 'claude-quota-status', *args]), \
+                 patch.object(sys, 'argv', ['reprise', 'claude-quota-status', *args]), \
                  patch.object(claude_quota_log, 'source_observation', source_reader), \
                  contextlib.redirect_stdout(output):
                 module.main()
@@ -473,7 +473,7 @@ class AutomaticSchedulerTests(unittest.TestCase):
         """claude-quota-config --transport cdp est accepté."""
         with tempfile.TemporaryDirectory() as folder:
             db_path = Path(folder) / 'tasks.db'
-            script = str(Path(__file__).parents[1] / 'resume')
+            script = str(Path(__file__).parents[1] / 'reprise')
             result = subprocess.run(
                 [script, 'claude-quota-config', '--transport', 'cdp', '--enabled', 'true'],
                 env=dict(os.environ, HOME=folder),
@@ -481,6 +481,20 @@ class AutomaticSchedulerTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             data = json.loads(result.stdout)
             self.assertTrue(data['claude_desktop_auto_enabled'])
+
+class DeprecatedAliasTests(unittest.TestCase):
+    def test_resume_alias_warns_on_stderr_and_delegates_to_reprise(self):
+        root = Path(__file__).parents[1]
+        with tempfile.TemporaryDirectory() as folder:
+            env = dict(os.environ, HOME=folder, AGENT_RESUME_STATE=folder + '/state')
+            direct = subprocess.run([str(root / 'reprise'), 'scheduler-status'], env=env, cwd=folder,
+                                    text=True, capture_output=True)
+            alias = subprocess.run([str(root / 'resume'), 'scheduler-status'], env=env, cwd=folder,
+                                   text=True, capture_output=True)
+        self.assertEqual(alias.returncode, direct.returncode, alias.stderr)
+        self.assertEqual(alias.stdout, direct.stdout)
+        self.assertEqual(alias.stderr.strip(), 'resume est déprécié, utiliser reprise')
+
 
 if __name__ == '__main__':
     unittest.main()

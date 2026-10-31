@@ -333,7 +333,7 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(observer.status(self.root, home=home)['status'], 'binding_mismatch')
 
     def test_cli_works_before_main_database_initialization(self):
-        executable = Path(__file__).parents[1] / 'resume'
+        executable = Path(__file__).parents[1] / 'reprise'
         state = self.base / 'cli-quick'
         env = dict(os.environ, HOME=str(self.base / 'unused-home'))
         env.pop('AGENT_RESUME_STATE', None)

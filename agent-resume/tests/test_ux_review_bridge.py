@@ -1,4 +1,4 @@
-"""`resume ux-review-config` is dispatched by the resume header, before the
+"""`reprise ux-review-config` is dispatched by the reprise header, before the
 heavy imports: a --check must never initialize the SQLite state, and every
 installer refusal must reach the operator as the JSON refusal contract
 ({'status': 'refused', 'message', 'recovery'}, exit 1), never a traceback.
@@ -28,7 +28,7 @@ class UxReviewBridgeTests(unittest.TestCase):
         self.environment = environment
 
     def run_bridge(self, *args, cwd=None):
-        return subprocess.run([sys.executable, str(ROOT / 'resume'), 'ux-review-config', *args],
+        return subprocess.run([sys.executable, str(ROOT / 'reprise'), 'ux-review-config', *args],
                               cwd=cwd if cwd is not None else self.folder, env=self.environment,
                               capture_output=True, text=True, timeout=30)
 

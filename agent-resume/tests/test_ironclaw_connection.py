@@ -127,12 +127,12 @@ class IronClawConnectionTests(unittest.TestCase):
         self.assertNotIn('tâche incertaine', message)
 
     def test_fail_is_reachable_from_resume_cli_dispatch(self):
-        # Issue #91 : le dispatch de `resume` doit router ironclaw-fail vers le module,
+        # Issue #91 : le dispatch de `reprise` doit router ironclaw-fail vers le module,
         # pas répondre « invalid choice » (argparse) avant d'y arriver.
         import subprocess
         state_install.initialize(self.state)
         process = subprocess.run(
-            [sys.executable, str(Path(__file__).resolve().parents[1] / 'resume'), 'ironclaw-fail'],
+            [sys.executable, str(Path(__file__).resolve().parents[1] / 'reprise'), 'ironclaw-fail'],
             input='{"request_key": "key", "reason": "sortie operateur"}',
             capture_output=True, text=True, timeout=60,
             env={**os.environ, 'AGENT_RESUME_STATE': str(self.state)})

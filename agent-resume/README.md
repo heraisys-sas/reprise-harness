@@ -39,11 +39,11 @@ L’analyse des sept tentatives locales distingue trois refus de dossier, deux s
 Reprise distingue maintenant le CLI Codex, un serveur Codex partagé existant et une délégation explicite à une session parente. Le serveur partagé transporte JSON-RPC dans WebSocket sur socket Unix. Aucun serveur de remplacement n’est lancé, aucun verrou n’est supprimé et aucun message n’est envoyé par le simple affichage d’une session.
 
 ```sh
-./resume engines
-./resume server-check --socket /chemin/prive/codex.sock
-./resume add --engine codex-server --socket /chemin/prive/codex.sock --session UUID --cwd /projet --at '2026-10-17T10:00:00+02:00' --prompt-file prompt.example.txt
-./resume add --engine codex-parent --socket /chemin/prive/codex.sock --parent UUID_PARENT --session UUID_ENFANT --cwd /projet --at '2026-10-17T10:00:00+02:00' --prompt-file prompt.example.txt
-./resume enable IDENTIFIANT_RETOURNE
+./reprise engines
+./reprise server-check --socket /chemin/prive/codex.sock
+./reprise add --engine codex-server --socket /chemin/prive/codex.sock --session UUID --cwd /projet --at '2026-10-17T10:00:00+02:00' --prompt-file prompt.example.txt
+./reprise add --engine codex-parent --socket /chemin/prive/codex.sock --parent UUID_PARENT --session UUID_ENFANT --cwd /projet --at '2026-10-17T10:00:00+02:00' --prompt-file prompt.example.txt
+./reprise enable IDENTIFIANT_RETOURNE
 ```
 
 Les ajouts restent en pause jusqu’à activation. `server-check` effectue uniquement la connexion et l’initialisation, sans appeler le modèle. La route `codex` choisit un socket existant ou le CLI ; un socket explicitement configuré ne déclenche jamais un repli vers un second processus. `engine-config codex --socket /chemin/prive/codex.sock` permet de fixer le transport des futures tentatives automatiques. Ne configurer que le serveur qui détient effectivement les sessions concernées.
@@ -68,7 +68,7 @@ La reprise automatique Codex traite les erreurs structurées `task_complete.erro
 
 Lorsqu’une interruption quota confirmée comporte une échéance structurée, le scheduler tente une seule continuation à cette échéance, sans mesure préalable obligatoire du quota. Les anciennes attentes repoussées par une mesure sont recalées sur cette échéance seulement si leur événement est inchangé et leur tentative non consommée. Sans échéance, une lecture espacée via `account/rateLimits/read`, sans requête au modèle, reste utilisée pour déterminer quand tenter la reprise. Un pourcentage, une échéance passée ou une admission ne prouvent ni récupération ni succès : seule la fin native du tour confirme son achèvement. Une nouvelle interruption quota constitue un nouvel événement avec sa propre échéance ; une tentative incertaine reste à réconcilier, sans rejeu. Aucun achat ni utilisation de clé API de secours. L’authentification ChatGPT, le fournisseur OpenAI, les permissions existantes et les contrôles de session restent requis ; une action nécessitant une approbation peut toujours bloquer.
 
-Le tableau de bord affiche l'état du service et les reprises en attente. `./resume scheduler-status` expose le même état ; `./resume auto-mode off` met l'automatisation en pause, `on` la réactive. Les arrêts volontaires, erreurs non liées au quota et interruptions anciennes ne sont pas repris automatiquement. Une tentative par interruption ; un échec demande examen. Les autres applications restent en détection seule.
+Le tableau de bord affiche l'état du service et les reprises en attente. `./reprise scheduler-status` expose le même état ; `./reprise auto-mode off` met l'automatisation en pause, `on` la réactive. Les arrêts volontaires, erreurs non liées au quota et interruptions anciennes ne sont pas repris automatiquement. Une tentative par interruption ; un échec demande examen. Les autres applications restent en détection seule.
 
 Validation : reproduction du format exact de l'erreur observée et tests de relance avec exécutable simulé, sans dépense de quota modèle. Un renouvellement réel futur reste à observer. La suite du document conserve l'historique des fonctions : les limitations des premières versions concernant la reprise Codex automatique sont remplacées par cette section.
 
@@ -83,10 +83,10 @@ Reprise différée d'une session Codex sur macOS. Python 3.11+ standard, SQLite,
 Décompresser le dossier dans un emplacement durable, puis :
 
 ```sh
-chmod +x resume
+chmod +x reprise
 codex login status
-./resume install
-./resume status
+./reprise install
+./reprise status
 ```
 
 Le service vérifie les échéances chaque minute. Le Mac doit être éveillé et connecté ; après veille, une tâche en retard est traitée au prochain passage. Le dossier du programme ne doit pas être déplacé sans réinstallation du service.
@@ -96,9 +96,9 @@ Le service vérifie les échéances chaque minute. Le Mac doit être éveillé e
 Prendre l'identifiant exact de la session sauvegardée et l'heure de réinitialisation affichée par Codex. Ajouter deux minutes de marge. Ne pas utiliser une session simultanément dans l'application et le scheduler.
 
 ```sh
-./resume add --session UUID --cwd /chemin/du/projet --at '2026-10-14T18:02:00+02:00' --prompt-file prompt.example.txt
-./resume enable IDENTIFIANT_RETOURNE
-./resume status
+./reprise add --session UUID --cwd /chemin/du/projet --at '2026-10-14T18:02:00+02:00' --prompt-file prompt.example.txt
+./reprise enable IDENTIFIANT_RETOURNE
+./reprise status
 ```
 
 Les tâches sont créées en pause. `pause ID` suspend une tâche qui n'est pas en cours. Chaque tâche activée s'exécute une fois. Une sortie CLI réussie signifie `finished`, pas une preuve que les tests du projet ont réussi. Les journaux sont dans `state/`. Les échecs restent `needs_review` sans boucle automatique. Après un arrêt brutal, `running` reste visible : vérifier la session avant de réactiver.
@@ -106,10 +106,10 @@ Les tâches sont créées en pause. `pause ID` suspend une tâche qui n'est pas 
 ## Sauvegarder, partager, restaurer
 
 ```sh
-./resume backup sauvegarde.zip
-./resume share
-./resume restore sauvegarde.zip
-./resume uninstall
+./reprise backup sauvegarde.zip
+./reprise share
+./reprise restore sauvegarde.zip
+./reprise uninstall
 ```
 
 `share` exporte uniquement le programme, la documentation et le prompt exemple. `backup` contient les chemins, instructions et états des tâches : sauvegarde privée, sans chiffrement, à ne pas partager publiquement. Il ne contient ni credentials Codex, ni dépôt, ni historique de session ; sauvegarder ceux-ci séparément avec leur dispositif existant. Sur une autre machine, reconnecter Codex, restaurer les projets et sessions, puis importer la sauvegarde. Les nouvelles tâches importées restent en pause ; celles déjà présentes ne sont pas modifiées.
@@ -120,7 +120,7 @@ La commande `codex exec resume` a été vérifiée dans le CLI installé. Aucun 
 
 ## Panneau local
 
-`./resume dashboard` ouvre un tableau de bord dans le navigateur : échéances, états, pause et activation. Il écoute uniquement sur 127.0.0.1, sur un port temporaire. Les actions exigent un jeton aléatoire de session ; aucun CDN, télémétrie ou dépendance web. Arrêter avec Ctrl+C. La création et les sauvegardes restent accessibles avec le CLI. Le bouton d'activation autorise une reprise à l'échéance, immédiatement si elle est passée. Le panneau ne détermine pas encore automatiquement l'heure de retour du quota.
+`./reprise dashboard` ouvre un tableau de bord dans le navigateur : échéances, états, pause et activation. Il écoute uniquement sur 127.0.0.1, sur un port temporaire. Les actions exigent un jeton aléatoire de session ; aucun CDN, télémétrie ou dépendance web. Arrêter avec Ctrl+C. La création et les sauvegardes restent accessibles avec le CLI. Le bouton d'activation autorise une reprise à l'échéance, immédiatement si elle est passée. Le panneau ne détermine pas encore automatiquement l'heure de retour du quota.
 
 ## Interface macOS native
 
@@ -134,7 +134,7 @@ Le panneau réunit désormais Codex et Harness. Harness est lu depuis ~/.dsh : c
 
 ### Compteurs et quotas
 
-L'icône et la fenêtre affichent C (Codex) et H (Harness). Le compteur estime les sessions actives : un tour est ouvert et ses données ont été modifiées depuis moins de deux minutes. Une session silencieuse peut donc être sous-comptée ; ce n'est pas une interrogation des agents. Au maximum 100 sessions récentes par application sont examinées. La carte Codex consulte désormais un registre sourcé : **Lire les quotas** interroge explicitement les métadonnées du socket configuré, sans tour de modèle. Les identités compte/pool sont pseudonymes et les données absentes/périmées restent inconnues. Les signaux de journaux restent séparés, avec leur horodatage et sans attribution de compte. Une échéance passée signifie « mesure périmée », jamais épuisement ou reprise garantie ; le reset affiche sa date et son heure locales complètes. Harness affiche une absence de quota chiffré plutôt qu'une estimation à partir des tokens. La détection ordinaire reste passive ; seule la lecture explicite des quotas peut interroger la source native. CLI : `./resume quota-status --engine codex-server --refresh` ; MCP : `reprise_quotas`. [Contrat et limites](QUOTA-KNOWLEDGE.md).
+L'icône et la fenêtre affichent C (Codex) et H (Harness). Le compteur estime les sessions actives : un tour est ouvert et ses données ont été modifiées depuis moins de deux minutes. Une session silencieuse peut donc être sous-comptée ; ce n'est pas une interrogation des agents. Au maximum 100 sessions récentes par application sont examinées. La carte Codex consulte désormais un registre sourcé : **Lire les quotas** interroge explicitement les métadonnées du socket configuré, sans tour de modèle. Les identités compte/pool sont pseudonymes et les données absentes/périmées restent inconnues. Les signaux de journaux restent séparés, avec leur horodatage et sans attribution de compte. Une échéance passée signifie « mesure périmée », jamais épuisement ou reprise garantie ; le reset affiche sa date et son heure locales complètes. Harness affiche une absence de quota chiffré plutôt qu'une estimation à partir des tokens. La détection ordinaire reste passive ; seule la lecture explicite des quotas peut interroger la source native. CLI : `./reprise quota-status --engine codex-server --refresh` ; MCP : `reprise_quotas`. [Contrat et limites](QUOTA-KNOWLEDGE.md).
 
 ### Claude Code
 
@@ -164,7 +164,7 @@ Le fichier state/search.noindex/index.sqlite contient les titres, diagnostics r�
 
 ### Nettoyage de l'index
 
-Le service launchd effectue au premier passage, puis au maximum une fois par jour, une purge des entrées dont la source date de plus de sept jours. Si le Mac est éteint ou le service arrêté, la purge attend son prochain passage. Les recherches excluent également ces anciennes sources pour ne pas les réintroduire. Les anciennes entrées sans date sont supprimées lors de la migration. Le bouton « Vider l’index » dans Recherche privée, ou ./resume clear-index, efface le cache de recherche uniquement. La recherche suivante reconstruit les entrées récentes ; les conversations et le cache d'analyse Apple sont conservés. Nettoyage et recherches sont sérialisés par SQLite. Aucun LLM n'est appelé pour ce nettoyage.
+Le service launchd effectue au premier passage, puis au maximum une fois par jour, une purge des entrées dont la source date de plus de sept jours. Si le Mac est éteint ou le service arrêté, la purge attend son prochain passage. Les recherches excluent également ces anciennes sources pour ne pas les réintroduire. Les anciennes entrées sans date sont supprimées lors de la migration. Le bouton « Vider l’index » dans Recherche privée, ou ./reprise clear-index, efface le cache de recherche uniquement. La recherche suivante reconstruit les entrées récentes ; les conversations et le cache d'analyse Apple sont conservés. Nettoyage et recherches sont sérialisés par SQLite. Aucun LLM n'est appelé pour ce nettoyage.
 
 ## Chiffrement des données de recherche et d'analyse
 
@@ -189,7 +189,7 @@ L'interface native utilise SwiftUI dans une fenêtre AppKit : NavigationSplitVie
 - `runtime.py` centralise l’environnement Codex, le décodage JSONL borné et le nettoyage des processus.
 - `detect.py`, `local_analysis.py`, `private_search.py` et `vault.py` gardent leurs responsabilités distinctes.
 
-Vérification : `python3 -W error::ResourceWarning -m unittest discover -s agent-resume/tests`. L’installation native compile les deux fichiers de l’interface ; l’export `resume share` inclut tous les modules nécessaires. Aucune bibliothèque supplémentaire.
+Vérification : `python3 -W error::ResourceWarning -m unittest discover -s agent-resume/tests`. L’installation native compile les deux fichiers de l’interface ; l’export `reprise share` inclut tous les modules nécessaires. Aucune bibliothèque supplémentaire.
 
 ### Prérequis du prototype macOS
 

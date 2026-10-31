@@ -154,7 +154,7 @@ class PackageRuntimeTests(unittest.TestCase):
         shutil.move(str(app), relocated)
         runtime = relocated / 'Contents/Resources/runtime'
         executable = runtime / 'bin/python3'
-        resume = relocated / 'Contents/Resources/helpers/resume'
+        resume = relocated / 'Contents/Resources/helpers/reprise'
         before = package_runtime.metadata(relocated)
         home = self.root / 'Isolated Home'
         home.mkdir()

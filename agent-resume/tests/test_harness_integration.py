@@ -406,7 +406,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'journal modifié'):
             integration.apply(self.root, proposed)
         self.assertEqual(self.snapshot(), before)
-        response = subprocess.run([sys.executable, str(SOURCE / 'resume'), 'integration-apply'],
+        response = subprocess.run([sys.executable, str(SOURCE / 'reprise'), 'integration-apply'],
                                   input=json.dumps({'plan': proposed}), text=True, capture_output=True,
                                   env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'), timeout=30)
         self.assertNotEqual(response.returncode, 0)
@@ -429,7 +429,7 @@ class HarnessIntegrationTests(unittest.TestCase):
     def test_cli_inspect_does_not_initialize_state(self):
         absent = self.base / 'never-initialized-state'
         environment = dict(os.environ, AGENT_RESUME_STATE=str(absent), PYTHONDONTWRITEBYTECODE='1')
-        command = [sys.executable, str(SOURCE / 'resume'), 'integration-inspect', '--home', str(self.home)]
+        command = [sys.executable, str(SOURCE / 'reprise'), 'integration-inspect', '--home', str(self.home)]
         result = subprocess.run(command, capture_output=True, text=True, env=environment, check=True)
         self.assertEqual(json.loads(result.stdout)['profiles'], ['desktop', 'other'])
         self.assertFalse(absent.exists())
