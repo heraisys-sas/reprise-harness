@@ -138,12 +138,12 @@ extension App {
         guard stateReady, !setupBusy else { return }
         setupCommand(["claude-integration-inspect"]) { result in
             self.claudeIntegrationResult = result
-            if self.integrationProject.isEmpty, let project = result["project"] as? String { self.integrationProject = project }
         }
     }
     func previewClaudeIntegration(_ action: String) {
         guard stateReady, !setupBusy else { return }
-        var args = ["claude-integration-plan", "--project", integrationProject, "--action", action]
+        guard !claudeIntegrationProject.isEmpty else { return }
+        var args = ["claude-integration-plan", "--project", claudeIntegrationProject, "--action", action]
         if action == "install" {
             if claudeReplaceProbe { args.append("--replace-probe") }
             switch claudeAwaitChoice {
@@ -160,6 +160,7 @@ extension App {
     }
     func applyClaudeIntegration() {
         guard stateReady, !setupBusy, claudeIntegrationAcknowledged, let plan = claudeIntegrationPlan else { return }
+        guard plan["project"] as? String == claudeIntegrationProject else { invalidateClaudeIntegrationPlan(); return }
         setupCommand(["claude-integration-apply"], input: ["plan": plan]) { result in
             var displayedResult = result
             displayedResult["action"] = plan["action"]
@@ -179,7 +180,11 @@ extension App {
     }
     func verifyClaudeIntegration() {
         guard stateReady, !setupBusy else { return }
-        setupCommand(["claude-integration-verify"]) { self.claudeIntegrationResult = $0 }
+        guard !claudeIntegrationProject.isEmpty else {
+            claudeIntegrationResult = ["status": "refused", "message": "Associez un workspace Claude au projet sélectionné avant la vérification."]
+            return
+        }
+        setupCommand(["claude-integration-verify", "--project", claudeIntegrationProject]) { self.claudeIntegrationResult = $0 }
     }
 
     func invalidateClaudeInbox(clearTasks: Bool = true) {
@@ -206,7 +211,7 @@ extension App {
 
     func refreshClaudeInbox() {
         guard stateReady, !setupBusy else { return }
-        let project = integrationProject.trimmingCharacters(in: .whitespacesAndNewlines)
+        let project = claudeIntegrationProject.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !project.isEmpty else {
             invalidateClaudeInbox()
             claudeInboxStatus = "Choisissez d’abord le projet autorisé du connecteur."
@@ -222,7 +227,7 @@ extension App {
         claudeInboxStatus = "Vérification du projet et lecture du registre…"
         setupCommand(["claude-inbox-list", "--project", project]) { result in
             guard generation == self.claudeInboxGeneration,
-                  project == self.integrationProject.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+                  project == self.claudeIntegrationProject.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
             guard result["status"] as? String == "ok",
                   result["project"] is String,
                   let tasks = result["tasks"] as? [[String: Any]] else {
@@ -240,7 +245,7 @@ extension App {
 
     func readClaudeInboxResult() {
         guard stateReady, !setupBusy else { return }
-        let project = integrationProject.trimmingCharacters(in: .whitespacesAndNewlines)
+        let project = claudeIntegrationProject.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = claudeInboxSelection
         guard !project.isEmpty, !key.isEmpty,
               claudeInboxTasks.contains(where: {
@@ -257,7 +262,7 @@ extension App {
         claudeInboxStatus = "Lecture intégrale et vérification SHA-256…"
         setupCommand(["claude-inbox-read", "--project", project, "--request-key", key]) { result in
             guard generation == self.claudeInboxGeneration,
-                  project == self.integrationProject.trimmingCharacters(in: .whitespacesAndNewlines),
+                  project == self.claudeIntegrationProject.trimmingCharacters(in: .whitespacesAndNewlines),
                   key == self.claudeInboxSelection else { return }
             guard result["status"] as? String == "ok",
                   result["project"] is String,
@@ -278,7 +283,7 @@ extension App {
 
     func acknowledgeClaudeInboxResult() {
         guard stateReady, !setupBusy,
-              claudeInboxResultProject == integrationProject.trimmingCharacters(in: .whitespacesAndNewlines),
+              claudeInboxResultProject == claudeIntegrationProject.trimmingCharacters(in: .whitespacesAndNewlines),
               claudeInboxResultSelection == claudeInboxSelection,
               let sha = claudeInboxResult["result_sha256"] as? String,
               let length = claudeInboxResult["total_length"] as? Int,
@@ -294,7 +299,7 @@ extension App {
         setupCommand(["claude-inbox-ack", "--project", project, "--request-key", key,
                       "--result-sha256", sha, "--total-length", String(length), "--confirm-viewed"]) { result in
             guard generation == self.claudeInboxGeneration,
-                  project == self.integrationProject.trimmingCharacters(in: .whitespacesAndNewlines),
+                  project == self.claudeIntegrationProject.trimmingCharacters(in: .whitespacesAndNewlines),
                   key == self.claudeInboxSelection else { return }
             guard result["status"] as? String == "ok",
                   result["result_sha256"] as? String == sha,
@@ -452,6 +457,140 @@ extension App {
             if let diagnostic = result["diagnostic"] as? String { self.integrationMessage += "\n" + diagnostic }
         }
     }
+
+    var selectedProject: [String: Any]? {
+        projects.first { $0["id"] as? String == selectedProjectID }
+    }
+
+    func projectResultMessage(_ result: [String: Any], fallback: String) -> String {
+        var parts = [result["message"] as? String ?? fallback]
+        if let diagnostic = result["diagnostic"] as? String, !diagnostic.isEmpty { parts.append(diagnostic) }
+        else if let error = result["error"] as? String, !error.isEmpty { parts.append(error) }
+        return parts.joined(separator: "\n")
+    }
+
+    func projectCommandReady() -> Bool {
+        guard stateReady else { projectMessage = "L’état Reprise n’est pas prêt."; return false }
+        guard !setupBusy else { projectMessage = "Une commande de préparation est déjà en cours."; return false }
+        if let runtimeError { projectMessage = runtimeError; return false }
+        return true
+    }
+
+    func refreshProjects(select projectID: String? = nil, completion: (() -> Void)? = nil) {
+        guard projectCommandReady() else { return }
+        setupCommand(["project-list"]) { result in
+            guard result["status"] as? String == "ok",
+                  let rows = result["projects"] as? [[String: Any]] else {
+                self.projectMessage = self.projectResultMessage(result, fallback: "Impossible de charger les projets.")
+                completion?()
+                return
+            }
+            self.projects = rows
+            if let projectID, rows.contains(where: { $0["id"] as? String == projectID }) {
+                self.selectProject(projectID)
+            } else if !self.selectedProjectID.isEmpty,
+                      !rows.contains(where: { $0["id"] as? String == self.selectedProjectID }) {
+                self.selectProject("")
+            }
+            self.projectMessage = rows.isEmpty ? "Aucun projet enregistré." : "\(rows.count) projet(s) chargé(s)."
+            completion?()
+        }
+    }
+
+    func selectProject(_ projectID: String) {
+        selectedProjectID = projectID
+        projectWorkspaceDraft = ""
+        invalidateClaudeInbox()
+        guard let project = projects.first(where: { $0["id"] as? String == projectID }) else {
+            projectRenameDraft = ""
+            integrationProject = ""
+            claudeIntegrationProject = ""
+            invalidateIntegrationPlan()
+            invalidateClaudeIntegrationPlan()
+            return
+        }
+        projectRenameDraft = project["name"] as? String ?? ""
+        let workspaces = project["workspaces"] as? [String: String] ?? [:]
+        integrationProject = workspaces["harness"] ?? ""
+        claudeIntegrationProject = workspaces["claude"] ?? ""
+        invalidateIntegrationPlan()
+        invalidateClaudeIntegrationPlan()
+    }
+
+    func chooseProjectDirectory(_ target: String) {
+        guard stateReady, !setupBusy else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        let selection = target == "root" ? "Choisissez le dossier racine du projet." :
+            target == "source" ? "Choisissez le dépôt Git source." : "Choisissez le workspace existant à associer."
+        panel.message = selection + " Le dossier peut être synchronisé avec iCloud ; rendez-le disponible localement. Reprise ne vérifie pas son état iCloud."
+        if panel.runModal() == .OK, let url = panel.url {
+            switch target {
+            case "root": projectRootDraft = url.path
+            case "source": projectSourceDraft = url.path
+            default: projectWorkspaceDraft = url.path
+            }
+        }
+    }
+
+    func createProject() {
+        guard projectCommandReady() else { return }
+        guard !projectNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !projectRootDraft.isEmpty, !projectSourceDraft.isEmpty else {
+            projectMessage = "Indiquez un nom, un dossier racine et un dépôt source existants."
+            return
+        }
+        setupCommand(["project-create", "--name", projectNameDraft, "--root", projectRootDraft,
+                      "--source", projectSourceDraft]) { result in
+            guard result["status"] as? String == "ok", let project = result["project"] as? [String: Any],
+                  let projectID = project["id"] as? String else {
+                self.projectMessage = self.projectResultMessage(result, fallback: "Création du projet impossible.")
+                return
+            }
+            self.projectRootDraft = ""
+            self.projectSourceDraft = ""
+            self.projectNameDraft = ""
+            self.projects.removeAll { $0["id"] as? String == projectID }
+            self.projects.append(project)
+            self.projectMessage = self.projectResultMessage(result, fallback: "Projet créé.")
+            self.selectProject(projectID)
+        }
+    }
+
+    func renameProject() {
+        guard projectCommandReady(), !selectedProjectID.isEmpty else { return }
+        setupCommand(["project-rename", "--project-id", selectedProjectID, "--name", projectRenameDraft]) { result in
+            guard result["status"] as? String == "ok", let project = result["project"] as? [String: Any] else {
+                self.projectMessage = self.projectResultMessage(result, fallback: "Renommage du projet impossible.")
+                return
+            }
+            self.projects.removeAll { $0["id"] as? String == self.selectedProjectID }
+            self.projects.append(project)
+            self.projectMessage = self.projectResultMessage(result, fallback: "Projet renommé.")
+        }
+    }
+
+    func associateProjectWorkspace() {
+        guard projectCommandReady(), !selectedProjectID.isEmpty else { return }
+        guard !projectWorkspaceDraft.isEmpty else {
+            projectMessage = "Choisissez un dossier de workspace existant."
+            return
+        }
+        setupCommand(["project-associate", "--project-id", selectedProjectID, "--harness", projectWorkspaceHarness,
+                      "--workspace", projectWorkspaceDraft]) { result in
+            guard result["status"] as? String == "ok", let project = result["project"] as? [String: Any] else {
+                self.projectMessage = self.projectResultMessage(result, fallback: "Association du workspace impossible.")
+                return
+            }
+            self.projects.removeAll { $0["id"] as? String == self.selectedProjectID }
+            self.projects.append(project)
+            self.projectWorkspaceDraft = ""
+            self.projectMessage = self.projectResultMessage(result, fallback: "Workspace associé.")
+            self.selectProject(self.selectedProjectID)
+        }
+    }
 }
 
 struct Integrations: View {
@@ -467,6 +606,70 @@ struct Integrations: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
+            GroupBox("Projets et workspaces") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Picker("Projet", selection: $app.selectedProjectID) {
+                            Text("Choisir un projet…").tag("")
+                            ForEach(app.projects.indices, id: \.self) { index in
+                                let project = app.projects[index]
+                                Text(project["name"] as? String ?? "Projet sans nom")
+                                    .tag(project["id"] as? String ?? "")
+                            }
+                        }
+                        Button("Actualiser") { app.refreshProjects() }
+                    }
+                    if let project = app.selectedProject {
+                        path("Identité stable", project["id"] as? String ?? "")
+                        path("Racine choisie", project["root_path"] as? String ?? "")
+                        path("Dépôt source", project["source_repository"] as? String ?? "")
+                        HStack {
+                            TextField("Nom du projet", text: $app.projectRenameDraft)
+                            Button("Renommer") { app.renameProject() }
+                                .disabled(app.projectRenameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                        let workspaces = project["workspaces"] as? [String: String] ?? [:]
+                        path("Workspace Codex", workspaces["codex"] ?? "")
+                        path("Workspace Harness", workspaces["harness"] ?? "")
+                        path("Workspace Claude", workspaces["claude"] ?? "")
+                        HStack {
+                            Picker("Associer pour", selection: $app.projectWorkspaceHarness) {
+                                Text("Codex").tag("codex")
+                                Text("Harness").tag("harness")
+                                Text("Claude").tag("claude")
+                            }
+                            Button("Choisir un dossier existant…") { app.chooseProjectDirectory("workspace") }
+                        }
+                        path("Workspace à associer", app.projectWorkspaceDraft)
+                        Button("Associer le workspace") { app.associateProjectWorkspace() }
+                            .disabled(app.projectWorkspaceDraft.isEmpty)
+                        Text("Une association déjà renseignée n’est pas remplacée automatiquement ; une autre destination sera refusée par le registre.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Divider()
+                    Text("Créer un projet")
+                        .font(.headline)
+                    TextField("Nom du projet", text: $app.projectNameDraft)
+                    HStack {
+                        Button("Choisir la racine…") { app.chooseProjectDirectory("root") }
+                        Text(app.projectRootDraft.isEmpty ? "Racine non choisie" : app.projectRootDraft)
+                            .font(.caption).textSelection(.enabled)
+                    }
+                    HStack {
+                        Button("Choisir le dépôt source…") { app.chooseProjectDirectory("source") }
+                        Text(app.projectSourceDraft.isEmpty ? "Dépôt source non choisi" : app.projectSourceDraft)
+                            .font(.caption).textSelection(.enabled)
+                    }
+                    Button("Créer le projet") { app.createProject() }
+                        .disabled(app.projectNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                                  app.projectRootDraft.isEmpty || app.projectSourceDraft.isEmpty)
+                    Text(app.projectMessage).font(.caption).textSelection(.enabled)
+                    Text("Le dossier choisi peut être synchronisé avec iCloud. Rendez-le disponible localement avant de créer le projet ou d’associer un workspace. Cette interface ne vérifie pas son état iCloud.")
+                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    Text("Cette identité commune organise les associations de workspaces ; les registres de délégation restent actuellement indexés par chemin. Elle ne partage pas encore les demandes ni les résultats entre workspaces.")
+                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }.padding(6)
+            }
             SettingsCard(title: "Profil Harness",
                          status: hasProfile ? "Profil : " + app.integrationProfile : "Aucun profil",
                          ok: hasProfile) {
@@ -543,15 +746,13 @@ struct Integrations: View {
                                  ((app.claudeIntegrationResult["action"] as? String == "remove") ? "Retrait appliqué" : "Plan appliqué") : "État inconnu",
                          ok: ["completed", "verified"].contains(app.claudeIntegrationResult["status"] as? String ?? "")) {
                 HStack {
-                    path("Projet autorisé", app.integrationProject)
-                    Spacer()
-                    Button("Choisir le projet…") { app.chooseIntegrationDirectory(project: true) }
+                    path("Workspace Claude du projet sélectionné", app.claudeIntegrationProject)
                 }
                 HStack(spacing: 10) {
                     Button("Relire l’état") { app.inspectClaudeIntegration() }
-                    Button("Installer ou mettre à jour…") { app.previewClaudeIntegration("install") }.disabled(app.integrationProject.isEmpty)
-                    Button("Retirer…") { app.previewClaudeIntegration("remove") }.disabled(app.integrationProject.isEmpty)
-                    Button("Vérifier") { app.verifyClaudeIntegration() }
+                    Button("Installer ou mettre à jour…") { app.previewClaudeIntegration("install") }.disabled(app.claudeIntegrationProject.isEmpty)
+                    Button("Retirer…") { app.previewClaudeIntegration("remove") }.disabled(app.claudeIntegrationProject.isEmpty)
+                    Button("Vérifier") { app.verifyClaudeIntegration() }.disabled(app.claudeIntegrationProject.isEmpty)
                 }
                 SettingsHint(
                     text: "Les autorisations se donnent dans Claude, pas ici.",
@@ -625,7 +826,7 @@ struct Integrations: View {
                     detail: "Reprise compare le projet sélectionné et l’empreinte d’état du socket au manifeste géré avant chaque opération. Cela vérifie le rattachement local, pas le chargement du connecteur dans Claude.",
                     detailLabel: "Portée et preuve")
                 Button("Actualiser les tâches du projet") { app.refreshClaudeInbox() }
-                    .disabled(app.setupBusy || app.integrationProject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(app.setupBusy || app.claudeIntegrationProject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 if !app.claudeInboxTasks.isEmpty {
                     Picker("Tâche", selection: Binding(
                         get: { app.claudeInboxSelection },
@@ -646,7 +847,7 @@ struct Integrations: View {
                                   }))
                 }
                 Text(app.claudeInboxStatus).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                if app.claudeInboxResultProject == app.integrationProject.trimmingCharacters(in: .whitespacesAndNewlines),
+                if app.claudeInboxResultProject == app.claudeIntegrationProject.trimmingCharacters(in: .whitespacesAndNewlines),
                    app.claudeInboxResultSelection == app.claudeInboxSelection,
                    let answer = app.claudeInboxResult["answer"] as? String,
                    let sha = app.claudeInboxResult["result_sha256"] as? String,
@@ -698,7 +899,7 @@ struct Integrations: View {
                     observation: app.claudeQuotaSourceObservation,
                     fallbackStatus: app.claudeQuotaSourceStatus)
                 Button("Actualiser le suivi et lire le journal") { app.refreshClaudeQuota() }
-            }.disabled(app.setupBusy).onAppear { app.refreshClaudeQuota() }
+            }.disabled(app.setupBusy).onAppear { app.refreshProjects { app.refreshClaudeQuota() } }
             if app.setupBusy { InlineStatus(busy: true, message: "Opération en cours…") }
             SettingsCard(title: "Appliquer la configuration",
                          status: app.integrationPlan == nil ? "Aucun plan en attente" : "Plan en attente",
@@ -759,7 +960,12 @@ struct Integrations: View {
         .onChange(of: app.integrationAgentRole) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationCodexWorkspaceWrite) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationDelegate) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.selectedProjectID) { _, projectID in app.selectProject(projectID) }
         .onChange(of: app.integrationProject) { _, _ in
+            app.invalidateClaudeIntegrationPlan()
+            app.invalidateClaudeInbox()
+        }
+        .onChange(of: app.claudeIntegrationProject) { _, _ in
             app.invalidateClaudeIntegrationPlan()
             app.invalidateClaudeInbox()
         }

@@ -262,7 +262,7 @@ def apply(root, public):
             'message': 'Connecteur reprise-harness configuré. ' + AUTHORIZATION_NOTICE}
 
 
-def verify(root, home=None):
+def verify(root, home=None, project=None):
     home, config, managed = paths(home or Path.home())
     old = metadata(managed)
     servers = read_config(config).get('mcpServers', {})
@@ -270,6 +270,8 @@ def verify(root, home=None):
     entry = servers.get(name)
     if not old or old.get('status') != 'installed' or entry is None:
         raise ValueError('Connecteur géré absent ou modifié.')
+    if project is not None and str(Path(project).expanduser().resolve(strict=True)) != old.get('project'):
+        raise ValueError('Le workspace sélectionné ne correspond pas au projet du connecteur installé.')
     if name != CONNECTOR_NAME or old.get('connector_name') != name:
         raise ValueError('Nom du connecteur incohérent ; migration gérée requise avant vérification.')
     enable_await = manifest_enable_await(old)
@@ -337,6 +339,8 @@ def main(root, argv=None):
     for name in ('claude-integration-inspect', 'claude-integration-plan', 'claude-integration-verify'):
         command = sub.add_parser(name)
         command.add_argument('--home', default=str(Path.home()))
+        if name == 'claude-integration-verify':
+            command.add_argument('--project')
         if name == 'claude-integration-plan':
             command.add_argument('--project', required=True)
             command.add_argument('--replace-probe', action='store_true')
@@ -360,7 +364,7 @@ def main(root, argv=None):
         elif args.command.endswith('-apply'):
             result = apply(root, json.loads(sys.stdin.read(1024 * 1024))['plan'])
         else:
-            result = verify(root, args.home)
+            result = verify(root, args.home, project=args.project)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, StopIteration):
         # Configurations can contain credentials; never echo parser errors or subprocess stderr.
         print(json.dumps({'status': 'refused', 'message': 'Installation refusée ; inspecter la configuration, les préconditions et les sauvegardes.'}))

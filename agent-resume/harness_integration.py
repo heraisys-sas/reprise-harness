@@ -785,13 +785,15 @@ def bridge_capabilities(tools):
     }, 'evidence': 'direct_probe_tools_schema', 'client_loaded': 'unknown'}
 
 
-def verify(home, profile, root=None):
+def verify(home, profile, root=None, project=None):
     _, folder, managed = context(home, profile)
     if inspect(home, profile).get('pending_plan'):
         raise ValueError('Opération partielle : terminer ou réconcilier avant vérification.')
     old = manifest(managed)
     if not old or old.get('status') != 'installed':
         raise ValueError('Aucune intégration installée gérée dans ce profil.')
+    if project is not None and str(Path(project).expanduser().resolve(strict=True)) != old.get('project'):
+        raise ValueError('Le workspace sélectionné ne correspond pas au projet de l’intégration installée.')
     config_text = (folder / 'cordis.patch.yml').read_bytes().decode('utf-8')
     base, block = split_block(config_text)
     reconciled = None
@@ -873,6 +875,8 @@ def main(root, argv=None):
         command = sub.add_parser(name)
         command.add_argument('--home', required=True)
         command.add_argument('--profile', required=name != 'integration-inspect')
+        if name == 'integration-verify':
+            command.add_argument('--project')
         if name == 'integration-plan':
             command.add_argument('--project', required=True)
             command.add_argument('--action', choices=('install', 'remove'), required=True)
@@ -895,7 +899,7 @@ def main(root, argv=None):
             public = json.loads(sys.stdin.read(1024 * 1024))['plan']
             result = apply(root, public)
         else:
-            result = verify(args.home, args.profile, root=root)
+            result = verify(args.home, args.profile, root=root, project=args.project)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         result = {'status': 'refused', 'message': str(error), 'recovery': 'Aucune suppression automatique. Inspecter le profil pour retrouver un plan partiel ou les sauvegardes.'}
         if args.command == 'integration-apply' and isinstance(locals().get('public'), dict):
