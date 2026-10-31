@@ -14,6 +14,8 @@ Outils macOS pour suivre les sessions d’agents, rechercher leurs diagnostics l
 
 Le routage par embeddings Apple est implémenté et testé dans un profil Harness isolé. Il reste expérimental et n’est pas activé dans le profil quotidien. Le modèle génératif Apple Intelligence ne participe pas au routage.
 
+Le contrat du prototype de registre de projets et ses limites sont décrits dans [`agent-resume/PROJECT-REGISTRY-CONTRACT.md`](agent-resume/PROJECT-REGISTRY-CONTRACT.md).
+
 ## Démarrage de Reprise
 
 Sur macOS 26+ ARM64 avec les outils Swift/SDK 26+ et Python de build, construire puis lancer le bundle autonome :

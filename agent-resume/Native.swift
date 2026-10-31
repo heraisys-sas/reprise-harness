@@ -31,6 +31,16 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var integrationHome = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".dsh").path
     @Published var integrationProfile = ""
     @Published var integrationProject = ""
+    @Published var claudeIntegrationProject = ""
+    @Published var projects: [[String: Any]] = []
+    @Published var selectedProjectID = ""
+    @Published var projectNameDraft = ""
+    @Published var projectRootDraft = ""
+    @Published var projectSourceDraft = ""
+    @Published var projectRenameDraft = ""
+    @Published var projectWorkspaceHarness = "harness"
+    @Published var projectWorkspaceDraft = ""
+    @Published var projectMessage = "Choisissez un projet ou créez-en un."
     @Published var integrationDelegate = false
     @Published var integrationCodexWorkspaceWrite = false
     @Published var claudeIntegrationPlan: [String: Any]?
