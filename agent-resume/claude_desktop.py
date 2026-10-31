@@ -8,10 +8,12 @@ local endpoint. UI automation that would open or submit Quick Entry is out of
 scope here and requires separate operator-granted macOS permissions.
 """
 from pathlib import Path
+import hashlib
 import json
 import os
 import sqlite3
 import stat
+import time
 import uuid
 
 import engines
@@ -157,14 +159,62 @@ def configure(db, program, path=None):
     return result
 
 
+MCP_TASK_INSTRUCTION = ('A Reprise task is waiting in the configured project. '
+                        'Persist a claim_key, then call get_task with request_key={key}. '
+                        'Follow your session instructions, perform that scoped task, and call '
+                        'submit_result with the returned attempt_id. If already completed, '
+                        'retrieve the existing result instead.')
+
+
+def _collect(tasks, request_key, max_wait, clock):
+    """Bounded wait for a validated submit_result; None when still pending."""
+    clock = clock or time.time
+    deadline = clock() + max(0, max_wait)
+    while True:
+        try:
+            receipt = tasks.result(request_key)
+        except (ValueError, sqlite3.Error):
+            return None
+        if receipt.get('state') == 'recorded':
+            full = tasks.result(request_key, view='full')
+            return full.get('answer')
+        if clock() >= deadline:
+            return None
+        time.sleep(0.25)
+
+
+def _fingerprint(answer):
+    return hashlib.sha256(json.dumps({'answer': answer}, sort_keys=True, separators=(',', ':'),
+                                     ensure_ascii=False).encode()).hexdigest()
+
+
+def _orchestrated_receipt(tasks, request_key, max_wait, clock=None):
+    """Explicit result for an already-dispatched orchestrated request: no second submit."""
+    result = {'status': 'indeterminate', 'thread_id': None, 'resumable': False,
+              'model': 'claude-desktop', 'dispatch': None, 'response': None,
+              'admission_only': True, 'billing': 'Claude Desktop session; quota not reported'}
+    if max_wait > 0:
+        answer = _collect(tasks, request_key, max_wait, clock)
+        if answer is not None:
+            result.update({'status': 'finished', 'response': answer,
+                           'result_sha256': _fingerprint(answer), 'admission_only': False})
+    return result
+
+
 def review(root, question, *, kind='expertise', level='standard', paths=None,
-           chat_id=None, file_paths=None, program=None, values=None, timeout=30, request_key=None):
+           chat_id=None, file_paths=None, program=None, values=None, timeout=30, request_key=None,
+           tasks=None, max_wait=0, clock=None):
     """Delegate a bounded Quick Apply submission to the local supervision endpoint.
 
     Mirrors the shape of codex_expert.review / claude_expert.review: returns
     {status, thread_id, resumable, model, response, ...}. The effective turn is
     dispatched through dispatchOnQuickEntrySubmit, which is a full turn (not a
     composer prefill). No automatic fallback or retry.
+
+    With a TaskStore (orchestrated round-trip), the full prompt is durably
+    admitted BEFORE the RPC and the Quick prompt only carries the MCP return
+    instructions (get_task/submit_result). Completion is reported only from a
+    validated submit_result; max_wait=0 means no wait.
     """
     root = Path(root).resolve(strict=True)
     if not root.is_dir() or not isinstance(question, str) or not question.strip() or len(question) > 12000:
@@ -173,7 +223,16 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
         raise ValueError('Invalid delegation kind or level')
     # Attach only explicit project file snapshots, as the CLI backends do.
     snapshots = context_files(root, paths)
-    prompt = question + snapshots
+    prompt_full = question + snapshots
+    orchestrated = tasks is not None and bool(request_key)
+    if not orchestrated and tasks is not None:
+        raise ValueError('Durable task admission requires a request_key')
+    if orchestrated:
+        prompt = MCP_TASK_INSTRUCTION.format(key=json.dumps(request_key)) + '\n\n' + question + snapshots
+        if len(prompt) > 12000:
+            raise ValueError('Orchestrated Quick prompt exceeds limit; no truncation')
+    else:
+        prompt = prompt_full
     result = {'status': 'needs_review', 'resumable': False, 'project_root': str(root),
               'kind': kind, 'level': level, 'quota_remaining': None, 'automatic_fallback': False}
     from claude_desktop_rpc import Client
@@ -183,7 +242,23 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
         values.setdefault('socket', str(DEFAULT_SOCKET))
         client = Client(program, values, timeout=timeout)
         client.call('initialize', {'clientInfo': {'name': 'reprise-delegation', 'version': '0.1.0'}})
+        if orchestrated:
+            row = tasks.db.execute('SELECT delivery,attempt_id FROM desktop_tasks WHERE scope=? AND request_key=?',
+                                   (tasks.scope, request_key)).fetchone()
+            if row and (row[0] is not None or row[1]):
+                # A dispatch attempt was already recorded: never re-submit.
+                return _orchestrated_receipt(tasks, request_key, max_wait, clock)
+            # Admit the exact dispatch prompt, then record delivery intent BEFORE the RPC:
+            # a socket loss after this point leaves an explicit 'attempted' barrier.
+            tasks.admit(request_key, prompt, chat_id)
+            tasks.db.execute("UPDATE desktop_tasks SET delivery='attempted',attempt_id=? "
+                             'WHERE scope=? AND request_key=? AND delivery IS NULL AND answer IS NULL',
+                             (str(uuid.uuid4()), tasks.scope, request_key))
+            tasks.db.commit()
         payload_args = {'prompt': prompt, 'request_key': request_key}
+        if orchestrated:
+            payload_args['purpose'] = 'delegation'
+            payload_args['orchestrated'] = True
         if chat_id:
             payload_args['chatId'] = chat_id
         if file_paths:
@@ -192,9 +267,16 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
         if submitted.get('status') != 'finished':
             return result | {'status': submitted.get('status', 'needs_review'),
                              'reason': submitted.get('reason', 'Soumission Quick Apply non aboutie.')}
-        return result | {'status': 'finished', 'thread_id': submitted.get('submission_id'),
-                         'resumable': False, 'model': 'claude-desktop', 'dispatch': submitted.get('dispatch'),
-                         'response': None, 'admission_only': True, 'billing': 'Claude Desktop session; quota not reported'}
+        finished = result | {'status': 'finished', 'thread_id': submitted.get('submission_id'),
+                             'resumable': False, 'model': 'claude-desktop', 'dispatch': submitted.get('dispatch'),
+                             'response': None, 'admission_only': True,
+                             'billing': 'Claude Desktop session; quota not reported'}
+        if not orchestrated:
+            return finished
+        answer = _collect(tasks, request_key, max_wait, clock)
+        if answer is None:
+            return finished
+        return finished | {'response': answer, 'result_sha256': _fingerprint(answer)}
     except engines.Unavailable as error:
         return result | {'status': error.state, 'reason': error.reason}
     except (OSError, ValueError, TimeoutError):
