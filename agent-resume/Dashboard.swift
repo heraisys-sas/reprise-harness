@@ -439,6 +439,7 @@ struct Dashboard: View {
         let enabled = route["enabled"] as? Bool == true
         let rootStatus = status["status"] as? String ?? "unavailable"
         let statusKnown = rootStatus == "ok"
+        let lastRead = (route["last_refresh_at"] as? Double).flatMap { $0.isFinite && $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
         return Surface {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
@@ -446,15 +447,48 @@ struct Dashboard: View {
                     Spacer()
                     Button("Configurer") { app.page = "connections"; app.connectionTab = "quickapply" }.buttonStyle(.link)
                 }
+                Toggle("Activer l’observation (opt-in)", isOn: $app.claudeObserverEnabledDraft)
+                    .disabled(app.claudeSessionsBusy)
+                HStack(spacing: 12) {
+                    Text("Intervalle (s)").font(.caption).foregroundStyle(.secondary)
+                    TextField("60", text: $app.claudeObserverInterval).frame(width: 90).textFieldStyle(.roundedBorder)
+                    Button("Enregistrer") { app.configureClaudeObserver(enabled: app.claudeObserverEnabledDraft) }
+                        .disabled(app.claudeSessionsBusy)
+                    Button("Actualiser") { app.refreshClaudeSessions() }.disabled(app.claudeSessionsBusy)
+                    if app.claudeSessionsBusy { ProgressView().controlSize(.small) }
+                }
+                if !app.claudeSessionsNote.isEmpty { InlineStatus(busy: false, message: app.claudeSessionsNote) }
                 Text(!statusKnown ? "État de configuration inconnu · \(rootStatus)" : enabled ? "Observation CDP opt-in · sessions ouvertes seulement" : "Observation désactivée · aucune lecture CDP").font(.caption).foregroundStyle(.secondary)
+                SettingsHint(
+                    text: "Une session associée ne prouve ni l’admission du message ni le retour MCP.",
+                    detail: "L’association est déclarée par vous. L’observation est limitée aux onglets ouverts et reste en lecture seule. État de la route : "
+                        + (route["refresh_status"] as? String ?? "inconnu")
+                        + " · instance : " + (route["instance_status"] as? String ?? "inconnue")
+                        + " · couverture : " + (route["coverage"] as? String ?? "onglets ouverts uniquement")
+                        + (lastRead.map { "\nDernière lecture : " + localDateTime($0) } ?? "")
+                        + ((route["next_refresh_at"] as? Double).flatMap { $0.isFinite && $0 > 0 ? "\nProchaine observation au plus tôt : " + localDateTime(Date(timeIntervalSince1970: $0)) : nil } ?? ""),
+                    detailLabel: "État détaillé")
+                Divider()
+                Text("Associer un chat déjà ouvert").font(.callout.weight(.semibold))
+                TextField("Identifiant du chat (UUID)", text: $app.claudeSessionChatID).textFieldStyle(.roundedBorder)
+                Toggle("Je confirme que ce chat est ouvert dans Claude Desktop", isOn: $app.claudeSessionConfirmed)
+                    .disabled(app.claudeSessionsBusy)
+                HStack(spacing: 10) {
+                    Button("Associer") { app.registerClaudeSession() }
+                        .disabled(app.claudeSessionsBusy || !app.claudeSessionConfirmed)
+                    Button("Retirer l’association") { app.registerClaudeSession(remove: true) }
+                        .disabled(app.claudeSessionsBusy)
+                }
                 if sessions.isEmpty {
                     Text(statusKnown ? "Aucune session Desktop déclarée. L’observation ne crée pas de chat." : "Sessions inconnues tant que l’état du connecteur n’est pas disponible.").font(.callout).foregroundStyle(.secondary)
                 }
                 ForEach(Array(sessions.enumerated()), id: \.offset) { _, session in
                     claudeSessionSummary(session)
                 }
-                if let next = route["next_refresh_at"] as? Double, next.isFinite, next > 0 {
-                    Text("Prochaine lecture au plus tôt : " + localDateTime(Date(timeIntervalSince1970: next))).font(.caption).foregroundStyle(.secondary)
+                if (status["capabilities"] as? [String: Any])?["action_eligible"] as? Bool != true {
+                    SettingsHint(
+                        text: "Aucune reprise n’est proposée depuis cet écran.",
+                        detail: "La pilotabilité, l’admission du message et le retour MCP sont trois capacités distinctes. L’observation ne les prouve pas ; une reprise n’est donc proposée que lorsqu’elles sont toutes vérifiées.")
                 }
             }
         }
@@ -746,77 +780,16 @@ struct Dashboard: View {
                 if !app.desktopConnectionNote.isEmpty { InlineStatus(busy: false, message: app.desktopConnectionNote) }
                 SettingsHint(
                     text: "Un test réussi confirme le service, pas la soumission dans Desktop.",
-                    detail: "Le test initialise uniquement le protocole Quick Apply : aucun envoi de prompt, aucun appel au modèle. La soumission réelle dans l’overlay de Desktop dépend des autorisations macOS décrites plus bas.")
+                    detail: "Le test initialise uniquement le protocole Quick Apply : aucun envoi de prompt, aucun appel au modèle.")
                 Button("Rétablir la détection automatique") { app.restoreDesktopConnectionDetection() }
                     .disabled(app.desktopConnectionBusy || !customSocket)
             }
-            claudeObserverPanel
             SettingsCard(title: "Soumission Quick Apply",
-                         status: "Autorisations requises",
+                         status: "Aucune autorisation requise",
                          ok: true) {
                 SettingsHint(
-                    text: "Accessibilité et Capture d’écran doivent être accordées par vous.",
-                    detail: "La soumission réelle dans l’overlay Quick Apply exige les autorisations macOS Accessibilité et Capture d’écran, accordées par l’opérateur dans Réglages Système. Reprise valide et achemine la demande ; elle ne pilote pas l’interface de Claude Desktop à votre place.")
-            }
-        }
-    }
-    var claudeObserverPanel: some View {
-        let status = app.claudeSessionsStatus
-        let route = status["route"] as? [String: Any] ?? [:]
-        let binding = status["binding"] as? [String: Any] ?? [:]
-        let sessions = status["sessions"] as? [[String: Any]] ?? []
-        let capabilities = status["capabilities"] as? [String: Any] ?? [:]
-        let lastRead = (route["last_refresh_at"] as? Double).flatMap { $0.isFinite && $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
-        return SettingsCard(title: "Observation des sessions Claude Desktop",
-                            status: app.claudeObserverEnabledDraft ? "Active" : "Inactive",
-                            ok: app.claudeObserverEnabledDraft) {
-            Toggle("Activer l’observation (opt-in)", isOn: $app.claudeObserverEnabledDraft)
-                .disabled(app.claudeSessionsBusy)
-            HStack(spacing: 12) {
-                Text("Port CDP local").font(.caption).foregroundStyle(.secondary)
-                TextField("9222", text: $app.claudeObserverPort).frame(width: 90).textFieldStyle(.roundedBorder)
-                Text("Intervalle (s)").font(.caption).foregroundStyle(.secondary)
-                TextField("60", text: $app.claudeObserverInterval).frame(width: 90).textFieldStyle(.roundedBorder)
-                Button("Enregistrer") { app.configureClaudeObserver(enabled: app.claudeObserverEnabledDraft) }
-                    .disabled(app.claudeSessionsBusy)
-                if app.claudeSessionsBusy { ProgressView().controlSize(.small) }
-            }
-            SettingsHint(
-                text: "Une session associée ne prouve ni l’admission du message ni le retour MCP.",
-                detail: "L’association est déclarée par vous. L’observation est limitée aux onglets ouverts et reste en lecture seule. État de la route : "
-                    + (route["refresh_status"] as? String ?? status["status"] as? String ?? "inconnu")
-                    + " · instance : " + (route["instance_status"] as? String ?? "inconnue")
-                    + " · couverture : " + (route["coverage"] as? String ?? "onglets ouverts uniquement")
-                    + " · rattachement local : " + (binding["status"] as? String ?? "inconnu")
-                    + (lastRead.map { "\nDernière lecture : " + localDateTime($0) } ?? "")
-                    + ((route["next_refresh_at"] as? Double).flatMap { $0.isFinite && $0 > 0 ? "\nProchaine observation au plus tôt : " + localDateTime(Date(timeIntervalSince1970: $0)) : nil } ?? ""),
-                detailLabel: "État détaillé")
-            Divider()
-            Text("Associer un chat déjà ouvert").font(.callout.weight(.semibold))
-            HStack(spacing: 10) {
-                TextField("Identifiant du chat (UUID)", text: $app.claudeSessionChatID).textFieldStyle(.roundedBorder)
-                Button("Actualiser") { app.refreshClaudeSessions() }.disabled(app.claudeSessionsBusy)
-            }
-            Toggle("Je confirme que ce chat est ouvert dans Claude Desktop", isOn: $app.claudeSessionConfirmed)
-                .disabled(app.claudeSessionsBusy)
-            HStack(spacing: 10) {
-                Button("Associer") { app.registerClaudeSession() }
-                    .disabled(app.claudeSessionsBusy || !app.claudeSessionConfirmed)
-                Button("Retirer l’association") { app.registerClaudeSession(remove: true) }
-                    .disabled(app.claudeSessionsBusy)
-            }
-            if !app.claudeSessionsNote.isEmpty { InlineStatus(busy: false, message: app.claudeSessionsNote) }
-            if sessions.isEmpty {
-                Text("Aucune session associée.").font(.callout).foregroundStyle(.secondary)
-            } else {
-                ForEach(Array(sessions.enumerated()), id: \.offset) { _, session in
-                    claudeSessionSummary(session)
-                }
-            }
-            if capabilities["action_eligible"] as? Bool != true {
-                SettingsHint(
-                    text: "Aucune reprise n’est proposée depuis cet écran.",
-                    detail: "La pilotabilité, l’admission du message et le retour MCP sont trois capacités distinctes. L’observation ne les prouve pas ; une reprise n’est donc proposée que lorsqu’elles sont toutes vérifiées.")
+                    text: "Aucune autorisation macOS n’est requise pour Reprise.",
+                    detail: "Quick Apply s’applique via le socket du daemon claude-desktopd (~/.claude-desktop/quick-entry.sock). Le daemon, lui, agit dans Claude Desktop avec les autorisations que vous lui accordez.")
             }
         }
     }
