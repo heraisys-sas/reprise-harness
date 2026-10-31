@@ -7,7 +7,7 @@ Outils macOS pour suivre les sessions d’agents, rechercher leurs diagnostics l
 | Dossier | État |
 | --- | --- |
 | `agent-resume/` | Application native SwiftUI/AppKit, collecte locale, quotas disponibles, recherche privée et cache d’analyse chiffrés |
-| `deepseek-harness-config/` | Instructions et six compétences de développement, DevOps, sécurité, preuves scientifiques, orchestration et portage Rust ; configuration de référence |
+| `deepseek-harness-config/` | Instructions et compétences de développement, DevOps, sécurité, preuves scientifiques, orchestration, portage Rust et maintenance Reprise ; configuration de référence |
 | `routing/` | Routeur expérimental avec embeddings Apple locaux, tests et comparaisons |
 | `role-routing/` | Routage optionnel par rôles planner/executor, désactivé par défaut |
 | `harness-tools/` | Outils de vérification et pilotes d’évaluation |
@@ -15,6 +15,8 @@ Outils macOS pour suivre les sessions d’agents, rechercher leurs diagnostics l
 Le routage par embeddings Apple est implémenté et testé dans un profil Harness isolé. Il reste expérimental et n’est pas activé dans le profil quotidien. Le modèle génératif Apple Intelligence ne participe pas au routage.
 
 Le contrat du prototype de registre de projets et ses limites sont décrits dans [`agent-resume/PROJECT-REGISTRY-CONTRACT.md`](agent-resume/PROJECT-REGISTRY-CONTRACT.md).
+
+Pour installer, migrer, diagnostiquer ou transmettre la maintenance : [index des procédures et skill portable](MAINTENANCE.md).
 
 ## Démarrage de Reprise
 
