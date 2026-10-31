@@ -84,9 +84,10 @@ class Endpoint:
         """Validate, bound and record a submission; returns the routed payload."""
         if not isinstance(args, dict):
             raise ValueError('Objet de soumission requis')
-        allowed = {'prompt', 'images', 'filePaths', 'chatId', 'request_key', 'parent_request_key', 'purpose'}
+        allowed = {'prompt', 'images', 'filePaths', 'chatId', 'request_key', 'parent_request_key', 'purpose', 'orchestrated'}
         if args.keys() - allowed:
             raise ValueError('Champs de soumission non pris en charge')
+        orchestrated = bool(args.get('orchestrated'))
         purpose = args.get('purpose', 'delegation')
         if purpose not in ('delegation', 'continuation'):
             raise ValueError('Invalid submission purpose')
@@ -104,7 +105,7 @@ class Endpoint:
         if existing:
             return existing
         delivery = payload
-        if self.tasks and purpose == 'delegation':
+        if self.tasks and purpose == 'delegation' and not orchestrated:
             delivery = dict(payload, text=(
                 'A Reprise task is waiting in the configured project. Persist a claim_key, then call '
                 'get_task with request_key=' + json.dumps(args['request_key']) +
@@ -123,6 +124,7 @@ class Endpoint:
                 'dispatch': 'dispatchOnQuickEntrySubmit',
                 'reason': 'Payload validé et routé ; la soumission réelle dépend du pilote Desktop autorisé.',
                 'automatic_fallback': False, 'admission_only': True, 'dispatch_attempted': False,
+                'task_pre_registered': bool(orchestrated and self.tasks),
                 'task_available': self.tasks is not None and purpose == 'delegation', 'purpose': purpose})
 
     def call(self, name, args):

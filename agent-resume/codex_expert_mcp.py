@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Project-bound MCP expertise tools; explicit backends, no background inference."""
-from app_paths import state_directory
+from app_paths import state_directory, state_location
 import argparse
 import fcntl
 import hashlib
@@ -206,6 +206,15 @@ class Bridge:
         routing_events.seed_local(self.db)
         self.db.commit()
         self.requests = Store(self.db, str(self.root))
+        # Canal de retour MCP (get_task/submit_result) : TaskStore durable, ou
+        # None si l'état Quick Apply n'est pas initialisable — le pont doit
+        # alors refuser l'orchestration plutôt que promettre un aller-retour.
+        self.desktop_tasks = None
+        try:
+            from desktop_task_store import TaskStore
+            self.desktop_tasks = TaskStore(state_location(self.root, 'quick-state'), self.root)
+        except (OSError, sqlite3.Error, ValueError):
+            self.desktop_tasks = None
 
     def _ironclaw_configured(self):
         try:
@@ -302,12 +311,16 @@ class Bridge:
             existing = self.requests.begin(key, payload, parent)
             if existing:
                 pointer = existing.get('request_key', key)
+                completion = self._desktop_completion(pointer)
                 if return_mode == 'receipt':
                     manifest = self.requests.lookup({'request_key': pointer, 'view': 'receipt'})
-                    # The lookup status only says the receipt was found, not how the delegation ended.
-                    self._tag(manifest, existing)
+                    if completion:
+                        manifest.update(completion)
+                    else:
+                        # The lookup status only says the receipt was found, not how the delegation ended.
+                        self._tag(manifest, existing)
                     return manifest
-                return self._bounded_full(pointer, existing)
+                return self._bounded_full(pointer, existing | completion if completion else existing)
             # Exceptions or process exit leave a durable uncertain attempt.
             def attach(event):
                 context = {'scope': self.scope, 'backend': clean.get('backend', 'codex'),
@@ -327,6 +340,10 @@ class Bridge:
                 result = dict(result, status='needs_review', original_status=result.get('status'),
                               original_reason=result.get('reason'),
                               reason='Input files changed during delegation; result requires reconciliation.', input_changed=True)
+            if clean.get('backend') == 'claude-desktop' and result.get('status') == 'finished' \
+                    and result.get('response') is None:
+                # A claude-desktop submission is only admitted: the MCP round-trip (submit_result) completes it.
+                result = dict(result, admission_only=True)
             result = self.requests.finish(key, result)
             if return_mode == 'receipt':
                 return self._tag(self.requests.lookup({'request_key': key, 'view': 'receipt'}), result)
@@ -337,6 +354,21 @@ class Bridge:
         """A receipt manifest reports the delegation status, not the lookup status."""
         manifest['status'] = result['status']
         return manifest
+
+    def _desktop_completion(self, pointer):
+        """Surface a validated submit_result (MCP round-trip) for a claude-desktop request."""
+        if self.desktop_tasks is None:
+            return None
+        try:
+            receipt = self.desktop_tasks.result(pointer)
+        except (ValueError, sqlite3.Error):
+            return None
+        if receipt.get('state') != 'recorded':
+            return None
+        answer = self.desktop_tasks.result(pointer, view='full').get('answer')
+        return {'status': 'finished', 'response': answer,
+                'result_sha256': receipt.get('result_sha256'),
+                'completed': True}
 
     def _bounded_full(self, key, result):
         """Deliver a full-mode result unchanged up to FULL_RESULT_LIMIT, else its durable manifest."""
@@ -389,7 +421,9 @@ class Bridge:
                 {'id': 'claude-desktop', 'configured': bool(self.desktop_values), 'models': [],
                  'billing': 'Claude Desktop session; quota not reported',
                  'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': False,
+                 'task_return_supported': self.desktop_tasks is not None,
                  'dispatch': 'dispatchOnQuickEntrySubmit (full turn, not a prefill)',
+                 'return_channel': 'MCP get_task/submit_result via durable TaskStore; completion only on validated submit_result',
                  'context': 'Structured Quick Apply payload; images/files bounded; target chat routing'},
                 {'id': 'ironclaw', 'configured': self._ironclaw_configured(), 'models': [],
                  'reason': None if self._ironclaw_configured() else
@@ -471,8 +505,10 @@ class Bridge:
                 policy['execution_deadline'] > policy.get('wait_timeout', 30) or
                 policy.get('inactivity', float('inf')) < policy['execution_deadline']):
             raise ValueError('Execution deadline must fit inside the connected wait and inactivity windows')
-        if policy and backend != 'codex':
+        if policy and backend not in ('codex', 'claude-desktop'):
             raise ValueError('Wait and execution budgets apply to the Codex backend only')
+        if backend == 'claude-desktop' and policy.keys() - {'wait_timeout', 'stop_on_deadline'}:
+            raise ValueError('Only wait_seconds applies to the claude-desktop backend')
         if backend == 'ironclaw':
             # Appel explicite uniquement (billing paid, admissibilité automatic=False) ;
             # une configuration absente ou incomplète renvoie un statut actionnable.
@@ -485,6 +521,10 @@ class Bridge:
         if backend == 'claude-desktop' and not self.desktop_values:
             return {'status': 'engine_unavailable', 'backend': backend,
                     'reason': 'Quick Apply non configuré sur ce pont ; relancez-le avec --desktop-socket.', 'automatic_fallback': False}
+        if backend == 'claude-desktop' and self.desktop_tasks is None:
+            return {'status': 'return_channel_unavailable', 'backend': backend,
+                    'reason': "Canal de retour MCP indisponible (TaskStore non initialisé) ; aucun aller-retour garanti.",
+                    'automatic_fallback': False}
         if backend != 'claude-desktop' and not (self.ironclaw_program if backend == 'ironclaw'
                                                 else (self.program if backend == 'codex' else self.claude_program)):
             return {'status': 'engine_unavailable', 'backend': backend, 'reason': 'Requested executable not configured', 'automatic_fallback': False}
@@ -528,12 +568,15 @@ class Bridge:
             routing_events.finalize(self.db, event_id, str(result.get('status') or 'unknown'))
             return result | {'backend': backend, 'automatic_fallback': False}
         if backend == 'claude-desktop':
+            max_wait = min(max(policy.get('wait_timeout', 0), 0), 600) if policy else 0
             result = claude_desktop.review(self.root, question, kind=args.get('kind', 'expertise'),
                                           level=args.get('level', 'standard'), paths=args.get('paths'),
                                           chat_id=args.get('chatId'), file_paths=args.get('filePaths'),
-                                          program=self.desktop_program, values=self.desktop_values, request_key=self.requests.active_key)
+                                          program=self.desktop_program, values=self.desktop_values,
+                                          request_key=self.requests.active_key, tasks=self.desktop_tasks,
+                                          max_wait=max_wait)
             routing_events.finalize(self.db, event_id, str(result.get('status') or 'unknown'))
-            return result | {'backend': backend, 'automatic_fallback': False, 'admission_only': True, 'response': None}
+            return result | {'backend': backend, 'automatic_fallback': False}
         if backend == 'claude-code':
             result = claude_review(self.claude_program, self.root, question, paths=args.get('paths'),
                                    thread_id=ident, subscription_only=self.claude_subscription_only, **routing)
