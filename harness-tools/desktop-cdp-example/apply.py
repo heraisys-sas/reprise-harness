@@ -1,7 +1,7 @@
 """Désactivation des anciens exemples CDP et adaptateur quota local.
 
 Le pilote décrit par la source historique n'est plus exécutable depuis ce
-répertoire. Pour le flux produit, voir ``agent-resume/resume desktop-apply``.
+répertoire. Pour le flux produit, voir ``agent-resume/reprise desktop-apply``.
 ``quota_blocked`` reste une lecture locale de fixtures/journal, sans CDP.
 """
 

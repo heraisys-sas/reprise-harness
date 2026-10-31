@@ -71,7 +71,7 @@ class PackageHelpersTests(unittest.TestCase):
             environment = dict(os.environ, HOME=str(folder / 'home'), REPRISE_ALLOW_NEW_STATE='1')
             environment.pop('AGENT_RESUME_STATE', None)
             environment.pop('PYTHONPATH', None)
-            result = subprocess.run([sys.executable, str(root / 'resume'), 'scheduler-status'],
+            result = subprocess.run([sys.executable, str(root / 'reprise'), 'scheduler-status'],
                                     cwd=folder, env=environment, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             json.loads(result.stdout)
@@ -95,10 +95,10 @@ class PackageHelpersTests(unittest.TestCase):
             for key in ('AGENT_RESUME_STATE', 'REPRISE_ALLOW_NEW_STATE', 'PYTHONPATH'):
                 environment.pop(key, None)
             target = folder / 'home/Library/Application Support/Reprise/state'
-            result = subprocess.run([sys.executable, str(root / 'resume'), 'state-init', '--target', str(target)],
+            result = subprocess.run([sys.executable, str(root / 'reprise'), 'state-init', '--target', str(target)],
                                     env=environment, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            result = subprocess.run([sys.executable, str(root / 'resume'), 'scheduler-status'],
+            result = subprocess.run([sys.executable, str(root / 'reprise'), 'scheduler-status'],
                                     env=environment, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((target / 'tasks.sqlite').exists())
@@ -112,7 +112,7 @@ class PackageHelpersTests(unittest.TestCase):
             for key in ('AGENT_RESUME_STATE', 'REPRISE_ALLOW_NEW_STATE', 'PYTHONPATH'):
                 environment.pop(key, None)
             def command(*args, input=None):
-                result = subprocess.run([sys.executable, str(root / 'resume'), *args], env=environment,
+                result = subprocess.run([sys.executable, str(root / 'reprise'), *args], env=environment,
                                         input=input, capture_output=True, text=True)
                 return result, json.loads(result.stdout)
             result, state = command('state-status')

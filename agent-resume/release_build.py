@@ -19,7 +19,7 @@ def inputs(root):
     # Only build inputs: never state, logs, credentials, generated bundles or tests.
     suffixes = {'.swift', '.py', '.md', '.json', '.txt', '.html', '.cjs'}
     return {p.name: sha(p) for p in sorted(root.iterdir())
-            if p.is_file() and not p.is_symlink() and (p.suffix in suffixes or p.name in ('VERSION', 'native-install', 'resume'))}
+            if p.is_file() and not p.is_symlink() and (p.suffix in suffixes or p.name in ('VERSION', 'native-install', 'reprise'))}
 
 
 def identity(files):
@@ -54,7 +54,7 @@ def check(app, root=ROOT):
 def smoke(app):
     resources = app / 'Contents/Resources'
     python = resources / 'runtime/bin/python3'
-    helper = resources / 'helpers/resume'
+    helper = resources / 'helpers/reprise'
     with tempfile.TemporaryDirectory(prefix='reprise-smoke-') as folder:
         home = Path(folder)
         env = {k: v for k, v in os.environ.items() if not k.startswith(('PYTHON', 'DYLD_')) and k != 'AGENT_RESUME_STATE'}

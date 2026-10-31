@@ -218,7 +218,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         guard runtimeError == nil, stateReady || ["state-status", "state-plan", "state-apply"].contains(args.first ?? "") else { return nil }
         let process = Process(); let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: python)
-        process.arguments = (python == "/usr/bin/env" ? ["python3"] : []) + (usesBundledRuntime ? ["-E", "-s", "-B"] : []) + [root.appendingPathComponent("resume").path] + args
+        process.arguments = (python == "/usr/bin/env" ? ["python3"] : []) + (usesBundledRuntime ? ["-E", "-s", "-B"] : []) + [root.appendingPathComponent("reprise").path] + args
         var environment = ProcessInfo.processInfo.environment
         for name in ["PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE", "PYTHONSTARTUP"] { environment.removeValue(forKey: name) }
         environment["PYTHONNOUSERSITE"] = "1"

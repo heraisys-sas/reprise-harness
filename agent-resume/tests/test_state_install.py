@@ -216,7 +216,7 @@ class StateInstallTests(unittest.TestCase):
         home = self.root / 'isolated-home'
         home.mkdir(exist_ok=True)
         env = dict(os.environ, HOME=str(home), AGENT_RESUME_STATE=str(self.root / 'unused-state'))
-        return subprocess.run([sys.executable, str(ROOT / 'resume'), *map(str, args)],
+        return subprocess.run([sys.executable, str(ROOT / 'reprise'), *map(str, args)],
                               env=env, cwd=self.root, text=True, capture_output=True, timeout=20)
 
     def test_cli_initialize(self):

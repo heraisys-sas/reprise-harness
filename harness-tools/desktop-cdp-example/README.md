@@ -6,7 +6,7 @@ CDP, d’attente de quota et de cycle de vie du navigateur. Ils ne lancent aucun
 sous-processus, n’ouvrent aucun socket et ne pilotent aucune fenêtre.
 
 Pour le parcours produit, utilisez uniquement la CLI Reprise
-`agent-resume/resume desktop-apply` et sa documentation
+`agent-resume/reprise desktop-apply` et sa documentation
 [`CLAUDE-DESKTOP-APPLY.md`](../../agent-resume/CLAUDE-DESKTOP-APPLY.md). Le
 code actif de cet exemple n’est pas une alternative à cette CLI.
 
