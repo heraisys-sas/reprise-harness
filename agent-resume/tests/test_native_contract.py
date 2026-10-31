@@ -8,10 +8,14 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from native_contract import build_version, check_sdk
+from native_contract import BINARIES, build_version, check_sdk
 
 
 class NativeContractTests(unittest.TestCase):
+    def test_binaries_contract_excludes_ax_helper(self):
+        """ClaudeQuota.swift supprimé (issue #96) : le contrat ne liste plus de helper AX."""
+        self.assertEqual(BINARIES, ('Reprise', 'Embedding', 'FoundationExplain', 'Vault'))
+
     def test_build_sdk_does_not_raise_deployment_minimum(self):
         output = 'Load command 1\n cmd LC_BUILD_VERSION\n cmdsize 32\n minos 26.0\n sdk 27.0\nLoad command 2\n'
         self.assertEqual(build_version(output), {'minos': '26.0', 'sdk': '27.0'})

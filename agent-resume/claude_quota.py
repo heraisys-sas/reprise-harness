@@ -159,21 +159,6 @@ def status(db):
             for row in db.execute('SELECT event_key,chat_id,observed_at,due,fingerprint,status FROM claude_quota_resumes ORDER BY observed_at DESC LIMIT 100')]
 
 
-def native_observer(helper, chat_id=None):
-    def observe():
-        reply = subprocess.run([str(helper), 'observe'] + (['--chat', chat_id] if chat_id else []), capture_output=True, text=True, timeout=15)
-        return json.loads(reply.stdout)
-    return observe
-
-
-def native_clicker(helper):
-    def click(chat_id, fingerprint):
-        reply = subprocess.run([str(helper), 'continue', '--chat', chat_id, '--evidence', fingerprint],
-                               capture_output=True, text=True, timeout=15)
-        return json.loads(reply.stdout)
-    return click
-
-
 
 def run_quick(db, now, client_factory=None):
     """Use the same daemon API as delegating harnesses, never treat admission as a turn."""
@@ -231,26 +216,7 @@ def run_native(db, root, state, now=None):
             return run_quick(db, time.time() if now is None else now)
     if transport == 'cdp':
         return _run_cdp(db, state, time.time() if now is None else now)
-    if transport == 'accessibility':
-        root = Path(root)
-        helper = root.parent.parent / 'MacOS/ClaudeQuota'
-        with (Path(state) / 'claude-quota.lock').open('a') as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return {'status': 'busy', 'submitted': 0}
-            observer = native_observer(helper)
-            # Timezone comes from the native desktop, never an implicit UTC daemon locale.
-            initial = observer()
-            zone_name = initial.get('timezone')
-            if not isinstance(zone_name, str):
-                return {'status': initial.get('reason', 'unavailable'), 'submitted': 0}
-            zone = ZoneInfo(zone_name)
-            reads = iter([initial])
-            def read():
-                return next(reads, None) or observer()
-            return tick(db, read, native_clicker(helper), time.time() if now is None else now, zone)
-    # Unknown transport — fail closed, NEVER fall through to accessibility path
+    # Unknown or unmigrated transport — fail closed, never attempt an AX fallback.
     return {'status': 'unknown_transport', 'submitted': 0, 'transport': transport}
 
 

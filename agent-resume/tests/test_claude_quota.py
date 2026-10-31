@@ -182,6 +182,25 @@ class ClaudeQuotaTests(unittest.TestCase):
         quota.tick(self.db,lambda:next(readings),lambda *args:self.clicks.append(args),DUE,ZONE)
         self.assertFalse(self.clicks)
 
+    def test_run_native_unknown_transport_fails_closed(self):
+        """Transport persisté 'accessibility' (non migré) : run_native fail-closed, aucune soumission."""
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td)
+            quota.initialize(self.db)
+            self.db.execute(
+                "INSERT INTO claude_quota_resumes VALUES (?,?,?,?,?,?,?)",
+                ('evt-ax', CHAT, NOW, DUE, 'f' * 64, 'p' * 64, 'waiting'))
+            self.db.commit()
+            scheduler.put(self.db, 'claude_desktop_transport', 'accessibility')
+            with mock.patch('claude_desktop_rpc.Client') as mock_client_cls:
+                result = quota.run_native(self.db, str(state), str(state), now=DUE + 1)
+                self.assertEqual(result, {'status': 'unknown_transport', 'submitted': 0,
+                                          'transport': 'accessibility'})
+                mock_client_cls.assert_not_called()
+            status_row = self.db.execute(
+                "SELECT status FROM claude_quota_resumes WHERE event_key='evt-ax'").fetchone()
+            self.assertEqual(status_row[0], 'waiting')
+
     def test_run_native_cdp_transport_idle(self):
         """run_native avec transport='cdp' et pas de reprise due retourne observed."""
         with tempfile.TemporaryDirectory() as td:
