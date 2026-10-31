@@ -880,11 +880,10 @@ struct Integrations: View {
                     get: { app.claudeQuotaState["transport"] as? String ?? "quick-apply" },
                     set: { app.configureClaudeQuota(app.claudeQuotaState["enabled"] as? Bool ?? true, transport: $0) })) {
                     Text("Quick Apply (claude-desktopd)").tag("quick-apply")
-                    Text("Accessibilité macOS (autorisation requise)").tag("accessibility")
                 }
                 SettingsHint(
                     text: "La pause globale reste prioritaire.",
-                    detail: "Quick Apply passe par le même service que les autres harness et exige une capacité d’émission vérifiée. L’autre canal demande l’autorisation Accessibilité de macOS. Dans les deux cas, Reprise examine le dernier message du chat affiché et son bouton Continuer, sans saisir de texte à votre place.")
+                    detail: "Quick Apply passe par le même service que les autres harness et exige une capacité d’émission vérifiée. Reprise examine le dernier message du chat affiché et son bouton Continuer, sans saisir de texte à votre place.")
                 if let events = app.claudeQuotaState["events"] as? [[String: Any]], let latest = events.first,
                    let due = latest["due"] as? Double {
                     HStack(spacing: 16) {
