@@ -93,7 +93,7 @@ class ContextBudgetTests(unittest.TestCase):
 
 class SourceExportTests(unittest.TestCase):
     def test_export_closes_build_and_local_import_dependencies(self):
-        tree = ast.parse((ROOT / 'resume').read_text())
+        tree = ast.parse((ROOT / 'reprise').read_text())
         function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'share_files')
         namespace = {}
         exec(compile(ast.Module(body=[function], type_ignores=[]), 'share_files', 'exec'), namespace)
@@ -109,7 +109,7 @@ class SourceExportTests(unittest.TestCase):
         self.assertTrue(required <= names, required - names)
         for name in names:
             self.assertTrue((ROOT / name).is_file(), name)
-            if name.endswith('.py') or name == 'resume':
+            if name.endswith('.py') or name == 'reprise':
                 for node in ast.walk(ast.parse((ROOT / name).read_text())):
                     imports = ([a.name for a in node.names] if isinstance(node, ast.Import)
                                else [node.module] if isinstance(node, ast.ImportFrom) and node.module else [])

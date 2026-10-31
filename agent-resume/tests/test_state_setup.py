@@ -263,7 +263,7 @@ class StateSetupTests(unittest.TestCase):
         home = self.root / 'home'
         home.mkdir()
         env = dict(os.environ, HOME=str(home), AGENT_RESUME_STATE=str(self.target))
-        result = subprocess.run([sys.executable, str(ROOT / 'resume'), 'state-status'],
+        result = subprocess.run([sys.executable, str(ROOT / 'reprise'), 'state-status'],
                                 cwd=self.root, env=env, text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)['status'], 'needs_setup')

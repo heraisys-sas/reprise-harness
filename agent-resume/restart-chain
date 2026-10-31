@@ -53,7 +53,7 @@ done
 
 echo "1/6 · Conservation des sockets existants (aucune suppression aveugle)"
 echo "2/6 · Arrêt ciblé du daemon Quick Apply géré par Reprise"
-"$PYTHON" "$ROOT/resume" quick-apply-daemon-stop || echo "   (arrêt non confirmé — aucun processus tué par son nom)"
+"$PYTHON" "$ROOT/reprise" quick-apply-daemon-stop || echo "   (arrêt non confirmé — aucun processus tué par son nom)"
 
 if [ "$build" = "1" ]; then
     echo "3/6 · Recompilation de Reprise"
@@ -63,7 +63,7 @@ else
 fi
 
 echo "4/6 · Démarrage du daemon Quick Apply"
-"$PYTHON" "$ROOT/resume" quick-apply-daemon-start >/dev/null 2>&1 || echo "   (daemon Quick Apply non démarré ici — voir quick-apply-daemon-status)"
+"$PYTHON" "$ROOT/reprise" quick-apply-daemon-start >/dev/null 2>&1 || echo "   (daemon Quick Apply non démarré ici — voir quick-apply-daemon-status)"
 
 echo "5/6 · Daemon Codex conservé : aucune interruption des chats propriétaires"
 
@@ -75,4 +75,4 @@ else
 fi
 
 echo "État :"
-"$PYTHON" "$ROOT/resume" desktop-status 2>/dev/null || true
+"$PYTHON" "$ROOT/reprise" desktop-status 2>/dev/null || true
