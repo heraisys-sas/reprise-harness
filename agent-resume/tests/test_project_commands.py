@@ -26,7 +26,7 @@ class ProjectCommandsTests(unittest.TestCase):
         self.base = Path(self.temp.name).resolve()
         self.home = self.base / 'home'
         self.state = self.base / 'explicit-state'
-        self.resume = SOURCE / 'resume'
+        self.reprise = SOURCE / 'reprise'
         self.env = dict(os.environ, HOME=str(self.home), AGENT_RESUME_STATE=str(self.state))
         self.env.pop('PYTHONPATH', None)
         self.repo = self._repo(self.base / 'source', commit=True)
@@ -46,7 +46,7 @@ class ProjectCommandsTests(unittest.TestCase):
         return path
 
     def command(self, *args, resume=None, env=None):
-        result = subprocess.run([sys.executable, str(resume or self.resume), *args],
+        result = subprocess.run([sys.executable, str(resume or self.reprise), *args],
                                 cwd=self.base, env=env or self.env,
                                 capture_output=True, text=True, timeout=30)
         try:
@@ -166,7 +166,7 @@ class ProjectCommandsTests(unittest.TestCase):
 
         packaged_env = dict(self.env)
         packaged_env['AGENT_RESUME_STATE'] = str(self.base / 'packaged-state')
-        packaged_resume = moved_helpers / 'resume'
+        packaged_resume = moved_helpers / 'reprise'
         result, listed = self.command('project-list', resume=packaged_resume, env=packaged_env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(listed, {'status': 'ok', 'projects': []})

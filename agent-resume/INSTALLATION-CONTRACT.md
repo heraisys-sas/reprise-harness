@@ -89,8 +89,8 @@ Deux tests sur copies temporaires couvrent payload déplacé, CLI sans chemin so
 Les commandes suivantes fonctionnent avant toute ouverture du registre courant, y compris depuis les helpers déplacés :
 
 ```sh
-python3 /chemin/helpers/resume state-init --target "/chemin/nouvel-etat"
-python3 /chemin/helpers/resume state-import --source "/chemin/ancien-etat" --target "/chemin/nouvel-etat" --source-stopped
+python3 /chemin/helpers/reprise state-init --target "/chemin/nouvel-etat"
+python3 /chemin/helpers/reprise state-import --source "/chemin/ancien-etat" --target "/chemin/nouvel-etat" --source-stopped
 ```
 
 `state-init` crée un manifeste `.reprise-state.json` reconnu par le lancement embarqué, sans base ni activation de service. Une cible existante est refusée, même vide. Le chemin par défaut embarqué est `~/Library/Application Support/Reprise/state` ; chaque commande exige néanmoins sa cible explicite. L’état historique du développement reste inchangé. `AGENT_RESUME_STATE` demeure une sélection explicite, et l’ancienne variable de prototype reste compatible.

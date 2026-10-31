@@ -2,7 +2,7 @@
 
 `ironclaw_ssh.probe(Endpoint(...))` effectue uniquement un GET authentifié de
 `http://127.0.0.1:<http_port>/api/webchat/v2/session` dans le conteneur distant.
-Connexion accessible dans **Connexions → IronClaw SSH** et via les commandes `resume ironclaw-inspect`, `ironclaw-configure` (objet Endpoint JSON sur stdin) et `ironclaw-probe`. Aucune soumission, inférence, installation ou modification distante.
+Connexion accessible dans **Connexions → IronClaw SSH** et via les commandes `reprise ironclaw-inspect`, `ironclaw-configure` (objet Endpoint JSON sur stdin) et `ironclaw-probe`. Aucune soumission, inférence, installation ou modification distante.
 Le résultat contient le statut HTTP, la présence du canal de session et des noms de
 champs autorisés. Un HTTP 200 sans canal non vide produit une erreur.
 

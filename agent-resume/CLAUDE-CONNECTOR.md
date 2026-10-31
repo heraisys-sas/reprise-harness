@@ -71,7 +71,7 @@ Un plan appliqué indique si la configuration locale a été écrite (`changed=t
 
 ## Démon et reprise quota
 
-La carte Claude peut lire explicitement une observation bornée du journal renderer via `resume claude-quota-status --observe-renderer-log`. Sans ce flag, `claude-quota-status` conserve sa sortie et son comportement historiques. L’interface lance cette lecture lorsque la carte est actualisée ou ouverte ; aucune ligne brute n’est renvoyée ni persistée. L’échéance indiquée est celle annoncée par un événement du journal, pas une preuve de quota actuellement bloqué ou disponible. Le fuseau d’écriture du journal n’étant pas attesté, la date de l’événement et sa fraîcheur restent inconnues ; compte, chat, quantité et état courant du quota ne sont pas attribués.
+La carte Claude peut lire explicitement une observation bornée du journal renderer via `reprise claude-quota-status --observe-renderer-log`. Sans ce flag, `claude-quota-status` conserve sa sortie et son comportement historiques. L’interface lance cette lecture lorsque la carte est actualisée ou ouverte ; aucune ligne brute n’est renvoyée ni persistée. L’échéance indiquée est celle annoncée par un événement du journal, pas une preuve de quota actuellement bloqué ou disponible. Le fuseau d’écriture du journal n’étant pas attesté, la date de l’événement et sa fraîcheur restent inconnues ; compte, chat, quantité et état courant du quota ne sont pas attribués.
 
 Le démon `claude-desktopd` peut être lié au projet avec `--project-root`. Son
 registre `quick.sqlite` est partagé avec le connecteur, isolé par projet. Une

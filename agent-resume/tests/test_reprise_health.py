@@ -442,7 +442,7 @@ class SocketAndWatchRegressionTests(unittest.TestCase):
         import contextlib
         import io
         import scheduler
-        tree = ast.parse((Path(__file__).parents[1] / 'resume').read_text())
+        tree = ast.parse((Path(__file__).parents[1] / 'reprise').read_text())
         statement = next(n for n in ast.walk(tree) if isinstance(n, ast.Try)
                          and any(isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
                                  and c.func.attr == 'watch' for b in n.body for c in ast.walk(b)))

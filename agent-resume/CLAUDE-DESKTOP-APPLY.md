@@ -14,10 +14,10 @@ Prérequis : endpoint CDP local déjà ouvert et choisi volontairement, navigate
 
 ```sh
 # Observation uniquement : ce résultat ne mesure pas le quota fournisseur.
-./resume desktop-apply --status --port 9333
+./reprise desktop-apply --status --port 9333
 
 # Une tentative explicite dans une conversation existante.
-./resume desktop-apply --chat UUID --prompt-file /chemin/message.txt --port 9333
+./reprise desktop-apply --chat UUID --prompt-file /chemin/message.txt --port 9333
 ```
 
 Les options historiques `--raise` et `--raise-on-login` n’ouvrent plus de navigateur. `launch`, `shutdown` et `raise_for_login` retournent `False` ; le motif est `lifecycle_unverified`. Il faut une action humaine ou un futur gestionnaire de cycle de vie qualifié.
@@ -93,12 +93,12 @@ Le module `claude_cdp_pipe.py` fournit un transport CCD sur la **paire de descri
 
 ```sh
 # Choisir le transport CDP
-./resume claude-quota-config --transport cdp --enabled true
+./reprise claude-quota-config --transport cdp --enabled true
 
 # Vérifier le statut CDP
-./resume desktop-apply --status
+./reprise desktop-apply --status
 # Ou via le daemon :
-./resume desktop-status  # inclut 'cdp' si disponible
+./reprise desktop-status  # inclut 'cdp' si disponible
 ```
 
 ### API interne

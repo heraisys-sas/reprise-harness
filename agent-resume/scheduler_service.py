@@ -143,7 +143,7 @@ def inspect(root, home=None, runner=launch):
         result['expected_release'] = str(state.parent / 'integration-releases' / identity)
     except (OSError, ValueError, KeyError):
         result['expected_release'] = None
-    observed_release = re.search(r'(/[^\n]*?/integration-releases/[0-9a-f]{64})/Contents/Resources/helpers/resume', loaded.stdout) if loaded.returncode == 0 else None
+    observed_release = re.search(r'(/[^\n]*?/integration-releases/[0-9a-f]{64})/Contents/Resources/helpers/(?:resume|reprise)', loaded.stdout) if loaded.returncode == 0 else None
     if observed_release:
         result['effective_release'] = observed_release.group(1)
     args = scheduler_arguments(settings)
@@ -201,7 +201,7 @@ def plan(root, home=None, action='install', activate=False, interval=60):
         except Exception as error:
             raise ValueError('Service personnalisé ou non géré : plist invalide.') from error
         args = scheduler_arguments(existing)
-        adoption = (previous is None and existing.get('Label') == LABEL and args is not None and Path(args[1]).name == 'resume'
+        adoption = (previous is None and existing.get('Label') == LABEL and args is not None and Path(args[1]).name in ('resume', 'reprise')
                     and existing.get('EnvironmentVariables', {}).get('AGENT_RESUME_STATE') == str(state)
                     and Path(args[1]).parent.name == 'helpers'
                     and Path(args[1]).parents[3].parent == state.parent / 'integration-releases')
@@ -229,7 +229,7 @@ def plan(root, home=None, action='install', activate=False, interval=60):
                     raise ValueError('Release existant altéré sans ownership du service ; réconciliation requise.')
                 repair_tree = digest(encoded(tree_files(release)).encode())
         resources = release / 'Contents/Resources'
-        settings = {'Label': LABEL, 'ProgramArguments': [str(resources / 'runtime/bin/python3'), '-E', '-s', '-B', str(resources / 'helpers/resume'), 'tick'],
+        settings = {'Label': LABEL, 'ProgramArguments': [str(resources / 'runtime/bin/python3'), '-E', '-s', '-B', str(resources / 'helpers/reprise'), 'tick'],
                     'StartInterval': interval, 'EnvironmentVariables': {'AGENT_RESUME_STATE': str(state), 'PYTHONDONTWRITEBYTECODE': '1', 'PATH': os.environ.get('PATH', '/usr/bin:/bin')},
                     'StandardOutPath': str(state / 'service.log'), 'StandardErrorPath': str(state / 'service-error.log')}
         content = plistlib.dumps(settings).decode()

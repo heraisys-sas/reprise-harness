@@ -8,7 +8,7 @@ Après préparation des états, l’onglet **Intégrations** permet de choisir e
 
 Le profil doit déjà posséder `profiles/PROFIL/cordis.patch.yml` ; Reprise n’installe pas Harness et ne crée pas son profil. Le projet doit être un dossier existant explicitement choisi. Aucun credential, réglage Codex ou service n’est modifié.
 
-Les commandes `resume integration-inspect`, `integration-plan`, `integration-apply` et `integration-verify` réutilisent le même adaptateur que l’interface. Les trois premières préparent une configuration ; `integration-verify` sonde seulement le pont lui-même avec `initialize` et `tools/list`. Aucune commande ne démarre Harness ni un daemon. `integration-apply` reçoit le plan JSON sur stdin ; le plan ne réserve pas les destinations et est revalidé.
+Les commandes `reprise integration-inspect`, `integration-plan`, `integration-apply` et `integration-verify` réutilisent le même adaptateur que l’interface. Les trois premières préparent une configuration ; `integration-verify` sonde seulement le pont lui-même avec `initialize` et `tools/list`. Aucune commande ne démarre Harness ni un daemon. `integration-apply` reçoit le plan JSON sur stdin ; le plan ne réserve pas les destinations et est revalidé.
 
 ## Éléments gérés et portées
 

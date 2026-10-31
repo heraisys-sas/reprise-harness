@@ -24,7 +24,7 @@ extension App {
                 let stdout = try FileHandle(forWritingTo: out), stderr = try FileHandle(forWritingTo: err), stdin = try FileHandle(forReadingFrom: incoming)
                 defer { try? stdout.close(); try? stderr.close(); try? stdin.close() }
                 process.executableURL = URL(fileURLWithPath: self.python)
-                process.arguments = (self.python == "/usr/bin/env" ? ["python3"] : []) + (self.usesBundledRuntime ? ["-E", "-s", "-B"] : []) + [self.root.appendingPathComponent("resume").path] + args
+                process.arguments = (self.python == "/usr/bin/env" ? ["python3"] : []) + (self.usesBundledRuntime ? ["-E", "-s", "-B"] : []) + [self.root.appendingPathComponent("reprise").path] + args
                 var environment = ProcessInfo.processInfo.environment
                 for key in ["PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE", "PYTHONSTARTUP"] { environment.removeValue(forKey: key) }
                 environment["PYTHONNOUSERSITE"] = "1"; environment["PYTHONDONTWRITEBYTECODE"] = "1"
