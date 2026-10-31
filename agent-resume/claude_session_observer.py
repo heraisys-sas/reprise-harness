@@ -178,10 +178,15 @@ def refresh(store, state, *, now, if_due=False):
         sessions, deadline = store.sessions(), time.monotonic() + BUDGET_SECONDS
         store.db.execute('PRAGMA busy_timeout=100')
         try:
-            targets = cdp.read_targets(route['port'], timeout=_timeout(deadline))
-            metadata = cdp.local_json(route['port'], '/json/version', timeout=_timeout(deadline))
-            instance = _instance(store, route['port'], metadata)
-            instance_status = 'changed' if route['instance_key'] and instance != route['instance_key'] else 'observed' if instance else 'unknown'
+            if route['port'] is None:
+                targets, metadata, instance = [], None, None
+            else:
+                targets = cdp.read_targets(route['port'], timeout=_timeout(deadline))
+                metadata = cdp.local_json(route['port'], '/json/version', timeout=_timeout(deadline))
+                instance = _instance(store, route['port'], metadata)
+            instance_status = 'unknown' if route['port'] is None else (
+                'changed' if route['instance_key'] and instance != route['instance_key']
+                else 'observed' if instance else 'unknown')
             grouped = {}
             known = {s['chat_id'] for s in sessions}
             for target in targets:
@@ -201,7 +206,7 @@ def refresh(store, state, *, now, if_due=False):
                 presence = 'not_open' if not pages else 'ambiguous' if len(pages) != 1 else 'open'
                 session['observation'].update(presence=presence, target_count=len(pages), last_checked_at=now)
                 observation = dict(observation_status='unavailable', failure='session_not_open' if not pages else 'target_ambiguous')
-                if len(pages) == 1:
+                if len(pages) == 1 and route['port'] is not None:
                     session['observation']['last_seen_at'] = now
                     client = None
                     try:
@@ -220,7 +225,7 @@ def refresh(store, state, *, now, if_due=False):
                     return 'not_due'
                 with store.db:
                     retained = store.observe(session, route['revision'])
-                if retained:
+                if retained and route['port'] is not None:
                     store.registry.record_claude(store.scope, route['port'], session['session_key'], observation, observed_at=now)
             route.update(instance_key=instance, instance_status=instance_status, failure_count=0,
                          refresh_status='partial' if partial else 'refreshed', next_refresh_at=now + route['interval_seconds'])
