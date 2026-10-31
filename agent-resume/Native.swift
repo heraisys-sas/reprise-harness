@@ -89,7 +89,6 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var claudeSessionsBusy = false
     @Published var claudeSessionsNote = ""
     @Published var claudeObserverEnabledDraft = false
-    @Published var claudeObserverPort = ""
     @Published var claudeObserverInterval = "60"
     @Published var claudeSessionChatID = ""
     @Published var claudeSessionConfirmed = false
@@ -300,7 +299,6 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                     let route = result["route"] as? [String: Any] ?? [:]
                     if !self.claudeObserverSettingsLoaded, result["status"] as? String == "ok" {
                         self.claudeObserverEnabledDraft = route["enabled"] as? Bool ?? false
-                        self.claudeObserverPort = (route["port"] as? Int).map(String.init) ?? ""
                         self.claudeObserverInterval = String(route["interval_seconds"] as? Int ?? 60)
                         self.claudeObserverSettingsLoaded = true
                     }
@@ -329,17 +327,12 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     }
     func configureClaudeObserver(enabled: Bool) {
         guard !claudeSessionsBusy else { return }
-        let portText = claudeObserverPort.trimmingCharacters(in: .whitespacesAndNewlines)
-        let port = portText.isEmpty ? nil : Int(portText)
-        guard (portText.isEmpty || port.map { (1...65535).contains($0) } == true),
-              !enabled || port != nil,
-              let interval = Int(claudeObserverInterval), (15...3600).contains(interval) else {
-            claudeSessionsNote = "Pour activer, saisissez un port CDP valide (1–65 535) et un intervalle de 15 à 3 600 s."
+        guard let interval = Int(claudeObserverInterval), (15...3600).contains(interval) else {
+            claudeSessionsNote = "L’intervalle doit être compris entre 15 et 3 600 secondes."
             return
         }
-        var args = ["claude-observer-config", "--enabled", enabled ? "true" : "false"]
-        if let port { args += ["--port", String(port)] }
-        args += ["--interval-seconds", String(interval)]
+        let args = ["claude-observer-config", "--enabled", enabled ? "true" : "false",
+                    "--interval-seconds", String(interval)]
         runClaudeSessionsCommand(args, note: enabled ? "Activation de l’observation…" : "Désactivation de l’observation…")
     }
     func registerClaudeSession(remove: Bool = false) {
@@ -372,7 +365,6 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                     let status = result["status"] as? String ?? "inconnu"
                     if status == "ok" {
                         self.claudeObserverEnabledDraft = route["enabled"] as? Bool ?? false
-                        self.claudeObserverPort = (route["port"] as? Int).map(String.init) ?? ""
                         self.claudeObserverInterval = String(route["interval_seconds"] as? Int ?? 60)
                         self.claudeObserverSettingsLoaded = true
                     }
