@@ -77,6 +77,35 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(result['sessions'][0]['quota']['freshness'], 'unobserved')
         self.assertFalse((self.state / 'claude-observer.lock').exists())
 
+    def store_without_port(self, name):
+        state = self.base / name
+        db = open_database(state, write=True)
+        self.addCleanup(db.close)
+        store = SessionStore(db, self.project)
+        store.register(CHAT, source='operator_desktop_confirmed', now=NOW-10)
+        store.configure(enabled=True)
+        return state
+
+    def test_configure_without_port_is_accepted(self):
+        state = self.store_without_port('no-port-config')
+        db = open_database(state, write=True)
+        self.addCleanup(db.close)
+        route = SessionStore(db, self.project).configure(enabled=True)
+        self.assertTrue(route['enabled'])
+        self.assertIsNone(route['port'])
+        self.assertIsNone(route['route_key'])
+
+    def test_refresh_with_port_none_never_probes_cdp(self):
+        state = self.store_without_port('no-port-refresh')
+        with self.transport():
+            result = observer.status(self.root, project_root=str(self.project), quick_state=str(state),
+                                     now=NOW, refresh_now=True)
+            self.listing.assert_not_called(); self.metadata.assert_not_called(); self.connect.assert_not_called()
+        self.assertEqual(result['route']['refresh_status'], 'refreshed')
+        self.assertEqual(result['route']['instance_status'], 'unknown')
+        self.assertEqual(result['sessions'][0]['observation']['presence'], 'not_open')
+        self.assertEqual(result['route']['last_refresh_at'], NOW)
+
     def test_passive_refresh_is_scoped_and_contains_no_action(self):
         with self.transport(pages=[target(), target(OTHER, 'unknown'), target(CHAT, 'evil', 'https://evil.test')]):
             result = self.status(refresh_now=True)
@@ -345,7 +374,7 @@ class ObserverTests(unittest.TestCase):
         self.assertFalse(state.exists())
         result = command('claude-session-register', '--chat', CHAT)
         self.assertEqual(result['sessions'][0]['registration']['source'], 'operator_desktop_confirmed')
-        result = command('claude-observer-config', '--enabled', 'true', '--port', '9333', '--interval-seconds', '120')
+        result = command('claude-observer-config', '--enabled', 'true', '--interval-seconds', '120')
         self.assertEqual(result['route']['interval_seconds'], 120)
         result = command('claude-session-remove', '--chat', CHAT)
         self.assertEqual(result['sessions'], [])

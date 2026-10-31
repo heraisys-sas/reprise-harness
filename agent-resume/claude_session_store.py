@@ -69,8 +69,6 @@ class SessionStore:
             self.db.execute('BEGIN IMMEDIATE')
             route = self.route()
             selected = port if port is not None else route['port']
-            if enabled and selected is None:
-                raise ValueError('Explicit local CDP port required')
             changed = selected != route['port']
             route.update(enabled=enabled, port=selected,
                          interval_seconds=interval_seconds if interval_seconds is not None else route['interval_seconds'],
