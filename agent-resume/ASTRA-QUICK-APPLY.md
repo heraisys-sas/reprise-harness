@@ -13,14 +13,14 @@ Contraintes respectées : aucune automatisation d'interface (accessibilité ou w
 - **Secours** : le transport CDP de `dev` (`claude_desktop_apply.py`) relance une session **interrompue** dans son chat web existant (UUID exact), tant qu'aucune voie native propre dans Claude Desktop sans Accessibilité n'est trouvée. Preuve live du 27/10 : cette conversation (#79). Non qualifié : bouton natif « Continuer », reprise après quota, `submit_result`.
 - **Capture du reset sans écran** : `claude_quota_log.py` lit dans `~/Library/Logs/Claude/claude.ai-web.log` la ligne `[COMPLETION] Request failed {"type":"exceeded_limit","resetsAt":<epoch>,…}`. Le texte du bandeau a changé (« Réinitialisation : 14:40 », sans date) et ne se parse plus ; le module refuse de deviner une heure.
 
-**Toujours vrai** : résultat négatif sur Claude Desktop 3.6556.2 (aucune entrée externe non visuelle n'atteint le dispatch).
+**Toujours vrai** : résultat négatif sur Claude Desktop 3.6556.2 (aucune entrée externe non visuelle n'atteint le dispatch) ; confirmé le 31/10 par l'analyse native de `claude-swift` (§6 bis).
 **Résolu depuis la première version** : fichiers de mission et sorties du recensement fournis, version mesurée (3.6556.2), inspector fermé (aucun accès étroit démontré à `ZIr`/`QXr`), question de la voie web tranchée (secours autorisé et testé une fois).
 
 ## 1. Verdict
 
 1. **Objectif direct (entrée externe qui rejoint `dispatchOnQuickEntrySubmit` avec `chatId`/prompt) : négatif pour 3.6556.2.** La fonction de dépôt n'a que deux appelants (§2), tous deux liés à l'interface de Quick Entry. Aucun événement externe (`open-url`, `open-file`, `second-instance`, `continue-activity`) n'apparaît dans sa chaîne d'appels. Réserve : le graphe est heuristique ; le comptage global de l'outil mis à jour (§6) le confirmera sur tous les scripts.
 2. **Aucune piste positive vérifiée, donc pas d'appel exact à fournir.** Créer l'entrée manquante reviendrait à modifier ou injecter dans Claude : interdit.
-3. **Une piste indirecte reste ouverte** : les liens profonds `claude://` aboutissent au renderer (`handleDeepLink`). Ils permettraient au mieux de **préparer** un chat, pas de **livrer** un prompt, sauf si le renderer soumet de lui-même une valeur reçue (à instruire, §6).
+3. **Une piste indirecte tranchée** : les liens profonds `claude://` aboutissent au renderer (`handleDeepLink`). Ils permettent de **préparer** un chat, pas de **livrer** un prompt : la contre-analyse native du 31/10 (§6 bis) n'a trouvé **aucune trace statique** d'un chemin renderer ou natif qui soumettrait de lui-même une valeur reçue.
 
 ## 2. Preuves du recensement (3.6556.2)
 
@@ -48,7 +48,7 @@ Contraintes respectées : aucune automatisation d'interface (accessibilité ou w
 
 **C4 — Continuation par prompt (décision de l'opérateur du 25/10, #36 corrigée).** Si une entrée `(chatId, prompt)` existait, un message de continuation explicite remplacerait le bouton. **[HYPOTHÈSE]** à valider : la pause gratuite n'empêche pas un nouveau message après le reset.
 
-**C5 — Limites du recensement.** Heuristique : les faux liens ci-dessus le prouvent. Le premier rapport ne comptait les références que dans le script de l'ancre ; l'outil mis à jour compte désormais l'ancre, `requestQuickWindowDismissWithPayload`, `quickEntrySubmitted`, `submit_quick_entry`, `handleDeepLink` et `claudeURLHandler` dans tous les scripts. Le module natif `claude-swift` n'est pas du JavaScript : l'émission de `quickEntrySubmitted` par l'overlay n'est pas analysable ici.
+**C5 — Limites du recensement.** Heuristique : les faux liens ci-dessus le prouvent. Le premier rapport ne comptait les références que dans le script de l'ancre ; l'outil mis à jour compte désormais l'ancre, `requestQuickWindowDismissWithPayload`, `quickEntrySubmitted`, `submit_quick_entry`, `handleDeepLink` et `claudeURLHandler` dans tous les scripts. Le module natif `claude-swift` n'est pas du JavaScript : l'émission de `quickEntrySubmitted` par l'overlay a depuis été **analysée statiquement au niveau natif** (§6 bis) — aucune trace statique d'un chemin de soumission autonome.
 
 ## 4. Pistes classées
 
@@ -56,7 +56,7 @@ Contraintes respectées : aucune automatisation d'interface (accessibilité ou w
 |---|---|---|
 | Événement Swift `quickEntrySubmitted` | oui, avec `chatId` | exige l'overlay natif (interaction d'interface ou accessibilité) : exclu |
 | `requestDismiss` / `blur` de la fenêtre héritée | oui, sans `chatId` | IPC interne du renderer Quick : exclu (injection) |
-| `claude://` → `$z` → `handleDeepLink` (renderer distant) | non | **indirect** : préparation seulement ; à instruire |
+| `claude://` → `$z` → `handleDeepLink` (renderer distant) | non | **indirect** : préparation seulement ; **préparation confirmée, aucune soumission possible** (§6 bis) |
 | Lien web universel / Spotlight / Handoff | non | exigent une action utilisateur ou le navigateur |
 | `open-file` (skills, DXT/MCPB) | non | installent des outils MCP : concerne le **retour MCP**, jamais la livraison ; confirmation de l'utilisateur probable **[HYPOTHÈSE]** |
 | `globalShortcut` configuré | via touche | interface : exclu |
@@ -71,6 +71,18 @@ Dans 3.6556.2, **aucun appelant non visuel** de `QXr`/`$Xr` : l'entrée recherch
 Les trois commandes de lecture seule ont été exécutées par Codex le 26/10 (`routes.md`, `sqe.md`, `census2.md`) et leurs conclusions sont intégrées aux §1 à §5. L'essai réel `open 'claude://…'` n'a pas été fait et n'est pas nécessaire tant que le canal MCP et le secours CDP couvrent le besoin ; il resterait une option pour préparer (jamais livrer) un chat.
 
 **Suite utile** : le POC de `await_task` est fait (voir §0). Restent à mesurer la durée maximale d'un appel en attente et la limite d'étapes par tour (inconnues), et à trancher le réveil à froid, que seul le secours CDP couvre.
+
+## 6 bis. Analyse native de `claude-swift` (31/10/2026) — préparation confirmée, pas de soumission
+
+Analyse statique en lecture seule du module natif `swift_addon.node` (Mach-O arm64, 12 638 128 octets ; `otool -tvV` → 1 372 183 lignes de désassemblage persistées dans `/tmp/swift_addon.dis`, `otool -oV` → `/tmp/swift_addon.objc`). Question : le renderer ou le natif soumet-il de lui-même une valeur reçue (émission de `quickEntrySubmitted` sans interaction d'interface) ? **Conclusion : aucune trace statique** d'un tel chemin — « aucune trace statique » signifie que l'analyse n'en trouve pas, pas une impossibilité au sens strict.
+
+- **`setQuickEntrySharing`** : exposé uniquement comme fonction N-API côté JavaScript, par le bloc d'enregistrement à `0x77a74`–`0x77ad0` (`napi_create_function` + `napi_set_named_property`, cstring à `0x54aa50`). Aucun appelant natif interne (0 `bl`/`b` vers son corps à `0x1c1bc`) ; les 3 seules références à la cstring (dis lignes 120395/120403/120413) sont ce bloc d'enregistrement.
+- **`QuickEntrySubmittedPayload.toNAPI(env:)`** (`0x12db14`) : 0 appel direct (`bl`) ; les 7 sites `adrp` de sa page (`0x12d000`) ciblent des offsets `#0x1e0`–`#0x304`, jamais `#0xb14` (aucune référence de pointeur de fonction).
+- **Émission d'événement** : 0 appel vers `Event.emit` (`0x12d998`) et `EventBridge.emit` (`0x133244`) ; 0 référence code à la cstring `emitMulticastEvent` (`0x6a61e8`).
+- **`submitQuickEntryText`** (cstring `0x551020`) : aucune selref, aucun chargement de cstring en code, aucun appel statique ; son entrée dans le dump Objective-C (ligne 3764) n'est qu'un descripteur d'ivar, sans implémentation.
+- **Aucun symbole QuickEntryCoordinator** exporté (0 parmi les 382 symboles texte `_$s11ClaudeSwift`) : l'émetteur éventuel n'est pas attribuable statiquement ; seule une analyse dynamique (hors périmètre) trancherait.
+
+Verdict : le canal `claude://` reste **préparation seulement**. La seule ancre de soumission côté renderer reste l'UI Quick Entry (`dispatchOnQuickEntrySubmit`).
 
 ## 7. Quota et échéance
 
