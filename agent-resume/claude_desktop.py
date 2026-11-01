@@ -280,7 +280,8 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
             except engines.Unavailable:
                 capabilities = {}
             if capabilities.get('dispatch_supported'):
-                finished['dispatch_socket'] = capabilities.get('dispatch_socket')
+                finished['dispatch_channel'] = capabilities.get('dispatch_channel', 'cdp')
+                finished['cdp_port'] = capabilities.get('cdp_port')
                 finished['dispatch_attempted'] = True
                 try:
                     dispatched = client.call('quick_entry/dispatch', {'request_key': request_key})

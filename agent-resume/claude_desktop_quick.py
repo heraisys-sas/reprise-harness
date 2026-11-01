@@ -3,11 +3,12 @@
 
 Accepts a validated Quick Apply payload and hands it to Claude Desktop's Quick
 Entry submission contract. It binds a private UNIX socket, speaks newline
-delimited JSON-RPC, and never opens or automates the Desktop UI: actually
-submitting through Quick Entry's native overlay requires separate
-operator-granted macOS permissions and is intentionally left to the supervised
-driver. This server owns payload validation, target routing and the bounded
-admission contract so the harness can treat it as an external-expert channel.
+delimited JSON-RPC. Orchestrated dispatch goes over the local CDP endpoint
+(port 9333) to the claude.ai page of the admitted chat: one prepare, one
+fingerprint check, one click — never a retry after a lost response, never a
+response read. This server owns payload validation, target routing and the
+bounded admission contract so the harness can treat it as an
+external-expert channel.
 """
 from app_paths import state_location
 import argparse
@@ -25,8 +26,8 @@ import time
 import uuid
 
 import claude_desktop
+import claude_desktop_apply
 from claude_desktop import build_payload, validate_chat_id
-from claude_desktop_rpc import REPRISE_DISPATCH_SOCKET, dispatch_turn, probe_dispatch_socket
 from delegation_store import Store, file_evidence
 
 # Lazy imports for CDP path — avoids importing subprocess at module level
@@ -40,6 +41,15 @@ def _cdp_pipe():
 
 SERVER_NAME = 'reprise-claude-desktop-quick'
 VERSION = Path(__file__).with_name('VERSION').read_text().strip()
+
+
+def _probe_cdp(port):
+    """A live CDP endpoint is decided by connect(), never by a socket file."""
+    try:
+        with socket.create_connection(('127.0.0.1', int(port)), timeout=1):
+            return True
+    except (OSError, ValueError):
+        return False
 
 
 class Endpoint:
@@ -128,11 +138,61 @@ class Endpoint:
                 'task_pre_registered': bool(orchestrated and self.tasks),
                 'task_available': self.tasks is not None and purpose == 'delegation', 'purpose': purpose})
 
+    def _cdp_apply(self, prompt, chat_id):
+        """Stage and single-click the prompt over CDP, using apply primitives.
+
+        Intermediate steps (state/stage) stay local to the DOM; no response is
+        read and no polling happens after the click.
+        """
+        mod = claude_desktop_apply
+        chat_id = validate_chat_id(chat_id)
+        prompt = prompt.strip()
+        path = '/chat/' + chat_id
+        fingerprint = hashlib.sha256(prompt.encode()).hexdigest()
+        cdp = None
+        try:
+            cdp = mod.CDP(mod.DEFAULT_PORT, chat_id=chat_id)
+            info = mod.state(cdp)
+            if mod._page_path(info.get('url')) == '/login':
+                return {'stage': 'session', 'detail': 'Connexion claude.ai requise'}
+            if info.get('changed') or mod._page_path(info.get('url')) is None:
+                return {'stage': 'cible', 'detail': 'Page claude.ai unique requise'}
+            if info.get('composerPresent') is not True or info.get('text_length') is None:
+                return {'stage': 'composeur', 'detail': 'Composeur indisponible'}
+            if info['text_length'] != 0:
+                return {'stage': 'brouillon', 'detail': 'Contenu préexistant dans le composeur'}
+            if mod._page_path(info['url']) != path:
+                cdp.navigate('https://claude.ai' + path)
+            mod.wait_composer(cdp)
+            info = mod.state(cdp)
+            problem = mod._check(info, path)
+            if problem:
+                return {'stage': problem, 'detail': 'État du composeur invalide'}
+            if info.get('text_length') != 0:
+                return {'stage': 'brouillon', 'detail': 'Contenu préexistant dans le composeur'}
+            if not mod._prepare(cdp, path):
+                return {'stage': 'cible', 'detail': 'Préparation du composeur refusée'}
+            cdp.call('Input.insertText', {'text': prompt})
+            info = mod.state(cdp)
+            problem = mod._check(info, path)
+            if problem:
+                return {'stage': problem, 'detail': 'État du composeur invalide après insertion'}
+            if info.get('text_sha256') != fingerprint:
+                return {'stage': 'empreinte', 'detail': 'Empreinte du composeur inattendue'}
+            outcome = mod._dispatch(cdp, path, fingerprint)
+            return {'stage': outcome.get('stage'), 'ok': outcome.get('ok') is True,
+                    'click_observed': outcome.get('click_observed') is True}
+        except (OSError, ValueError, mod.WSError, TimeoutError) as error:
+            # A lost response may conceal a click: never retry, never claim success.
+            return {'stage': 'incertain', 'detail': str(error) or type(error).__name__}
+        finally:
+            mod._close(cdp)
+
     def _dispatch(self, request_key):
-        """Send the admitted, orchestrated prompt over the native reprise socket.
+        """Send the admitted, orchestrated prompt over native CDP to claude.ai.
 
         Unknown request_key never dispatches. The dispatch failure is logged
-        (dispatch_attempted + ok/error) and returned as-is; no retry, no
+        (dispatch_attempted + ok/error/stage) and returned as-is; no retry, no
         fallback, and admission-only remains the recorded outcome.
         """
         row = self.tasks.db.execute(
@@ -142,16 +202,20 @@ class Endpoint:
             raise ValueError('Unknown request_key; no dispatch')
         prompt, chat_id = row
         result = {'request_key': request_key, 'dispatch_attempted': True,
-                  'dispatch_socket': str(REPRISE_DISPATCH_SOCKET), 'admission_only': True}
+                  'dispatch_channel': 'cdp', 'cdp_port': claude_desktop_apply.DEFAULT_PORT,
+                  'admission_only': True}
+        if not chat_id or not validate_chat_id(chat_id):
+            return result | {'dispatch_ok': False, 'dispatch_error': 'chat_id invalide ou absent',
+                             'stage': 'cible'}
         try:
-            reply = dispatch_turn(REPRISE_DISPATCH_SOCKET, prompt, chat_id=chat_id)
-            ok = reply.get('ok') is True
-            return result | ({'dispatch_ok': True, 'dispatch_reply': reply} if ok else
-                             {'dispatch_ok': False, 'dispatch_error': reply.get('error', 'dispatch refused')})
-        except (OSError, ValueError, TypeError, UnicodeDecodeError) as error:
-            from engines import Unavailable
-            reason = error.reason if isinstance(error, Unavailable) else str(error)
-            return result | {'dispatch_ok': False, 'dispatch_error': reason}
+            outcome = self._cdp_apply(prompt, chat_id)
+        except Exception as error:  # a daemon crash must never replace the receipt
+            outcome = {'stage': 'incertain', 'detail': str(error) or type(error).__name__}
+        ok = outcome.get('stage') == 'envoyé' and outcome.get('click_observed') is True
+        if ok:
+            return result | {'dispatch_ok': True, 'stage': 'envoyé'}
+        return result | {'dispatch_ok': False, 'stage': outcome['stage'],
+                         'dispatch_error': outcome.get('detail') or outcome['stage']}
 
     def call(self, name, args):
         if not isinstance(args, dict):
@@ -162,18 +226,18 @@ class Endpoint:
         if name == 'quick_entry/capabilities':
             if args:
                 raise ValueError('No capability arguments expected')
-            dispatch_socket = str(REPRISE_DISPATCH_SOCKET)
-            dispatch_ready = probe_dispatch_socket(REPRISE_DISPATCH_SOCKET)
+            cdp_port = claude_desktop_apply.DEFAULT_PORT
+            dispatch_ready = _probe_cdp(cdp_port)
             return {'version': VERSION, 'admission_supported': True,
                     'dispatch_supported': dispatch_ready,
-                    'dispatch_socket': dispatch_socket if dispatch_ready else None,
+                    'dispatch_channel': 'cdp', 'cdp_port': cdp_port,
                     'resume_validation_supported': False,
                     'task_return_supported': self.tasks is not None,
                     'project_root': self.tasks.scope if self.tasks else None,
                     'state_sha256': hashlib.sha256(str(self.state.resolve()).encode()).hexdigest(),
-                    'reason': ('Native TYr dispatch socket answered greeting: dispatch available.'
+                    'reason': ('CDP endpoint answered on port %d: dispatch available.' % cdp_port
                                if dispatch_ready else
-                               'Native Quick Apply dispatch driver not connected; admission alone does not send a turn.'),
+                               'CDP endpoint refused connection on port %d; admission alone does not send a turn.' % cdp_port),
                     'cdp_resume_supported': Path(_cdp_pipe()._chrome_bin()).exists()}
         if name == 'quick_entry/dispatch':
             if not self.tasks:
