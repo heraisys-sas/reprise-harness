@@ -26,6 +26,7 @@ import uuid
 
 import claude_desktop
 from claude_desktop import build_payload, validate_chat_id
+from claude_desktop_rpc import REPRISE_DISPATCH_SOCKET, dispatch_turn, probe_dispatch_socket
 from delegation_store import Store, file_evidence
 
 # Lazy imports for CDP path — avoids importing subprocess at module level
@@ -127,6 +128,31 @@ class Endpoint:
                 'task_pre_registered': bool(orchestrated and self.tasks),
                 'task_available': self.tasks is not None and purpose == 'delegation', 'purpose': purpose})
 
+    def _dispatch(self, request_key):
+        """Send the admitted, orchestrated prompt over the native reprise socket.
+
+        Unknown request_key never dispatches. The dispatch failure is logged
+        (dispatch_attempted + ok/error) and returned as-is; no retry, no
+        fallback, and admission-only remains the recorded outcome.
+        """
+        row = self.tasks.db.execute(
+            'SELECT prompt,chat_id FROM desktop_tasks WHERE scope=? AND request_key=?',
+            (self.tasks.scope, request_key)).fetchone()
+        if not row:
+            raise ValueError('Unknown request_key; no dispatch')
+        prompt, chat_id = row
+        result = {'request_key': request_key, 'dispatch_attempted': True,
+                  'dispatch_socket': str(REPRISE_DISPATCH_SOCKET), 'admission_only': True}
+        try:
+            reply = dispatch_turn(REPRISE_DISPATCH_SOCKET, prompt, chat_id=chat_id)
+            ok = reply.get('ok') is True
+            return result | ({'dispatch_ok': True, 'dispatch_reply': reply} if ok else
+                             {'dispatch_ok': False, 'dispatch_error': reply.get('error', 'dispatch refused')})
+        except (OSError, ValueError, TypeError, UnicodeDecodeError) as error:
+            from engines import Unavailable
+            reason = error.reason if isinstance(error, Unavailable) else str(error)
+            return result | {'dispatch_ok': False, 'dispatch_error': reason}
+
     def call(self, name, args):
         if not isinstance(args, dict):
             raise ValueError('Objet JSON-RPC requis')
@@ -136,12 +162,25 @@ class Endpoint:
         if name == 'quick_entry/capabilities':
             if args:
                 raise ValueError('No capability arguments expected')
-            return {'version': VERSION, 'admission_supported': True, 'dispatch_supported': False, 'resume_validation_supported': False,
+            dispatch_socket = str(REPRISE_DISPATCH_SOCKET)
+            dispatch_ready = probe_dispatch_socket(REPRISE_DISPATCH_SOCKET)
+            return {'version': VERSION, 'admission_supported': True,
+                    'dispatch_supported': dispatch_ready,
+                    'dispatch_socket': dispatch_socket if dispatch_ready else None,
+                    'resume_validation_supported': False,
                     'task_return_supported': self.tasks is not None,
                     'project_root': self.tasks.scope if self.tasks else None,
                     'state_sha256': hashlib.sha256(str(self.state.resolve()).encode()).hexdigest(),
-                    'reason': 'Native Quick Apply dispatch driver not connected; admission alone does not send a turn.',
+                    'reason': ('Native TYr dispatch socket answered greeting: dispatch available.'
+                               if dispatch_ready else
+                               'Native Quick Apply dispatch driver not connected; admission alone does not send a turn.'),
                     'cdp_resume_supported': Path(_cdp_pipe()._chrome_bin()).exists()}
+        if name == 'quick_entry/dispatch':
+            if not self.tasks:
+                raise ValueError('Project-scoped dispatch required; unknown request_key gets no dispatch')
+            if args.keys() - {'request_key'} or not isinstance(args.get('request_key'), str):
+                raise ValueError('request_key only; images and filePaths are refused on this channel')
+            return self._dispatch(args['request_key'])
         if name == 'quick_entry/get_result':
             if not self.tasks or args.keys() - {'request_key', 'acknowledge', 'view', 'offset', 'max_chars', 'result_sha256'} or 'request_key' not in args:
                 raise ValueError('Project-scoped result lookup required')

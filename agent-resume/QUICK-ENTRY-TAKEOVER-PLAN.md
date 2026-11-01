@@ -84,7 +84,12 @@ Propriétés :
 ## 4. Prochaines étapes
 
 1. Go opérateur → prototype sur copie (§2.2–2.3).
-2. Si prototype OK : script `agent-resume/tools/patch-claude-quickentry.sh` (patch + hash + sign, dry-run par
-   défaut) + intégration `native-install`.
+2. ✅ **Outil écrit (01/11/2026) — pas encore appliqué** : `agent-resume/tools/claude_quickentry_patch.py`
+   (Python stdlib ; dry-run par défaut, `--apply` pour écrire, `--check` pour une copie patchée) + payload
+   `agent-resume/tools/reprise_qe_inject.js`. Ancrage littéral sur `KW?.on("quickEntrySubmitted",TYr)`,
+   reconstruction asar cohérente, recalcul du hash `ElectronAsarIntegrity` (SHA-256 des octets
+   `[16:16+w4]`, w[3]) dans Info.plist, backup `app.asar.orig`, `codesign --force --deep --sign -` + verify.
+   Tests : `agent-resume/tests/test_claude_quickentry_patch.py` (7 OK ; suite globale 1197 OK, 6 skipped).
+   Application réelle sur copie : en attente du go opérateur (§2.2–2.3).
 3. Côté Reprise : client socket dans `claude-desktopd` (format payload = signature `TYr`), statut `running`
    vérifié par `connect()` (règle socket orphelin = `stopped`).

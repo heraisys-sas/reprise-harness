@@ -271,6 +271,25 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
                              'resumable': False, 'model': 'claude-desktop', 'dispatch': submitted.get('dispatch'),
                              'response': None, 'admission_only': True,
                              'billing': 'Claude Desktop session; quota not reported'}
+        # Best-effort native dispatch, only when the daemon itself reports the
+        # reprise socket ready. Any failure keeps admission-only as the recorded
+        # outcome: never a claimed success without submit_result.
+        if orchestrated:
+            try:
+                capabilities = client.call('quick_entry/capabilities', {})
+            except engines.Unavailable:
+                capabilities = {}
+            if capabilities.get('dispatch_supported'):
+                finished['dispatch_socket'] = capabilities.get('dispatch_socket')
+                finished['dispatch_attempted'] = True
+                try:
+                    dispatched = client.call('quick_entry/dispatch', {'request_key': request_key})
+                    finished['dispatch_ok'] = dispatched.get('dispatch_ok') is True
+                    if not finished['dispatch_ok']:
+                        finished['dispatch_error'] = dispatched.get('dispatch_error', 'dispatch refused')
+                except engines.Unavailable as error:
+                    finished['dispatch_ok'] = False
+                    finished['dispatch_error'] = error.reason
         if not orchestrated:
             return finished
         answer = _collect(tasks, request_key, max_wait, clock)
