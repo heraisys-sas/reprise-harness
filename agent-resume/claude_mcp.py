@@ -68,7 +68,7 @@ class ClaudeMCP:
         """
         wait = args.get('wait_seconds', self.max_wait)
         if type(wait) is not int or not 1 <= wait <= self.max_wait:
-            raise ValueError('wait_seconds must be an integer from 1 to %d' % self.max_wait)
+            raise ValueError('wait_seconds must be an integer from 1 to %d (connector max_wait)' % self.max_wait)
         request_key, claim_key = args['request_key'], args['claim_key']
         started = self.clock()
         deadline = started + wait
@@ -138,7 +138,16 @@ class ClaudeMCP:
         if method == 'ping':
             return {}
         if method == 'tools/list':
-            return {'tools': [item for item in INBOX_TOOLS if item['name'] != 'await_task' or self.enable_await] + outbound_tools()}
+            tools = [item for item in INBOX_TOOLS if item['name'] != 'await_task' or self.enable_await]
+            if self.enable_await and self.max_wait != MAX_WAIT_CEILING:
+                # Advertise the effective per-instance cap: the connector may run with a lower
+                # max_wait than MAX_WAIT_CEILING, and a schema advertising 600 makes any larger
+                # wait_seconds fail with an opaque -32602 (observed live, 2026-11-01).
+                tools = [dict(item, inputSchema=dict(item['inputSchema'], properties=dict(
+                    item['inputSchema']['properties'], wait_seconds=dict(
+                        item['inputSchema']['properties']['wait_seconds'], maximum=self.max_wait))))
+                    if item['name'] == 'await_task' else item for item in tools]
+            return {'tools': tools + outbound_tools()}
         if method != 'tools/call' or not isinstance(params, dict):
             raise ValueError('Unsupported MCP method')
         name, args = params.get('name'), params.get('arguments', {})
