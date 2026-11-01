@@ -6,8 +6,84 @@ over a private UNIX socket speaking newline-delimited JSON-RPC.
 """
 import json
 import socket
+from pathlib import Path
 
 from engines import Unavailable, socket_path
+
+# Injected native dispatch socket (QUICK-ENTRY-TAKEOVER-PLAN.md §2.1):
+# greeting {"hello":true}, then one JSON request per line, one reply per line.
+REPRISE_DISPATCH_SOCKET = Path.home() / '.claude-desktop/quick-entry-reprise.sock'
+DISPATCH_LIMIT = 8 * 1024 * 1024
+
+
+def _readline(sock, limit=DISPATCH_LIMIT):
+    buffer = bytearray()
+    while b'\n' not in buffer:
+        chunk = sock.recv(65536)
+        if not chunk:
+            raise Unavailable('engine_unavailable',
+                              'Connexion dispatch fermée avant réponse ; aucune relance automatique.')
+        buffer.extend(chunk)
+        if len(buffer) > limit:
+            raise ValueError('Réponse dispatch trop volumineuse')
+    line, _ = buffer.split(b'\n', 1)
+    return line.decode()
+
+
+def probe_dispatch_socket(path, timeout=2.0):
+    """True only when connect() succeeds AND the greeting is answered.
+
+    An orphan socket file (present but refusing connections) is `stopped`,
+    never `running`: verified by connect(), never by file existence.
+    """
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect(str(path))
+        greeting = json.loads(_readline(sock, limit=1024))
+        return isinstance(greeting, dict) and greeting.get('hello') is True
+    except (OSError, ValueError, UnicodeDecodeError):
+        return False
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+def dispatch_turn(path, prompt, *, images=None, file_paths=None, chat_id=None, timeout=10.0):
+    """One-shot native TYr dispatch; the connection is KEPT OPEN until the reply.
+
+    Returns the parsed reply dict ({ok:true} or {ok:false,error:...}). Transport
+    failures raise (Unavailable/ValueError/OSError) — never retried, never
+    fall-backed.
+    """
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError('Prompt requis pour le dispatch')
+    payload = {'prompt': prompt, 'images': [str(i) for i in (images or [])],
+               'filePaths': [str(p) for p in (file_paths or [])]}
+    if chat_id:
+        payload['chatId'] = str(chat_id)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect(str(path))
+        greeting = json.loads(_readline(sock, limit=1024))
+        if not (isinstance(greeting, dict) and greeting.get('hello') is True):
+            raise ValueError('Greeting dispatch inattendu')
+        line = json.dumps(payload, ensure_ascii=False).encode()
+        if len(line) > DISPATCH_LIMIT:
+            raise ValueError('Payload dispatch trop volumineux')
+        sock.sendall(line + b'\n')
+        reply = json.loads(_readline(sock))
+        if not isinstance(reply, dict):
+            raise ValueError('Réponse dispatch invalide')
+        return reply
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
 
 
 class Client:
