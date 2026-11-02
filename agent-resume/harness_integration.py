@@ -661,7 +661,18 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
                 parsed = block_entries(block)
             except ValueError:
                 raise ValueError(_BLOCK_REFUSAL)
-            if parsed != entries:
+            # Équivalence sémantique : le bloc live référence le release installé ; on compare
+            # les entrées du nouveau plan rebasées sur ce chemin (comme verify() juge sur l'existant).
+            def _rebase(value):
+                if isinstance(value, str):
+                    return value.replace(str(release), old['release']) if old and old.get('release') else value
+                if isinstance(value, list):
+                    return [_rebase(item) for item in value]
+                if isinstance(value, dict):
+                    return {key: _rebase(item) for key, item in value.items()}
+                return value
+            expected = _rebase(entries) if old and old.get('status') == 'installed' else entries
+            if parsed != expected:
                 raise ValueError(_BLOCK_REFUSAL)
             # Bloc reformatté équivalent : réécriture canonique tracée dans le manifeste.
             reconciled_from = digest(block.encode())
