@@ -21,6 +21,10 @@ END = '# END REPRISE MANAGED INTEGRATION'
 DOCS = ('REPRISE-AGENTS.template.md', 'CODEX-EXECUTION-CONTRACT.md', 'ASI1-ORCHESTRATOR.template.md', 'ASI1-ORCHESTRATION-CONTRACT.md', 'HANDOFF-CONTRACT.md', 'HARNESS-ROLES-CONTRACT.md', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'HARNESS-SUPERVISION-ARCHITECTURE.md', 'HARNESS-INTEGRATION.md', 'CLARIFICATION-CONTRACT.md')
 OBSERVE = ('reprise_backends', 'reprise_requests', 'reprise_quotas')
 DELEGATE = ('reprise_delegate', 'reprise_followup', 'reprise_reconcile')
+# Socket Quick Apply local par nature ; généré seulement s'il existe sur cette machine.
+DESKTOP_SOCKET = Path.home() / '.claude-desktop' / 'quick-entry.sock'
+BASH_SANDBOX_PLUGIN = {'id': 'bash-sandbox', 'name': '@deepseek-ai/dsh-bash-sandbox',
+                       'config': {'timeoutMs': 90000, 'maxOutputBytes': 32000}}
 
 
 def digest(value):
@@ -118,6 +122,58 @@ _BLOCK_REFUSAL = 'Bloc Reprise personnalisé ou non géré ; aucune réécriture
 _BLOCK_ILLISIBLE = 'Bloc Reprise illisible ; réconciliation impossible.'
 
 
+def _yaml_module():
+    """PyYAML pur Python vendored (agent-resume/vendor/yaml, MIT) ; repli sur un yaml système."""
+    import importlib.util
+    package = Path(__file__).resolve().parent / 'vendor' / 'yaml'
+    if (package / '__init__.py').is_file():
+        spec = importlib.util.spec_from_file_location('reprise_vendor_yaml', package / '__init__.py',
+                                                      submodule_search_locations=[str(package)])
+        module = importlib.util.module_from_spec(spec)
+        sys.modules['reprise_vendor_yaml'] = module
+        spec.loader.exec_module(module)
+        return module
+    return importlib.import_module('yaml')
+
+
+def _scalar_tree(value):
+    """Forme attendue d'une entry : scalaires, listes, dicts à clés str (récursif)."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, list):
+        return all(_scalar_tree(item) for item in value)
+    if isinstance(value, dict):
+        return all(isinstance(key, str) and _scalar_tree(item) for key, item in value.items())
+    return False
+
+
+def _entries_from_yaml(block_text):
+    try:
+        safe_load = _yaml_module().safe_load
+        body = '\n'.join(line for line in block_text.splitlines()
+                         if line.strip() not in (START, END))
+        data = safe_load(body)
+    except Exception:
+        raise ValueError(_BLOCK_ILLISIBLE)
+    if isinstance(data, dict):
+        if list(data) != ['insert']:
+            raise ValueError(_BLOCK_ILLISIBLE)
+        data = [data]
+    if not isinstance(data, list):
+        raise ValueError(_BLOCK_ILLISIBLE)
+    entries = []
+    for item in data:
+        if not isinstance(item, dict):
+            raise ValueError(_BLOCK_ILLISIBLE)
+        if list(item) == ['insert'] and isinstance(item['insert'], list):
+            entries.extend(item['insert'])
+        else:
+            entries.append(item)
+    if not entries or not all(isinstance(entry, dict) and _scalar_tree(entry) for entry in entries):
+        raise ValueError(_BLOCK_ILLISIBLE)
+    return entries
+
+
 def block_entries(block_text):
     # Le bloc géré est du YAML minimal produit ici : une seule clé `insert`
     # portant le JSON des entries, en ligne ou ré-indenté sur les lignes suivantes.
@@ -131,28 +187,39 @@ def block_entries(block_text):
     else:
         collected = []
         indent = None
+        extra = False
         for line in lines[index + 1:]:
             if not line.strip():
                 continue
             if not line.startswith(' '):
+                if line.strip() != END:
+                    # Items YAML de premier niveau après le bloc `insert` : parse YAML complet.
+                    extra = True
                 break
             if indent is None:
                 indent = re.match(r' *', line).end()
             collected.append(line[indent:])
+        if extra:
+            return _entries_from_yaml(block_text)
         payload = ' '.join(collected)
     try:
         entries = json.loads(payload)
     except json.JSONDecodeError:
-        raise ValueError(_BLOCK_ILLISIBLE)
+        # Bloc reformatté par Harness en YAML multi-lignes (folding, style bloc) :
+        # parse YAML vendored, puis normalisation et validation stricte.
+        return _entries_from_yaml(block_text)
     if not isinstance(entries, list):
         raise ValueError(_BLOCK_ILLISIBLE)
     return entries
 
 
-def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, codex_workspace_write=False):
+def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, codex_workspace_write=False, desktop_socket=None, bash_sandbox_disabled=False):
     program = release / 'Contents/Resources/runtime/bin/python3'
     args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/codex_expert_mcp.py'),
-            '--project-root', project, '--state', state, '--tools', ','.join(tools)]
+            '--project-root', project]
+    if desktop_socket:
+        args.extend(['--desktop-socket', str(desktop_socket)])
+    args.extend(['--state', state, '--tools', ','.join(tools)])
     if codex_workspace_write:
         args.append('--codex-workspace-write')
     entries = [
@@ -167,6 +234,8 @@ def _bridge_entries(release, state, tools, project, profile, managed, output_res
                         'config': {'enabled': True, 'projectRoot': output_resume_project or project,
                                    'stateDirectory': str(Path(state) / 'harness-output-resume'),
                                    'maxConsecutive': 2}})
+    if bash_sandbox_disabled:
+        entries.append(BASH_SANDBOX_PLUGIN | {'disabled': True})
     return entries
 
 
@@ -233,6 +302,9 @@ def stage_release(helpers, runtime, release):
             if Path(name).name != name:
                 raise ValueError('Chemin de payload non supporté.')
             shutil.copyfile(helpers / name, helper_target / name)
+        if (helpers / 'vendor/yaml').is_dir():
+            shutil.copytree(helpers / 'vendor/yaml', helper_target / 'vendor/yaml',
+                            ignore=shutil.ignore_patterns('__pycache__'))
         shutil.copytree(runtime, resources / 'runtime', symlinks=True)
         if (helpers.parent / 'native-manifest.json').is_file():
             shutil.copyfile(helpers.parent / 'native-manifest.json', resources / 'native-manifest.json')
@@ -260,6 +332,8 @@ def inspect(home, profile=None):
             result['asi1_effort'] = old.get('asi1_effort', False)
             result['delegate'] = 'reprise_delegate' in old.get('tools', [])
             result['agent_role'] = old.get('agent_role', 'standard')
+        result['bash_sandbox_disabled'] = (old or {}).get('bash_sandbox_disabled', False)
+        result['desktop_socket'] = (old or {}).get('desktop_socket')
         result['codex_workspace_write'] = (old or {}).get('codex_workspace_write', False)
         journal = managed / 'operation.json'
         if journal.exists() or journal.is_symlink():
@@ -522,7 +596,7 @@ def apply_asi1_preset(text, old, enable, plugin_path):
     return ''.join(lines), [digest(''.join(block).encode())], False
 
 
-def desired(root, home, profile, project, action, delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False):
+def desired(root, home, profile, project, action, delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False, bash_sandbox_disabled=False):
     home, folder, managed = context(home, profile)
     old = manifest(managed)
     project = str(Path(project).expanduser().resolve(strict=True))
@@ -571,14 +645,34 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         helpers, runtime, identity = bundle_info(root)
         release = Path(state).parent / 'integration-releases' / identity
         tools = OBSERVE + (DELEGATE if delegate else ())
+        # Socket Quick Apply : valeur locale générée par défaut quand le socket existe ;
+        # l'état choisi est persisté dans le manifeste pour une vérification déterministe.
+        desktop_socket = None
+        if DESKTOP_SOCKET.exists():
+            desktop_socket = str(DESKTOP_SOCKET)
+        # État plugin bash-sandbox conservé depuis le manifeste existant (choix local persisté).
+        if not bash_sandbox_disabled and old and old.get('status') == 'installed' and old.get('bash_sandbox_disabled'):
+            bash_sandbox_disabled = True
         entries = _bridge_entries(release, state, tools, project, profile, managed,
-                                  output_resume, resume_project, codex_workspace_write)
+                                  output_resume, resume_project, codex_workspace_write,
+                                  desktop_socket, bash_sandbox_disabled)
         if mismatched_block:
             try:
                 parsed = block_entries(block)
             except ValueError:
                 raise ValueError(_BLOCK_REFUSAL)
-            if parsed != entries:
+            # Équivalence sémantique : le bloc live référence le release installé ; on compare
+            # les entrées du nouveau plan rebasées sur ce chemin (comme verify() juge sur l'existant).
+            def _rebase(value):
+                if isinstance(value, str):
+                    return value.replace(str(release), old['release']) if old and old.get('release') else value
+                if isinstance(value, list):
+                    return [_rebase(item) for item in value]
+                if isinstance(value, dict):
+                    return {key: _rebase(item) for key, item in value.items()}
+                return value
+            expected = _rebase(entries) if old and old.get('status') == 'installed' else entries
+            if parsed != expected:
                 raise ValueError(_BLOCK_REFUSAL)
             # Bloc reformatté équivalent : réécriture canonique tracée dans le manifeste.
             reconciled_from = digest(block.encode())
@@ -619,6 +713,10 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
             next_manifest['asi1_preset_preexisting'] = asi1_preset_preexisting
         if codex_workspace_write:
             next_manifest['codex_workspace_write'] = True
+        if desktop_socket:
+            next_manifest['desktop_socket'] = desktop_socket
+        if bash_sandbox_disabled:
+            next_manifest['bash_sandbox_disabled'] = True
         if reconciled_from:
             next_manifest['reconciled_from_sha256'] = reconciled_from
         elif old and 'reconciled_from_sha256' in old:
@@ -649,12 +747,12 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
     return files, extra, next_manifest
 
 
-def plan(root, home, profile, project, action='install', delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False):
-    if action not in ('install', 'remove') or type(delegate) is not bool or agent_role not in ('standard', 'coordinator') or type(output_resume) is not bool or type(codex_workspace_write) is not bool or type(asi1_effort) is not bool or (codex_workspace_write and not delegate):
+def plan(root, home, profile, project, action='install', delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False, bash_sandbox_disabled=False):
+    if action not in ('install', 'remove') or type(delegate) is not bool or agent_role not in ('standard', 'coordinator') or type(output_resume) is not bool or type(codex_workspace_write) is not bool or type(asi1_effort) is not bool or type(bash_sandbox_disabled) is not bool or (codex_workspace_write and not delegate):
         raise ValueError('Action ou capacité invalide.')
     if inspect(home, profile).get('pending_plan'):
         raise ValueError('Reprendre l’opération partielle conservée avant de créer un autre plan.')
-    files, extra, _ = desired(root, home, profile, project, action, delegate, agent_role, output_resume, output_resume_project, codex_workspace_write, asi1_effort)
+    files, extra, _ = desired(root, home, profile, project, action, delegate, agent_role, output_resume, output_resume_project, codex_workspace_write, asi1_effort, bash_sandbox_disabled)
     changes = []
     for path, text in files.items():
         before, after = file_hash(path), digest(text.encode()) if text is not None else None
@@ -674,6 +772,8 @@ def plan(root, home, profile, project, action='install', delegate=False, agent_r
         result['output_resume_project'] = str(Path(output_resume_project or project).expanduser().resolve(strict=True))
     if asi1_effort and action == 'install':
         result['asi1_effort'] = True
+    if bash_sandbox_disabled and action == 'install':
+        result['bash_sandbox_disabled'] = True
     if 'block_reconciled' in extra:
         result['block_reconciled'] = extra['block_reconciled']
     result['fingerprint'] = digest(encoded(result).encode())
@@ -706,12 +806,12 @@ def apply(root, public):
             if journal['plan'] != public:
                 raise ValueError('Un autre plan est en attente ; reprendre ce plan sans écrasement.')
         else:
-            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False))
+            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False))
             if current != public:
                 raise ValueError('Entrées modifiées depuis la prévisualisation. Refaire le plan.')
             if not public['changes']:
                 return {'status': 'completed', 'changed': False, 'message': 'Configuration identique ; aucune écriture.'}
-            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False))
+            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False))
             if public['action'] == 'install':
                 helpers, runtime, _ = bundle_info(root)
                 stage_release(helpers, runtime, Path(public['release']))
@@ -800,7 +900,8 @@ def verify(home, profile, root=None, project=None):
     if block is None or digest(block.encode()) != old['block_sha256']:
         expected = _bridge_entries(Path(old['release']), old['state'], old['tools'], old['project'],
                                    old['profile'], managed, old.get('output_resume', False),
-                                   old.get('output_resume_project'), old.get('codex_workspace_write', False))
+                                   old.get('output_resume_project'), old.get('codex_workspace_write', False),
+                                   old.get('desktop_socket'), old.get('bash_sandbox_disabled', False))
         if block is None or block_entries(block) != expected:
             raise ValueError('Configuration Reprise absente ou modifiée.')
         # Bloc reformatté équivalent : accepté sans réécriture ici.
@@ -885,6 +986,7 @@ def main(root, argv=None):
             command.add_argument('--output-resume', action='store_true', help='Explicitly authorize same-session continuation after output-token limit')
             command.add_argument('--asi1-effort', action='store_true', help='Installer l’effort ASI1 bas pour le preset asi1-orchestrator')
             command.add_argument('--codex-workspace-write', action='store_true', help='Autoriser les implémentations Codex dans le projet sélectionné')
+            command.add_argument('--disable-bash-sandbox', action='store_true', help='Générer l’entrée plugin bash-sandbox désactivée (choix local persisté)')
             command.add_argument('--agent-role', choices=('standard', 'coordinator'), default='standard')
     sub.add_parser('integration-apply')
     args = parser.parse_args(argv)
@@ -894,7 +996,7 @@ def main(root, argv=None):
             result = inspect(args.home, args.profile)
         elif args.command == 'integration-plan':
             result = {'status': 'planned', 'message': 'Plan sans écriture. L’installation n’autorise ni inférence ni activation automatique.',
-                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role, args.output_resume, args.output_resume_project, args.codex_workspace_write, args.asi1_effort)}
+                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role, args.output_resume, args.output_resume_project, args.codex_workspace_write, args.asi1_effort, args.disable_bash_sandbox)}
         elif args.command == 'integration-apply':
             public = json.loads(sys.stdin.read(1024 * 1024))['plan']
             result = apply(root, public)

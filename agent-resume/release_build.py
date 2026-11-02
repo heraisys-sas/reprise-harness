@@ -18,8 +18,17 @@ def sha(path):
 def inputs(root):
     # Only build inputs: never state, logs, credentials, generated bundles or tests.
     suffixes = {'.swift', '.py', '.md', '.json', '.txt', '.html', '.cjs'}
-    return {p.name: sha(p) for p in sorted(root.iterdir())
-            if p.is_file() and not p.is_symlink() and (p.suffix in suffixes or p.name in ('VERSION', 'native-install', 'reprise'))}
+    def walk(base, rel=''):
+        for p in sorted(base.iterdir()):
+            if p.is_symlink():
+                continue
+            rel_name = f'{rel}/{p.name}' if rel else p.name
+            if p.is_dir():
+                if rel_name != 'builds':  # sorties générées, jamais des sources
+                    yield from walk(p, rel_name)
+            elif p.suffix in suffixes or p.name in ('VERSION', 'native-install', 'reprise'):
+                yield rel_name, p
+    return {rel: sha(p) for rel, p in walk(root)}
 
 
 def identity(files):
@@ -79,7 +88,9 @@ def build(archive, root=ROOT):
         stage = Path(folder) / 'source'
         stage.mkdir()
         for name in source:
-            shutil.copy2(root / name, stage / name)
+            target = stage / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(root / name, target)
         if inputs(stage) != source:
             raise ValueError('Sources modifiées pendant la copie ; recommencer.')
         subprocess.run(['/bin/sh', str(stage / 'native-install'), '--runtime-archive', str(archive)], check=True)
