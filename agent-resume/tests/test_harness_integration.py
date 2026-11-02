@@ -59,8 +59,8 @@ class HarnessIntegrationTests(unittest.TestCase):
     def plan(self, action='install', delegate=False):
         return integration.plan(self.root, self.home, 'desktop', self.project, action, delegate)
 
-    def install(self, delegate=False):
-        proposed = self.plan(delegate=delegate)
+    def install(self, delegate=False, **options):
+        proposed = integration.plan(self.root, self.home, 'desktop', self.project, 'install', delegate, **options)
         integration.apply(self.root, proposed)
         return proposed
 
@@ -638,6 +638,82 @@ class HarnessIntegrationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Bloc ASI1 personnalisé'):
                 integration.plan(self.root, self.home, 'desktop', self.project, action,
                                  asi1_effort=action == 'install')
+
+    def test_desktop_socket_is_generated_when_present_and_persisted(self):
+        socket = self.base / 'quick-entry.sock'
+        socket.write_text('')
+        with patch.object(integration, 'DESKTOP_SOCKET', socket):
+            proposed = self.install()
+        text = self.config.read_text()
+        self.assertIn('--desktop-socket', text)
+        self.assertIn(str(socket), text)
+        manifest = json.loads((self.managed / 'managed.json').read_text())
+        self.assertEqual(manifest['desktop_socket'], str(socket))
+        self.assertTrue(integration.inspect(self.home, 'desktop')['desktop_socket'])
+        with patch.object(integration.subprocess, 'run', return_value=self.bridge_probe()):
+            integration.verify(self.home, 'desktop', root=self.root, project=self.project)
+        integration.apply(self.root, integration.plan(self.root, self.home, 'desktop', self.project, 'remove'))
+        self.assertNotIn('--desktop-socket', self.config.read_text())
+
+    def test_desktop_socket_is_absent_by_default_and_plan_tracks_the_filesystem(self):
+        with patch.object(integration, 'DESKTOP_SOCKET', self.base / 'absent.sock'):
+            proposed = self.install()
+        self.assertNotIn('--desktop-socket', self.config.read_text())
+        manifest = json.loads((self.managed / 'managed.json').read_text())
+        self.assertNotIn('desktop_socket', manifest)
+        self.assertIsNone(integration.inspect(self.home, 'desktop')['desktop_socket'])
+        with patch.object(integration.subprocess, 'run', return_value=self.bridge_probe()):
+            integration.verify(self.home, 'desktop', root=self.root, project=self.project)
+        socket = self.base / 'quick-entry.sock'
+        socket.write_text('')
+        with patch.object(integration, 'DESKTOP_SOCKET', socket):
+            with self.assertRaisesRegex(ValueError, 'Refaire le plan'):
+                integration.apply(self.root, proposed)
+
+    def test_bash_sandbox_disabled_is_explicit_persisted_and_carried_over(self):
+        proposed = self.install(bash_sandbox_disabled=True)
+        text = self.config.read_text()
+        self.assertIn('bash-sandbox', text)
+        self.assertIn('"disabled": true', text)
+        self.assertIn('"timeoutMs": 90000', text)
+        manifest = json.loads((self.managed / 'managed.json').read_text())
+        self.assertTrue(manifest['bash_sandbox_disabled'])
+        self.assertTrue(integration.inspect(self.home, 'desktop')['bash_sandbox_disabled'])
+        # Re-plan sans le drapeau : l'état persisté est conservé (plan sans changement).
+        self.assertEqual(integration.plan(self.root, self.home, 'desktop', self.project)['changes'], [])
+        with patch.object(integration.subprocess, 'run', return_value=self.bridge_probe()):
+            integration.verify(self.home, 'desktop', root=self.root, project=self.project)
+        integration.apply(self.root, integration.plan(self.root, self.home, 'desktop', self.project, 'remove'))
+        self.assertNotIn('bash-sandbox', self.config.read_text())
+
+    def test_bash_sandbox_plugin_is_not_generated_by_default(self):
+        self.install()
+        self.assertNotIn('bash-sandbox', self.config.read_text())
+        manifest = json.loads((self.managed / 'managed.json').read_text())
+        self.assertNotIn('bash_sandbox_disabled', manifest)
+        self.assertFalse(integration.inspect(self.home, 'desktop')['bash_sandbox_disabled'])
+        entries = integration._bridge_entries(Path('/release'), '/state', ('reprise_backends',), '/project', 'desktop', self.managed)
+        self.assertEqual([entry['id'] for entry in entries],
+                         ['reprise-codex-expert', 'reprise-skill-filesystem'])
+        self.assertNotIn('--desktop-socket', entries[0]['config']['args'])
+
+    def test_bridge_entries_non_regression_with_new_options(self):
+        entries = integration._bridge_entries(
+            Path('/release'), '/state', ('reprise_backends', 'reprise_delegate'), '/project', 'desktop',
+            self.managed, output_resume=True, output_resume_project='/resume', codex_workspace_write=True,
+            desktop_socket='/tmp/quick.sock', bash_sandbox_disabled=True)
+        self.assertEqual([entry['id'] for entry in entries],
+                         ['reprise-codex-expert', 'reprise-skill-filesystem', 'reprise-output-resume', 'bash-sandbox'])
+        args = entries[0]['config']['args']
+        self.assertEqual(args[args.index('--desktop-socket') + 1], '/tmp/quick.sock')
+        self.assertEqual(args[args.index('--project-root') + 1], '/project')
+        self.assertEqual(args[args.index('--state') + 1], '/state')
+        self.assertIn('--codex-workspace-write', args)
+        disabled = entries[-1]
+        self.assertTrue(disabled['disabled'])
+        self.assertEqual(disabled['config'], {'timeoutMs': 90000, 'maxOutputBytes': 32000})
+        with self.assertRaisesRegex(ValueError, 'Action ou capacité invalide'):
+            integration.plan(self.root, self.home, 'desktop', self.project, bash_sandbox_disabled='yes')
 
 
 if __name__ == '__main__':
