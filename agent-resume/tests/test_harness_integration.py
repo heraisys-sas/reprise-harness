@@ -59,8 +59,8 @@ class HarnessIntegrationTests(unittest.TestCase):
     def plan(self, action='install', delegate=False):
         return integration.plan(self.root, self.home, 'desktop', self.project, action, delegate)
 
-    def install(self, delegate=False):
-        proposed = self.plan(delegate=delegate)
+    def install(self, delegate=False, **options):
+        proposed = integration.plan(self.root, self.home, 'desktop', self.project, 'install', delegate, **options)
         integration.apply(self.root, proposed)
         return proposed
 
@@ -638,6 +638,212 @@ class HarnessIntegrationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Bloc ASI1 personnalisé'):
                 integration.plan(self.root, self.home, 'desktop', self.project, action,
                                  asi1_effort=action == 'install')
+
+    def test_desktop_socket_is_generated_when_present_and_persisted(self):
+        socket = self.base / 'quick-entry.sock'
+        socket.write_text('')
+        with patch.object(integration, 'DESKTOP_SOCKET', socket):
+            proposed = self.install()
+        text = self.config.read_text()
+        self.assertIn('--desktop-socket', text)
+        self.assertIn(str(socket), text)
+        manifest = json.loads((self.managed / 'managed.json').read_text())
+        self.assertEqual(manifest['desktop_socket'], str(socket))
+        self.assertTrue(integration.inspect(self.home, 'desktop')['desktop_socket'])
+        with patch.object(integration.subprocess, 'run', return_value=self.bridge_probe()):
+            integration.verify(self.home, 'desktop', root=self.root, project=self.project)
+        integration.apply(self.root, integration.plan(self.root, self.home, 'desktop', self.project, 'remove'))
+        self.assertNotIn('--desktop-socket', self.config.read_text())
+
+    def test_desktop_socket_is_absent_by_default_and_plan_tracks_the_filesystem(self):
+        with patch.object(integration, 'DESKTOP_SOCKET', self.base / 'absent.sock'):
+            proposed = self.install()
+        self.assertNotIn('--desktop-socket', self.config.read_text())
+        manifest = json.loads((self.managed / 'managed.json').read_text())
+        self.assertNotIn('desktop_socket', manifest)
+        self.assertIsNone(integration.inspect(self.home, 'desktop')['desktop_socket'])
+        with patch.object(integration.subprocess, 'run', return_value=self.bridge_probe()):
+            integration.verify(self.home, 'desktop', root=self.root, project=self.project)
+        socket = self.base / 'quick-entry.sock'
+        socket.write_text('')
+        with patch.object(integration, 'DESKTOP_SOCKET', socket):
+            with self.assertRaisesRegex(ValueError, 'Refaire le plan'):
+                integration.apply(self.root, proposed)
+
+    def test_bash_sandbox_disabled_is_explicit_persisted_and_carried_over(self):
+        proposed = self.install(bash_sandbox_disabled=True)
+        text = self.config.read_text()
+        self.assertIn('bash-sandbox', text)
+        self.assertIn('"disabled": true', text)
+        self.assertIn('"timeoutMs": 90000', text)
+        manifest = json.loads((self.managed / 'managed.json').read_text())
+        self.assertTrue(manifest['bash_sandbox_disabled'])
+        self.assertTrue(integration.inspect(self.home, 'desktop')['bash_sandbox_disabled'])
+        # Re-plan sans le drapeau : l'état persisté est conservé (plan sans changement).
+        self.assertEqual(integration.plan(self.root, self.home, 'desktop', self.project)['changes'], [])
+        with patch.object(integration.subprocess, 'run', return_value=self.bridge_probe()):
+            integration.verify(self.home, 'desktop', root=self.root, project=self.project)
+        integration.apply(self.root, integration.plan(self.root, self.home, 'desktop', self.project, 'remove'))
+        self.assertNotIn('bash-sandbox', self.config.read_text())
+
+    def test_bash_sandbox_plugin_is_not_generated_by_default(self):
+        self.install()
+        self.assertNotIn('bash-sandbox', self.config.read_text())
+        manifest = json.loads((self.managed / 'managed.json').read_text())
+        self.assertNotIn('bash_sandbox_disabled', manifest)
+        self.assertFalse(integration.inspect(self.home, 'desktop')['bash_sandbox_disabled'])
+        entries = integration._bridge_entries(Path('/release'), '/state', ('reprise_backends',), '/project', 'desktop', self.managed)
+        self.assertEqual([entry['id'] for entry in entries],
+                         ['reprise-codex-expert', 'reprise-skill-filesystem'])
+        self.assertNotIn('--desktop-socket', entries[0]['config']['args'])
+
+    def test_bridge_entries_non_regression_with_new_options(self):
+        entries = integration._bridge_entries(
+            Path('/release'), '/state', ('reprise_backends', 'reprise_delegate'), '/project', 'desktop',
+            self.managed, output_resume=True, output_resume_project='/resume', codex_workspace_write=True,
+            desktop_socket='/tmp/quick.sock', bash_sandbox_disabled=True)
+        self.assertEqual([entry['id'] for entry in entries],
+                         ['reprise-codex-expert', 'reprise-skill-filesystem', 'reprise-output-resume', 'bash-sandbox'])
+        args = entries[0]['config']['args']
+        self.assertEqual(args[args.index('--desktop-socket') + 1], '/tmp/quick.sock')
+        self.assertEqual(args[args.index('--project-root') + 1], '/project')
+        self.assertEqual(args[args.index('--state') + 1], '/state')
+        self.assertIn('--codex-workspace-write', args)
+        disabled = entries[-1]
+        self.assertTrue(disabled['disabled'])
+        self.assertEqual(disabled['config'], {'timeoutMs': 90000, 'maxOutputBytes': 32000})
+        with self.assertRaisesRegex(ValueError, 'Action ou capacité invalide'):
+            integration.plan(self.root, self.home, 'desktop', self.project, bash_sandbox_disabled='yes')
+
+    # Bloc tel que reformaté par Harness (YAML multi-lignes, folding `\`, style bloc),
+    # copié du profil ~/.dsh avec des chemins génériques substitués.
+    HARNESS_REFORMATTED_BLOCK = '''- insert:
+    [
+      {
+          "id": "reprise-codex-expert",
+          "name": "@deepseek-ai/dsh-mcp-client",
+          "config":
+            {
+              "transport": "stdio",
+              "serverName": "reprise_codex",
+              "command": "<REPRISE>\\
+                /integration-releases/f7d6baabc9484640c88018433ac92ed49b9884d5f122759820d4923a4beaa015/Contents/Resources/runti\\
+                me/bin/python3",
+              "args":
+                [
+                  "-E",
+                  "-s",
+                  "-B",
+                  "<REPRISE>\\
+                /integration-releases/f7d6baabc9484640c88018433ac92ed49b9884d5f122759820d4923a4beaa015/Contents/Resourc\\
+                es/helpers/codex_expert_mcp.py",
+                  "--project-root",
+                  "<PROJECT>",
+                  "--desktop-socket",
+                  "<DESKTOP>/quick-entry.sock",
+                  "--state",
+                  "<REPRISE>/state",
+                  "--tools",
+                  "reprise_backends,reprise_requests,reprise_quotas,reprise_d\\
+                    elegate,reprise_followup,reprise_reconcile"
+                ],
+              "toolCallTimeoutMs": 330000,
+              "failOnStartupError": false,
+              "reconnect": { "enabled": false }
+            }
+        },
+      {
+          "id": "reprise-skill-filesystem",
+          "name": "@deepseek-ai/dsh-skill-filesystem",
+          "config":
+            {
+              "providerName": "reprise-desktop",
+              "includeDefaultRoots": false,
+              "customSkillDirs": [ "<PROFILE>/.reprise/skills" ],
+              "watch": false
+            }
+        },
+      {
+          "id": "reprise-output-resume",
+          "name": "<REPRISE>\\
+                /integration-releases/f7d6baabc9484640c88018433ac92ed49b9884d5f122759820d4923a4beaa015/Contents/Resources/helpers/harne\\
+                ss-output-resume.cjs",
+          "config":
+            {
+              "enabled": true,
+              "projectRoot": "<RESUME>",
+              "stateDirectory": "<REPRISE>/state/harness-output-resume",
+              "maxConsecutive": 2
+            }
+        }
+    ]
+- id: bash-sandbox
+  name: "@deepseek-ai/dsh-bash-sandbox"
+  disabled: true
+  config:
+    timeoutMs: 90000
+    maxOutputBytes: 32000
+'''
+
+    RELEASE_NAME = 'f7d6baabc9484640c88018433ac92ed49b9884d5f122759820d4923a4beaa015'
+
+    def _fixture_block(self):
+        return self.HARNESS_REFORMATTED_BLOCK.replace('<REPRISE>', str(self.base / 'Reprise')) \
+            .replace('<PROJECT>', str(self.project)).replace('<PROFILE>', str(self.folder)) \
+            .replace('<DESKTOP>', str(self.base / '.claude-desktop')) \
+            .replace('<RESUME>', str(self.base / 'resume'))
+
+    def _expected_fixture_entries(self):
+        release = self.base / 'Reprise' / 'integration-releases' / self.RELEASE_NAME
+        return integration._bridge_entries(
+            release, str(self.base / 'Reprise' / 'state'),
+            ('reprise_backends', 'reprise_requests', 'reprise_quotas',
+             'reprise_delegate', 'reprise_followup', 'reprise_reconcile'),
+            str(self.project), 'desktop', self.managed,
+            output_resume=True, output_resume_project=str(self.base / 'resume'),
+            desktop_socket=str(self.base / '.claude-desktop' / 'quick-entry.sock'),
+            bash_sandbox_disabled=True)
+
+    def test_block_entries_parses_harness_reformatted_yaml_fixture(self):
+        block = integration.START + '\n' + self._fixture_block() + integration.END + '\n'
+        parsed = integration.block_entries(block)
+        expected = self._expected_fixture_entries()
+        self.assertEqual([entry['id'] for entry in parsed], [entry['id'] for entry in expected])
+        # Égalité sémantique stricte, ordre inclus (les Paths des entries générées sont comparés en str).
+        self.assertEqual(parsed, expected)
+
+    def test_block_entries_json_inline_non_regression(self):
+        entries = [{'id': 'a', 'config': {'path': '/x', 'n': 1}}]
+        for payload in ('- insert: ' + json.dumps(entries) + '\n',
+                        '- insert:\n    ' + json.dumps(entries) + '\n'):
+            self.assertEqual(integration.block_entries(integration.START + '\n' + payload + integration.END + '\n'),
+                             entries)
+
+    def test_block_entries_refuses_invalid_or_wrongly_shaped_yaml(self):
+        for body in ('- insert: [\n  {"id": "a",\n  "broken":\n',
+                     'just a scalar\n', '- insert:\n  - not a mapping: [\n'):
+            with self.assertRaisesRegex(ValueError, 'illisible'):
+                integration.block_entries(integration.START + '\n' + body + integration.END + '\n')
+
+    def test_verify_accepts_harness_reformatted_block_without_rewrite(self):
+        probe = self.bridge_probe(delegate=True)
+        self.install(delegate=True, bash_sandbox_disabled=True)
+        _, original_block = integration.split_block(self.config.read_text())
+        entries = integration.block_entries(original_block)
+        bridge = json.dumps([entry for entry in entries if entry['id'] != 'bash-sandbox'], indent=2)
+        sandbox = next(entry for entry in entries if entry['id'] == 'bash-sandbox')
+        body = '- insert:\n' + '\n'.join('    ' + line for line in bridge.splitlines()) + '\n'
+        body += '- id: bash-sandbox\n  name: ' + json.dumps(sandbox['name']) + '\n  disabled: true\n  config:\n'
+        body += '    timeoutMs: 90000\n    maxOutputBytes: 32000\n'
+        base, _ = integration.split_block(self.config.read_text())
+        self.config.write_text(base + integration.START + '\n' + body + integration.END + '\n')
+        with patch.object(integration.subprocess, 'run', return_value=probe):
+            result = integration.verify(self.home, 'desktop', root=self.root, project=self.project)
+        self.assertEqual(result['status'], 'verified')
+        self.assertIn('block_reconciled', result)
+        # verify() ne réécrit pas : le bloc reformatté reste en place.
+        self.assertEqual(integration.split_block(self.config.read_text())[1],
+                         integration.START + '\n' + body + integration.END + '\n')
 
 
 if __name__ == '__main__':
