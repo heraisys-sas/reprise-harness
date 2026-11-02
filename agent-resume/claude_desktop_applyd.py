@@ -60,6 +60,8 @@ def apply_prompt(prompt, chat_id):
             # The attached tab may sit on /chats or another claude.ai page;
             # navigate to the target chat before judging the composer.
             cdp.navigate('https://claude.ai' + path)
+            if not mod.wait_composer(cdp):
+                return {'stage': 'composeur', 'detail': 'Composeur indisponible après navigation'}
             info = mod.state(cdp)
         if info.get('composerPresent') is not True or info.get('text_length') is None:
             return {'stage': 'composeur', 'detail': 'Composeur indisponible'}
