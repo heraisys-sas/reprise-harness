@@ -21,6 +21,10 @@ END = '# END REPRISE MANAGED INTEGRATION'
 DOCS = ('REPRISE-AGENTS.template.md', 'CODEX-EXECUTION-CONTRACT.md', 'ASI1-ORCHESTRATOR.template.md', 'ASI1-ORCHESTRATION-CONTRACT.md', 'HANDOFF-CONTRACT.md', 'HARNESS-ROLES-CONTRACT.md', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'HARNESS-SUPERVISION-ARCHITECTURE.md', 'HARNESS-INTEGRATION.md', 'CLARIFICATION-CONTRACT.md')
 OBSERVE = ('reprise_backends', 'reprise_requests', 'reprise_quotas')
 DELEGATE = ('reprise_delegate', 'reprise_followup', 'reprise_reconcile')
+# Socket Quick Apply local par nature ; généré seulement s'il existe sur cette machine.
+DESKTOP_SOCKET = Path.home() / '.claude-desktop' / 'quick-entry.sock'
+BASH_SANDBOX_PLUGIN = {'id': 'bash-sandbox', 'name': '@deepseek-ai/dsh-bash-sandbox',
+                       'config': {'timeoutMs': 90000, 'maxOutputBytes': 32000}}
 
 
 def digest(value):
@@ -149,10 +153,13 @@ def block_entries(block_text):
     return entries
 
 
-def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, codex_workspace_write=False):
+def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, codex_workspace_write=False, desktop_socket=None, bash_sandbox_disabled=False):
     program = release / 'Contents/Resources/runtime/bin/python3'
     args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/codex_expert_mcp.py'),
-            '--project-root', project, '--state', state, '--tools', ','.join(tools)]
+            '--project-root', project]
+    if desktop_socket:
+        args.extend(['--desktop-socket', str(desktop_socket)])
+    args.extend(['--state', state, '--tools', ','.join(tools)])
     if codex_workspace_write:
         args.append('--codex-workspace-write')
     entries = [
@@ -167,6 +174,8 @@ def _bridge_entries(release, state, tools, project, profile, managed, output_res
                         'config': {'enabled': True, 'projectRoot': output_resume_project or project,
                                    'stateDirectory': str(Path(state) / 'harness-output-resume'),
                                    'maxConsecutive': 2}})
+    if bash_sandbox_disabled:
+        entries.append(BASH_SANDBOX_PLUGIN | {'disabled': True})
     return entries
 
 
@@ -260,6 +269,8 @@ def inspect(home, profile=None):
             result['asi1_effort'] = old.get('asi1_effort', False)
             result['delegate'] = 'reprise_delegate' in old.get('tools', [])
             result['agent_role'] = old.get('agent_role', 'standard')
+        result['bash_sandbox_disabled'] = (old or {}).get('bash_sandbox_disabled', False)
+        result['desktop_socket'] = (old or {}).get('desktop_socket')
         result['codex_workspace_write'] = (old or {}).get('codex_workspace_write', False)
         journal = managed / 'operation.json'
         if journal.exists() or journal.is_symlink():
@@ -522,7 +533,7 @@ def apply_asi1_preset(text, old, enable, plugin_path):
     return ''.join(lines), [digest(''.join(block).encode())], False
 
 
-def desired(root, home, profile, project, action, delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False):
+def desired(root, home, profile, project, action, delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False, bash_sandbox_disabled=False):
     home, folder, managed = context(home, profile)
     old = manifest(managed)
     project = str(Path(project).expanduser().resolve(strict=True))
@@ -571,8 +582,17 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         helpers, runtime, identity = bundle_info(root)
         release = Path(state).parent / 'integration-releases' / identity
         tools = OBSERVE + (DELEGATE if delegate else ())
+        # Socket Quick Apply : valeur locale générée par défaut quand le socket existe ;
+        # l'état choisi est persisté dans le manifeste pour une vérification déterministe.
+        desktop_socket = None
+        if DESKTOP_SOCKET.exists():
+            desktop_socket = str(DESKTOP_SOCKET)
+        # État plugin bash-sandbox conservé depuis le manifeste existant (choix local persisté).
+        if not bash_sandbox_disabled and old and old.get('status') == 'installed' and old.get('bash_sandbox_disabled'):
+            bash_sandbox_disabled = True
         entries = _bridge_entries(release, state, tools, project, profile, managed,
-                                  output_resume, resume_project, codex_workspace_write)
+                                  output_resume, resume_project, codex_workspace_write,
+                                  desktop_socket, bash_sandbox_disabled)
         if mismatched_block:
             try:
                 parsed = block_entries(block)
@@ -619,6 +639,10 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
             next_manifest['asi1_preset_preexisting'] = asi1_preset_preexisting
         if codex_workspace_write:
             next_manifest['codex_workspace_write'] = True
+        if desktop_socket:
+            next_manifest['desktop_socket'] = desktop_socket
+        if bash_sandbox_disabled:
+            next_manifest['bash_sandbox_disabled'] = True
         if reconciled_from:
             next_manifest['reconciled_from_sha256'] = reconciled_from
         elif old and 'reconciled_from_sha256' in old:
@@ -649,12 +673,12 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
     return files, extra, next_manifest
 
 
-def plan(root, home, profile, project, action='install', delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False):
-    if action not in ('install', 'remove') or type(delegate) is not bool or agent_role not in ('standard', 'coordinator') or type(output_resume) is not bool or type(codex_workspace_write) is not bool or type(asi1_effort) is not bool or (codex_workspace_write and not delegate):
+def plan(root, home, profile, project, action='install', delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False, bash_sandbox_disabled=False):
+    if action not in ('install', 'remove') or type(delegate) is not bool or agent_role not in ('standard', 'coordinator') or type(output_resume) is not bool or type(codex_workspace_write) is not bool or type(asi1_effort) is not bool or type(bash_sandbox_disabled) is not bool or (codex_workspace_write and not delegate):
         raise ValueError('Action ou capacité invalide.')
     if inspect(home, profile).get('pending_plan'):
         raise ValueError('Reprendre l’opération partielle conservée avant de créer un autre plan.')
-    files, extra, _ = desired(root, home, profile, project, action, delegate, agent_role, output_resume, output_resume_project, codex_workspace_write, asi1_effort)
+    files, extra, _ = desired(root, home, profile, project, action, delegate, agent_role, output_resume, output_resume_project, codex_workspace_write, asi1_effort, bash_sandbox_disabled)
     changes = []
     for path, text in files.items():
         before, after = file_hash(path), digest(text.encode()) if text is not None else None
@@ -674,6 +698,8 @@ def plan(root, home, profile, project, action='install', delegate=False, agent_r
         result['output_resume_project'] = str(Path(output_resume_project or project).expanduser().resolve(strict=True))
     if asi1_effort and action == 'install':
         result['asi1_effort'] = True
+    if bash_sandbox_disabled and action == 'install':
+        result['bash_sandbox_disabled'] = True
     if 'block_reconciled' in extra:
         result['block_reconciled'] = extra['block_reconciled']
     result['fingerprint'] = digest(encoded(result).encode())
@@ -706,12 +732,12 @@ def apply(root, public):
             if journal['plan'] != public:
                 raise ValueError('Un autre plan est en attente ; reprendre ce plan sans écrasement.')
         else:
-            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False))
+            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False))
             if current != public:
                 raise ValueError('Entrées modifiées depuis la prévisualisation. Refaire le plan.')
             if not public['changes']:
                 return {'status': 'completed', 'changed': False, 'message': 'Configuration identique ; aucune écriture.'}
-            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False))
+            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False))
             if public['action'] == 'install':
                 helpers, runtime, _ = bundle_info(root)
                 stage_release(helpers, runtime, Path(public['release']))
@@ -800,7 +826,8 @@ def verify(home, profile, root=None, project=None):
     if block is None or digest(block.encode()) != old['block_sha256']:
         expected = _bridge_entries(Path(old['release']), old['state'], old['tools'], old['project'],
                                    old['profile'], managed, old.get('output_resume', False),
-                                   old.get('output_resume_project'), old.get('codex_workspace_write', False))
+                                   old.get('output_resume_project'), old.get('codex_workspace_write', False),
+                                   old.get('desktop_socket'), old.get('bash_sandbox_disabled', False))
         if block is None or block_entries(block) != expected:
             raise ValueError('Configuration Reprise absente ou modifiée.')
         # Bloc reformatté équivalent : accepté sans réécriture ici.
@@ -885,6 +912,7 @@ def main(root, argv=None):
             command.add_argument('--output-resume', action='store_true', help='Explicitly authorize same-session continuation after output-token limit')
             command.add_argument('--asi1-effort', action='store_true', help='Installer l’effort ASI1 bas pour le preset asi1-orchestrator')
             command.add_argument('--codex-workspace-write', action='store_true', help='Autoriser les implémentations Codex dans le projet sélectionné')
+            command.add_argument('--disable-bash-sandbox', action='store_true', help='Générer l’entrée plugin bash-sandbox désactivée (choix local persisté)')
             command.add_argument('--agent-role', choices=('standard', 'coordinator'), default='standard')
     sub.add_parser('integration-apply')
     args = parser.parse_args(argv)
@@ -894,7 +922,7 @@ def main(root, argv=None):
             result = inspect(args.home, args.profile)
         elif args.command == 'integration-plan':
             result = {'status': 'planned', 'message': 'Plan sans écriture. L’installation n’autorise ni inférence ni activation automatique.',
-                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role, args.output_resume, args.output_resume_project, args.codex_workspace_write, args.asi1_effort)}
+                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role, args.output_resume, args.output_resume_project, args.codex_workspace_write, args.asi1_effort, args.disable_bash_sandbox)}
         elif args.command == 'integration-apply':
             public = json.loads(sys.stdin.read(1024 * 1024))['plan']
             result = apply(root, public)
