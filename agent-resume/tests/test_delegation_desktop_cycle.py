@@ -223,10 +223,12 @@ class UnavailableTests(Cycle):
 
     def test_socket_lost_between_admission_and_submit_is_explicit(self):
         class BrokenClient:
+            calls = []
             def __init__(self, *args, **kwargs):
                 pass
 
             def call(self, method, params=None):
+                self.calls.append(method)
                 if method == 'quick_entry/submit':
                     raise OSError('endpoint closed between admission and submit')
                 return {}
@@ -239,10 +241,21 @@ class UnavailableTests(Cycle):
 
         with patch('claude_desktop_rpc.Client', BrokenClient):
             result = self.review(request_key='cycle-7', tasks=self.store, max_wait=0)
+            # A new connection must see the durable intent and refuse replay.
+            reopened = TaskStore(self.state, self.project)
+            self.addCleanup(reopened.close)
+            replay = self.review(request_key='cycle-7', tasks=reopened, max_wait=0)
         row = self.row('cycle-7')
         self.assertIsNotNone(row, 'la tâche doit rester admise malgré la perte du socket')
         self.assertIsNone(row[1])
-        self.assertEqual(row[2], 'attempted')
+        self.assertIsNone(row[2], 'la livraison MCP ne doit pas être marquée comme tentée')
+        guard = self.store.db.execute('''SELECT legacy_unknown,review_started,dispatch_started,dispatch_receipt
+            FROM desktop_dispatch_guard WHERE scope=? AND request_key=?''',
+            (self.store.scope, 'cycle-7')).fetchone()
+        self.assertEqual(guard, (0, 1, 0, None))
+        self.assertEqual(replay['status'], 'indeterminate')
+        self.assertEqual(BrokenClient.calls.count('quick_entry/submit'), 1)
+        self.assertNotIn('quick_entry/dispatch', BrokenClient.calls)
         self.assertIn(result['status'], ('timed_out', 'engine_unavailable'))
         self.assertNotEqual(result['status'], 'finished')
         self.assertFalse(result['automatic_fallback'])

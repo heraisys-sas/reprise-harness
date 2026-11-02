@@ -15,6 +15,7 @@ per request and never crash the daemon; payloads above 8 MiB destroy the
 connection. Logs go to stderr only; the socket file is removed on SIGTERM.
 """
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -31,6 +32,11 @@ DEFAULT_SOCKET = Path.home() / '.claude-desktop' / 'quick-apply-chrome.sock'
 MAX_LINE = 8 * 1024 * 1024
 
 
+def log_stage(stage):
+    print(json.dumps({'pid': os.getpid(), 'stage': stage}, ensure_ascii=False),
+          file=sys.stderr, flush=True)
+
+
 def apply_prompt(prompt, chat_id):
     """Stage and single-click the prompt over CDP, using apply primitives.
 
@@ -43,6 +49,7 @@ def apply_prompt(prompt, chat_id):
     fingerprint = hashlib.sha256(prompt.encode()).hexdigest()
     cdp = None
     try:
+        log_stage('connexion_cdp')
         cdp = mod.CDP(mod.DEFAULT_PORT, chat_id=chat_id)
         info = mod.state(cdp)
         if mod._page_path(info.get('url')) == '/login':
@@ -64,6 +71,7 @@ def apply_prompt(prompt, chat_id):
             return {'stage': 'brouillon', 'detail': 'Contenu préexistant dans le composeur'}
         if not mod._prepare(cdp, path):
             return {'stage': 'cible', 'detail': 'Préparation du composeur refusée'}
+        log_stage('préparé')
         cdp.call('Input.insertText', {'text': prompt})
         info = mod.state(cdp)
         problem = mod._check(info, path)
@@ -71,6 +79,7 @@ def apply_prompt(prompt, chat_id):
             return {'stage': problem, 'detail': 'État du composeur invalide après insertion'}
         if info.get('text_sha256') != fingerprint:
             return {'stage': 'empreinte', 'detail': 'Empreinte du composeur inattendue'}
+        log_stage('empreinte_vérifiée')
         outcome = mod._dispatch(cdp, path, fingerprint)
         return {'stage': outcome.get('stage'), 'ok': outcome.get('ok') is True,
                 'click_observed': outcome.get('click_observed') is True}
@@ -84,7 +93,10 @@ def apply_prompt(prompt, chat_id):
 def _serve_conn(conn):
     conn.sendall(b'{"hello": true}\n')
     stream = conn.makefile('rb')
-    for raw in stream:
+    while True:
+        raw = stream.readline(MAX_LINE + 1)
+        if not raw:
+            break
         if len(raw) > MAX_LINE:
             break  # oversized payload: destroy the connection
         try:
@@ -101,6 +113,7 @@ def _serve_conn(conn):
         except (ValueError, TypeError, KeyError, OSError, RuntimeError) as error:
             reply = {'ok': False, 'stage': 'incertain',
                      'error': str(error) or type(error).__name__}
+        log_stage(reply.get('stage', 'incertain'))
         conn.sendall((json.dumps(reply, ensure_ascii=False) + '\n').encode())
     stream.close()
 
@@ -112,8 +125,18 @@ def bind_socket(path):
     if path.exists():
         if not stat.S_ISSOCK(path.lstat().st_mode):
             raise SystemExit('Le chemin de socket existe déjà sans être un socket.')
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(1)
+            try:
+                probe.connect(str(path))
+            except (ConnectionRefusedError, FileNotFoundError):
+                pass
+            except OSError as error:
+                raise SystemExit(f'Impossible de vérifier le socket {path} : {error}')
+            else:
+                raise SystemExit('Socket applyd actif : remplacement refusé')
         try:
-            path.unlink()
+            path.unlink(missing_ok=True)
         except OSError as error:
             raise SystemExit(f'Impossible de supprimer le socket orphelin {path} : {error}')
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -125,22 +148,33 @@ def bind_socket(path):
 
 
 def serve(path):
-    sock = bind_socket(path)
-    try:
-        while True:
-            conn, _ = sock.accept()
-            try:
-                _serve_conn(conn)
-            except (OSError, TimeoutError):
-                pass
-            finally:
-                conn.close()
-    finally:
-        sock.close()
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with Path(str(path) + '.lock').open('a') as lock:
         try:
-            Path(path).unlink(missing_ok=True)
-        except OSError:
-            pass
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SystemExit('Socket applyd déjà détenu')
+        sock = bind_socket(path)
+        identity = path.lstat()
+        log_stage('à_l’écoute')
+        try:
+            while True:
+                conn, _ = sock.accept()
+                try:
+                    _serve_conn(conn)
+                except (OSError, TimeoutError):
+                    pass
+                finally:
+                    conn.close()
+        finally:
+            sock.close()
+            try:
+                current = path.lstat()
+                if (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino):
+                    path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def main():
@@ -149,10 +183,6 @@ def main():
     args = parser.parse_args()
 
     def terminate(signum, frame):
-        try:
-            Path(args.socket).unlink(missing_ok=True)
-        except OSError:
-            pass
         raise SystemExit(128 + signum)
     signal.signal(signal.SIGTERM, terminate)
     serve(args.socket)

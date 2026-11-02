@@ -312,7 +312,8 @@ def main():
                         help='seconds between notifications/progress during await_task; 0 (default) sends none')
     args = parser.parse_args()
     tasks = TaskStore(args.state, args.project_root)
-    bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.expert_state, allowed_tools=OUTBOUND)
+    bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.expert_state,
+                    desktop_state=args.state, allowed_tools=OUTBOUND)
     facade = ClaudeMCP(tasks, bridge, max_wait=args.max_wait, progress_interval=args.progress_interval, enable_await=args.enable_await)
     send_lock = threading.Lock()
     await_requests = AwaitRequests()
