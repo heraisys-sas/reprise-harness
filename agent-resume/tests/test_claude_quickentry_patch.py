@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 TOOLS = Path(__file__).resolve().parent.parent / "tools"
 sys.path.insert(0, str(TOOLS))
@@ -119,14 +120,13 @@ class TestQuickEntryPatch(unittest.TestCase):
                 r = subprocess.CompletedProcess(cmd, 0, "", "")
                 return r
 
-            orig = cqp.subprocess.run
-            cqp.subprocess.run = fake_run
-            cqp.shutil.which = lambda n: "/usr/bin/codesign"
-            try:
+            original_run, original_which = subprocess.run, shutil.which
+            with patch.object(cqp.subprocess, 'run', side_effect=fake_run), \
+                 patch.object(cqp.shutil, 'which', return_value='/usr/bin/codesign'):
                 self.assertEqual(cqp.main([str(app), "--apply"]), 0)
-            finally:
-                cqp.subprocess.run = orig
-                cqp.shutil.which = shutil.which
+            # These modules are shared with other test modules in this process.
+            self.assertIs(subprocess.run, original_run)
+            self.assertIs(shutil.which, original_which)
             self.assertEqual(calls.count("/usr/bin/codesign"), 2)
 
 
