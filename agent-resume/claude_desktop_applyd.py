@@ -56,12 +56,15 @@ def apply_prompt(prompt, chat_id):
             return {'stage': 'session', 'detail': 'Connexion claude.ai requise'}
         if info.get('changed') or mod._page_path(info.get('url')) is None:
             return {'stage': 'cible', 'detail': 'Page claude.ai unique requise'}
+        if mod._page_path(info['url']) != path:
+            # The attached tab may sit on /chats or another claude.ai page;
+            # navigate to the target chat before judging the composer.
+            cdp.navigate('https://claude.ai' + path)
+            info = mod.state(cdp)
         if info.get('composerPresent') is not True or info.get('text_length') is None:
             return {'stage': 'composeur', 'detail': 'Composeur indisponible'}
         if info['text_length'] != 0:
             return {'stage': 'brouillon', 'detail': 'Contenu préexistant dans le composeur'}
-        if mod._page_path(info['url']) != path:
-            cdp.navigate('https://claude.ai' + path)
         mod.wait_composer(cdp)
         info = mod.state(cdp)
         problem = mod._check(info, path)
