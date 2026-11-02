@@ -76,7 +76,7 @@ def _spawn_applyd(socket_path):
                 [sys.executable, str(claude_desktop_applyd.__file__),
                  '--socket', str(socket_path)],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, start_new_session=True)
+                stderr=None, start_new_session=True)
         except OSError:
             return False
         deadline = time.monotonic() + 5
@@ -219,24 +219,35 @@ class Endpoint:
                   'dispatch_channel': 'chrome-socket',
                   'dispatch_socket': str(self.applyd_socket),
                   'admission_only': True}
+        reservation = self.tasks.reserve_socket_dispatch(request_key)
+        if reservation['state'] == 'recorded':
+            return reservation['receipt']
+        if reservation['state'] != 'reserved':
+            return result | {'dispatch_ok': False, 'stage': 'incertain',
+                             'dispatch_error': 'Dispatch antérieur ou historique incertain ; aucune relance.'}
+        outcome = self._dispatch_reserved(result, prompt, chat_id)
+        self.tasks.record_socket_dispatch(request_key, outcome)
+        return outcome
+
+    def _dispatch_reserved(self, result, prompt, chat_id):
+        """Dispatch once after a durable reservation, without retry or fallback."""
         if not chat_id or not validate_chat_id(chat_id):
             return result | {'dispatch_ok': False, 'dispatch_error': 'chat_id invalide ou absent',
                              'stage': 'cible'}
-        if not _probe_socket(self.applyd_socket) and not _spawn_applyd(self.applyd_socket):
+        if not _probe_socket(self.applyd_socket):
             if not Path(_cdp_pipe()._chrome_bin()).exists():
                 return result | {'dispatch_ok': False, 'stage': 'incertain',
                                  'dispatch_error': 'Démon applyd injoignable ; Chrome absent, pas de spawn'}
-            return result | {'dispatch_ok': False, 'stage': 'incertain',
-                             'dispatch_error': 'Démon applyd injoignable ; spawn échoué'}
-            return result | {'dispatch_ok': False, 'stage': 'incertain',
-                             'dispatch_error': 'Démon applyd injoignable ; spawn échoué'}
+            if not _spawn_applyd(self.applyd_socket):
+                return result | {'dispatch_ok': False, 'stage': 'incertain',
+                                 'dispatch_error': 'Démon applyd injoignable ; spawn échoué'}
         try:
             outcome = self._socket_apply(prompt, chat_id)
         except Exception as error:  # a daemon crash must never replace the receipt
             outcome = {'stage': 'incertain', 'detail': str(error) or type(error).__name__}
         ok = outcome.get('stage') == 'envoyé' and outcome.get('click_observed') is True
         if ok:
-            return result | {'dispatch_ok': True, 'stage': 'envoyé'}
+            return result | {'dispatch_ok': True, 'stage': 'envoyé', 'click_observed': True}
         return result | {'dispatch_ok': False, 'stage': outcome['stage'],
                          'dispatch_error': outcome.get('detail') or outcome.get('error') or outcome['stage']}
 
@@ -250,21 +261,28 @@ class Endpoint:
             if args:
                 raise ValueError('No capability arguments expected')
             socket_path = self.applyd_socket
-            # Capability decision stays connect()-based and side-effect free:
-            # the lazy spawn happens at dispatch time, not in capabilities.
-            dispatch_ready = _probe_socket(socket_path)
-            reason = ('applyd daemon answered on %s: dispatch available.' % socket_path
-                      if dispatch_ready else
-                      'applyd socket %s refused connection; a lazy spawn is attempted at dispatch time when Chrome is present.' % socket_path)
+            # A cold applyd is normal: capability probing never starts it.
+            # Capability is not proof of a connected browser or a successful click.
+            applyd_running = _probe_socket(socket_path)
+            chrome_present = Path(_cdp_pipe()._chrome_bin()).is_file()
+            supported = self.tasks is not None and (applyd_running or chrome_present)
+            if self.tasks is None:
+                reason = 'Project-scoped task store required for dispatch.'
+            elif applyd_running:
+                reason = 'applyd socket answers; Chrome session and target are not verified.'
+            elif chrome_present:
+                reason = 'applyd starts lazily at dispatch; Chrome session and target are not verified.'
+            else:
+                reason = 'applyd unavailable and Chrome binary absent.'
             return {'version': VERSION, 'admission_supported': True,
-                    'dispatch_supported': dispatch_ready,
+                    'dispatch_supported': supported, 'applyd_running': applyd_running,
                     'dispatch_channel': 'chrome-socket', 'dispatch_socket': str(socket_path),
                     'resume_validation_supported': False,
                     'task_return_supported': self.tasks is not None,
                     'project_root': self.tasks.scope if self.tasks else None,
                     'state_sha256': hashlib.sha256(str(self.state.resolve()).encode()).hexdigest(),
                     'reason': reason,
-                    'cdp_resume_supported': Path(_cdp_pipe()._chrome_bin()).exists()}
+                    'cdp_resume_supported': chrome_present}
         if name == 'quick_entry/dispatch':
             if not self.tasks:
                 raise ValueError('Project-scoped dispatch required; unknown request_key gets no dispatch')
@@ -385,7 +403,7 @@ class Endpoint:
             'detail': 'Envoyé' if stage == 'envoyé' else stage}
 
     def _shutdown(self, args):
-        """Authenticated shutdown: verify token, terminate Chrome, close socket."""
+        """Authenticate shutdown without terminating an unowned Chrome process."""
         if not isinstance(args, dict):
             raise ValueError('Objet de soumission requis')
         token = args.get('token', '')
@@ -401,31 +419,12 @@ class Endpoint:
         if hashlib.sha256(token.encode()).hexdigest() != hashlib.sha256(stored.encode()).hexdigest():
             return {'ok': False, 'status': 'unauthenticated'}
 
-        result = {'ok': True}
-
-        cdp_mod = _cdp_pipe()
-        profile = cdp_mod._profile_dir()
-        lock_path, _ = cdp_mod._hostname_pid_lock(profile)
-        try:
-            pid = int(lock_path.read_text().strip())
-            os.kill(pid, signal.SIGTERM)
-            # Bounded loop: wait for process to die, never block forever
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
-                try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
-                    break
-                time.sleep(0.1)
-        except (ValueError, OSError):
-            pass
-
         try:
             shutdown_token_path.unlink(missing_ok=True)
         except OSError:
             pass
 
-        return result
+        return {'ok': True}
 
 
 def _serve(conn, endpoint):
@@ -531,23 +530,12 @@ def main():
     parser.add_argument('--socket', default=str(claude_desktop.DEFAULT_SOCKET))
     parser.add_argument('--state', default=str(state_location(Path(__file__).parent, 'quick-state')))
     parser.add_argument('--project-root', help='Bind the inbox/result channel to this project; legacy admission remains unbound')
+    parser.add_argument('--applyd-socket', help='Socket du démon applyd (défaut : chemin standard)')
     parser.add_argument('--daily-limit', type=int, help='Deprecated compatibility option; ignored')
     args = parser.parse_args()
-    endpoint = Endpoint(args.state, args.daily_limit, args.project_root)
+    endpoint = Endpoint(args.state, args.daily_limit, args.project_root, args.applyd_socket)
     def terminate(signum, frame):
-        # Terminate Chrome if a PID lock exists
-        try:
-            import claude_cdp_pipe as _cdp
-            _profile = _cdp._profile_dir()
-            _lock_path, _ = _cdp._hostname_pid_lock(_profile)
-            if _lock_path.exists():
-                _pid = int(_lock_path.read_text().strip())
-                try:
-                    os.kill(_pid, signal.SIGTERM)
-                except OSError:
-                    pass
-        except Exception:
-            pass
+        # A profile lock does not establish ownership of a Chrome process.
         raise SystemExit(128 + signum)
     previous = signal.signal(signal.SIGTERM, terminate)
     try:

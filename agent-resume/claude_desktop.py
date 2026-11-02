@@ -243,18 +243,11 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
         client = Client(program, values, timeout=timeout)
         client.call('initialize', {'clientInfo': {'name': 'reprise-delegation', 'version': '0.1.0'}})
         if orchestrated:
-            row = tasks.db.execute('SELECT delivery,attempt_id FROM desktop_tasks WHERE scope=? AND request_key=?',
-                                   (tasks.scope, request_key)).fetchone()
-            if row and (row[0] is not None or row[1]):
-                # A dispatch attempt was already recorded: never re-submit.
-                return _orchestrated_receipt(tasks, request_key, max_wait, clock)
-            # Admit the exact dispatch prompt, then record delivery intent BEFORE the RPC:
-            # a socket loss after this point leaves an explicit 'attempted' barrier.
+            # A separate durable barrier protects the outbound submission. MCP
+            # delivery state is reserved exclusively for get_task/await_task.
             tasks.admit(request_key, prompt, chat_id)
-            tasks.db.execute("UPDATE desktop_tasks SET delivery='attempted',attempt_id=? "
-                             'WHERE scope=? AND request_key=? AND delivery IS NULL AND answer IS NULL',
-                             (str(uuid.uuid4()), tasks.scope, request_key))
-            tasks.db.commit()
+            if not tasks.reserve_review_dispatch(request_key):
+                return _orchestrated_receipt(tasks, request_key, max_wait, clock)
         payload_args = {'prompt': prompt, 'request_key': request_key}
         if orchestrated:
             payload_args['purpose'] = 'delegation'
@@ -271,9 +264,8 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
                              'resumable': False, 'model': 'claude-desktop', 'dispatch': submitted.get('dispatch'),
                              'response': None, 'admission_only': True,
                              'billing': 'Claude Desktop session; quota not reported'}
-        # Best-effort native dispatch, only when the daemon itself reports the
-        # reprise socket ready. Any failure keeps admission-only as the recorded
-        # outcome: never a claimed success without submit_result.
+        # Capability permits a single attempt, including a cold applyd; it is
+        # not proof of a usable browser session or a completed MCP result.
         if orchestrated:
             try:
                 capabilities = client.call('quick_entry/capabilities', {})
@@ -286,6 +278,9 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
                 try:
                     dispatched = client.call('quick_entry/dispatch', {'request_key': request_key})
                     finished['dispatch_ok'] = dispatched.get('dispatch_ok') is True
+                    for field in ('stage', 'click_observed', 'dispatch_socket'):
+                        if field in dispatched:
+                            finished[field] = dispatched[field]
                     if not finished['dispatch_ok']:
                         finished['dispatch_error'] = dispatched.get('dispatch_error', 'dispatch refused')
                 except engines.Unavailable as error:

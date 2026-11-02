@@ -35,6 +35,18 @@ class TaskStore:
                 scope TEXT NOT NULL, request_key TEXT NOT NULL, prompt TEXT NOT NULL,
                 chat_id TEXT, claim_key TEXT, attempt_id TEXT, answer TEXT,
                 acknowledged INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(scope,request_key))''')
+            dispatch_guard_exists = self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='desktop_dispatch_guard'").fetchone() is not None
+            self.db.execute('''CREATE TABLE IF NOT EXISTS desktop_dispatch_guard(
+                scope TEXT NOT NULL, request_key TEXT NOT NULL,
+                legacy_unknown INTEGER NOT NULL DEFAULT 0,
+                review_started INTEGER NOT NULL DEFAULT 0,
+                dispatch_started INTEGER NOT NULL DEFAULT 0,
+                dispatch_receipt TEXT,
+                PRIMARY KEY(scope,request_key))''')
+            if not dispatch_guard_exists:
+                # Old direct dispatches left no durable trace, even when delivery is NULL.
+                self.db.execute('''INSERT INTO desktop_dispatch_guard(scope,request_key,legacy_unknown)
+                                   SELECT scope,request_key,1 FROM desktop_tasks''')
             columns = {row[1] for row in self.db.execute('PRAGMA table_info(desktop_tasks)')}
             if 'delivery' not in columns:
                 self.db.execute('ALTER TABLE desktop_tasks ADD COLUMN delivery TEXT')  # NULL | reserved | attempted
@@ -159,7 +171,49 @@ class TaskStore:
             if row and row[:2] != (prompt, chat_id):
                 raise ValueError('Request identity conflict')
             self.db.execute('INSERT OR IGNORE INTO desktop_tasks(scope,request_key,prompt,chat_id) VALUES(?,?,?,?)', (self.scope,request_key,prompt,chat_id))
+            if not row:
+                self.db.execute('INSERT INTO desktop_dispatch_guard(scope,request_key) VALUES(?,?)',
+                                (self.scope, request_key))
         return {'status': 'finished', 'request_key': request_key, 'admitted': True, 'dispatch_confirmed': False}
+
+    def reserve_review_dispatch(self, request_key):
+        """Reserve one orchestrated submission without touching MCP delivery state."""
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            changed = self.db.execute('''UPDATE desktop_dispatch_guard SET review_started=1
+                WHERE scope=? AND request_key=? AND legacy_unknown=0 AND review_started=0
+                AND dispatch_started=0 AND EXISTS (SELECT 1 FROM desktop_tasks t
+                    WHERE t.scope=desktop_dispatch_guard.scope AND t.request_key=desktop_dispatch_guard.request_key
+                    AND t.claim_key IS NULL AND t.attempt_id IS NULL AND t.delivery IS NULL AND t.answer IS NULL)''',
+                (self.scope, request_key)).rowcount
+        return changed == 1
+
+    def reserve_socket_dispatch(self, request_key):
+        """Reserve the only socket send; return a stored receipt or uncertainty on replay."""
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            row = self.db.execute('''SELECT legacy_unknown,dispatch_started,dispatch_receipt
+                FROM desktop_dispatch_guard WHERE scope=? AND request_key=?''',
+                (self.scope, request_key)).fetchone()
+            if row is None or row[0]:
+                return {'state': 'legacy_unknown'}
+            if row[1]:
+                return {'state': 'recorded', 'receipt': json.loads(row[2])} if row[2] else {'state': 'attempted'}
+            changed = self.db.execute('''UPDATE desktop_dispatch_guard SET dispatch_started=1
+                WHERE scope=? AND request_key=? AND dispatch_started=0 AND EXISTS
+                  (SELECT 1 FROM desktop_tasks t WHERE t.scope=desktop_dispatch_guard.scope
+                   AND t.request_key=desktop_dispatch_guard.request_key AND t.claim_key IS NULL
+                   AND t.attempt_id IS NULL AND t.delivery IS NULL AND t.answer IS NULL)''',
+                (self.scope, request_key)).rowcount
+            return {'state': 'reserved' if changed == 1 else 'attempted'}
+
+    def record_socket_dispatch(self, request_key, receipt):
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            changed = self.db.execute('''UPDATE desktop_dispatch_guard SET dispatch_receipt=?
+                WHERE scope=? AND request_key=? AND dispatch_started=1 AND dispatch_receipt IS NULL''',
+                (json.dumps(receipt, ensure_ascii=False), self.scope, request_key)).rowcount
+        return changed == 1
 
     def claim(self, request_key, claim_key):
         """Explicit pull (get_task), sharing await_task's one-attempt delivery barrier.

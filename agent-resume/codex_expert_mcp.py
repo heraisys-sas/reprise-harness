@@ -168,7 +168,7 @@ def bounded_content(result, ident):
 
 
 class Bridge:
-    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, allowed_tools=None, ironclaw_values=None, codex_workspace_write=False):
+    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, codex_workspace_write=False):
         if type(codex_workspace_write) is not bool:
             raise ValueError('Explicit workspace-write grant required')
         self.codex_workspace_write = codex_workspace_write
@@ -212,7 +212,7 @@ class Bridge:
         self.desktop_tasks = None
         try:
             from desktop_task_store import TaskStore
-            self.desktop_tasks = TaskStore(state_location(self.root, 'quick-state'), self.root)
+            self.desktop_tasks = TaskStore(desktop_state if desktop_state is not None else state_location(self.root, 'quick-state'), self.root)
         except (OSError, sqlite3.Error, ValueError):
             self.desktop_tasks = None
 
