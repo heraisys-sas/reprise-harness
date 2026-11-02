@@ -122,6 +122,58 @@ _BLOCK_REFUSAL = 'Bloc Reprise personnalisé ou non géré ; aucune réécriture
 _BLOCK_ILLISIBLE = 'Bloc Reprise illisible ; réconciliation impossible.'
 
 
+def _yaml_module():
+    """PyYAML pur Python vendored (agent-resume/vendor/yaml, MIT) ; repli sur un yaml système."""
+    import importlib.util
+    package = Path(__file__).resolve().parent / 'vendor' / 'yaml'
+    if (package / '__init__.py').is_file():
+        spec = importlib.util.spec_from_file_location('reprise_vendor_yaml', package / '__init__.py',
+                                                      submodule_search_locations=[str(package)])
+        module = importlib.util.module_from_spec(spec)
+        sys.modules['reprise_vendor_yaml'] = module
+        spec.loader.exec_module(module)
+        return module
+    return importlib.import_module('yaml')
+
+
+def _scalar_tree(value):
+    """Forme attendue d'une entry : scalaires, listes, dicts à clés str (récursif)."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, list):
+        return all(_scalar_tree(item) for item in value)
+    if isinstance(value, dict):
+        return all(isinstance(key, str) and _scalar_tree(item) for key, item in value.items())
+    return False
+
+
+def _entries_from_yaml(block_text):
+    try:
+        safe_load = _yaml_module().safe_load
+        body = '\n'.join(line for line in block_text.splitlines()
+                         if line.strip() not in (START, END))
+        data = safe_load(body)
+    except Exception:
+        raise ValueError(_BLOCK_ILLISIBLE)
+    if isinstance(data, dict):
+        if list(data) != ['insert']:
+            raise ValueError(_BLOCK_ILLISIBLE)
+        data = [data]
+    if not isinstance(data, list):
+        raise ValueError(_BLOCK_ILLISIBLE)
+    entries = []
+    for item in data:
+        if not isinstance(item, dict):
+            raise ValueError(_BLOCK_ILLISIBLE)
+        if list(item) == ['insert'] and isinstance(item['insert'], list):
+            entries.extend(item['insert'])
+        else:
+            entries.append(item)
+    if not entries or not all(isinstance(entry, dict) and _scalar_tree(entry) for entry in entries):
+        raise ValueError(_BLOCK_ILLISIBLE)
+    return entries
+
+
 def block_entries(block_text):
     # Le bloc géré est du YAML minimal produit ici : une seule clé `insert`
     # portant le JSON des entries, en ligne ou ré-indenté sur les lignes suivantes.
@@ -135,19 +187,27 @@ def block_entries(block_text):
     else:
         collected = []
         indent = None
+        extra = False
         for line in lines[index + 1:]:
             if not line.strip():
                 continue
             if not line.startswith(' '):
+                if line.strip() != END:
+                    # Items YAML de premier niveau après le bloc `insert` : parse YAML complet.
+                    extra = True
                 break
             if indent is None:
                 indent = re.match(r' *', line).end()
             collected.append(line[indent:])
+        if extra:
+            return _entries_from_yaml(block_text)
         payload = ' '.join(collected)
     try:
         entries = json.loads(payload)
     except json.JSONDecodeError:
-        raise ValueError(_BLOCK_ILLISIBLE)
+        # Bloc reformatté par Harness en YAML multi-lignes (folding, style bloc) :
+        # parse YAML vendored, puis normalisation et validation stricte.
+        return _entries_from_yaml(block_text)
     if not isinstance(entries, list):
         raise ValueError(_BLOCK_ILLISIBLE)
     return entries
@@ -242,6 +302,9 @@ def stage_release(helpers, runtime, release):
             if Path(name).name != name:
                 raise ValueError('Chemin de payload non supporté.')
             shutil.copyfile(helpers / name, helper_target / name)
+        if (helpers / 'vendor/yaml').is_dir():
+            shutil.copytree(helpers / 'vendor/yaml', helper_target / 'vendor/yaml',
+                            ignore=shutil.ignore_patterns('__pycache__'))
         shutil.copytree(runtime, resources / 'runtime', symlinks=True)
         if (helpers.parent / 'native-manifest.json').is_file():
             shutil.copyfile(helpers.parent / 'native-manifest.json', resources / 'native-manifest.json')

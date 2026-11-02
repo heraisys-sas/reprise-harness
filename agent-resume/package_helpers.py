@@ -20,6 +20,9 @@ def package(source, app):
         payload.mkdir()
         for item in files:
             shutil.copyfile(item, payload / item.name)
+        vendor = source / 'vendor/yaml'
+        if vendor.is_dir():
+            shutil.copytree(vendor, payload / 'vendor/yaml', ignore=shutil.ignore_patterns('__pycache__'))
         manifest = {'version': (source / 'VERSION').read_text().strip(),
                     'runtime': metadata(app),
                     'files': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}}

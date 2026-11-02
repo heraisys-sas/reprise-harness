@@ -715,6 +715,136 @@ class HarnessIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Action ou capacité invalide'):
             integration.plan(self.root, self.home, 'desktop', self.project, bash_sandbox_disabled='yes')
 
+    # Bloc tel que reformaté par Harness (YAML multi-lignes, folding `\`, style bloc),
+    # copié du profil ~/.dsh avec des chemins génériques substitués.
+    HARNESS_REFORMATTED_BLOCK = '''- insert:
+    [
+      {
+          "id": "reprise-codex-expert",
+          "name": "@deepseek-ai/dsh-mcp-client",
+          "config":
+            {
+              "transport": "stdio",
+              "serverName": "reprise_codex",
+              "command": "<REPRISE>\\
+                /integration-releases/f7d6baabc9484640c88018433ac92ed49b9884d5f122759820d4923a4beaa015/Contents/Resources/runti\\
+                me/bin/python3",
+              "args":
+                [
+                  "-E",
+                  "-s",
+                  "-B",
+                  "<REPRISE>\\
+                /integration-releases/f7d6baabc9484640c88018433ac92ed49b9884d5f122759820d4923a4beaa015/Contents/Resourc\\
+                es/helpers/codex_expert_mcp.py",
+                  "--project-root",
+                  "<PROJECT>",
+                  "--desktop-socket",
+                  "<DESKTOP>/quick-entry.sock",
+                  "--state",
+                  "<REPRISE>/state",
+                  "--tools",
+                  "reprise_backends,reprise_requests,reprise_quotas,reprise_d\\
+                    elegate,reprise_followup,reprise_reconcile"
+                ],
+              "toolCallTimeoutMs": 330000,
+              "failOnStartupError": false,
+              "reconnect": { "enabled": false }
+            }
+        },
+      {
+          "id": "reprise-skill-filesystem",
+          "name": "@deepseek-ai/dsh-skill-filesystem",
+          "config":
+            {
+              "providerName": "reprise-desktop",
+              "includeDefaultRoots": false,
+              "customSkillDirs": [ "<PROFILE>/.reprise/skills" ],
+              "watch": false
+            }
+        },
+      {
+          "id": "reprise-output-resume",
+          "name": "<REPRISE>\\
+                /integration-releases/f7d6baabc9484640c88018433ac92ed49b9884d5f122759820d4923a4beaa015/Contents/Resources/helpers/harne\\
+                ss-output-resume.cjs",
+          "config":
+            {
+              "enabled": true,
+              "projectRoot": "<RESUME>",
+              "stateDirectory": "<REPRISE>/state/harness-output-resume",
+              "maxConsecutive": 2
+            }
+        }
+    ]
+- id: bash-sandbox
+  name: "@deepseek-ai/dsh-bash-sandbox"
+  disabled: true
+  config:
+    timeoutMs: 90000
+    maxOutputBytes: 32000
+'''
+
+    RELEASE_NAME = 'f7d6baabc9484640c88018433ac92ed49b9884d5f122759820d4923a4beaa015'
+
+    def _fixture_block(self):
+        return self.HARNESS_REFORMATTED_BLOCK.replace('<REPRISE>', str(self.base / 'Reprise')) \
+            .replace('<PROJECT>', str(self.project)).replace('<PROFILE>', str(self.folder)) \
+            .replace('<DESKTOP>', str(self.base / '.claude-desktop')) \
+            .replace('<RESUME>', str(self.base / 'resume'))
+
+    def _expected_fixture_entries(self):
+        release = self.base / 'Reprise' / 'integration-releases' / self.RELEASE_NAME
+        return integration._bridge_entries(
+            release, str(self.base / 'Reprise' / 'state'),
+            ('reprise_backends', 'reprise_requests', 'reprise_quotas',
+             'reprise_delegate', 'reprise_followup', 'reprise_reconcile'),
+            str(self.project), 'desktop', self.managed,
+            output_resume=True, output_resume_project=str(self.base / 'resume'),
+            desktop_socket=str(self.base / '.claude-desktop' / 'quick-entry.sock'),
+            bash_sandbox_disabled=True)
+
+    def test_block_entries_parses_harness_reformatted_yaml_fixture(self):
+        block = integration.START + '\n' + self._fixture_block() + integration.END + '\n'
+        parsed = integration.block_entries(block)
+        expected = self._expected_fixture_entries()
+        self.assertEqual([entry['id'] for entry in parsed], [entry['id'] for entry in expected])
+        # Égalité sémantique stricte, ordre inclus (les Paths des entries générées sont comparés en str).
+        self.assertEqual(parsed, expected)
+
+    def test_block_entries_json_inline_non_regression(self):
+        entries = [{'id': 'a', 'config': {'path': '/x', 'n': 1}}]
+        for payload in ('- insert: ' + json.dumps(entries) + '\n',
+                        '- insert:\n    ' + json.dumps(entries) + '\n'):
+            self.assertEqual(integration.block_entries(integration.START + '\n' + payload + integration.END + '\n'),
+                             entries)
+
+    def test_block_entries_refuses_invalid_or_wrongly_shaped_yaml(self):
+        for body in ('- insert: [\n  {"id": "a",\n  "broken":\n',
+                     'just a scalar\n', '- insert:\n  - not a mapping: [\n'):
+            with self.assertRaisesRegex(ValueError, 'illisible'):
+                integration.block_entries(integration.START + '\n' + body + integration.END + '\n')
+
+    def test_verify_accepts_harness_reformatted_block_without_rewrite(self):
+        probe = self.bridge_probe(delegate=True)
+        self.install(delegate=True, bash_sandbox_disabled=True)
+        _, original_block = integration.split_block(self.config.read_text())
+        entries = integration.block_entries(original_block)
+        bridge = json.dumps([entry for entry in entries if entry['id'] != 'bash-sandbox'], indent=2)
+        sandbox = next(entry for entry in entries if entry['id'] == 'bash-sandbox')
+        body = '- insert:\n' + '\n'.join('    ' + line for line in bridge.splitlines()) + '\n'
+        body += '- id: bash-sandbox\n  name: ' + json.dumps(sandbox['name']) + '\n  disabled: true\n  config:\n'
+        body += '    timeoutMs: 90000\n    maxOutputBytes: 32000\n'
+        base, _ = integration.split_block(self.config.read_text())
+        self.config.write_text(base + integration.START + '\n' + body + integration.END + '\n')
+        with patch.object(integration.subprocess, 'run', return_value=probe):
+            result = integration.verify(self.home, 'desktop', root=self.root, project=self.project)
+        self.assertEqual(result['status'], 'verified')
+        self.assertIn('block_reconciled', result)
+        # verify() ne réécrit pas : le bloc reformatté reste en place.
+        self.assertEqual(integration.split_block(self.config.read_text())[1],
+                         integration.START + '\n' + body + integration.END + '\n')
+
 
 if __name__ == '__main__':
     unittest.main()
