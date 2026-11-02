@@ -54,6 +54,12 @@ Tous les agents partagent le compte GitHub `heraisys-sas` : l'assigné ne distin
 - Les timestamps de l'UI sont en **heure locale 24h** (helpers `localTime`/`localDateTime` dans `Dashboard.swift`).
 - `runtime.terminate()` doit être résilient (un `killpg` refusé ne doit pas écraser le retour de l'appelant) — corrigé, source du bug des quotas manquants.
 
+## Quick Apply — architecture réelle (prouvée le 02/11/2026, issue #102)
+- Le CDP ne vise **jamais l'app Claude Desktop** (port CDP protégé par Anthropic). Le dispatcher pilote un **Google Chrome dédié**, profil isolé `~/.local/share/claude-cdp/chrome`, lancé par `claude_cdp_pipe.launch_chrome()` avec `--remote-debugging-pipe` (pipe fd 3/4, **pas de port TCP**) et `--app=https://claude.ai`. Voir `claude_cdp_pipe.py::build_chrome_args`.
+- `claude_desktop_applyd.py` = daemon headless qui écoute sur `~/.claude-desktop/quick-apply-chrome.sock` et pilote le Chrome dédié (navigate vers `https://claude.ai/chat/<chat_id>`, clique le composeur). Spawné paresseusement par `claude_desktop_quick._spawn_applyd()`.
+- Diagnostic dispatch : un `Connection refused` dans le reçu (`dispatch_error`) après une admission OK vient de la **connexion CDP vers le Chrome dédié**, pas du socket fichier. Vérifier : (1) `applyd` à l'écoute (`connect()` sur son socket), (2) **Chrome dédié lancé** (aucun process `Google Chrome` avec `--user-data-dir=...claude-cdp` = cause des échecs du 02/11). Le lancer via `cdp/resume`/`launch_chrome`, jamais à la main sans le profil dédié.
+- `claude_desktop_apply.launch()` / `shutdown()` **refusent** (`return False`) : adoption d'un navigateur non possédé interdite tant que le lifecycle n'est pas implémenté.
+
 ## Modèles & escalade
 - Le modèle par défaut du workspace est configuré dans `~/.dsh` (hors dépôt) — **il évolue, ne pas le figer ici**. L'identifier par `reprise_backends` / la config du profil au moment du travail.
 - Un modèle **léger** (type Flash) est adapté aux tâches **cadrées/localisées** : ajout de composants/labels, correctifs ciblés, tests. Il peut **bloquer sur de la refonte structurante** (échec observé : boucle sans résultat sur une fusion d'onglets).
