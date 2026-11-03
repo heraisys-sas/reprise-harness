@@ -315,6 +315,80 @@ class DiagnosticsAndLifecycle(unittest.TestCase):
             self.assertNotIn(forbidden, source)
 
 
+class EventInsertion(unittest.TestCase):
+    """Lot #101: React must observe the insertion; a click is not a send."""
+
+    def test_insert_expression_is_event_driven_not_plain_assignment(self):
+        client = Mock()
+        client.evaluate.return_value = {'inserted': True, 'length': len(PROMPT)}
+        result = transport._insert(client, PROMPT)
+        self.assertTrue(result['inserted'])
+        expression = client.evaluate.call_args[0][0]
+        self.assertIn("execCommand('insertText'", expression)
+        self.assertIn("InputEvent('input'", expression)
+        self.assertIn('bubbles: true', expression)
+        self.assertNotIn('el.innerText =', expression)
+
+    def test_insertion_not_confirmed_is_reported(self):
+        client = Mock()
+        client.evaluate.return_value = {'inserted': False, 'length': 0}
+        self.assertFalse(transport._insert(client, PROMPT)['inserted'])
+        client.evaluate.return_value = None
+        self.assertFalse(transport._insert(client, PROMPT)['inserted'])
+
+    def test_arm_requires_enabled_button_after_single_fallback(self):
+        client = Mock()
+        client.evaluate.return_value = {'ready': True}
+        self.assertTrue(transport._arm(client)['ready'])
+        client.evaluate.return_value = {'ready': False}
+        expression = client.evaluate.call_args[0][0]
+        self.assertIn("KeyboardEvent('keydown'", expression)  # the one Enter fallback
+        self.assertFalse(transport._arm(client)['ready'])
+        client.evaluate.return_value = None
+        self.assertFalse(transport._arm(client)['ready'])
+
+    def test_confirm_requires_positive_evidence_or_failure_is_not_confirmed(self):
+        client = Mock()
+        client.evaluate.return_value = {'confirmed': True}
+        self.assertTrue(transport._confirm(client))
+        client.evaluate.return_value = {'confirmed': False}
+        self.assertFalse(transport._confirm(client))
+        client.evaluate.side_effect = TimeoutError('private')
+        self.assertFalse(transport._confirm(client))
+
+    def test_click_without_send_evidence_is_uncertain_never_envoye(self):
+        client = Mock()
+        client.evaluate.side_effect = [{'stage': 'envoyé', 'clicked': True}, {'confirmed': False}]
+        with patch.object(transport, 'CDP', return_value=client), \
+                patch.object(transport, 'state', return_value=info(PROMPT)):
+            result = transport.send_staged(chat_id=CHAT, expected_sha256=SHA)
+        self.assertEqual(result['stage'], 'incertain')
+        self.assertTrue(result['dispatch_attempted'])
+        self.assertTrue(result['click_observed'])
+        self.assertEqual(transport.to_submission(result)['status'], 'needs_review')
+
+    def test_uncertain_no_click_outcome_maps_to_uncertain_needs_review(self):
+        client = Mock()
+        client.evaluate.return_value = {'stage': 'incertain', 'clicked': False}
+        with patch.object(transport, 'CDP', return_value=client), \
+                patch.object(transport, 'state', return_value=info(PROMPT)):
+            result = transport.send_staged(chat_id=CHAT, expected_sha256=SHA)
+        self.assertEqual(result['stage'], 'incertain')
+        self.assertTrue(result['dispatch_attempted'])
+        self.assertFalse(result['click_observed'])
+        self.assertEqual(transport.to_submission(result)['status'], 'needs_review')
+
+    def test_click_with_send_evidence_confirmed(self):
+        client = Mock()
+        client.evaluate.side_effect = [{'stage': 'envoyé', 'clicked': True}, {'confirmed': True}]
+        with patch.object(transport, 'CDP', return_value=client), \
+                patch.object(transport, 'state', return_value=info(PROMPT)):
+            result = transport.send_staged(chat_id=CHAT, expected_sha256=SHA)
+        self.assertEqual(result['stage'], 'envoyé')
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['click_observed'])
+
+
 class CDPProtocol(unittest.TestCase):
     def client(self):
         client = transport.CDP.__new__(transport.CDP)
