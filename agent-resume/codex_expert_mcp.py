@@ -22,9 +22,25 @@ import shutil
 from engines import Unavailable, executable, options
 
 
+WORKSPACE_WRITE_ENABLE = ('harness_integration integration-plan --action install --delegate '
+                          '--codex-workspace-write, puis integration-apply et redémarrage du pont')
+
+
+class WorkspaceWriteNotAuthorized(ValueError):
+    """Implementation refused: the operator never granted project workspace writes (issue #104)."""
+
+
 def error_payload(exc):
     detail = f'{type(exc).__name__}: {exc}'[:200]
     kind, code = 'refused', -32602
+    if isinstance(exc, WorkspaceWriteNotAuthorized):
+        # Operator configuration, not a secret: say exactly why and how to fix it instead of the generic refusal.
+        return {'code': code,
+                'message': ('Implementation mode refused: project workspace writes are not authorized '
+                            '(workspace_write_authorized=false). Use mode \'expertise\' for a read-only '
+                            'patch, or ask the operator to enable --codex-workspace-write. No automatic retry.'),
+                'data': {'kind': 'workspace_write_not_authorized', 'reason': 'workspace_write_authorized_false',
+                         'error': detail, 'enable_with': WORKSPACE_WRITE_ENABLE}}
     if isinstance(exc, Unavailable):
         # Backend/engine down is an availability failure, not a caller mistake.
         kind, code = 'unavailable', -32000
@@ -255,7 +271,7 @@ class Bridge:
             if name not in ('reprise_delegate', 'reprise_followup') or args.get('backend', 'codex') != 'codex':
                 raise ValueError('Implementation requires generic Codex delegation tools')
             if not self.codex_workspace_write:
-                raise ValueError('Project workspace writes not authorized by the integration')
+                raise WorkspaceWriteNotAuthorized('Project workspace writes not authorized by the integration')
         return mode
 
     def call(self, name, args):
@@ -410,6 +426,9 @@ class Bridge:
                  'modes': ['expertise'] + (['implementation'] if self.codex_workspace_write else []),
                  'workspace_write_authorized': self.codex_workspace_write,
                  'implementation_scope': str(self.root) if self.codex_workspace_write else None,
+                 **({} if self.codex_workspace_write else {
+                     'implementation_unavailable_reason': 'workspace_write_not_authorized',
+                     'enable_with': WORKSPACE_WRITE_ENABLE}),
                  'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': self.codex_workspace_write},
                 {'id': 'autoclaw', 'configured': False, 'models': [], 'reason': 'Adapter, billing and fallback behavior not validated.'},
                 {'id': 'claude-code', 'configured': bool(self.claude_program and self.claude_subscription_only),
