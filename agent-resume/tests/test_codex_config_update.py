@@ -54,6 +54,10 @@ class CodexConfigUpdateTests(unittest.TestCase):
         for path in (self.old, self.target):
             (path / 'Contents/Resources/helpers').mkdir(parents=True)
             (path / 'Contents/Resources/runtime/bin').mkdir(parents=True)
+            binary = path / 'Contents/Resources/runtime/bin/python3.13'
+            binary.write_text('#!/bin/sh\nexit 0\n')
+            binary.chmod(0o700)
+            (binary.parent / 'python3').symlink_to('python3.13')
         self.config = self.root / 'config.toml'
         entries = []
         for name, script in update.ENTRIES.items():
@@ -68,6 +72,40 @@ class CodexConfigUpdateTests(unittest.TestCase):
         self.release = patch.object(update, '_release', side_effect=lambda path, base: Path(path))
         self.release.start()
         self.addCleanup(self.release.stop)
+
+    def test_runtime_links_are_confined_and_executable(self):
+        runtime = self.old / 'Contents/Resources/runtime'
+        python = runtime / 'bin/python3'
+        real = runtime / 'bin/python3.13'
+        self.assertEqual(update._runtime_executable(python, runtime), real)
+        python.unlink()
+        python.symlink_to('missing')
+        with self.assertRaises(ValueError):
+            update._runtime_executable(python, runtime)
+        python.unlink()
+        python.symlink_to('/bin/sh')
+        with self.assertRaisesRegex(ValueError, 'sortant'):
+            update._runtime_executable(python, runtime)
+        python.unlink()
+        outside = self.root / 'outside'
+        outside.symlink_to(real)
+        python.symlink_to(outside)
+        with self.assertRaisesRegex(ValueError, 'sortant'):
+            update._runtime_executable(python, runtime)
+        python.unlink()
+        python.symlink_to('../bin/python3.13')
+        with self.assertRaisesRegex(ValueError, 'traversée'):
+            update._runtime_executable(python, runtime)
+        python.unlink()
+        (python.parent / 'escape').symlink_to(self.root, target_is_directory=True)
+        python.symlink_to('escape/../python3.13')
+        with self.assertRaisesRegex(ValueError, 'traversée'):
+            update._runtime_executable(python, runtime)
+        python.unlink()
+        real.chmod(0o600)
+        python.symlink_to('python3.13')
+        with self.assertRaises(ValueError):
+            update._runtime_executable(python, runtime)
 
     def test_apply_preserves_scope_and_two_entries(self):
         old = tomllib.loads(self.config.read_text())['mcp_servers']
@@ -96,6 +134,10 @@ class CodexConfigUpdateTests(unittest.TestCase):
     def test_foreign_command_refused(self):
         text = self.config.read_text().replace(str(self.old / 'Contents/Resources/runtime/bin/python3'), '/usr/bin/python3')
         self.config.write_text(text)
+        with self.assertRaisesRegex(ValueError, 'étranger'):
+            update.plan(self.client, self.config, self.base, self.target, ['reprise_codex'])
+        other = str(self.target / 'Contents/Resources/runtime/bin/python3')
+        self.config.write_text(text.replace('/usr/bin/python3', other))
         with self.assertRaisesRegex(ValueError, 'étranger'):
             update.plan(self.client, self.config, self.base, self.target, ['reprise_codex'])
 
