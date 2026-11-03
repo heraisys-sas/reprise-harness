@@ -10,7 +10,8 @@ pas signature, notarisation ou confiance dans la provenance du paquet.
 python3 -B agent-resume/managed_update.py inspect
 python3 -B agent-resume/managed_update.py plan \
   --bundle /chemin/du/build/Reprise.app \
-  --components app,scheduler,harness,claude --profile desktop \
+  --components app,scheduler,harness,claude,codex --profile desktop \
+  --codex-entry reprise_codex --codex-entry reprise-harness \
   --activate-scheduler --relaunch-app > /tmp/reprise-update-plan.json
 # Lire le plan. Fermer normalement Reprise avant son remplacement.
 python3 -B agent-resume/managed_update.py apply --plan /tmp/reprise-update-plan.json
@@ -56,8 +57,17 @@ Aucun contenu de journal n’est imprimé dans le résultat public.
 
 Limites explicites : pas de redémarrage de Codex, DSH ou Claude Desktop,
 pas d’arrêt implicite de Reprise, pas d’arrêt d’un daemon à partir d’un simple
-fichier PID. L’inspection mentionne l’entrée MCP Codex ; son installation/mise
-à jour native demeure séparée (#30). Le remplacement authentifié de
+fichier PID. L’option `codex` met à jour uniquement les entrées MCP explicitement sélectionnées
+(`--codex-entry`), avec leurs scopes et arguments existants. Le plan lit le bundle
+sans le publier ; l’application vérifie et prépare la release après avoir écrit
+une intention durable, puis utilise `config/batchWrite` avec la version native
+attendue et sans rechargement. La sauvegarde de configuration est conservée dans
+`maintenance/codex-config/UUID`, séparément des sauvegardes nettoyées ici. Le
+numéro de version natif reflète la configuration sémantique, pas les commentaires.
+Une réponse perdue laisse l’opération indéterminée ; la conformité actuelle ne
+prouve pas que cette opération a écrit. Les commandes `reprise
+codex-integration-inspect` et `reprise codex-integration-verify-operation --id UUID`
+permettent de retrouver et vérifier l’état courant sans réémettre d’écriture. Le remplacement authentifié de
 claude-desktopd demeure séparé (#25/#27). Le reformatage YAML d’un bloc DSH
 peut encore exiger une réconciliation (#76) : cet updater ne contourne pas
 les contrôles de propriété des adaptateurs. Aucun téléchargement, credential

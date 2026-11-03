@@ -58,6 +58,10 @@ if len(sys.argv) > 1 and sys.argv[1] == 'aa-key-save':
         sys.exit(1)
     sys.exit(0)
 
+if len(sys.argv) > 1 and sys.argv[1].startswith('codex-integration-'):
+    import managed_update
+    sys.exit(managed_update.codex_cli(Path(__file__).resolve().parent, sys.argv[1:]))
+
 if len(sys.argv) > 1 and sys.argv[1].startswith('claude-integration-'):
     import claude_integration
     sys.exit(claude_integration.main(Path(__file__).resolve().parent, sys.argv[1:]))
@@ -103,10 +107,14 @@ LABEL = 'local.agent-resume'
 
 def share_files():
     from package_helpers import ASSETS
+    from yaml_contract import YAML_FILES
     extra = ('claude_session_store.py', 'claude_session_observer.py', 'websocket_transport.py', 'app_paths.py', 'package_helpers.py', 'reprise', 'VERSION', 'scheduler.py', 'presentation.py', 'connection.py', 'shared_mode.py', 'ROADMAP.md', 'quota.py', 'quota_knowledge.py', 'delegation_store.py', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'run_status.py', 'runtime.py', 'engines.py', 'engine_events.py', 'routing_events.py', 'external_rankings.py', 'openrouter_adapter.py', 'artificial_analysis_adapter.py', 'codex_rpc.py', 'owner_route.py', 'task_archive.py', 'codex_expert.py', 'claude_expert.py', 'claude_quota.py', 'claude_mcp.py', 'desktop_task_store.py', 'claude_integration.py', 'codex_expert_mcp.py', 'install-expertise.py', 'reprise-delegation.md', 'CODEX-INTEGRATION.md', 'CLAUDE-INTEGRATION.md', 'CACHE-POLICY.md', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'restart-chain', 'claude_desktop.py', 'claude_desktop_quick.py', 'claude_desktop_rpc.py', 'claude_desktop_cli.py', 'desktop_mode.py', 'reprise_logs.py', 'reprise_health.py', 'FoundationExplain.swift', 'install-quick-entry.py', 'ux_review_probe.py', 'harness-events.cjs', 'asi1-orchestrator-effort.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py')
     build = ('native_contract.py', 'package_runtime.py', 'StateSetup.swift',
-             'Integrations.swift', 'SchedulerService.swift', 'IronClawConnection.swift')
-    return tuple(dict.fromkeys(ASSETS + extra + build))
+             'Integrations.swift', 'SchedulerService.swift', 'IronClawConnection.swift',
+             'ApplePilotUI.swift', 'ApplePilotView.swift', 'release_build.py', 'relaunch',
+             'python-runtime.lock.json', 'PYTHON-THIRD-PARTY-NOTICES.txt')
+    yaml = tuple('vendor/yaml/' + name for name in YAML_FILES)
+    return tuple(dict.fromkeys(ASSETS + extra + build + yaml))
 
 def database():
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -375,7 +383,6 @@ def main():
         import desktop_mode
         print(json.dumps(desktop_mode.daemon_status(), ensure_ascii=False))
     elif args.action == 'restart-chain':
-        import subprocess
         if bundled(ROOT):
             print(json.dumps({'status': 'unsupported', 'error': 'Redémarrage groupé indisponible dans le prototype distribué ; aucun service modifié.'}, ensure_ascii=False))
             return
@@ -539,6 +546,12 @@ def main():
     elif args.action == 'share':
         if bundled(ROOT):
             parser.error('Export des sources indisponible dans le prototype embarqué')
+        from yaml_contract import yaml_hashes
+        try:
+            if not yaml_hashes(ROOT):
+                raise ValueError('Répertoire YAML requis absent.')
+        except ValueError as error:
+            parser.error(str(error))
         missing = [name for name in share_files() if not (ROOT / name).is_file()]
         if missing:
             parser.error('Export incomplet : ' + ', '.join(missing))

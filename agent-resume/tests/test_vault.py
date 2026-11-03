@@ -38,6 +38,15 @@ class VaultTests(unittest.TestCase):
             self.assertIsNone(vault.check())
             self.assertEqual(json.loads(run.call_args.kwargs['input'])['interactive'], False)
 
+    def test_coordinator_jobs_purpose_is_supported_and_noninteractive(self):
+        source = Path(__file__).resolve().parents[1].joinpath('Vault.swift').read_text()
+        self.assertIn('"coordinator-jobs-v1"', source)
+        with self.run_helper(base64.b64encode(b'ciphertext').decode()) as run:
+            self.assertEqual(vault.crypt(b'draft', 'coordinator-jobs-v1', 'seal'), b'ciphertext')
+            request = json.loads(run.call_args.kwargs['input'])
+            self.assertEqual(request['purpose'], 'coordinator-jobs-v1')
+            self.assertFalse(request['interactive'])
+
     def test_invalid_interactive_operations_never_start_helper(self):
         with patch.object(vault.subprocess, 'run') as run:
             for operation in ('seal', 'open', 'check'):

@@ -4,14 +4,64 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+import sys
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).parents[1]))
 SPEC = importlib.util.spec_from_file_location('release_build_review', Path(__file__).parents[1] / 'release_build.py')
 b = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(b)
 
 
 class ReleaseBuildTests(unittest.TestCase):
+    def test_inputs_only_include_root_sources_and_vendored_yaml(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / 'Native.swift').write_text('source')
+            for name in ('vendor/yaml', 'state', 'tests', 'Reprise.app/Contents'):
+                (root / name).mkdir(parents=True)
+            for name in b.YAML_FILES:
+                (root / 'vendor/yaml' / name).write_text(name)
+            (root / 'vendor/yaml/.env').write_text('private')
+            (root / 'vendor/yaml/token.pem').write_text('private')
+            (root / 'vendor/yaml/__pycache__').mkdir()
+            (root / 'vendor/yaml/__pycache__/cache.py').write_text('cache')
+            (root / 'state/token.json').write_text('private')
+            (root / 'tests/test_example.py').write_text('test')
+            (root / 'Reprise.app/Contents/private.txt').write_text('private')
+            (root / 'link.py').symlink_to(root / 'Native.swift')
+            (root / 'vendor/yaml/link.py').symlink_to(root / 'Native.swift')
+            inputs = b.inputs(root)
+            self.assertEqual(set(inputs), {'Native.swift'} | {f'vendor/yaml/{name}' for name in b.YAML_FILES})
+            (root / 'state/token.json').write_text('changed')
+            (root / 'tests/test_example.py').write_text('changed')
+            (root / 'Reprise.app/Contents/private.txt').write_text('changed')
+            self.assertEqual(inputs, b.inputs(root))
+            (root / 'vendor/yaml/__init__.py').write_text('changed')
+            self.assertNotEqual(b.identity(inputs), b.identity(b.inputs(root)))
+
+    def test_incomplete_or_symlinked_yaml_file_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            yaml = root / 'vendor/yaml'
+            yaml.mkdir(parents=True)
+            for name in b.YAML_FILES:
+                (yaml / name).write_text(name)
+            (yaml / 'LICENSE').unlink()
+            with self.assertRaisesRegex(ValueError, 'LICENSE'):
+                b.inputs(root)
+            (yaml / 'LICENSE').symlink_to(yaml / '__init__.py')
+            with self.assertRaisesRegex(ValueError, 'LICENSE'):
+                b.inputs(root)
+
+    def test_symlinked_vendor_is_not_traversed(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / 'external/yaml').mkdir(parents=True)
+            (root / 'external/yaml/file.py').write_text('not vendored')
+            (root / 'vendor').symlink_to(root / 'external', target_is_directory=True)
+            self.assertEqual(b.inputs(root), {})
+
     def fixture(self, root):
         (root / 'Native.swift').write_text('source')
         (root / 'state').mkdir()

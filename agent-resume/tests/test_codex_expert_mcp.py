@@ -370,7 +370,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
             result=self.call('reprise_backends',{})
             review.assert_not_called()
         self.assertFalse(result['automatic_fallback'])
-        self.assertFalse(result['backends'][1]['configured'])
+        self.assertFalse(next(item for item in result['backends'] if item['id'] == 'autoclaw')['configured'])
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM expert_calls').fetchone()[0],0)
     def test_invalid_delegation_rejected_before_budget(self):
         for args in [{'kind':'write','question':'x'},{'kind':'review','level':'ultra','question':'x'}]:

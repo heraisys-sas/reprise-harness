@@ -10,11 +10,12 @@ from pathlib import Path
 import signal
 import sqlite3
 import sys
-from delegation_store import LOOKUP_SCHEMA, Store, file_evidence
+from delegation_store import LOOKUP_SCHEMA, Store, file_evidence, validate_key
 from delegation_reconcile import reconcile as reconcile_turn
 from codex_expert import STOP_REASONS, positive, review
 from claude_expert import review as claude_review
 import claude_desktop
+import apple_expert
 import ironclaw
 import reprise_logs
 import reprise_health
@@ -63,6 +64,7 @@ BACKEND_MODELS = {
     'claude-code': ('sonnet', 'opus'),
     'ironclaw': (),
     'claude-desktop': (),
+    'foundation-models': ('system',),
 }
 RETURN_MODES = {'type': 'string', 'enum': ['full', 'receipt'], 'default': 'full'}
 INFERENCE_TOOLS = ('reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup')
@@ -106,7 +108,7 @@ TOOLS = [
          'kind': {'type': 'string', 'enum': ['expertise', 'review', 'batch']},
          'level': {'type': 'string', 'enum': ['standard', 'deep']},
          'model': MODEL_SCHEMA,
-         'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop']},
+         'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models']},
          'paths': {'type': 'array', 'maxItems': 30, 'items': {'type': 'string'}},
          'chatId': {'type': 'string'},
          'filePaths': {'type': 'array', 'maxItems': 10, 'items': {'type': 'string'}}},
@@ -120,7 +122,7 @@ TOOLS = [
     {'name': 'reprise_followup', 'description': 'Continue an owned project session and inherit its execution mode. Omitted model preserves the thread route; explicit model overrides it, preserving effort. No fallback.',
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | POLICY_PROPERTIES | {
          'model': MODEL_SCHEMA, 'mode': MODE_SCHEMA,
-         'thread_id': {'type': 'string'}, 'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop']}},
+         'thread_id': {'type': 'string'}, 'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models']}},
          'required': ['question', 'thread_id', 'backend', 'request_key']}},
     {'name': 'reprise_resume', 'description': 'List interrupted tasks reconstructed from local logs that can be retried (quota, guard or missing dispatch). Read-only; no automatic retry.',
      'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
@@ -305,7 +307,16 @@ class Bridge:
                 return {'status': 'busy', 'reason': 'One active expertise per state directory; no automatic retry.'}
             clean = {k: v for k, v in args.items() if k not in ('request_key', 'parent_request_key', 'return_mode')}
             mode = self.execution_mode(name, clean)
-            self._call(name, clean, preflight=True)
+            if clean.get('backend') == 'foundation-models':
+                validate_key(args.get('request_key'))
+                if args.get('parent_request_key') is not None:
+                    validate_key(args['parent_request_key'])
+            preflight_result = self._call(name, clean, preflight=True)
+            if clean.get('backend') == 'foundation-models' and preflight_result is not None:
+                known = self.db.execute('SELECT 1 FROM delegation_requests WHERE scope=? AND request_key=?',
+                                        (self.requests.scope, args.get('request_key'))).fetchone()
+                if not known:
+                    return preflight_result
             key = args.get('request_key')
             payload = {'tool': name, **clean}
             payload['file_evidence'] = (file_evidence(self.root, args.get('paths'), args.get('filePaths'))
@@ -352,6 +363,11 @@ class Bridge:
                 changed = True
             if changed and mode == 'implementation':
                 result = dict(result, project_files_changed=True)
+            elif changed and result.get('backend') == 'foundation-models' and (
+                    (result.get('status') == 'apple_input_invalid' and result.get('process_started') is False) or
+                    (result.get('status') == 'apple_process_failed' and result.get('process_reaped') is True)):
+                # Input changes cannot invalidate proof that no process started or that it was reaped.
+                result = dict(result, input_changed=True)
             elif changed:
                 result = dict(result, status='needs_review', original_status=result.get('status'),
                               original_reason=result.get('reason'),
@@ -430,6 +446,12 @@ class Bridge:
                      'implementation_unavailable_reason': 'workspace_write_not_authorized',
                      'enable_with': WORKSPACE_WRITE_ENABLE}),
                  'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': self.codex_workspace_write},
+                {'id': 'foundation-models', 'configured': apple_expert.configured(),
+                 'models': ['system'], 'availability': 'unknown', 'inference_verified': False,
+                 'billing': 'On-device model; no cloud API cost', 'on_device': True,
+                 'modes': ['expertise'], 'writes': False, 'resumable': False,
+                 'kinds': list(MODES), 'levels': ['standard'],
+                 'context': 'Explicit question and file snapshots only; no tools'},
                 {'id': 'autoclaw', 'configured': False, 'models': [], 'reason': 'Adapter, billing and fallback behavior not validated.'},
                 {'id': 'claude-code', 'configured': bool(self.claude_program and self.claude_subscription_only),
                  'models': list(BACKEND_MODELS['claude-code']),
@@ -463,7 +485,7 @@ class Bridge:
         mode = self.execution_mode(name, args)
         routing = {}
         backend = args.get('backend', 'codex')
-        if backend not in ('codex', 'ironclaw', 'claude-code', 'claude-desktop'):
+        if backend not in ('codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models'):
             raise ValueError('Unknown expertise backend')
         if 'model' in args:
             if not isinstance(args['model'], str) or args['model'] not in BACKEND_MODELS[backend]:
@@ -475,10 +497,14 @@ class Bridge:
             kind, level = args.get('kind'), args.get('level', 'standard')
             if kind not in MODES or level not in ('standard', 'deep'):
                 raise ValueError('Invalid delegation kind or level')
+            if backend == 'foundation-models' and level != 'standard':
+                raise ValueError('Apple local route supports standard level only.')
             routing = {'model': 'gpt-6-astra' if level == 'deep' else 'gpt-6-luna' if kind == 'batch' else 'gpt-6.1-sol',
                        'effort': 'high' if level == 'deep' else 'medium'}
             if backend == 'claude-code':
                 routing['model'] = 'opus' if level == 'deep' else 'sonnet'
+            elif backend == 'foundation-models':
+                routing = {'model': 'system'}
             question = (('Implement the bounded task; apply project changes and run appropriate local checks.'
                          if mode == 'implementation' else MODES[kind]) + '\n\n' + question)
             if len(question) > 12000:
@@ -486,6 +512,8 @@ class Bridge:
         ident = args.get('thread_id')
         if name == 'reprise_followup' and 'backend' not in args:
             raise ValueError('Explicit followup backend required')
+        if name == 'reprise_followup' and backend == 'foundation-models':
+            raise ValueError('Apple local expertise has no resumable conversation.')
         if name == 'reprise_followup' and backend == 'ironclaw':
             raise ValueError('Pas de session IronClaw suiveuse ; run -m est sans état.')
         if name == 'reprise_followup' and backend == 'claude-desktop':
@@ -508,7 +536,8 @@ class Bridge:
                 routing = dict(zip(('model', 'effort'), route))
         if 'model' in args:
             routing['model'] = args['model']
-            routing.setdefault('effort', 'medium')
+            if backend != 'foundation-models':
+                routing.setdefault('effort', 'medium')
         policy = {}
         for source, target in (('wait_seconds', 'wait_timeout'), ('execution_seconds', 'execution_deadline'),
                                ('inactivity_seconds', 'inactivity')):
@@ -544,7 +573,10 @@ class Bridge:
             return {'status': 'return_channel_unavailable', 'backend': backend,
                     'reason': "Canal de retour MCP indisponible (TaskStore non initialisé) ; aucun aller-retour garanti.",
                     'automatic_fallback': False}
-        if backend != 'claude-desktop' and not (self.ironclaw_program if backend == 'ironclaw'
+        if backend == 'foundation-models' and not apple_expert.configured():
+            return {'status': 'engine_unavailable', 'backend': backend,
+                    'reason': 'Apple fm executable unavailable.', 'automatic_fallback': False}
+        if backend not in ('claude-desktop', 'foundation-models') and not (self.ironclaw_program if backend == 'ironclaw'
                                                 else (self.program if backend == 'codex' else self.claude_program)):
             return {'status': 'engine_unavailable', 'backend': backend, 'reason': 'Requested executable not configured', 'automatic_fallback': False}
         if backend == 'claude-code' and not self.claude_subscription_only:
@@ -580,6 +612,10 @@ class Bridge:
                                          thread_id=ident,
                                          account_key=self._account_key(backend),
                                          admissibility='granted')
+        if backend == 'foundation-models':
+            result = apple_expert.review(self.root, question, paths=args.get('paths'))
+            routing_events.finalize(self.db, event_id, str(result.get('status') or 'unknown'))
+            return result
         if backend == 'ironclaw':
             result = ironclaw.review(self.ironclaw_program, self.ironclaw_values, self.root, question,
                                      kind=args.get('kind', 'expertise'), level=args.get('level', 'standard'),
