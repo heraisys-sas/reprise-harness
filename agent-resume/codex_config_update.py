@@ -135,20 +135,53 @@ def _release(path, release_base):
     return path
 
 
+def _runtime_executable(command, runtime):
+    """Resolve each symlink hop without ever leaving the authenticated runtime."""
+    runtime = _safe(runtime)
+    current = Path(os.path.normpath(str(command)))
+    if not current.is_absolute() or not current.is_relative_to(runtime):
+        raise ValueError('Exécutable hors du runtime authentifié.')
+    for _ in range(40):
+        relative = current.relative_to(runtime)
+        prefix = runtime
+        for index, part in enumerate(relative.parts):
+            prefix = prefix / part
+            if prefix.is_symlink():
+                destination = Path(os.readlink(prefix))
+                if '..' in destination.parts:
+                    raise ValueError('Lien de runtime avec traversée refusé.')
+                if not destination.is_absolute():
+                    destination = prefix.parent / destination
+                current = Path(os.path.normpath(str(destination.joinpath(*relative.parts[index + 1:]))))
+                if not current.is_relative_to(runtime):
+                    raise ValueError('Lien du runtime sortant refusé.')
+                break
+        else:
+            if not current.is_file() or not os.access(current, os.X_OK):
+                raise ValueError('Exécutable du runtime absent ou invalide.')
+            return current
+    raise ValueError('Chaîne de liens du runtime trop longue.')
+
+
 def _rewrite(entry, script, release_base, target):
     if not isinstance(entry, dict) or not isinstance(entry.get('command'), str) or not isinstance(entry.get('args'), list):
         raise ValueError('Entrée MCP non reconnue.')
     args = entry['args']
     if len(args) < 4 or args[:3] != ['-E', '-s', '-B'] or not all(isinstance(x, str) for x in args):
         raise ValueError('Arguments MCP non reconnus.')
-    command, helper = _safe(entry['command']), _safe(args[3])
+    command, helper = Path(entry['command']), _safe(args[3])
+    if not command.is_absolute() or '..' in command.parts:
+        raise ValueError('Chemin de runtime ambigu.')
+    _safe(command.parent)
     suffix = Path('Contents/Resources/helpers') / script
     if not str(helper).endswith('/' + str(suffix)):
         raise ValueError('Helper MCP étranger.')
     old = helper.parents[3]
     _release(old, release_base)
-    if command != old / 'Contents/Resources/runtime/bin/python3':
+    runtime = old / 'Contents/Resources/runtime'
+    if command != runtime / 'bin/python3':
         raise ValueError('Runtime MCP étranger.')
+    _runtime_executable(command, runtime)
     # The helper flags and their values, including scopes, remain byte-for-byte
     # equal as JSON values. Reject a second script/executable or malformed flags.
     options = {
