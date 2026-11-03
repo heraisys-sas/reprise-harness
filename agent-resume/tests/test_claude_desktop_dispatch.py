@@ -48,7 +48,7 @@ def composer_state(url=PAGE_URL, text_sha256=None, text_length=0):
 
 def patched_apply_module(state_sequence=None, prepared=True, dispatch_outcome=None,
                          dispatch_raises=None):
-    """Patch the claude_desktop_apply primitives the applyd daemon uses."""
+    """Patch the claude_desktop_apply primitives the daemon dispatch uses."""
     state_calls = {'n': 0}
 
     def fake_state(cdp):
@@ -75,56 +75,67 @@ def patched_apply_module(state_sequence=None, prepared=True, dispatch_outcome=No
     return patchers
 
 
-class FakeApplyd(threading.Thread):
-    """Fake applyd child: binds a temp socket, greets, one line, one reply."""
+class FakePipe:
+    """Faux transport CDP pipe (fd 3/4) : enregistre les appels, jamais de réseau."""
 
-    def __init__(self, reply):
-        super().__init__(daemon=True)
-        self.reply = reply
-        self.received = []
-        self.directory = tempfile.TemporaryDirectory()
-        self.path = str(Path(self.directory.name) / 'applyd.sock')
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.bind(self.path)
-        self.sock.listen(1)
+    def __init__(self, fail_first_pick=False):
+        self.calls = []
+        self.pick_attempts = 0
+        self.fail_first_pick = fail_first_pick
 
-    def start(self):
-        super().start()
-        # Wait for accept to be reachable without racing the test.
-        for _ in range(50):
-            if claude_desktop_quick._probe_socket(self.path):
-                return
-            threading.Event().wait(0.02)
+    def pick_and_attach(self, chat_id):
+        self.pick_attempts += 1
+        if self.fail_first_pick and self.pick_attempts == 1:
+            raise RuntimeError(f'Page claude.ai/chat/{chat_id} introuvable')
+        self.calls.append(('pick_and_attach', chat_id))
+        return 'session-1'
 
-    def run(self):
-        try:
-            while True:
-                conn, _ = self.sock.accept()
-                try:
-                    conn.sendall(b'{"hello": true}\n')
-                    stream = conn.makefile('rb')
-                    for raw in stream:
-                        self.received.append(json.loads(raw))
-                        if self.reply is None:
-                            return  # close without reply; no retry
-                        conn.sendall((json.dumps(self.reply, ensure_ascii=False) + '\n').encode())
-                except OSError:
-                    pass
-                finally:
-                    conn.close()
-        finally:
-            self.sock.close()
-            self.directory.cleanup()
+    def call(self, method, params=None):
+        self.calls.append((method, params))
+        return {}
 
-    def stop(self):
-        # Trigger loop end by connecting and closing; thread cleans up itself.
-        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            probe.connect(self.path)
-        except OSError:
-            pass
-        finally:
-            probe.close()
+    def insert_text(self, text):
+        self.calls.append(('Input.insertText', {'text': text}))
+
+    def close(self):
+        self.calls.append(('close', None))
+
+
+class FakeProc:
+    pid = 4242
+
+    def poll(self):
+        return None
+
+
+class FakeCdpModule:
+    """Faux module claude_cdp_pipe : launch/terminate tracés, jamais de Chrome."""
+
+    def __init__(self, fail_first_pick=False, chrome_exists=True, busy=None):
+        self.pipe = FakePipe(fail_first_pick)
+        self.launched = []
+        self.terminated = []
+        self.chrome_exists = chrome_exists
+        self.busy = busy
+
+    def _profile_dir(self):
+        return '/tmp/fake-claude-cdp-profile'
+
+    def _hostname_pid_lock(self, profile):
+        return (Path('/tmp/fake-claude-cdp.lock'), 'fake-host')
+
+    def check_profile_busy(self, lock_path):
+        return self.busy
+
+    def _chrome_bin(self):
+        return '/bin/echo' if self.chrome_exists else '/nonexistent/chrome'
+
+    def launch_chrome(self, profile):
+        self.launched.append(profile)
+        return self.pipe, FakeProc()
+
+    def terminate_chrome(self, proc, timeout=10.0):
+        self.terminated.append(proc.pid)
 
 
 class _RealApplyd:
@@ -192,40 +203,38 @@ class DaemonDispatchTests(unittest.TestCase):
 
     # -- capabilities ---------------------------------------------------------
 
-    def test_capabilities_report_socket_channel(self):
-        endpoint = self.endpoint(applyd_socket=str(Path(self.directory.name) / 'absent.sock'))
-        with mock.patch.object(claude_desktop_quick, '_spawn_applyd') as spawn, \
-             mock.patch('claude_cdp_pipe._chrome_bin', return_value=sys.executable):
-            caps = endpoint.call('quick_entry/capabilities', {})
-        self.assertEqual(caps['dispatch_channel'], 'chrome-socket')
-        self.assertEqual(caps['dispatch_socket'], str(endpoint.applyd_socket))
-        self.assertTrue(caps['dispatch_supported'])
-        self.assertFalse(caps['applyd_running'])
-        spawn.assert_not_called()
-
-    def test_capabilities_refuse_missing_chrome_and_applyd(self):
-        endpoint = self.endpoint(applyd_socket=str(Path(self.directory.name) / 'absent.sock'))
-        with mock.patch('claude_cdp_pipe._chrome_bin', return_value='/nonexistent/chrome'):
-            caps = endpoint.call('quick_entry/capabilities', {})
-        self.assertFalse(caps['dispatch_supported'])
-        self.assertFalse(caps['applyd_running'])
-
     def test_capabilities_refuse_unscoped_dispatch(self):
         endpoint = Endpoint(self.directory.name, applyd_socket=str(Path(self.directory.name) / 'absent.sock'))
         self.addCleanup(endpoint.close)
-        with mock.patch('claude_cdp_pipe._chrome_bin', return_value=sys.executable):
+        with mock.patch.object(claude_desktop_quick, '_cdp_pipe', return_value=FakeCdpModule()):
             self.assertFalse(endpoint.call('quick_entry/capabilities', {})['dispatch_supported'])
 
-    def test_capabilities_true_when_socket_answers(self):
-        daemon = _RealApplyd()
-        self.addCleanup(daemon.close)
-        endpoint = self.endpoint(applyd_socket=daemon.path)
-        caps = endpoint.call('quick_entry/capabilities', {})
+    def test_capabilities_report_cdp_pipe_channel(self):
+        endpoint = self.endpoint(applyd_socket=str(Path(self.directory.name) / 'absent.sock'))
+        fake = FakeCdpModule()
+        with mock.patch.object(claude_desktop_quick, '_cdp_pipe', return_value=fake):
+            caps = endpoint.call('quick_entry/capabilities', {})
+        self.assertEqual(caps['dispatch_channel'], 'cdp-pipe')
         self.assertTrue(caps['dispatch_supported'])
-        self.assertTrue(caps['applyd_running'])
-        self.assertEqual(caps['dispatch_socket'], daemon.path)
+        self.assertNotIn('applyd_running', caps)
+        self.assertNotIn('dispatch_socket', caps)
+        self.assertEqual(fake.launched, [])
 
-    # -- dispatch over the socket --------------------------------------------
+    def test_capabilities_refuse_missing_chrome(self):
+        endpoint = self.endpoint(applyd_socket=str(Path(self.directory.name) / 'absent.sock'))
+        fake = FakeCdpModule(chrome_exists=False)
+        with mock.patch.object(claude_desktop_quick, '_cdp_pipe', return_value=fake):
+            caps = endpoint.call('quick_entry/capabilities', {})
+        self.assertFalse(caps['dispatch_supported'])
+
+    # -- dispatch over CDP pipes ----------------------------------------------
+
+    def patch_cdp(self, **kwargs):
+        fake = FakeCdpModule(**kwargs)
+        patcher = mock.patch.object(claude_desktop_quick, '_cdp_pipe', return_value=fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return fake
 
     def test_dispatch_click_observed_is_ok(self):
         prompt = 'Tâche orchestrée pour dispatch'
@@ -233,108 +242,95 @@ class DaemonDispatchTests(unittest.TestCase):
             state_sequence=[composer_state(), composer_state(text_sha256=self.fingerprint(prompt))],
             dispatch_outcome=claude_desktop_apply._result('envoyé', ok=True,
                                                           dispatch_attempted=True, click_observed=True))
-        daemon = _RealApplyd()
-        self.addCleanup(daemon.close)
-        endpoint = self.endpoint(applyd_socket=daemon.path)
+        fake = self.patch_cdp()
+        endpoint = self.endpoint()
         key = self.admit(endpoint, prompt)
         result = endpoint.call('quick_entry/dispatch', {'request_key': key})
         self.assertTrue(result['dispatch_attempted'])
         self.assertTrue(result['dispatch_ok'])
-        self.assertEqual(result['dispatch_channel'], 'chrome-socket')
-        self.assertEqual(result['dispatch_socket'], daemon.path)
+        self.assertEqual(result['dispatch_channel'], 'cdp-pipe')
         self.assertEqual(result['stage'], 'envoyé')
         self.assertIs(result['click_observed'], True)
         self.assertTrue(result['admission_only'])
-        # prompt staged once via Input.insertText, single click primitive
-        self.assertIn(('Input.insertText', {'text': prompt.strip()}), FakeCDP.last.calls)
+        # prompt staged once via Input.insertText; single attach, no cold-start retarget
+        self.assertIn(('Input.insertText', {'text': prompt.strip()}), fake.pipe.calls)
+        self.assertEqual(fake.pipe.pick_attempts, 1)
+        self.assertNotIn(('Target.createTarget', {'url': 'https://claude.ai/chat/' + CHAT_ID}), fake.pipe.calls)
+        self.assertEqual(fake.terminated, [])  # success preserves the daemon-owned Chrome
 
-    def test_dispatch_stage_error_fails(self):
-        self.patch_apply(state_sequence=[composer_state(url='https://claude.ai/login')])
-        daemon = _RealApplyd()
-        self.addCleanup(daemon.close)
-        endpoint = self.endpoint(applyd_socket=daemon.path)
-        key = self.admit(endpoint, 'Requête sur page login')
+    def test_dispatch_cold_start_creates_target_then_attaches(self):
+        prompt = 'Démarrage à froid'
+        self.patch_apply(
+            state_sequence=[composer_state(), composer_state(text_sha256=self.fingerprint(prompt))],
+            dispatch_outcome=claude_desktop_apply._result('envoyé', ok=True,
+                                                          dispatch_attempted=True, click_observed=True))
+        fake = self.patch_cdp(fail_first_pick=True)
+        endpoint = self.endpoint()
+        key = self.admit(endpoint, prompt)
+        result = endpoint.call('quick_entry/dispatch', {'request_key': key})
+        self.assertTrue(result['dispatch_ok'])
+        self.assertEqual(fake.pipe.pick_attempts, 2)
+        self.assertIn(('Target.createTarget', {'url': 'https://claude.ai/chat/' + CHAT_ID}), fake.pipe.calls)
+
+    def test_dispatch_profile_busy_is_refused_without_attempt(self):
+        self.patch_apply(state_sequence=[composer_state()])
+        fake = self.patch_cdp(busy={'pid': 1234, 'lock_mtime': 1.0})
+        endpoint = self.endpoint()
+        key = self.admit(endpoint, 'Profil occupé')
         result = endpoint.call('quick_entry/dispatch', {'request_key': key})
         self.assertFalse(result['dispatch_ok'])
-        self.assertEqual(result['stage'], 'session')
-        self.assertIn('dispatch_error', result)
+        self.assertFalse(result['dispatch_attempted'])
+        self.assertEqual(result['stage'], 'profile_busy')
+        self.assertEqual(fake.launched, [])
 
-    def test_dispatch_lost_reply_is_uncertain(self):
+    def test_dispatch_stage_error_fails_and_terminates_chrome(self):
+        self.patch_apply(state_sequence=[composer_state(url='https://claude.ai/login')])
+        fake = self.patch_cdp()
+        endpoint = self.endpoint()
+        key = self.admit(endpoint, 'Requête sur page login')
+        with mock.patch.object(claude_desktop_apply, '_check',
+                               lambda info, path: 'session'):
+            result = endpoint.call('quick_entry/dispatch', {'request_key': key})
+        self.assertFalse(result['dispatch_ok'])
+        self.assertEqual(result['stage'], 'session')
+        self.assertEqual(fake.terminated, [4242])
+
+    def test_dispatch_lost_reply_is_uncertain_and_preserves_chrome(self):
         prompt = 'Requête à réponse perdue'
         self.patch_apply(
             state_sequence=[composer_state(), composer_state(text_sha256=self.fingerprint(prompt))],
             dispatch_raises=claude_desktop_apply.WSError('Réponse CDP perdue'))
-        daemon = _RealApplyd()
-        self.addCleanup(daemon.close)
-        endpoint = self.endpoint(applyd_socket=daemon.path)
+        fake = self.patch_cdp()
+        endpoint = self.endpoint()
         key = self.admit(endpoint, prompt)
         result = endpoint.call('quick_entry/dispatch', {'request_key': key})
         self.assertFalse(result['dispatch_ok'])
         self.assertEqual(result['stage'], 'incertain')
         self.assertNotIn('click_observed', result)
+        self.assertEqual(fake.terminated, [])  # a possible click preserves Chrome
 
-    def test_dispatch_timeout_is_uncertain_without_retry(self):
-        daemon = FakeApplyd(reply=None)  # greets then never replies
-        daemon.start()
-        self.addCleanup(daemon.stop)
-        endpoint = self.endpoint(applyd_socket=daemon.path)
-        key = self.admit(endpoint, 'Requête silencieuse')
-        with mock.patch.dict('os.environ', {'REPRISE_APPLYD_TIMEOUT': '1'}), \
-             mock.patch.object(claude_desktop_quick, '_spawn_applyd') as spawn:
-            result = endpoint.call('quick_entry/dispatch', {'request_key': key})
-        spawn.assert_not_called()
-        self.assertEqual(len(daemon.received), 1)
+    def test_dispatch_chrome_missing_is_uncertain(self):
+        endpoint = self.endpoint()
+        key = self.admit(endpoint, 'Sans Chrome')
+        self.patch_cdp(chrome_exists=False)
+        result = endpoint.call('quick_entry/dispatch', {'request_key': key})
         self.assertFalse(result['dispatch_ok'])
         self.assertEqual(result['stage'], 'incertain')
 
-    def test_dispatch_socket_refused_then_lazy_spawn(self):
-        prompt = 'Spawn lazy requis'
-        self.patch_apply(
-            state_sequence=[composer_state(), composer_state(text_sha256=self.fingerprint(prompt))],
-            dispatch_outcome=claude_desktop_apply._result('envoyé', ok=True,
-                                                          dispatch_attempted=True, click_observed=True))
-        daemon = _RealApplyd()
-        self.addCleanup(daemon.close)
-        endpoint = self.endpoint(applyd_socket=daemon.path)
-        key = self.admit(endpoint, prompt)
-        # Pretend the socket was cold: _dispatch must go through _spawn_applyd.
-        calls = []
-        def fake_spawn(path):
-            calls.append(path)
-            return True
-        with mock.patch.object(claude_desktop_quick, '_probe_socket', return_value=False), \
-             mock.patch.object(Path, 'exists', return_value=True), \
-             mock.patch.object(claude_desktop_quick, '_spawn_applyd', side_effect=fake_spawn):
-            result = endpoint.call('quick_entry/dispatch', {'request_key': key})
-        self.assertEqual(calls, [Path(daemon.path)])
-        self.assertTrue(result['dispatch_ok'])
-
-    def test_dispatch_spawn_failure_is_uncertain(self):
-        endpoint = self.endpoint(applyd_socket=str(Path(self.directory.name) / 'absent.sock'))
-        key = self.admit(endpoint, 'Sans démon')
-        with mock.patch.object(Path, 'exists', return_value=True), \
-             mock.patch.object(claude_desktop_quick, '_spawn_applyd', return_value=False):
-            result = endpoint.call('quick_entry/dispatch', {'request_key': key})
+    def test_dispatch_missing_chat_id_fails_without_chrome(self):
+        endpoint = self.endpoint()
+        key = str(uuid.uuid4())
+        endpoint.submit({'request_key': key, 'prompt': 'Sans chatId'})
+        fake = self.patch_cdp()
+        result = endpoint.call('quick_entry/dispatch', {'request_key': key})
         self.assertFalse(result['dispatch_ok'])
-        self.assertEqual(result['stage'], 'incertain')
-        self.assertIn('spawn', result['dispatch_error'].lower())
-
-    def test_chrome_missing_does_not_spawn(self):
-        endpoint = self.endpoint(applyd_socket=str(Path(self.directory.name) / 'absent.sock'))
-        key = self.admit(endpoint)
-        with mock.patch.object(Path, 'exists', return_value=False), \
-             mock.patch.object(claude_desktop_quick, '_spawn_applyd') as spawn:
-            result = endpoint.call('quick_entry/dispatch', {'request_key': key})
-        spawn.assert_not_called()
-        self.assertEqual(result['stage'], 'incertain')
-        self.assertIn('Chrome absent', result['dispatch_error'])
+        self.assertEqual(result['stage'], 'cible')
+        self.assertEqual(fake.launched, [])
 
     def test_dispatch_unknown_request_key_refused(self):
         endpoint = self.endpoint()
-        with mock.patch.object(claude_desktop_quick, '_spawn_applyd', return_value=False) as spawn:
-            with self.assertRaises(ValueError):
-                endpoint.call('quick_entry/dispatch', {'request_key': 'inconnu'})
-            spawn.assert_not_called()
+        with self.assertRaises(ValueError):
+            endpoint.call('quick_entry/dispatch', {'request_key': 'inconnu'})
 
     def test_dispatch_refuses_extra_fields(self):
         endpoint = self.endpoint()
@@ -342,16 +338,6 @@ class DaemonDispatchTests(unittest.TestCase):
             endpoint.call('quick_entry/dispatch', {'request_key': 'k', 'images': ['a']})
         with self.assertRaises(ValueError):
             endpoint.call('quick_entry/dispatch', {'request_key': 'k', 'filePaths': ['file:///x']})
-
-    def test_dispatch_missing_chat_id_fails_without_socket(self):
-        endpoint = self.endpoint()
-        key = str(uuid.uuid4())
-        endpoint.submit({'request_key': key, 'prompt': 'Sans chatId'})
-        with mock.patch.object(claude_desktop_quick, '_spawn_applyd', return_value=False) as spawn:
-            result = endpoint.call('quick_entry/dispatch', {'request_key': key})
-            self.assertFalse(result['dispatch_ok'])
-            self.assertEqual(result['stage'], 'cible')
-            spawn.assert_not_called()
 
 
 class SocketProtocolTests(unittest.TestCase):
@@ -462,9 +448,9 @@ class ReviewDispatchTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        _FakeRpcClient.capabilities = {'dispatch_supported': True, 'dispatch_channel': 'chrome-socket'}
+        _FakeRpcClient.capabilities = {'dispatch_supported': True, 'dispatch_channel': 'cdp-pipe'}
         _FakeRpcClient.dispatch = {'dispatch_ok': True, 'stage': 'envoyé', 'click_observed': True,
-                                   'dispatch_socket': '/test/applyd.sock'}
+                                   'dispatch_channel': 'cdp-pipe'}
 
     def review(self):
         from desktop_task_store import TaskStore
@@ -481,7 +467,7 @@ class ReviewDispatchTests(unittest.TestCase):
         self.assertTrue(result['dispatch_ok'])
         self.assertEqual(result['stage'], 'envoyé')
         self.assertTrue(result['click_observed'])
-        self.assertEqual(result['dispatch_socket'], '/test/applyd.sock')
+        self.assertEqual(result['dispatch_channel'], 'cdp-pipe')
         self.assertTrue(result['admission_only'])
         self.assertIsNone(result['response'])
 
@@ -502,14 +488,13 @@ class ReviewDispatchTests(unittest.TestCase):
         self.assertTrue(result['admission_only'])
 
     def test_cold_capability_allows_single_dispatch_and_no_replay(self):
-        _FakeRpcClient.capabilities['applyd_running'] = False
         self.review()
         self.assertEqual(_FakeRpcClient.last.calls.count('quick_entry/dispatch'), 1)
         again = self.review()
         self.assertEqual(again['status'], 'indeterminate')
         self.assertNotIn('quick_entry/dispatch', _FakeRpcClient.last.calls)
 
-    def test_review_cold_applyd_invokes_real_endpoint_dispatch_once(self):
+    def test_review_cold_start_invokes_real_endpoint_dispatch_once(self):
         from desktop_task_store import TaskStore
         state = self.directory.name
         endpoint = Endpoint(state, project_root=state,
@@ -527,19 +512,21 @@ class ReviewDispatchTests(unittest.TestCase):
                 pass
 
         with mock.patch.object(claude_desktop_rpc, 'Client', EndpointClient), \
-             mock.patch('claude_cdp_pipe._chrome_bin', return_value=sys.executable), \
-             mock.patch.object(claude_desktop_quick, '_probe_socket', return_value=False), \
-             mock.patch.object(claude_desktop_quick, '_spawn_applyd', return_value=True) as spawn, \
-             mock.patch.object(endpoint, '_socket_apply', return_value={
-                 'stage': 'envoyé', 'click_observed': True}) as apply:
-            result = claude_desktop.review(state, 'Question orchestrée', request_key='cold-key',
-                                           chat_id=CHAT_ID, tasks=tasks)
-            replay = endpoint.call('quick_entry/dispatch', {'request_key': 'cold-key'})
+             mock.patch.object(claude_desktop_quick, '_cdp_pipe', return_value=FakeCdpModule()):
+            patchers = patched_apply_module(
+                state_sequence=[composer_state()],
+                dispatch_outcome=claude_desktop_apply._result(
+                    'envoyé', ok=True, dispatch_attempted=True, click_observed=True))
+            try:
+                result = claude_desktop.review(state, 'Question orchestrée', request_key='cold-key',
+                                               chat_id=CHAT_ID, tasks=tasks)
+                replay = endpoint.call('quick_entry/dispatch', {'request_key': 'cold-key'})
+            finally:
+                for patcher in patchers:
+                    patcher.stop()
         self.assertTrue(result['dispatch_ok'])
         self.assertTrue(result['click_observed'])
         self.assertTrue(replay['dispatch_ok'])
-        spawn.assert_called_once()
-        apply.assert_called_once()
         # The socket barrier must not consume the separate MCP delivery barrier.
         claimed = tasks.claim('cold-key', 'claim-for-test')
         self.assertEqual(claimed['delivery'], 'handed_over')
@@ -557,18 +544,23 @@ class ReviewDispatchTests(unittest.TestCase):
         self.addCleanup(reopened.close)
         self.assertEqual(reopened.reserve_socket_dispatch('lost-key')['state'], 'attempted')
 
-    def test_uncertain_socket_result_is_recorded_and_never_retried(self):
+    def test_uncertain_pipe_result_is_recorded_and_never_retried(self):
         endpoint = Endpoint(self.directory.name, project_root=self.directory.name,
                             applyd_socket=str(Path(self.directory.name) / 'absent.sock'))
         self.addCleanup(endpoint.close)
         endpoint.submit({'request_key': 'uncertain-key', 'prompt': 'Question test', 'chatId': CHAT_ID})
-        with mock.patch.object(claude_desktop_quick, '_probe_socket', return_value=True), \
-             mock.patch.object(endpoint, '_socket_apply', return_value={'stage': 'incertain', 'detail': 'ACK perdu'}) as apply:
-            first = endpoint.call('quick_entry/dispatch', {'request_key': 'uncertain-key'})
-            replay = endpoint.call('quick_entry/dispatch', {'request_key': 'uncertain-key'})
+        with mock.patch.object(claude_desktop_quick, '_cdp_pipe', return_value=FakeCdpModule()):
+            patchers = patched_apply_module(
+                state_sequence=[composer_state(), composer_state()],
+                dispatch_raises=claude_desktop_apply.WSError('Réponse CDP perdue'))
+            try:
+                first = endpoint.call('quick_entry/dispatch', {'request_key': 'uncertain-key'})
+                replay = endpoint.call('quick_entry/dispatch', {'request_key': 'uncertain-key'})
+            finally:
+                for patcher in patchers:
+                    patcher.stop()
         self.assertEqual(first, replay)
         self.assertEqual(first['stage'], 'incertain')
-        apply.assert_called_once()
 
     def test_concurrent_socket_reservations_are_single_winner(self):
         from concurrent.futures import ThreadPoolExecutor
@@ -630,12 +622,17 @@ class ReviewDispatchTests(unittest.TestCase):
             def close(self): pass
 
         with mock.patch.object(claude_desktop_rpc, 'Client', EndpointClient), \
-             mock.patch('claude_cdp_pipe._chrome_bin', return_value=sys.executable), \
-             mock.patch.object(claude_desktop_quick, '_probe_socket', return_value=False), \
-             mock.patch.object(claude_desktop_quick, '_spawn_applyd', return_value=True), \
-             mock.patch.object(endpoint, '_socket_apply', return_value={'stage': 'envoyé', 'click_observed': True}):
-            receipt = claude_desktop.review(project, 'Question partagée', chat_id=CHAT_ID,
-                                            request_key='shared-key', tasks=bridge.desktop_tasks)
+             mock.patch.object(claude_desktop_quick, '_cdp_pipe', return_value=FakeCdpModule()):
+            patchers = patched_apply_module(
+                state_sequence=[composer_state()],
+                dispatch_outcome=claude_desktop_apply._result(
+                    'envoyé', ok=True, dispatch_attempted=True, click_observed=True))
+            try:
+                receipt = claude_desktop.review(project, 'Question partagée', chat_id=CHAT_ID,
+                                                request_key='shared-key', tasks=bridge.desktop_tasks)
+            finally:
+                for patcher in patchers:
+                    patcher.stop()
         self.assertTrue(receipt['dispatch_ok'])
         def call(name, args):
             reply = facade.dispatch({'method': 'tools/call', 'params': {'name': name, 'arguments': args}})
