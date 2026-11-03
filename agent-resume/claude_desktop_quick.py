@@ -2,13 +2,13 @@
 """Local Quick Entry supervision server (start-at-login, in the Codex server spirit).
 
 Accepts a validated Quick Apply payload and hands it to Claude Desktop's Quick
-Entry submission contract. It binds a private UNIX socket, speaks newline
-delimited JSON-RPC. Orchestrated dispatch goes over a child daemon
-(claude_desktop_applyd, spawned lazily, UNIX socket file) that drives the CDP
-endpoint of the admitted claude.ai chat: one prepare, one fingerprint check,
-one click — never a retry after a lost response, never a response read. This
-server owns payload validation, target routing and the bounded admission
-contract so the harness can treat it as an external-expert channel.
+Apply submission contract. It binds a private UNIX socket, speaks newline
+delimited JSON-RPC. Orchestrated dispatch launches Chrome over CDP pipes owned
+by this daemon, attached to the admitted claude.ai chat: one prepare, one
+fingerprint check, one click — never a retry after a lost response, never a
+response read. This server owns payload validation, target routing and the
+bounded admission contract so the harness can treat it as an external-expert
+channel.
 """
 from app_paths import state_location
 import argparse
@@ -28,6 +28,7 @@ import time
 import uuid
 
 import claude_desktop
+import claude_desktop_apply
 import claude_desktop_applyd
 from claude_desktop import build_payload, validate_chat_id
 from delegation_store import Store, file_evidence
@@ -202,10 +203,9 @@ class Endpoint:
             return {'stage': 'incertain', 'detail': str(error) or type(error).__name__}
 
     def _dispatch(self, request_key):
-        """Send the admitted, orchestrated prompt through the applyd child.
+        """Dispatch once over CDP pipes after durable admission and reservation.
 
-        Unknown request_key never dispatches. The daemon is spawned lazily if
-        its socket refuses connections. The dispatch failure is logged
+        Unknown request_key never dispatches. The failure is logged
         (dispatch_attempted + ok/error/stage) and returned as-is; no retry, no
         fallback, and admission-only remains the recorded outcome.
         """
@@ -216,9 +216,7 @@ class Endpoint:
             raise ValueError('Unknown request_key; no dispatch')
         prompt, chat_id = row
         result = {'request_key': request_key, 'dispatch_attempted': True,
-                  'dispatch_channel': 'chrome-socket',
-                  'dispatch_socket': str(self.applyd_socket),
-                  'admission_only': True}
+                  'dispatch_channel': 'cdp-pipe', 'admission_only': True}
         reservation = self.tasks.reserve_socket_dispatch(request_key)
         if reservation['state'] == 'recorded':
             return reservation['receipt']
@@ -230,26 +228,79 @@ class Endpoint:
         return outcome
 
     def _dispatch_reserved(self, result, prompt, chat_id):
-        """Dispatch once after a durable reservation, without retry or fallback."""
+        """Dispatch once over the daemon-owned Chrome CDP pipes, no retry.
+
+        One prepare, one fingerprint check, one click. Chrome is terminated
+        only on a certain failure that predates the click; a possible click
+        (envoyé without click_observed, incertain) preserves the Chrome
+        process so the outcome can be observed.
+        """
         if not chat_id or not validate_chat_id(chat_id):
             return result | {'dispatch_ok': False, 'dispatch_error': 'chat_id invalide ou absent',
                              'stage': 'cible'}
-        if not _probe_socket(self.applyd_socket):
-            if not Path(_cdp_pipe()._chrome_bin()).exists():
-                return result | {'dispatch_ok': False, 'stage': 'incertain',
-                                 'dispatch_error': 'Démon applyd injoignable ; Chrome absent, pas de spawn'}
-            if not _spawn_applyd(self.applyd_socket):
-                return result | {'dispatch_ok': False, 'stage': 'incertain',
-                                 'dispatch_error': 'Démon applyd injoignable ; spawn échoué'}
+        cdp_mod = _cdp_pipe()
+        profile = cdp_mod._profile_dir()
+        lock_path, _ = cdp_mod._hostname_pid_lock(profile)
+        busy = cdp_mod.check_profile_busy(lock_path)
+        if busy is not None:
+            return result | {'dispatch_attempted': False, 'dispatch_ok': False,
+                             'stage': 'profile_busy',
+                             'dispatch_error': 'Profil Chrome occupé par un autre propriétaire ; aucune tentative.'}
+        if not Path(cdp_mod._chrome_bin()).exists():
+            return result | {'dispatch_ok': False, 'stage': 'incertain',
+                             'dispatch_error': 'Binaire Chrome introuvable'}
         try:
-            outcome = self._socket_apply(prompt, chat_id)
-        except Exception as error:  # a daemon crash must never replace the receipt
-            outcome = {'stage': 'incertain', 'detail': str(error) or type(error).__name__}
-        ok = outcome.get('stage') == 'envoyé' and outcome.get('click_observed') is True
-        if ok:
-            return result | {'dispatch_ok': True, 'stage': 'envoyé', 'click_observed': True}
-        return result | {'dispatch_ok': False, 'stage': outcome['stage'],
-                         'dispatch_error': outcome.get('detail') or outcome.get('error') or outcome['stage']}
+            transport, proc = cdp_mod.launch_chrome(profile)
+        except RuntimeError as exc:
+            return result | {'dispatch_ok': False, 'stage': 'incertain',
+                             'dispatch_error': str(exc) or 'launch_chrome échoué'}
+        path = '/chat/' + chat_id
+        try:
+            try:
+                transport.pick_and_attach(chat_id)
+            except RuntimeError:
+                # Cold start: launch_chrome opens only https://claude.ai; the
+                # admitted chat page may not exist yet. Create the target
+                # explicitly, then pick once again (still exactly one attach).
+                transport.call('Target.createTarget',
+                               {'url': 'https://claude.ai' + path})
+                transport.pick_and_attach(chat_id)
+            if not claude_desktop_apply.wait_composer(transport):
+                cdp_mod.terminate_chrome(proc)
+                return result | {'dispatch_ok': False, 'stage': 'composeur',
+                                 'dispatch_error': 'Composeur indisponible'}
+            info = claude_desktop_apply.state(transport)
+            check = claude_desktop_apply._check(info, path)
+            if check:
+                cdp_mod.terminate_chrome(proc)
+                return result | {'dispatch_ok': False, 'stage': check,
+                                 'dispatch_error': check}
+            if not claude_desktop_apply._prepare(transport, path):
+                cdp_mod.terminate_chrome(proc)
+                return result | {'dispatch_ok': False, 'stage': 'composeur',
+                                 'dispatch_error': 'Préparation du composeur échouée'}
+            fingerprint = hashlib.sha256(prompt.strip().encode()).hexdigest()
+            transport.insert_text(prompt.strip())
+            try:
+                outcome = claude_desktop_apply._dispatch(transport, path, fingerprint)
+            except (OSError, ValueError, claude_desktop_apply.WSError, TimeoutError):
+                # A lost response may conceal a click: preserve Chrome, never retry.
+                return result | {'dispatch_ok': False, 'stage': 'incertain',
+                                 'dispatch_error': 'Réponse CDP perdue au clic'}
+            if outcome.get('stage') == 'envoyé' and outcome.get('click_observed') is True:
+                return result | {'dispatch_ok': True, 'stage': 'envoyé',
+                                 'click_observed': True}
+            if outcome.get('stage') == 'incertain' or outcome.get('click_observed') is not False:
+                return result | {'dispatch_ok': False, 'stage': 'incertain',
+                                 'dispatch_error': 'Résultat de clic incertain ; Chrome préservé'}
+            stage = outcome.get('stage') or 'incertain'
+            # Certain failure before the click: terminate the daemon-owned Chrome.
+            cdp_mod.terminate_chrome(proc)
+            return result | {'dispatch_ok': False, 'stage': stage,
+                             'dispatch_error': outcome.get('dispatch_error') or stage}
+        except Exception as exc:  # a daemon crash must never replace the receipt
+            return result | {'dispatch_ok': False, 'stage': 'incertain',
+                             'dispatch_error': str(exc) or type(exc).__name__}
 
     def call(self, name, args):
         if not isinstance(args, dict):
@@ -260,23 +311,19 @@ class Endpoint:
         if name == 'quick_entry/capabilities':
             if args:
                 raise ValueError('No capability arguments expected')
-            socket_path = self.applyd_socket
-            # A cold applyd is normal: capability probing never starts it.
-            # Capability is not proof of a connected browser or a successful click.
-            applyd_running = _probe_socket(socket_path)
+            # Dispatch is daemon-owned CDP over pipes; capability is not proof
+            # of a connected browser or a successful click.
             chrome_present = Path(_cdp_pipe()._chrome_bin()).is_file()
-            supported = self.tasks is not None and (applyd_running or chrome_present)
+            supported = self.tasks is not None and chrome_present
             if self.tasks is None:
                 reason = 'Project-scoped task store required for dispatch.'
-            elif applyd_running:
-                reason = 'applyd socket answers; Chrome session and target are not verified.'
             elif chrome_present:
-                reason = 'applyd starts lazily at dispatch; Chrome session and target are not verified.'
+                reason = 'Chrome launches at dispatch; session and target are not verified.'
             else:
-                reason = 'applyd unavailable and Chrome binary absent.'
+                reason = 'Chrome binary absent.'
             return {'version': VERSION, 'admission_supported': True,
-                    'dispatch_supported': supported, 'applyd_running': applyd_running,
-                    'dispatch_channel': 'chrome-socket', 'dispatch_socket': str(socket_path),
+                    'dispatch_supported': supported,
+                    'dispatch_channel': 'cdp-pipe',
                     'resume_validation_supported': False,
                     'task_return_supported': self.tasks is not None,
                     'project_root': self.tasks.scope if self.tasks else None,
