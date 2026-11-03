@@ -21,15 +21,11 @@ import signal
 import socket
 import sqlite3
 import stat
-import subprocess
-import sys
-import threading
 import time
 import uuid
 
 import claude_desktop
 import claude_desktop_apply
-import claude_desktop_applyd
 from claude_desktop import build_payload, validate_chat_id
 from delegation_store import Store, file_evidence
 
@@ -42,57 +38,10 @@ def _cdp_pipe():
     return mod
 
 
-def _probe_socket(path):
-    """A live daemon is decided by connect(), never by a socket file."""
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(1)
-            sock.connect(str(path))
-        return True
-    except OSError:
-        return False
-
-
-def applyd_timeout():
-    try:
-        return max(1.0, float(os.environ.get('REPRISE_APPLYD_TIMEOUT', '60')))
-    except ValueError:
-        return 60.0
-
-
-_spawn_lock = threading.Lock()
-
-
-def _spawn_applyd(socket_path):
-    """Lazily start the applyd child and wait (bounded) for its socket.
-
-    The lock guards against concurrent double-spawn; returns True only when
-    the socket answers connect().
-    """
-    with _spawn_lock:
-        if _probe_socket(socket_path):
-            return True
-        try:
-            subprocess.Popen(
-                [sys.executable, str(claude_desktop_applyd.__file__),
-                 '--socket', str(socket_path)],
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=None, start_new_session=True)
-        except OSError:
-            return False
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            if _probe_socket(socket_path):
-                return True
-            time.sleep(0.1)
-        return False
-
-
 class Endpoint:
     """Bounded admission and payload hand-off for Quick Entry submissions."""
 
-    def __init__(self, state, daily_limit=8, project_root=None, applyd_socket=None):
-        self.applyd_socket = Path(applyd_socket or claude_desktop_applyd.DEFAULT_SOCKET)
+    def __init__(self, state, daily_limit=8, project_root=None):
         state = Path(state)
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.state = state
@@ -174,33 +123,6 @@ class Endpoint:
                 'automatic_fallback': False, 'admission_only': True, 'dispatch_attempted': False,
                 'task_pre_registered': bool(orchestrated and self.tasks),
                 'task_available': self.tasks is not None and purpose == 'delegation', 'purpose': purpose})
-
-    def _socket_apply(self, prompt, chat_id):
-        """Send one request to the applyd child over its UNIX socket.
-
-        The connection stays open (no half-close before the reply); a lost
-        reply maps to 'incertain' and is never retried.
-        """
-        request = json.dumps({'prompt': prompt, 'chatId': chat_id},
-                             ensure_ascii=False) + '\n'
-        try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                timeout = applyd_timeout()
-                sock.settimeout(timeout)
-                sock.connect(str(self.applyd_socket))
-                greeting = sock.makefile('r').readline()
-                if json.loads(greeting).get('hello') is not True:
-                    return {'stage': 'incertain', 'detail': 'Greeting applyd inattendu'}
-                sock.sendall(request.encode())
-                reply = sock.makefile('r').readline()
-                if not reply:
-                    return {'stage': 'incertain', 'detail': 'Réponse applyd perdue'}
-                outcome = json.loads(reply)
-                if outcome.get('ok') is not True and not outcome.get('stage'):
-                    return {'stage': 'incertain', 'detail': outcome.get('error') or 'Réponse applyd invalide'}
-                return outcome
-        except (OSError, ValueError, TimeoutError) as error:
-            return {'stage': 'incertain', 'detail': str(error) or type(error).__name__}
 
     def _dispatch(self, request_key):
         """Dispatch once over CDP pipes after durable admission and reservation.
@@ -577,10 +499,9 @@ def main():
     parser.add_argument('--socket', default=str(claude_desktop.DEFAULT_SOCKET))
     parser.add_argument('--state', default=str(state_location(Path(__file__).parent, 'quick-state')))
     parser.add_argument('--project-root', help='Bind the inbox/result channel to this project; legacy admission remains unbound')
-    parser.add_argument('--applyd-socket', help='Socket du démon applyd (défaut : chemin standard)')
     parser.add_argument('--daily-limit', type=int, help='Deprecated compatibility option; ignored')
     args = parser.parse_args()
-    endpoint = Endpoint(args.state, args.daily_limit, args.project_root, args.applyd_socket)
+    endpoint = Endpoint(args.state, args.daily_limit, args.project_root)
     def terminate(signum, frame):
         # A profile lock does not establish ownership of a Chrome process.
         raise SystemExit(128 + signum)
