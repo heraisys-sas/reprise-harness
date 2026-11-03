@@ -19,3 +19,13 @@ Séparation des barrières : table `desktop_dispatch_guard` migrée transactionn
 Claude MCP transmet explicitement `--state` à Bridge via `desktop_state` ; les autres frontends conservent leur défaut historique. Les racines de projet demeurent isolées. Tests temporaires : review vers Endpoint simulé, `get_task` et `submit_result` dans un état séparé du projet ; migration legacy, perte de reçu, rejeu et réservations concurrentes. Ces tests simulés ne modifient aucun service réel ni base utilisateur.
 
 Validation supervisée du 02/11/2026 : admission orchestrée sur registre isolé puis un seul dispatch réel vers Chrome dédié ; reçu `dispatch_ok:true`, `stage:envoyé`, `click_observed:true`, canal `chrome-socket`. Étapes enfant observées : connexion CDP, préparation, empreinte vérifiée, envoyé. Aucune réponse du chat relue ; aucun retour `submit_result` vérifié lors de cet essai. Cet essai précède la séparation des barrières ; cette séparation est couverte par des tests simulés et reste à confirmer par un nouvel essai autorisé avec une nouvelle clé.
+
+## 03/11/2026 — suppression applyd, mentions de port, déploiement
+
+Suppression de `claude_desktop_applyd.py` : le dispatch CDP pipe est fait en direct par `claude_desktop_quick.py` (canal `cdp-pipe`), applyd n'a plus de rôle. `Endpoint` sans `applyd_socket` ni `_probe_socket` ; tests applyd retirés ; ASSETS (`package_helpers.py`) et export CLI (`reprise`) purgés ; AGENTS.md et CLAUDE-SESSION-OBSERVER.md réécrits (Chrome Quick Apply sans port TCP ; observer opt-in = endpoint legacy `claude_desktop_apply` 9333, précisé aussi dans `claude_session_observer.py`).
+
+Anomalie build au passage : `inputs()` de `release_build.py` (devenu récursif en 3bbfc95) capturait le `Reprise.app` déployé dans l'arbre source — auto-inclusion faussant l'empreinte des sources et faisant échouer `check()` après publication (`Bundle modifié ou incomplet`). Correctif : sous-arbres générés (`builds`, tout `Reprise.app`) exclus de `inputs()`.
+
+Traçabilité plan-3 : tour de planification délégué sur thread Codex `01a1a091-231f-7d90-9774-dc31f6986464` (request_key `asi1-102-cdp-pipe-dispatch-plan-3`), démarré puis réconcilié `owner_unavailable` (2 réconciliations, 02/11). Aucun plan produit par ce tour ; le plan appliqué a été conduit localement par le Lead. Le reçu est conservé dans `delegation_turns` (état terminal enregistré, jamais réémis).
+
+Validation : suite 1218 OK / 6 skipped sur branche et `dev` ; bundle reconstruit (build-evidence commit 211aeee, sans applyd), déployé sur worktree, `source/` et `/Applications` (check OK) ; daemon `claude-desktopd` relancé depuis `/Applications`, `cdp/status` = `idle`, `cdp_resume_supported: true`. Commits 6a66b85 et 0aa377f ; dev = 2c652da.
