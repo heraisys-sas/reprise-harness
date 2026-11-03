@@ -134,6 +134,65 @@ private struct ClaudeQuotaRendererObservation: View {
 }
 
 extension App {
+    var codexIntegrationEntries: [String] {
+        var entries: [String] = []
+        if codexIntegrationExpert { entries.append("reprise_codex") }
+        if codexIntegrationHarness { entries.append("reprise-harness") }
+        return entries
+    }
+    func invalidateCodexIntegrationPlan() {
+        codexIntegrationGeneration &+= 1
+        codexIntegrationPlan = nil
+        codexIntegrationAcknowledged = false
+    }
+    func inspectCodexIntegration() {
+        guard stateReady, !setupBusy else { return }
+        setupCommand(["codex-integration-inspect"]) { result in
+            self.codexIntegrationResult = result
+            self.codexIntegrationOperations = result["operations"] as? [[String: Any]] ?? []
+            if !self.codexIntegrationOperations.contains(where: { $0["id"] as? String == self.codexIntegrationOperationID }) {
+                self.codexIntegrationOperationID = ""
+            }
+        }
+    }
+    func verifyCodexIntegrationOperation() {
+        guard stateReady, !setupBusy, !codexIntegrationOperationID.isEmpty,
+              codexIntegrationOperations.contains(where: { $0["id"] as? String == codexIntegrationOperationID }) else { return }
+        setupCommand(["codex-integration-verify-operation", "--id", codexIntegrationOperationID]) { result in
+            self.codexIntegrationResult = result
+        }
+    }
+    func previewCodexIntegration() {
+        guard stateReady, !setupBusy, !codexIntegrationEntries.isEmpty else { return }
+        invalidateCodexIntegrationPlan()
+        let generation = codexIntegrationGeneration
+        let selected = codexIntegrationEntries
+        var args = ["codex-integration-plan"]
+        for entry in selected { args += ["--entry", entry] }
+        setupCommand(args) { result in
+            guard generation == self.codexIntegrationGeneration, selected == self.codexIntegrationEntries else { return }
+            self.codexIntegrationResult = result
+            self.codexIntegrationPlan = result["plan"] as? [String: Any]
+        }
+    }
+    func applyCodexIntegration() {
+        guard stateReady, !setupBusy, codexIntegrationAcknowledged,
+              let plan = codexIntegrationPlan,
+              let names = plan["names"] as? [String], names == codexIntegrationEntries,
+              let target = plan["target"] as? String, !target.isEmpty else { return }
+        // Consume the plan before starting: a timeout or lost reply must not be replayed.
+        codexIntegrationVerificationPlan = plan
+        invalidateCodexIntegrationPlan()
+        setupCommand(["codex-integration-apply"], input: ["plan": plan]) { result in
+            self.codexIntegrationResult = result
+        }
+    }
+    func verifyCodexIntegration() {
+        guard stateReady, !setupBusy, let plan = codexIntegrationVerificationPlan else { return }
+        setupCommand(["codex-integration-verify"], input: ["plan": plan]) { result in
+            self.codexIntegrationResult = result
+        }
+    }
     func inspectClaudeIntegration() {
         guard stateReady, !setupBusy else { return }
         setupCommand(["claude-integration-inspect"]) { result in
@@ -740,6 +799,52 @@ struct Integrations: View {
                     detail: "Emplacement : REPRISE_SUPPORT/credentials/artificial-analysis.key. La clé est vérifiée par empreinte SHA-256 et n’est jamais affichée ni journalisée.")
             }
             SchedulerService(app: app)
+            SettingsCard(title: "Connecteur Codex", status: "Chargement client inconnu", ok: false) {
+                SettingsHint(text: "La configuration locale peut être vérifiée ; son chargement par Codex reste inconnu.",
+                             detail: "La mise à jour conserve les projets et autorisations des entrées reconnues. Elle ne recharge ni ne redémarre Codex. En cas de réponse perdue, vérifiez l’état avant toute nouvelle opération.")
+                Toggle("Mettre à jour reprise_codex", isOn: $app.codexIntegrationExpert)
+                Toggle("Mettre à jour reprise-harness", isOn: $app.codexIntegrationHarness)
+                HStack {
+                    Button("Relire l’état") { app.inspectCodexIntegration() }
+                    Button("Prévisualiser…") { app.previewCodexIntegration() }
+                        .disabled(app.codexIntegrationEntries.isEmpty)
+                    Button("Vérifier la configuration") { app.verifyCodexIntegration() }
+                        .disabled(app.codexIntegrationVerificationPlan == nil)
+                }
+                if !app.codexIntegrationOperations.isEmpty {
+                    Picker("Opération enregistrée", selection: $app.codexIntegrationOperationID) {
+                        Text("Choisir une opération…").tag("")
+                        ForEach(app.codexIntegrationOperations.indices, id: \.self) { index in
+                            let operation = app.codexIntegrationOperations[index]
+                            let identifier = operation["id"] as? String ?? ""
+                            let status = operation["status"] as? String ?? "indeterminate"
+                            Text(identifier + " · " + (status == "recorded" ? "reçu enregistré" : "état indéterminé"))
+                                .tag(identifier)
+                        }
+                    }
+                    Button("Vérifier l’opération enregistrée") { app.verifyCodexIntegrationOperation() }
+                        .disabled(app.codexIntegrationOperationID.isEmpty)
+                    SettingsHint(text: "La conformité actuelle ne prouve pas qu’une opération indéterminée a écrit la configuration.")
+                }
+                if let plan = app.codexIntegrationPlan {
+                    let target = plan["target"] as? String ?? "Cible non disponible"
+                    path("Release cible", target)
+                    path("Identité de la release", URL(fileURLWithPath: target).lastPathComponent)
+                    SettingsHint(text: "Vérifiez les entrées et chemins avant application.", detail: planDetail(plan), detailLabel: "Plan exact")
+                    Toggle("J’ai vérifié les entrées et leurs changements", isOn: $app.codexIntegrationAcknowledged)
+                    Button("Appliquer le plan") { app.applyCodexIntegration() }
+                        .disabled(!app.codexIntegrationAcknowledged)
+                }
+                if let operationStatus = app.codexIntegrationResult["operation_status"] as? String {
+                    let proof = operationStatus == "recorded" ? "Reçu de l’opération enregistré." : "Opération indéterminée : écriture non attribuée."
+                    let current = app.codexIntegrationResult["configuration_written"] as? Bool == true ? " Configuration actuelle conforme." : " Configuration actuelle non confirmée."
+                    Text(proof + current).font(.caption)
+                }
+                if !app.codexIntegrationResult.isEmpty {
+                    SettingsHint(text: app.codexIntegrationResult["message"] as? String ?? "Résultat local ; chargement client inconnu.",
+                                 detail: planDetail(app.codexIntegrationResult), detailLabel: "Réponse complète")
+                }
+            }
             SettingsCard(title: "Connecteur Claude Desktop",
                          status: app.claudeIntegrationResult["status"] as? String == "verified" ? "Release vérifiée" :
                              app.claudeIntegrationResult["status"] as? String == "completed" ?
@@ -953,6 +1058,8 @@ struct Integrations: View {
             }
         }
         .disabled(app.setupBusy || !app.stateReady)
+        .onChange(of: app.codexIntegrationExpert) { _, _ in app.invalidateCodexIntegrationPlan() }
+        .onChange(of: app.codexIntegrationHarness) { _, _ in app.invalidateCodexIntegrationPlan() }
         .onChange(of: app.integrationProfile) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationOutputResumeProject) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationOutputResume) { _, _ in app.invalidateIntegrationPlan() }

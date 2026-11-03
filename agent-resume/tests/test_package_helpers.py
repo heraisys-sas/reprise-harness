@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,11 +12,35 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from app_paths import native_binary, state_directory
 from package_helpers import ASSETS, package
+import package_helpers
 
 SOURCE = Path(__file__).parents[1]
 
 
 class PackageHelpersTests(unittest.TestCase):
+    def test_yaml_package_is_closed_and_refuses_missing_or_symlinked_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / 'source'
+            yaml = source / 'vendor/yaml'
+            yaml.mkdir(parents=True)
+            (source / 'VERSION').write_text('1')
+            for name in package_helpers.YAML_FILES:
+                (yaml / name).write_text(name)
+            (yaml / '.env').write_text('private')
+            (yaml / 'token.pem').write_text('private')
+            (yaml / '__pycache__').mkdir()
+            (yaml / '__pycache__/cache.py').write_text('cache')
+            with patch.object(package_helpers, 'ASSETS', ('VERSION',)):
+                target = package(source, root / 'app') / 'vendor/yaml'
+                self.assertEqual({p.name for p in target.iterdir()}, set(package_helpers.YAML_FILES))
+                (yaml / 'LICENSE').unlink()
+                with self.assertRaisesRegex(ValueError, 'LICENSE'):
+                    package(source, root / 'app')
+                (yaml / 'LICENSE').symlink_to(yaml / '__init__.py')
+                with self.assertRaisesRegex(ValueError, 'LICENSE'):
+                    package(source, root / 'app')
+
     def test_desktop_apply_assets_preserve_current_packaging(self):
         for name in ('CLAUDE-DESKTOP-APPLY.md', 'claude_desktop_apply.py',
                      'claude_quota_log.py', 'claude_cdp_pipe.py', 'claude_inbox.py', 'websocket_transport.py', 'claude_session_store.py', 'claude_session_observer.py', 'managed_update.py',
@@ -33,9 +58,18 @@ class PackageHelpersTests(unittest.TestCase):
             root = moved / 'Contents/Resources/helpers'
             manifest = json.loads((root / 'payload-manifest.json').read_text())
             self.assertEqual(manifest['runtime'], 'external-python-required')
-            imported = subprocess.run([sys.executable, '-c', 'import codex_expert_mcp, claude_desktop_apply, claude_inbox, websocket_transport, claude_session_store, claude_session_observer'],
+            for name in ('apple_expert.py', 'apple_pilot.py', 'apple_pilot_service.py', 'apple_pilot_transport.py', 'orchestrator_memory.py', 'orchestrator_memory_service.py'):
+                self.assertTrue((root / name).is_file())
+                self.assertEqual(manifest['files'][name], hashlib.sha256((root / name).read_bytes()).hexdigest())
+                self.assertEqual((root / name).read_bytes(), (SOURCE / name).read_bytes())
+            imported = subprocess.run([sys.executable, '-c', 'import codex_expert_mcp, claude_desktop_apply, claude_inbox, websocket_transport, claude_session_store, claude_session_observer, apple_pilot, apple_pilot_transport, apple_pilot_service, orchestrator_memory, orchestrator_memory_service'],
                                       cwd=root, capture_output=True, text=True)
             self.assertEqual(imported.returncode, 0, imported.stderr)
+            pilot = subprocess.run([sys.executable, str(root / 'apple_pilot_service.py'), '--state', str(folder)],
+                                   input=json.dumps({'id': 'c03aa24b-bdb5-46e1-bca7-16544d55b258', 'op': 'catalog'}) + '\n',
+                                   cwd=folder, capture_output=True, text=True, timeout=20)
+            self.assertEqual(pilot.returncode, 0, pilot.stderr)
+            self.assertEqual(json.loads(pilot.stdout)['status'], 'finished')
             self.assertTrue((root / 'install-ux-review.py').is_file())
             project = folder / 'project'
             project.mkdir()

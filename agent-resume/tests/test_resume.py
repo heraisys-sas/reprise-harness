@@ -6,6 +6,7 @@ from pathlib import Path
 import json
 import os
 import subprocess
+import sqlite3
 import tempfile
 import unittest
 import sys
@@ -15,6 +16,10 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import scheduler
 import claude_quota_log
+import claude_quota
+import engines
+import private_search
+import reprise_health
 
 loader = importlib.machinery.SourceFileLoader('reprise', str(Path(__file__).parents[1] / 'reprise'))
 spec = importlib.util.spec_from_loader(loader.name, loader)
@@ -44,6 +49,27 @@ class SchedulerTests(unittest.TestCase):
             self.assertEqual(row['attempts'], 1)
             db.close()
 
+    def test_tick_records_unavailable_quota_and_continues(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(module, 'STATE', Path(folder)):
+            db = module.database()
+            unavailable = engines.Unavailable('engine_unavailable', 'fixture')
+            with patch.object(module, 'database', return_value=db), \
+                 patch.object(module, 'codex_executable', return_value=None), \
+                 patch.object(module, 'run_due') as run_due, \
+                 patch.object(scheduler, 'refresh_external'), \
+                 patch.object(claude_quota, 'run_native', side_effect=unavailable), \
+                 patch.object(private_search, 'cleanup') as cleanup, \
+                 patch.object(reprise_health, 'watch') as watch, \
+                 patch.object(sys, 'argv', ['reprise', 'tick']):
+                module.main()
+            with sqlite3.connect(Path(folder) / 'tasks.sqlite') as reopened:
+                observation = scheduler.get(reopened, 'claude_desktop_last_observation')
+            self.assertEqual(observation['status'], 'unavailable')
+            self.assertIsInstance(observation['checked_at'], float)
+            run_due.assert_called_once_with(db, None)
+            cleanup.assert_called_once_with(Path(folder))
+            watch.assert_called_once_with(db, module.ROOT)
+
     def test_backup_restore_pauses_and_share_excludes_state(self):
         with tempfile.TemporaryDirectory() as folder:
             import os
@@ -67,6 +93,27 @@ class SchedulerTests(unittest.TestCase):
             with zipfile.ZipFile(share) as z:
                 self.assertFalse(any('state/' in n for n in z.namelist()))
                 self.assertNotIn('private prompt', z.read('agent-resume/prompt.example.txt').decode())
+                from yaml_contract import YAML_FILES
+                self.assertEqual({name for name in z.namelist() if name.startswith('agent-resume/vendor/yaml/')},
+                                 {'agent-resume/vendor/yaml/' + name for name in YAML_FILES})
+                for name in ('python-runtime.lock.json', 'PYTHON-THIRD-PARTY-NOTICES.txt',
+                             'release_build.py', 'relaunch'):
+                    self.assertIn('agent-resume/' + name, z.namelist())
+                z.extractall(Path(folder) / 'export')
+            extracted = Path(folder) / 'export/agent-resume'
+            code = 'from pathlib import Path; from package_helpers import package; package(Path.cwd(), Path.cwd().parent / "out.app")'
+            result = subprocess.run([sys.executable, '-c', code], cwd=extracted, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for failure in ('missing', 'symlink'):
+                yaml_file = extracted / 'vendor/yaml/LICENSE'
+                if yaml_file.exists() or yaml_file.is_symlink():
+                    yaml_file.unlink()
+                if failure == 'symlink':
+                    yaml_file.symlink_to(extracted / 'vendor/yaml/reader.py')
+                result = subprocess.run([sys.executable, str(extracted / 'reprise'), 'share'],
+                                        cwd=folder, env=env, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('LICENSE', result.stderr)
 
     def test_add_accepts_z_suffix_and_offsets_but_rejects_missing_timezone(self):
         with tempfile.TemporaryDirectory() as folder:

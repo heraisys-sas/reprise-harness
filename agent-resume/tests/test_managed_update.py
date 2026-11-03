@@ -52,6 +52,28 @@ class ManagedUpdateTests(unittest.TestCase):
     def receipt(self, value):
         return update.operation(value) / 'receipt.json'
 
+    def test_codex_component_uses_shared_plan_apply_verify(self):
+        captured = []
+        def codex_plan(root, home, state, names, ident=None):
+            self.assertEqual(names, ['reprise_codex'])
+            return {'id': ident, 'names': names, 'marker': 'shared-plan'}
+        def codex_apply(value, root, home, state):
+            captured.append(value)
+            return {'status': 'written', 'operation': str(self.base / 'codex-operation'), 'client_loaded': 'unknown'}
+        def codex_verify(value, root, home, state):
+            captured.append(value)
+            return {'ok': True, 'configuration_written': True, 'client_loaded': 'unknown'}
+        with patch.object(update, 'codex_plan', side_effect=codex_plan), \
+             patch.object(update, 'codex_apply', side_effect=codex_apply), \
+             patch.object(update, 'codex_verify', side_effect=codex_verify):
+            value = self.plan(components=('codex',), codex_entries=('reprise_codex',))
+            result = update.apply(value)
+            verification = update.verify(result['receipt'])
+            self.assertTrue(verification['ok'])
+            self.assertEqual(verification['client_loaded'], 'unknown')
+            self.assertEqual(captured, [value['nested']['codex'], value['nested']['codex']])
+            self.assertEqual(json.loads(Path(result['receipt']).read_text())['backups'], [])
+
     def test_plan_is_read_only_and_contains_no_user_content(self):
         before = integration.tree_files(self.home)
         value = self.plan()

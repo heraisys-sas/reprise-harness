@@ -149,7 +149,12 @@ struct SocketCandidateMark: View {
 }
 struct Dashboard: View {
     @ObservedObject var app: App
-    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("search", "Recherche", "magnifyingglass"), ("connections", "Connexions", "point.3.connected.trianglepath.dotted"), ("integrations", "Intégrations", "puzzlepiece.extension"), ("health", "Santé post-update", "heart.text.square"), ("privacy", "Confidentialité", "lock.shield")]
+    @StateObject private var applePilot: ApplePilotUI
+    init(app: App) {
+        self.app = app
+        _applePilot = StateObject(wrappedValue: ApplePilotUI.make(app: app))
+    }
+    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("apple-pilot", "Pilote Apple", "bubble.left.and.text.bubble.right"), ("search", "Recherche", "magnifyingglass"), ("connections", "Connexions", "point.3.connected.trianglepath.dotted"), ("integrations", "Intégrations", "puzzlepiece.extension"), ("health", "Santé post-update", "heart.text.square"), ("privacy", "Confidentialité", "lock.shield")]
     var title: String { sections.first { $0.0 == app.page }?.1 ?? "Reprise" }
     @ViewBuilder var body: some View {
         if app.stateReady { normalDashboard } else { StateSetup(app: app) }
@@ -188,6 +193,7 @@ struct Dashboard: View {
                     case "sessions": sessions
                     case "resumptions": resumptions
                     case "analysis": analysis
+                    case "apple-pilot": ApplePilotView(app: app, pilot: applePilot)
                     case "search": search
                     case "connections": connections
                     case "integrations": Integrations(app: app)
@@ -214,6 +220,7 @@ struct Dashboard: View {
         case "sessions": return "Distinguez les interruptions récentes des arrêts et de l’historique."
         case "resumptions": return "Les tentatives sont regroupées par cause. Les détails restent accessibles à la demande."
         case "analysis": return "Un second regard sur les comptes rendus, sur votre Mac."
+        case "apple-pilot": return "Un assistant local expérimental pour examiner un contexte choisi."
         case "search": return "Retrouvez un élément sans vous souvenir de l’application."
         case "connections": return "Connectez Reprise aux services codexd (codex-desktop) et claude-desktopd (Quick Apply)."
         case "integrations": return "Préparez explicitement les outils MCP et les consignes de votre profil Harness."

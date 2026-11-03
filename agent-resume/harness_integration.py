@@ -11,10 +11,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 
 from app_paths import bundled, state_location
 from state_install import initialized, _sync_directory
+from yaml_contract import validate_yaml, yaml_hashes
 
 START = '# BEGIN REPRISE MANAGED INTEGRATION'
 END = '# END REPRISE MANAGED INTEGRATION'
@@ -120,20 +122,39 @@ def split_block(text):
 
 _BLOCK_REFUSAL = 'Bloc Reprise personnalisé ou non géré ; aucune réécriture.'
 _BLOCK_ILLISIBLE = 'Bloc Reprise illisible ; réconciliation impossible.'
+_YAML_IMPORT_LOCK = threading.Lock()
 
 
 def _yaml_module():
     """PyYAML pur Python vendored (agent-resume/vendor/yaml, MIT) ; repli sur un yaml système."""
     import importlib.util
-    package = Path(__file__).resolve().parent / 'vendor' / 'yaml'
-    if (package / '__init__.py').is_file():
-        spec = importlib.util.spec_from_file_location('reprise_vendor_yaml', package / '__init__.py',
-                                                      submodule_search_locations=[str(package)])
-        module = importlib.util.module_from_spec(spec)
-        sys.modules['reprise_vendor_yaml'] = module
-        spec.loader.exec_module(module)
-        return module
-    return importlib.import_module('yaml')
+    root = Path(__file__).resolve().parent
+    package = root / 'vendor' / 'yaml'
+    with _YAML_IMPORT_LOCK:
+        if bundled(root):
+            payload = json.loads((root / 'payload-manifest.json').read_text())
+            validate_yaml(root, payload)
+        else:
+            yaml_hashes(root, exact=True)
+        if (package / '__init__.py').is_file():
+            for name in list(sys.modules):
+                if name == 'reprise_vendor_yaml' or name.startswith('reprise_vendor_yaml.'):
+                    del sys.modules[name]
+            spec = importlib.util.spec_from_file_location('reprise_vendor_yaml', package / '__init__.py',
+                                                          submodule_search_locations=[str(package)])
+            module = importlib.util.module_from_spec(spec)
+            sys.modules['reprise_vendor_yaml'] = module
+            previous = sys.dont_write_bytecode
+            previous_cache_prefix = sys.pycache_prefix
+            sys.dont_write_bytecode = True
+            sys.pycache_prefix = None
+            try:
+                spec.loader.exec_module(module)
+            finally:
+                sys.dont_write_bytecode = previous
+                sys.pycache_prefix = previous_cache_prefix
+            return module
+        return importlib.import_module('yaml')
 
 
 def _scalar_tree(value):
@@ -255,6 +276,7 @@ def bundle_info(root):
     root = Path(root).resolve()
     helpers = root if bundled(root) else root / 'Reprise.app/Contents/Resources/helpers'
     payload = json.loads((helpers / 'payload-manifest.json').read_text())
+    validate_yaml(helpers, payload)
     runtime = helpers.parent / 'runtime'
     runtime_manifest = json.loads((runtime / 'runtime-manifest.json').read_text())
     if not isinstance(payload.get('runtime'), dict):
@@ -286,10 +308,19 @@ def release_check(release):
 
 
 def stage_release(helpers, runtime, release):
+    payload = json.loads((helpers / 'payload-manifest.json').read_text())
+    validate_yaml(helpers, payload)
     if release.is_symlink() or release.parent.is_symlink():
         raise ValueError('Destination de release symbolique refusée.')
     if release.exists():
         release_check(release)
+        target_helpers = release / 'Contents/Resources/helpers'
+        target_payload = json.loads((target_helpers / 'payload-manifest.json').read_text())
+        if target_payload != payload:
+            raise ValueError('Release existante différente du payload demandé.')
+        validate_yaml(target_helpers, target_payload)
+        if bundle_info(target_helpers)[2] != release.name:
+            raise ValueError('Identité de release différente du plan.')
         return
     release.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with tempfile.TemporaryDirectory(prefix='.release-', dir=release.parent) as temporary:
@@ -297,20 +328,26 @@ def stage_release(helpers, runtime, release):
         resources = stage / 'Contents/Resources'
         helper_target = resources / 'helpers'
         helper_target.mkdir(parents=True)
-        payload = json.loads((helpers / 'payload-manifest.json').read_text())
         for name in list(payload['files']) + ['payload-manifest.json']:
             if Path(name).name != name:
                 raise ValueError('Chemin de payload non supporté.')
             shutil.copyfile(helpers / name, helper_target / name)
-        if (helpers / 'vendor/yaml').is_dir():
-            shutil.copytree(helpers / 'vendor/yaml', helper_target / 'vendor/yaml',
-                            ignore=shutil.ignore_patterns('__pycache__'))
+        if payload.get('vendor_yaml'):
+            target_yaml = helper_target / 'vendor/yaml'
+            target_yaml.mkdir(parents=True)
+            for name in payload['vendor_yaml']:
+                shutil.copyfile(helpers / 'vendor/yaml' / name, target_yaml / name)
+        if json.loads((helper_target / 'payload-manifest.json').read_text()) != payload:
+            raise ValueError('Manifeste modifié pendant la copie.')
+        validate_yaml(helper_target, payload)
         shutil.copytree(runtime, resources / 'runtime', symlinks=True)
         if (helpers.parent / 'native-manifest.json').is_file():
             shutil.copyfile(helpers.parent / 'native-manifest.json', resources / 'native-manifest.json')
         native = helpers.parent.parent / 'MacOS'
         if native.is_dir():
             shutil.copytree(native, stage / 'Contents/MacOS')
+        if bundle_info(helper_target)[2] != release.name:
+            raise ValueError('Identité du bundle différente du plan ; publication refusée.')
         atomic(stage / 'release.json', encoded({'format': 1, 'files': tree_files(stage)}))
         stage.rename(release)
         _sync_directory(release.parent)
@@ -813,7 +850,9 @@ def apply(root, public):
                 return {'status': 'completed', 'changed': False, 'message': 'Configuration identique ; aucune écriture.'}
             files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False))
             if public['action'] == 'install':
-                helpers, runtime, _ = bundle_info(root)
+                helpers, runtime, identity = bundle_info(root)
+                if identity != Path(public['release']).name:
+                    raise ValueError('Payload changé ; refaire le plan.')
                 stage_release(helpers, runtime, Path(public['release']))
             backup = managed / 'backups' / str(uuid.uuid4())
             backup.mkdir(parents=True, mode=0o700)

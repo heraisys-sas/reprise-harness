@@ -17,10 +17,12 @@ import tomllib
 import uuid
 
 import claude_integration as claude
+import codex_config_update as codex_config
+import engines
 import harness_integration as harness
 import scheduler_service as scheduler
 
-COMPONENTS = ('app', 'scheduler', 'harness', 'claude')
+COMPONENTS = ('app', 'scheduler', 'harness', 'claude', 'codex')
 
 
 def safe(value):
@@ -110,8 +112,178 @@ def logs(state):
     return result
 
 
+@contextmanager
+def codex_client(home):
+    program = engines.executable('codex-cli')
+    if not program:
+        raise ValueError('Exécutable Codex indisponible.')
+    client = codex_config.NativeClient(program, safe(home) / '.codex')
+    try:
+        yield client
+    finally:
+        client.close()
+
+
+def codex_plan(root, home, state, names, ident=None):
+    root, home, state = map(safe, (root, home, state))
+    helpers, _, identity = harness.bundle_info(root)
+    base = state.parent / 'integration-releases'
+    with codex_client(home) as client:
+        return codex_config.plan(client, home / '.codex/config.toml', base, base / identity,
+                                 names, source=helpers, ident=ident)
+
+
+def codex_scope(value, root, home, state, *, check_source=True):
+    expected_base = safe(state).parent / 'integration-releases'
+    if (safe(value['config']) != safe(home) / '.codex/config.toml'
+            or safe(value['release_base']) != expected_base
+            or (check_source and safe(value['source']) != safe(root))):
+        raise ValueError('Plan Codex hors de l’installation sélectionnée.')
+
+
+def codex_apply(value, root, home, state):
+    codex_scope(value, root, home, state)
+    operations = safe(state).parent / 'maintenance/codex-config'
+    # A recorded operation can be reconciled, but an intent without a receipt
+    # remains indeterminate and is never sent again.
+    ident = str(uuid.UUID(value['id']))
+    existing = operations / ident / 'receipt.json'
+    with codex_client(home) as client:
+        if existing.is_file():
+            recorded_plan, status = codex_operation_read(state, ident)
+            if status != 'recorded':
+                raise ValueError('Durabilité du reçu Codex non confirmée ; réconciliation requise.')
+            recorded = json.loads(existing.read_text())
+            if (recorded_plan != value or not codex_config.verify(client, value)['ok']):
+                raise ValueError('Reçu Codex divergent ; réconciliation requise.')
+            return dict(recorded, operation=str(existing.parent))
+        return codex_config.apply(client, value, operations)
+
+
+def codex_verify(value, root, home, state, *, check_source=True):
+    codex_scope(value, root, home, state, check_source=check_source)
+    with codex_client(home) as client:
+        return codex_config.verify(client, value)
+
+
+def codex_operation(state, ident):
+    ident = str(uuid.UUID(ident))
+    return safe(state).parent / 'maintenance/codex-config' / ident
+
+
+def codex_operation_read(state, ident):
+    folder = codex_operation(state, ident)
+    value = json.loads((folder / 'plan.json').read_text())
+    if not isinstance(value, dict):
+        raise ValueError('Plan durable Codex invalide.')
+    fingerprint = value.get('fingerprint')
+    if (value.get('id') != folder.name or fingerprint != codex_config._digest(
+            codex_config._json({k: v for k, v in value.items() if k != 'fingerprint'}))):
+        raise ValueError('Plan durable Codex altéré.')
+    intent = json.loads((folder / 'dispatch-intent.json').read_text())
+    if not isinstance(intent, dict) or intent.get('status') != 'indeterminate' or intent.get('expectedVersion') != value.get('version'):
+        raise ValueError('Intention durable Codex altérée.')
+    receipt = folder / 'receipt.json'
+    status = 'indeterminate'
+    if receipt.is_file():
+        try:
+            recorded = json.loads(receipt.read_text())
+        except (OSError, ValueError):
+            return value, 'indeterminate'
+        if not isinstance(recorded, dict) or recorded.get('plan_fingerprint') != fingerprint or recorded.get('status') != 'written':
+            return value, 'indeterminate'
+        try:
+            fd = os.open(receipt, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            codex_config._sync_dir(folder)
+        except OSError:
+            # A visible receipt is not a durable receipt until both syncs succeed.
+            return value, 'indeterminate'
+        status = 'recorded'
+    return value, status
+
+
+def codex_operations(state):
+    base = safe(state).parent / 'maintenance/codex-config'
+    if not base.is_dir():
+        return []
+    result = []
+    for folder in sorted(base.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)[:20]:
+        if folder.is_symlink() or not folder.is_dir():
+            continue
+        try:
+            _, status = codex_operation_read(state, folder.name)
+        except (ValueError, OSError, KeyError, TypeError):
+            continue
+        result.append({'id': folder.name, 'status': status})
+    return result
+
+
+def codex_verify_operation(root, home, state, ident):
+    value, status = codex_operation_read(state, ident)
+    try:
+        result = codex_verify(value, root, home, state, check_source=False)
+    except (OSError, ValueError, KeyError, TypeError, EOFError, TimeoutError, subprocess.SubprocessError):
+        result = {'ok': False, 'configuration_written': None, 'client_loaded': 'unknown',
+                  'diagnostic': 'Vérification de la configuration ou de la release indisponible.'}
+    return dict(result, operation_status=status, id=value['id'],
+                evidence='current_configuration_only')
+
+
+def codex_cli(root, argv):
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest='action', required=True)
+    sub.add_parser('codex-integration-inspect')
+    p = sub.add_parser('codex-integration-plan')
+    p.add_argument('--entry', action='append', required=True, choices=tuple(codex_config.ENTRIES))
+    sub.add_parser('codex-integration-apply')
+    sub.add_parser('codex-integration-verify')
+    p = sub.add_parser('codex-integration-verify-operation')
+    p.add_argument('--id', required=True)
+    args = parser.parse_args(argv)
+    home = Path.home()
+    value = None
+    state = None
+    try:
+        from app_paths import state_directory
+        state = state_directory(root)
+        if args.action == 'codex-integration-inspect':
+            config = home / '.codex/config.toml'
+            servers = tomllib.loads(config.read_text()).get('mcp_servers', {}) if config.is_file() else {}
+            result = {'entries': [{'name': name, 'configured': name in servers} for name in codex_config.ENTRIES],
+                      'operations': codex_operations(state), 'client_loaded': 'unknown'}
+        elif args.action == 'codex-integration-plan':
+            result = {'plan': codex_plan(root, home, state, args.entry), 'client_loaded': 'unknown'}
+        elif args.action == 'codex-integration-verify-operation':
+            result = codex_verify_operation(root, home, state, args.id)
+        else:
+            value = json.load(sys.stdin)['plan']
+            if args.action == 'codex-integration-apply':
+                result = codex_apply(value, root, home, state)
+            else:
+                result = codex_verify(value, root, home, state)
+        print(json.dumps(result, ensure_ascii=False))
+        return 1 if result.get('ok') is False else 0
+    except (OSError, ValueError, KeyError, TypeError, EOFError, TimeoutError, subprocess.SubprocessError) as error:
+        status = 'refused'
+        if args.action == 'codex-integration-apply' and value and state:
+            try:
+                _, recorded = codex_operation_read(state, value['id'])
+                # An authenticated intent means an attempted operation may have
+                # reached the native server, even if cleanup subsequently failed.
+                status = 'indeterminate'
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        print(json.dumps({'status': status, 'message': str(error), 'client_loaded': 'unknown'}, ensure_ascii=False))
+        return 1
+
+
 def plan(source, destination, home, state, components=('app',), profiles=(), activate=False,
-         relaunch=False, ident=None):
+         relaunch=False, ident=None, codex_entries=()):
+    ident = ident or str(uuid.uuid4())
     source, destination, home, state = map(safe, (source, destination, home, state))
     selected = list(components)
     if not selected or len(selected) != len(set(selected)) or set(selected) - set(COMPONENTS):
@@ -122,6 +294,8 @@ def plan(source, destination, home, state, components=('app',), profiles=(), act
     helpers = source / 'Contents/Resources/helpers'
     nested = {}
     with settings(state):
+        if 'codex' in selected:
+            nested['codex'] = codex_plan(helpers, home, state, list(codex_entries), ident=ident)
         if 'scheduler' in selected:
             _, plist, _ = scheduler.paths(home)
             current = plistlib.loads(plist.read_bytes()) if plist.exists() else {}
@@ -156,10 +330,10 @@ def plan(source, destination, home, state, components=('app',), profiles=(), act
             nested['claude'] = claude.plan(helpers, home, old['project'])
     value = {'format': 1, 'id': ident or str(uuid.uuid4()), 'source': str(source),
              'destination': str(destination), 'home': str(home), 'state': str(state),
-             'components': selected, 'profiles': list(profiles), 'activate': activate, 'relaunch': relaunch,
+             'components': selected, 'profiles': list(profiles), 'activate': activate, 'relaunch': relaunch, 'codex_entries': list(codex_entries),
              'bundle': identity, 'before_app': fingerprint(inventory(destination)), 'nested': nested,
              'log_offsets': logs(state),
-             'manual_actions': ['Codex : mise à jour native séparée (#30). Aucun client ouvert n’est rechargé.',
+             'manual_actions': ['Codex : aucun client ouvert n’est rechargé.',
                                 'claude-desktopd : arrêt/remplacement authentifié séparé (#25/#27).',
                                 'Fermer Reprise avant un remplacement du bundle.']}
     value['fingerprint'] = fingerprint(value)
@@ -260,7 +434,7 @@ def apply(value):
                 raise ValueError('Opération nettoyée ; préparer un nouveau plan.')
         else:
             current = plan(value['source'], value['destination'], value['home'], value['state'],
-                           value['components'], value['profiles'], value['activate'], value['relaunch'], value['id'])
+                           value['components'], value['profiles'], value['activate'], value['relaunch'], value['id'], value.get('codex_entries', ()))
             if current != value:
                 raise ValueError('Plan périmé ; refaire la prévisualisation.')
             receipt = {'format': 1, 'plan': value, 'status': 'applying', 'steps': [], 'backups': [], 'started_at': time.time()}
@@ -273,6 +447,8 @@ def apply(value):
                 if name in receipt['steps']:
                     if name == 'app' and bundle_if_valid(Path(value['destination'])) != value['bundle']:
                         raise ValueError('Application déjà publiée modifiée ; reprise suspendue.')
+                    if name == 'codex' and not codex_verify(value['nested']['codex'], helpers, value['home'], value['state'])['ok']:
+                        raise ValueError('Configuration Codex publiée modifiée ; reprise suspendue.')
                     if name != 'app':
                         previous = value['nested'][name] if name == 'harness' else [value['nested'][name]]
                         for p in previous:
@@ -283,6 +459,10 @@ def apply(value):
                     continue
                 if name == 'app':
                     install_app(value, folder, receipt)
+                elif name == 'codex':
+                    result = codex_apply(value['nested']['codex'], helpers, value['home'], value['state'])
+                    receipt['codex_operation'] = result.get('operation')
+                    save(folder, receipt)
                 else:
                     values = value['nested'][name] if name == 'harness' else [value['nested'][name]]
                     for nested in values:
@@ -356,7 +536,10 @@ def verify(file, _already_locked=False):
             release = Path(value['state']).parent / 'integration-releases' / value['bundle']['release_identity']
             helpers = release / 'Contents/Resources/helpers'
         for name in value['components']:
-            if name == 'harness':
+            if name == 'codex':
+                results[name] = codex_verify(value['nested']['codex'], Path(value['source']) / 'Contents/Resources/helpers', value['home'], value['state'])
+                ok &= results[name]['ok']
+            elif name == 'harness':
                 results[name] = [harness.verify(p['home'],p['profile'],root=helpers) for p in value['nested'][name]]
                 ok &= all(not r['update_required'] for r in results[name])
             elif name == 'claude':
@@ -426,8 +609,8 @@ def inspect(destination, home, state):
     config = home / '.codex/config.toml'
     if config.exists():
         servers = tomllib.loads(config.read_text()).get('mcp_servers', {})
-        result['codex'] = {'configured': 'reprise_codex' in servers,
-                           'update_supported': False, 'followup': '#30', 'client_loaded': 'unknown'}
+        result['codex'] = {'entries': [{'name': name, 'configured': name in servers} for name in codex_config.ENTRIES],
+                           'update_supported': True, 'client_loaded': 'unknown'}
     with settings(state):
         result['claude'] = claude.inspect(destination / 'Contents/Resources/helpers', home)
         result['scheduler'] = scheduler.inspect(destination / 'Contents/Resources/helpers', home)
@@ -447,6 +630,7 @@ def main(argv=None):
             p.add_argument('--bundle', required=True)
             p.add_argument('--components', default='app', help=','.join(COMPONENTS))
             p.add_argument('--profile', action='append', default=[])
+            p.add_argument('--codex-entry', action='append', default=[], choices=tuple(codex_config.ENTRIES))
             p.add_argument('--activate-scheduler', action='store_true')
             p.add_argument('--relaunch-app', action='store_true')
     sub.add_parser('apply').add_argument('--plan', required=True)
@@ -458,15 +642,25 @@ def main(argv=None):
         if args.command in ('inspect','plan'):
             state = args.state or str(Path(args.home) / 'Library/Application Support/Reprise/state')
             result = inspect(args.app,args.home,state) if args.command == 'inspect' else {'plan': plan(
-                args.bundle,args.app,args.home,state,args.components.split(','),args.profile,args.activate_scheduler,args.relaunch_app)}
+                args.bundle,args.app,args.home,state,args.components.split(','),args.profile,args.activate_scheduler,args.relaunch_app, codex_entries=args.codex_entry)}
         elif args.command == 'apply':
             result = apply(json.loads(Path(args.plan).read_text())['plan'])
         else:
             result = (verify if args.command == 'verify' else cleanup)(args.receipt)
         print(json.dumps(result,ensure_ascii=False))
         return 1 if result.get('ok') is False else 0
-    except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError) as error:
-        print(json.dumps({'status':'refused','message':str(error),'recovery':'Conserver le reçu et les sauvegardes ; aucun arrêt forcé ni restauration aveugle.'},ensure_ascii=False))
+    except (OSError,ValueError,KeyError,TypeError,EOFError,TimeoutError,subprocess.SubprocessError) as error:
+        status = 'refused'
+        if args.command == 'apply':
+            try:
+                pending = json.loads(Path(args.plan).read_text())['plan']
+                _, observed = codex_operation_read(pending['state'], pending['id'])
+                # A recorded native write can still precede failure of the
+                # enclosing operation; never report that as non-admission.
+                status = 'indeterminate'
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        print(json.dumps({'status':status,'message':str(error),'recovery':'Conserver le reçu et les sauvegardes ; aucun arrêt forcé ni restauration aveugle.','client_loaded':'unknown'},ensure_ascii=False))
         return 1
 
 

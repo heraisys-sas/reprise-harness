@@ -18,6 +18,7 @@ import harness_integration as integration
 import package_helpers
 import package_runtime
 import state_install
+from yaml_contract import yaml_hashes
 
 
 class HarnessIntegrationTests(unittest.TestCase):
@@ -58,6 +59,124 @@ class HarnessIntegrationTests(unittest.TestCase):
 
     def plan(self, action='install', delegate=False):
         return integration.plan(self.root, self.home, 'desktop', self.project, action, delegate)
+
+    def test_yaml_integrity_and_identity(self):
+        helpers, runtime, before = integration.bundle_info(self.root)
+        yaml_file = helpers / 'vendor/yaml/reader.py'
+        yaml_file.write_text('altered')
+        with self.assertRaisesRegex(ValueError, 'YAML'):
+            integration.bundle_info(self.root)
+        payload_path = helpers / 'payload-manifest.json'
+        payload = json.loads(payload_path.read_text())
+        payload['vendor_yaml'] = yaml_hashes(helpers, exact=True)
+        payload_path.write_text(json.dumps(payload))
+        self.assertNotEqual(before, integration.bundle_info(self.root)[2])
+        (helpers / 'vendor/yaml/token.pem').write_text('unexpected')
+        with self.assertRaisesRegex(ValueError, 'YAML'):
+            integration.bundle_info(self.root)
+
+    def test_legacy_yaml_manifest_refused_without_touching_existing_release(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        integration.stage_release(helpers, runtime, release)
+        before = integration.tree_files(release)
+        payload_path = helpers / 'payload-manifest.json'
+        payload = json.loads(payload_path.read_text())
+        del payload['vendor_yaml']
+        payload_path.write_text(json.dumps(payload))
+        with self.assertRaisesRegex(ValueError, 'non authentifié'):
+            integration.stage_release(helpers, runtime, release)
+        self.assertEqual(before, integration.tree_files(release))
+        shutil.rmtree(helpers / 'vendor/yaml')
+        integration.bundle_info(self.root)  # legacy payload without YAML remains valid
+
+    def test_yaml_symlink_is_refused(self):
+        yaml_file = self.root / 'vendor/yaml/reader.py'
+        yaml_file.unlink()
+        yaml_file.symlink_to(self.root / 'vendor/yaml/parser.py')
+        with self.assertRaisesRegex(ValueError, 'YAML'):
+            integration.bundle_info(self.root)
+
+    def test_yaml_changed_during_stage_is_not_published(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        copyfile = shutil.copyfile
+        def mutate(source, target, *args, **kwargs):
+            if str(source).endswith('vendor/yaml/reader.py'):
+                Path(source).write_text('changed while copying')
+            return copyfile(source, target, *args, **kwargs)
+        with patch.object(integration.shutil, 'copyfile', side_effect=mutate):
+            with self.assertRaisesRegex(ValueError, 'YAML'):
+                integration.stage_release(helpers, runtime, release)
+        self.assertFalse(release.exists())
+
+    def test_coherent_yaml_change_after_validation_cannot_publish_old_identity(self):
+        proposed = self.plan('install', True)
+        release = Path(proposed['release'])
+        stage_release = integration.stage_release
+        def mutate_before_stage(helpers, runtime, target):
+            (helpers / 'vendor/yaml/reader.py').write_text('changed')
+            manifest = helpers / 'payload-manifest.json'
+            payload = json.loads(manifest.read_text())
+            payload['vendor_yaml'] = yaml_hashes(helpers, exact=True)
+            manifest.write_text(json.dumps(payload))
+            return stage_release(helpers, runtime, target)
+        with patch.object(integration, 'stage_release', side_effect=mutate_before_stage):
+            with self.assertRaisesRegex(ValueError, 'Identité'):
+                integration.apply(self.root, proposed)
+        self.assertFalse(release.exists())
+
+    def test_new_empty_yaml_manifest_is_refused_but_legacy_without_yaml_is_accepted(self):
+        payload_path = self.root / 'payload-manifest.json'
+        payload = json.loads(payload_path.read_text())
+        shutil.rmtree(self.root / 'vendor/yaml')
+        payload['vendor_yaml'] = {}
+        payload_path.write_text(json.dumps(payload))
+        with self.assertRaisesRegex(ValueError, 'YAML'):
+            integration.bundle_info(self.root)
+        del payload['vendor_yaml']
+        payload_path.write_text(json.dumps(payload))
+        integration.bundle_info(self.root)
+
+    def test_real_yaml_import_does_not_write_cache_or_change_identity(self):
+        helpers, runtime, before = integration.bundle_info(self.root)
+        env = dict(os.environ)
+        env.pop('PYTHONDONTWRITEBYTECODE', None)
+        env.pop('PYTHONPYCACHEPREFIX', None)
+        result = subprocess.run([sys.executable, '-c', 'import harness_integration; harness_integration._yaml_module()'],
+                                cwd=helpers, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cache = helpers / 'vendor/yaml/__pycache__'
+        self.assertFalse(cache.exists())
+        self.assertEqual(before, integration.bundle_info(self.root)[2])
+        release = self.base / 'releases' / before
+        integration.stage_release(helpers, runtime, release)
+        self.assertFalse((release / 'Contents/Resources/helpers/vendor/yaml/__pycache__').exists())
+        integration.bundle_info(self.root)
+
+    def test_forged_timestamp_matching_pyc_is_refused_before_import(self):
+        import py_compile
+        import importlib.util
+        helpers, _, _ = integration.bundle_info(self.root)
+        source = helpers / 'vendor/yaml/reader.py'
+        original = source.read_bytes()
+        stat = source.stat()
+        malicious = b'raise RuntimeError("FORGED_PYC_EXECUTED")\n'
+        source.write_bytes(malicious + b' ' * (len(original) - len(malicious)))
+        os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        cache = Path(importlib.util.cache_from_source(str(source)))
+        cache.parent.mkdir()
+        py_compile.compile(str(source), cfile=str(cache), doraise=True)
+        source.write_bytes(original)
+        os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        env = dict(os.environ)
+        env.pop('PYTHONDONTWRITEBYTECODE', None)
+        result = subprocess.run([sys.executable, '-c', 'import harness_integration; harness_integration._yaml_module()'],
+                                cwd=helpers, env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('FORGED_PYC_EXECUTED', result.stderr)
+        with self.assertRaisesRegex(ValueError, 'YAML'):
+            integration.bundle_info(self.root)
 
     def install(self, delegate=False, **options):
         proposed = integration.plan(self.root, self.home, 'desktop', self.project, 'install', delegate, **options)

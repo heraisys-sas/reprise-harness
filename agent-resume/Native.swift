@@ -43,6 +43,15 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var projectMessage = "Choisissez un projet ou créez-en un."
     @Published var integrationDelegate = false
     @Published var integrationCodexWorkspaceWrite = false
+    @Published var codexIntegrationExpert = false
+    @Published var codexIntegrationHarness = false
+    @Published var codexIntegrationPlan: [String: Any]?
+    @Published var codexIntegrationVerificationPlan: [String: Any]?
+    @Published var codexIntegrationResult: [String: Any] = [:]
+    @Published var codexIntegrationOperations: [[String: Any]] = []
+    @Published var codexIntegrationOperationID = ""
+    @Published var codexIntegrationAcknowledged = false
+    var codexIntegrationGeneration: UInt64 = 0
     @Published var claudeIntegrationPlan: [String: Any]?
     @Published var claudeIntegrationResult: [String: Any] = [:]
     @Published var claudeIntegrationAcknowledged = false

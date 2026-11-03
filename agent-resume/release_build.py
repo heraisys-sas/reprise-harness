@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+from yaml_contract import YAML_FILES, yaml_hashes
 
 ROOT = Path(__file__).resolve().parent
 
@@ -18,17 +19,15 @@ def sha(path):
 def inputs(root):
     # Only build inputs: never state, logs, credentials, generated bundles or tests.
     suffixes = {'.swift', '.py', '.md', '.json', '.txt', '.html', '.cjs'}
-    def walk(base, rel=''):
-        for p in sorted(base.iterdir()):
-            if p.is_symlink():
-                continue
-            rel_name = f'{rel}/{p.name}' if rel else p.name
-            if p.is_dir():
-                if rel_name != 'builds' and not rel_name.endswith('Reprise.app'):  # sorties générées, jamais des sources
-                    yield from walk(p, rel_name)
-            elif p.suffix in suffixes or p.name in ('VERSION', 'native-install', 'reprise'):
-                yield rel_name, p
-    return {rel: sha(p) for rel, p in walk(root)}
+    files = {p.name: sha(p) for p in sorted(root.iterdir())
+             if not p.is_symlink() and p.is_file()
+             and (p.suffix in suffixes or p.name in ('VERSION', 'native-install', 'reprise'))}
+    vendor = root / 'vendor'
+    yaml = vendor / 'yaml'
+    if not vendor.is_symlink() and not yaml.is_symlink():
+        for name, value in yaml_hashes(root).items():
+            files[f'vendor/yaml/{name}'] = value
+    return files
 
 
 def identity(files):
