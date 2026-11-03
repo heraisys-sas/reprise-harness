@@ -46,9 +46,14 @@ def composer_state(url=PAGE_URL, text_sha256=None, text_length=0):
 
 
 def patched_apply_module(state_sequence=None, prepared=True, dispatch_outcome=None,
-                         dispatch_raises=None):
+                         dispatch_raises=None, inserted=True):
     """Patch the claude_desktop_apply primitives the daemon dispatch uses."""
     state_calls = {'n': 0}
+    insert_calls = getattr(patched_apply_module, 'insert_calls', None)
+    if insert_calls is None:
+        insert_calls = []
+        patched_apply_module.insert_calls = insert_calls
+    del insert_calls[:]
 
     def fake_state(cdp):
         index = min(state_calls['n'], len(state_sequence) - 1)
@@ -63,11 +68,16 @@ def patched_apply_module(state_sequence=None, prepared=True, dispatch_outcome=No
             raise dispatch_raises
         return dispatch_outcome
 
+    def fake_insert(cdp, text):
+        patched_apply_module.insert_calls.append((cdp, text))
+        return {'inserted': inserted, 'length': len(text)}
+
     patchers = [mock.patch.object(claude_desktop_apply, 'CDP', FakeCDP),
                 mock.patch.object(claude_desktop_apply, 'state', fake_state),
                 mock.patch.object(claude_desktop_apply, 'wait_composer', lambda cdp: True),
                 mock.patch.object(claude_desktop_apply, '_prepare', fake_prepare),
                 mock.patch.object(claude_desktop_apply, '_check', lambda info, path: None),
+                mock.patch.object(claude_desktop_apply, '_insert', fake_insert),
                 mock.patch.object(claude_desktop_apply, '_dispatch', fake_dispatch)]
     for patcher in patchers:
         patcher.start()
@@ -215,8 +225,8 @@ class DaemonDispatchTests(unittest.TestCase):
         self.assertEqual(result['stage'], 'envoyé')
         self.assertIs(result['click_observed'], True)
         self.assertTrue(result['admission_only'])
-        # prompt staged once via Input.insertText; single attach, no cold-start retarget
-        self.assertIn(('Input.insertText', {'text': prompt.strip()}), fake.pipe.calls)
+        # prompt inserted once via the event-driven _insert primitive; single attach, no cold-start retarget
+        self.assertIn((fake.pipe, prompt.strip()), patched_apply_module.insert_calls)
         self.assertEqual(fake.pipe.pick_attempts, 1)
         self.assertNotIn(('Target.createTarget', {'url': 'https://claude.ai/chat/' + CHAT_ID}), fake.pipe.calls)
         self.assertEqual(fake.terminated, [])  # success preserves the daemon-owned Chrome

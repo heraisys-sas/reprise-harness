@@ -202,7 +202,13 @@ class Endpoint:
                 return result | {'dispatch_ok': False, 'stage': 'composeur',
                                  'dispatch_error': 'Préparation du composeur échouée'}
             fingerprint = hashlib.sha256(prompt.strip().encode()).hexdigest()
-            transport.insert_text(prompt.strip())
+            # Event-driven insertion (execCommand + bubbling input), not a
+            # plain innerText assignment: React must observe the input.
+            inserted = claude_desktop_apply._insert(transport, prompt.strip())
+            if not isinstance(inserted, dict) or inserted.get('inserted') is not True:
+                cdp_mod.terminate_chrome(proc)
+                return result | {'dispatch_ok': False, 'stage': 'composeur',
+                                 'dispatch_error': 'Insertion dans le composeur non confirmée'}
             try:
                 outcome = claude_desktop_apply._dispatch(transport, path, fingerprint)
             except (OSError, ValueError, claude_desktop_apply.WSError, TimeoutError):
@@ -345,21 +351,40 @@ class Endpoint:
                 return {'ok': False, 'status': 'brouillon', 'stage': 'brouillon',
                         'detail': 'Contenu préexistant dans le composeur'}
 
-            # Focus the composer BEFORE inserting text (proven sequence from claude_desktop_apply.py ~447)
-            transport.evaluate(
-                "(function(){const el=document.querySelector('[data-testid=compose-textarea]');if(el){el.focus();if(el.isContentEditable)el.dispatchEvent(new Event('input',{bubbles:true}));else el.focus()}return true})()")
-
-            transport.insert_text(prompt)
+            # Event-driven insertion: focus + execCommand('insertText') fires
+            # beforeinput/input through the browser input pipeline so the
+            # claude.ai React state actually observes the text.
+            inserted = claude_desktop_apply._insert(transport, prompt)
+            if not isinstance(inserted, dict) or inserted.get('inserted') is not True:
+                cdp_mod.terminate_chrome(proc)
+                return {'ok': False, 'status': 'composeur', 'stage': 'composeur',
+                        'detail': 'Insertion dans le composeur non confirmée'}
             stage = 'envoyé'
         except Exception as exc:
             cdp_mod.terminate_chrome(proc)
             return {'ok': False, 'status': 'send_failed', 'reason': str(exc)}
 
         try:
-            click_result = transport.evaluate(
-                "(function(){const btn=document.querySelector('[data-testid=chat-input-send]');if(!btn)return null;btn.click();return{clicked:true}})()")
-            if not click_result or not click_result.get("clicked"):
+            # Pre-click gate: the send button must be enabled; one Enter
+            # keydown fallback, else honest incertain without a click.
+            armed = claude_desktop_apply._arm(transport)
+            if not isinstance(armed, dict) or armed.get('ready') is not True:
                 stage = 'incertain'
+            else:
+                try:
+                    click_result = transport.evaluate(
+                        "(function(){const btn=document.querySelector('[data-testid=chat-input-send]');if(!btn)return null;btn.click();return{clicked:true}})()")
+                    if not click_result or not click_result.get("clicked"):
+                        stage = 'incertain'
+                except Exception:
+                    stage = 'incertain'
+                try:
+                    # A click is not a send: require composer emptied or
+                    # message in the DOM, else report incertain honestly.
+                    if not claude_desktop_apply._confirm(transport):
+                        stage = 'incertain'
+                except Exception:
+                    stage = 'incertain'
         except Exception:
             stage = 'incertain'
         finally:

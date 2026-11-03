@@ -298,10 +298,89 @@ def _send(cdp, path, expected_sha256):
         return {stage: 'empreinte', clicked: false};
       const button = sendButton();
       if (!button) return {stage: 'composeur', clicked: false};
-      if (button.disabled) return {stage: 'bloqué', clicked: false};
+      if (button.disabled) {
+        // React never saw the text: one Enter keydown fallback, then honesty.
+        try { el.dispatchEvent(new KeyboardEvent('keydown',
+          {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true})); }
+        catch (error) {}
+        if (button.disabled) return {stage: 'incertain', clicked: false};
+      }
       button.click();
       return {stage: 'envoyé', clicked: true};
     })()""")
+
+
+def _insert(cdp, text):
+    """Event-driven insertion into the composer.
+
+    Focus the composer then insert through document.execCommand('insertText'),
+    which drives the browser's real input pipeline (beforeinput/input bubbling)
+    so React state updates. Fallback: content assignment plus a dispatched
+    bubbling InputEvent. A plain innerText assignment never reaches React.
+    """
+    expression = ("(async () => {" + JS_HELPERS + "\nconst text = " + json.dumps(text) + ";" + """
+      const el = document.querySelector('[data-testid="compose-textarea"]') || composer();
+      if (!el) return {inserted: false, length: 0};
+      el.focus();
+      let executed = false;
+      try { executed = document.execCommand('insertText', false, text); } catch (error) {}
+      let current = el.tagName === 'TEXTAREA' ? el.value : readText(el);
+      if (!executed || current.length === 0) {
+        if (el.tagName === 'TEXTAREA') el.value = text;
+        else el.textContent = text;
+        try { el.dispatchEvent(new InputEvent('input', {bubbles: true, composed: true})); }
+        catch (error) {}
+      }
+      current = el.tagName === 'TEXTAREA' ? el.value : readText(el);
+      return {inserted: current === text, length: current.length};
+    })()""")
+    result = cdp.evaluate(expression)
+    return result if isinstance(result, dict) else {'inserted': False, 'length': 0}
+
+
+def _arm(cdp):
+    """Verify the send button is enabled before the click.
+
+    If React still holds the button disabled after insertion, attempt the one
+    reasonable activation (Enter keydown on the composer); report ready only
+    when the button is genuinely enabled.
+    """
+    result = cdp.evaluate("(function(){" + JS_HELPERS + """
+      const el = document.querySelector('[data-testid="compose-textarea"]') || composer();
+      const buttons = [...document.querySelectorAll('[data-testid="chat-input-send"]')];
+      const button = buttons.length === 1 ? buttons[0] : null;
+      if (!el || !button) return {ready: false};
+      if (!button.disabled) return {ready: true};
+      try { el.dispatchEvent(new KeyboardEvent('keydown',
+        {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true})); }
+      catch (error) {}
+      return {ready: !button.disabled};
+    })()""")
+    return result if isinstance(result, dict) else {'ready': False}
+
+
+def _confirm(cdp):
+    """Post-click send evidence: composer emptied or a user message in the DOM.
+
+    Returns True only on positive evidence; any failure or absence of evidence
+    is False so the caller reports incertain, never envoyé.
+    """
+    try:
+        result = cdp.evaluate("(async () => {" + JS_HELPERS + """
+      const messages = () => document.querySelectorAll('[data-testid^="user-message"]').length;
+      const before = messages();
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const el = composer();
+        const remaining = el ? readText(el).length : 0;
+        if (remaining === 0 || messages() > before) return {confirmed: true};
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      return {confirmed: false};
+    })()""")
+    except (OSError, ValueError, WSError, TimeoutError, RuntimeError):
+        return False
+    return isinstance(result, dict) and result.get('confirmed') is True
 
 
 def _result(stage, *, ok=False, staged=False, dispatch_attempted=False,
@@ -341,7 +420,12 @@ def _dispatch(cdp, path, fingerprint):
     if not isinstance(outcome, dict):
         return _result("incertain", staged=None, dispatch_attempted=True)
     if outcome.get("clicked") is True and outcome.get("stage") == "envoyé":
-        return _result("envoyé", ok=True, staged=None, dispatch_attempted=True, click_observed=True,
+        # A click is not a send: require real evidence (composer emptied or
+        # message in the DOM) before admitting envoyé.
+        if _confirm(cdp):
+            return _result("envoyé", ok=True, staged=None, dispatch_attempted=True, click_observed=True,
+                           expected_sha256=fingerprint)
+        return _result("incertain", staged=None, dispatch_attempted=True, click_observed=True,
                        expected_sha256=fingerprint)
     if outcome.get("clicked") is False and outcome.get("stage") in ("cible", "composeur", "empreinte", "bloqué"):
         stage = outcome["stage"]
