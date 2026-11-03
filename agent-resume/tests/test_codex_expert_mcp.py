@@ -38,6 +38,31 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.assertEqual(self.bridge.db.execute('SELECT COUNT(*) FROM delegation_requests').fetchone()[0], 0)
         self.assertFalse(self.call('reprise_backends', {})['backends'][0]['writes'])
 
+    def test_ungranted_implementation_refusal_is_explicit_issue_104(self):
+        with patch('codex_expert_mcp.review') as review:
+            with self.assertRaises(ValueError) as caught:
+                self.call('reprise_delegate', {'question':'Implement', 'kind':'batch', 'mode':'implementation'})
+            review.assert_not_called()
+        payload = error_payload(caught.exception)
+        self.assertIn('workspace_write_authorized=false', payload['message'])
+        self.assertIn("mode 'expertise'", payload['message'])
+        self.assertEqual(payload['data']['kind'], 'workspace_write_not_authorized')
+        self.assertIn('--codex-workspace-write', payload['data']['enable_with'])
+        # Les autres refus gardent le message générique uniforme.
+        self.assertEqual(error_payload(ValueError('x'))['message'], 'Request refused or unavailable; no automatic retry.')
+
+    def test_backends_reports_how_to_enable_writes_and_reflects_grant_issue_104(self):
+        codex = self.call('reprise_backends', {})['backends'][0]
+        self.assertFalse(codex['workspace_write_authorized'])
+        self.assertEqual(codex['implementation_unavailable_reason'], 'workspace_write_not_authorized')
+        self.assertIn('--codex-workspace-write', codex['enable_with'])
+        self.bridge.codex_workspace_write = True
+        codex = self.call('reprise_backends', {})['backends'][0]
+        self.assertTrue(codex['workspace_write_authorized'])
+        self.assertIn('implementation', codex['modes'])
+        self.assertNotIn('implementation_unavailable_reason', codex)
+        self.assertNotIn('enable_with', codex)
+
     def test_new_implementation_invalid_input_is_rejected_before_admission(self):
         self.bridge.codex_workspace_write = True
         with patch('codex_expert_mcp.review') as review:
