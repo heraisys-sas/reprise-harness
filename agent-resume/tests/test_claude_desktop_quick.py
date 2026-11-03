@@ -60,8 +60,7 @@ class EndpointTests(unittest.TestCase):
             store.submit(key, claimed['attempt_id'], 'Verified result')
             result = endpoint.call('quick_entry/get_result', {'request_key': key, 'view': 'full'})
             self.assertEqual(result['answer'], 'Verified result')
-            with mock.patch('claude_cdp_pipe._chrome_bin', return_value='/nonexistent/chrome'), \
-                 mock.patch('claude_desktop_quick._probe_socket', return_value=False):
+            with mock.patch('claude_cdp_pipe._chrome_bin', return_value='/nonexistent/chrome'):
                 self.assertFalse(endpoint.call('quick_entry/capabilities', {})['dispatch_supported'])
 
     def test_project_scoped_listing_is_metadata_only_and_does_not_acknowledge(self):
