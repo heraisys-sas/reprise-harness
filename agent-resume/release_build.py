@@ -24,7 +24,7 @@ def inputs(root):
                 continue
             rel_name = f'{rel}/{p.name}' if rel else p.name
             if p.is_dir():
-                if rel_name != 'builds':  # sorties générées, jamais des sources
+                if rel_name != 'builds' and not rel_name.endswith('Reprise.app'):  # sorties générées, jamais des sources
                     yield from walk(p, rel_name)
             elif p.suffix in suffixes or p.name in ('VERSION', 'native-install', 'reprise'):
                 yield rel_name, p
