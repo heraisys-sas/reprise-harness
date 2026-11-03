@@ -11,6 +11,8 @@ from datetime import datetime
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+# Legacy opt-in endpoint (claude_desktop_apply, TCP port 9333). NOT the Quick Apply
+# dedicated Chrome: since #102 it is driven over CDP pipes and exposes no TCP port.
 import claude_desktop_apply as cdp
 from claude_quota import parse_pause
 from claude_session_store import SessionStore, binding, empty_snapshot, open_database

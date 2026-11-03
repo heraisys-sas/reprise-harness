@@ -12,10 +12,9 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import claude_desktop
 import claude_desktop_apply
-import claude_desktop_applyd
 import claude_desktop_quick
 import claude_desktop_rpc
-from claude_desktop_quick import Endpoint, _probe_socket
+from claude_desktop_quick import Endpoint
 
 
 CHAT_ID = '178dcceb-fcd3-4f2d-ac4f-116a8a153bc3'
@@ -138,40 +137,6 @@ class FakeCdpModule:
         self.terminated.append(proc.pid)
 
 
-class _RealApplyd:
-    """Runs applyd._serve_conn on a temp socket with patched apply primitives."""
-
-    def __init__(self):
-        self.directory = tempfile.TemporaryDirectory()
-        self.path = str(Path(self.directory.name) / 'applyd.sock')
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.bind(self.path)
-        self.sock.listen(2)
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
-        for _ in range(50):
-            if _probe_socket(self.path):
-                return
-            threading.Event().wait(0.02)
-
-    def _run(self):
-        while True:
-            try:
-                conn, _ = self.sock.accept()
-            except OSError:
-                return
-            try:
-                claude_desktop_applyd._serve_conn(conn)
-            except OSError:
-                pass
-            finally:
-                conn.close()
-
-    def close(self):
-        self.sock.close()
-        self.directory.cleanup()
-
-
 class DaemonDispatchTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -187,9 +152,8 @@ class DaemonDispatchTests(unittest.TestCase):
         self.apply_patchers = patched_apply_module(**kwargs)
         self.addCleanup(self.cleanup_apply_patchers)
 
-    def endpoint(self, applyd_socket=None):
-        endpoint = Endpoint(self.directory.name, project_root=self.directory.name,
-                            applyd_socket=applyd_socket)
+    def endpoint(self):
+        endpoint = Endpoint(self.directory.name, project_root=self.directory.name)
         self.addCleanup(endpoint.close)
         return endpoint
 
@@ -204,24 +168,23 @@ class DaemonDispatchTests(unittest.TestCase):
     # -- capabilities ---------------------------------------------------------
 
     def test_capabilities_refuse_unscoped_dispatch(self):
-        endpoint = Endpoint(self.directory.name, applyd_socket=str(Path(self.directory.name) / 'absent.sock'))
+        endpoint = Endpoint(self.directory.name)
         self.addCleanup(endpoint.close)
         with mock.patch.object(claude_desktop_quick, '_cdp_pipe', return_value=FakeCdpModule()):
             self.assertFalse(endpoint.call('quick_entry/capabilities', {})['dispatch_supported'])
 
     def test_capabilities_report_cdp_pipe_channel(self):
-        endpoint = self.endpoint(applyd_socket=str(Path(self.directory.name) / 'absent.sock'))
+        endpoint = self.endpoint()
         fake = FakeCdpModule()
         with mock.patch.object(claude_desktop_quick, '_cdp_pipe', return_value=fake):
             caps = endpoint.call('quick_entry/capabilities', {})
         self.assertEqual(caps['dispatch_channel'], 'cdp-pipe')
         self.assertTrue(caps['dispatch_supported'])
-        self.assertNotIn('applyd_running', caps)
         self.assertNotIn('dispatch_socket', caps)
         self.assertEqual(fake.launched, [])
 
     def test_capabilities_refuse_missing_chrome(self):
-        endpoint = self.endpoint(applyd_socket=str(Path(self.directory.name) / 'absent.sock'))
+        endpoint = self.endpoint()
         fake = FakeCdpModule(chrome_exists=False)
         with mock.patch.object(claude_desktop_quick, '_cdp_pipe', return_value=fake):
             caps = endpoint.call('quick_entry/capabilities', {})
@@ -340,49 +303,6 @@ class DaemonDispatchTests(unittest.TestCase):
             endpoint.call('quick_entry/dispatch', {'request_key': 'k', 'filePaths': ['file:///x']})
 
 
-class SocketProtocolTests(unittest.TestCase):
-    """applyd protocol contract: greeting, bounded payload, per-request errors."""
-
-    def test_oversized_payload_destroys_connection(self):
-        daemon = _RealApplyd()
-        self.addCleanup(daemon.close)
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(5)
-            sock.connect(daemon.path)
-            greeting = sock.makefile('r').readline()
-            self.assertTrue(json.loads(greeting).get('hello'))
-            # Larger than MAX_LINE on a single line: the daemon closes the
-            # socket without replying (EOF, no error object).
-            blob = b'x' * (claude_desktop_applyd.MAX_LINE + 1)
-            sock.sendall(blob + b'\n')
-            sock.shutdown(socket.SHUT_WR)
-            self.assertEqual(sock.recv(1024), b'')
-
-    def test_probe_socket_refused_without_file(self):
-        self.assertFalse(_probe_socket('/nonexistent/applyd.sock'))
-
-    def test_existing_active_socket_is_not_unlinked(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'active.sock'
-            with socket.socket(socket.AF_UNIX) as owner:
-                owner.bind(str(path))
-                owner.listen(1)
-                inode = path.lstat().st_ino
-                with self.assertRaises(SystemExit):
-                    claude_desktop_applyd.bind_socket(path)
-                self.assertEqual(inode, path.lstat().st_ino)
-
-    def test_second_owner_refused_by_lock(self):
-        import fcntl
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'applyd.sock'
-            with Path(str(path) + '.lock').open('a') as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                with mock.patch.object(claude_desktop_applyd, 'bind_socket') as bind:
-                    with self.assertRaises(SystemExit):
-                        claude_desktop_applyd.serve(path)
-                    bind.assert_not_called()
-
     def test_quick_terminate_does_not_kill_chrome(self):
         handlers = []
         def signal_mock(sig, handler):
@@ -415,15 +335,6 @@ class SocketProtocolTests(unittest.TestCase):
                 self.assertFalse(token_path.exists())
             finally:
                 endpoint.close()
-
-    def test_stage_logging_contains_no_prompt_or_chat_id(self):
-        import io
-        output = io.StringIO()
-        with mock.patch('sys.stderr', output):
-            claude_desktop_applyd.log_stage('préparé')
-        self.assertEqual(json.loads(output.getvalue())['stage'], 'préparé')
-        self.assertNotIn(CHAT_ID, output.getvalue())
-
 
 class _FakeRpcClient:
     def __init__(self, *args, **kw):
@@ -497,8 +408,7 @@ class ReviewDispatchTests(unittest.TestCase):
     def test_review_cold_start_invokes_real_endpoint_dispatch_once(self):
         from desktop_task_store import TaskStore
         state = self.directory.name
-        endpoint = Endpoint(state, project_root=state,
-                            applyd_socket=str(Path(state) / 'absent.sock'))
+        endpoint = Endpoint(state, project_root=state)
         self.addCleanup(endpoint.close)
         tasks = TaskStore(state, state)
         self.addCleanup(tasks.close)
@@ -545,8 +455,7 @@ class ReviewDispatchTests(unittest.TestCase):
         self.assertEqual(reopened.reserve_socket_dispatch('lost-key')['state'], 'attempted')
 
     def test_uncertain_pipe_result_is_recorded_and_never_retried(self):
-        endpoint = Endpoint(self.directory.name, project_root=self.directory.name,
-                            applyd_socket=str(Path(self.directory.name) / 'absent.sock'))
+        endpoint = Endpoint(self.directory.name, project_root=self.directory.name)
         self.addCleanup(endpoint.close)
         endpoint.submit({'request_key': 'uncertain-key', 'prompt': 'Question test', 'chatId': CHAT_ID})
         with mock.patch.object(claude_desktop_quick, '_cdp_pipe', return_value=FakeCdpModule()):
@@ -612,7 +521,7 @@ class ReviewDispatchTests(unittest.TestCase):
         self.addCleanup(bridge.desktop_tasks.close)
         inbox = TaskStore(state, project)
         self.addCleanup(inbox.close)
-        endpoint = Endpoint(state, project_root=project, applyd_socket=str(base / 'absent.sock'))
+        endpoint = Endpoint(state, project_root=project)
         self.addCleanup(endpoint.close)
         facade = ClaudeMCP(inbox, bridge)
 
