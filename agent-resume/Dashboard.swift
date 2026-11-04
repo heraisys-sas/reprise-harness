@@ -157,7 +157,28 @@ struct Dashboard: View {
     let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("apple-pilot", "Pilote Apple", "bubble.left.and.text.bubble.right"), ("search", "Recherche", "magnifyingglass"), ("connections", "Connexions", "point.3.connected.trianglepath.dotted"), ("integrations", "Intégrations", "puzzlepiece.extension"), ("health", "Santé post-update", "heart.text.square"), ("privacy", "Confidentialité", "lock.shield")]
     var title: String { sections.first { $0.0 == app.page }?.1 ?? "Reprise" }
     @ViewBuilder var body: some View {
-        if app.stateReady { normalDashboard } else { StateSetup(app: app) }
+        if app.stateReady {
+            normalDashboard
+                .onAppear { loadPilotStartupProjects() }
+                .onChange(of: app.setupBusy) { _, busy in if !busy { loadPilotStartupProjects() } }
+                .onReceive(app.$projects) { rows in
+                    applePilot.updateKnownProjects(Set(rows.compactMap { $0["id"] as? String }))
+                }
+        } else { StateSetup(app: app) }
+    }
+    private func loadPilotStartupProjects() {
+        guard !app.pilotProjectsRequested, app.stateReady, !app.setupBusy, app.runtimeError == nil else { return }
+        app.pilotProjectsRequested = true
+        app.setupCommand(["project-list"]) { result in
+            guard result["status"] as? String == "ok", let rows = result["projects"] as? [[String: Any]] else {
+                app.pilotProjectsLoadFailed = true
+                return
+            }
+            app.pilotProjectsLoadFailed = false
+            app.projects = rows
+            applePilot.updateKnownProjects(Set(rows.compactMap { $0["id"] as? String }))
+            applePilot.openRestoredSessionIfReady()
+        }
     }
     var normalDashboard: some View {
         NavigationSplitView {
@@ -193,7 +214,10 @@ struct Dashboard: View {
                     case "sessions": sessions
                     case "resumptions": resumptions
                     case "analysis": analysis
-                    case "apple-pilot": ApplePilotView(app: app, pilot: applePilot)
+                    case "apple-pilot": ApplePilotView(app: app, pilot: applePilot, retryStartupProjects: {
+                        app.pilotProjectsRequested = false
+                        loadPilotStartupProjects()
+                    })
                     case "search": search
                     case "connections": connections
                     case "integrations": Integrations(app: app)
@@ -465,6 +489,9 @@ struct Dashboard: View {
                     if app.claudeSessionsBusy { ProgressView().controlSize(.small) }
                 }
                 if !app.claudeSessionsNote.isEmpty { InlineStatus(busy: false, message: app.claudeSessionsNote) }
+                if app.observerStartupFailed {
+                    Button("Réessayer l’activation de l’observation") { app.retryObserverStartup() }.disabled(app.busy)
+                }
                 Text(!statusKnown ? "État de configuration inconnu · \(rootStatus)" : enabled ? "Observation CDP opt-in · sessions ouvertes seulement" : "Observation désactivée · aucune lecture CDP").font(.caption).foregroundStyle(.secondary)
                 SettingsHint(
                     text: "Une session associée ne prouve ni l’admission du message ni le retour MCP.",
@@ -640,9 +667,9 @@ struct Dashboard: View {
         return VStack(alignment: .leading, spacing: 18) {
             SettingsBanner(
                 ok: !app.connection.isEmpty,
-                title: app.connection.isEmpty ? "Configuration indisponible" : "Service codexd joignable",
+                title: app.connection.isEmpty ? "Configuration indisponible" : "Configuration Codex chargée",
                 detail: app.connection.isEmpty ? "Lancez une actualisation pour lire l’état du service."
-                    : customSocket ? "Socket personnalisé enregistré." : "Détection automatique du socket local ou de la CLI.")
+                    : customSocket ? "Socket personnalisé enregistré. Testez la connexion pour vérifier le service." : "Détection automatique du socket local ou de la CLI ; la configuration seule ne confirme pas la connexion.")
             SettingsCard(title: "Partage avec Codex Desktop",
                          status: shared["startup_eligible"] as? Bool == true ? "Validé" : "À valider",
                          ok: shared["startup_eligible"] as? Bool == true) {
@@ -728,9 +755,9 @@ struct Dashboard: View {
         return VStack(alignment: .leading, spacing: 18) {
             SettingsBanner(
                 ok: !app.desktopConnection.isEmpty,
-                title: app.desktopConnection.isEmpty ? "Configuration indisponible" : "Service claude-desktopd prêt",
+                title: app.desktopConnection.isEmpty ? "Configuration indisponible" : "Configuration Claude chargée",
                 detail: app.desktopConnection.isEmpty ? "Lancez une actualisation pour lire l’état du service."
-                    : customSocket ? "Socket personnalisé enregistré." : "Détection automatique du socket local.")
+                    : customSocket ? "Socket personnalisé enregistré. Testez la connexion pour vérifier le service." : "Détection automatique du socket local ; la configuration seule ne confirme pas la connexion.")
             SettingsCard(title: "Service et application liée",
                          status: app.desktopStartup ? "Lancement auto" : "Manuel",
                          ok: true) {
@@ -744,7 +771,7 @@ struct Dashboard: View {
                 Toggle("Démarrer l’appli liée et claude-desktopd à l’ouverture de Reprise", isOn: Binding(get: { app.desktopStartup }, set: { app.setDesktopStartup($0) }))
                     .disabled(app.desktopBusy)
                 SettingsHint(
-                    text: "Rien n’est lancé implicitement : ces actions sont explicites.",
+                    text: "Si cette option est activée, l’application liée et son service démarrent à l’ouverture de Reprise.",
                     detail: "Le démarrage automatique n’ouvre que l’application liée et son service au lancement de Reprise. Aucun autre élément d’ouverture macOS n’est modifié.")
             }
             SettingsCard(title: "Socket de claude-desktopd",
@@ -837,20 +864,20 @@ struct Dashboard: View {
                 detail: verified && actionCount == 0
                     ? "Aucune action nécessaire après la dernière mise à jour."
                     : app.healthCheckedAt.map { "Dernier contrôle réussi : " + localDateTime($0) + "." } ?? "Aucun contrôle vérifié pour l’instant.")
-            SettingsCard(title: "Redémarrer les services",
+            SettingsCard(title: "Relancer Reprise",
                          status: app.chainSupported ? "Disponible" : "Indisponible",
                          ok: app.chainSupported) {
                 HStack(spacing: 10) {
-                    Button("Tout redémarrer") { app.restartChain() }.disabled(app.chainBusy || !app.chainSupported)
+                    Button("Relancer Reprise") { app.restartChain() }.disabled(app.chainBusy || !app.chainSupported)
                     Spacer()
                     if app.chainBusy { InlineStatus(busy: true, message: app.chainNote) }
                 }
                 if !app.chainNote.isEmpty { InlineStatus(busy: false, message: app.chainNote) }
                 SettingsHint(
-                    text: "Aucune application liée n’est arrêtée de force.",
+                    text: "Les applications liées et codexd ne sont pas arrêtés de force.",
                     detail: app.chainSupported
-                        ? "La relance redémarre Reprise, le service claude-desktopd et le service codexd, puis relit leur état. Les applications liées ne sont jamais terminées de force."
-                        : "Le redémarrage groupé est indisponible dans cette distribution (runtime embarqué ou script absent).")
+                        ? "La commande lance le script de relance. Celui-ci peut exiger une archive runtime ; il ne redémarre jamais codexd. Consultez le résultat affiché pour confirmer l’opération."
+                        : "La relance par script est indisponible dans cette distribution (runtime embarqué ou script absent).")
             }
             SettingsCard(title: "Éléments à examiner",
                          status: verified ? (actionCount == 0 ? "Rien à faire" : "\(actionCount) point(s)") : "Non vérifié",

@@ -71,6 +71,7 @@ class SessionStore:
             selected = port if port is not None else route['port']
             changed = selected != route['port']
             route.update(enabled=enabled, port=selected,
+                         startup_default_migrated=True,
                          interval_seconds=interval_seconds if interval_seconds is not None else route['interval_seconds'],
                          route_key=self.registry.claude_route(self.scope, selected) if selected else None,
                          revision=route['revision'] + 1, next_refresh_at=None,
@@ -82,6 +83,29 @@ class SessionStore:
                     self.save_session(session)
             self.save_route(route)
         return route
+
+    def restore_default(self):
+        """Enable a previously configured route once, preserving later user choices."""
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            row = self.db.execute('SELECT data FROM claude_observer_routes WHERE scope=?',
+                                  (self.scope,)).fetchone()
+            if row is None:
+                return 'not_configured'
+            route = dict(default_route(), **json.loads(row[0]))
+            if route.get('startup_default_migrated') is True:
+                return 'already_migrated'
+            port = route.get('port')
+            interval = route.get('interval_seconds')
+            if (route.get('transport') != 'cdp-web' or type(port) is not int
+                    or not 1 <= port <= 65535 or type(interval) is not int
+                    or not 15 <= interval <= 3600):
+                return 'not_configured'
+            route.update(enabled=True, startup_default_migrated=True,
+                         revision=route['revision'] + 1, next_refresh_at=None,
+                         refresh_status='cached')
+            self.save_route(route)
+            return 'enabled'
 
     def register(self, chat_id, *, source, now=None):
         chat = validate_chat_id(chat_id)

@@ -18,7 +18,7 @@ from claude_quota import parse_pause
 from claude_session_store import SessionStore, binding, empty_snapshot, open_database
 
 BUDGET_SECONDS = 5.0
-COMMANDS = ('claude-sessions-status', 'claude-observer-config', 'claude-session-register', 'claude-session-remove')
+COMMANDS = ('claude-sessions-status', 'claude-observer-config', 'claude-observer-restore-default', 'claude-session-register', 'claude-session-remove')
 
 REFUSAL_PATTERN = (r"\b(?:usage|message) limits? (?:reached|exceeded)\b"
                    r"|\byou(?: have|'ve) (?:reached|exceeded) (?:your|the) (?:usage|message) limit\b"
@@ -156,7 +156,7 @@ def _unavailable(store, sessions, route, now, deadline, reason='source_unavailab
         session['observation'].update(presence='unavailable', target_count=0, last_checked_at=now)
         with store.db:
             retained = store.observe(session, route['revision'])
-        if retained:
+        if retained and route['port'] is not None:
             store.registry.record_claude(store.scope, route['port'], session['session_key'],
                                          dict(observation_status='unavailable', failure=reason), observed_at=now)
 
@@ -181,7 +181,7 @@ def refresh(store, state, *, now, if_due=False):
         store.db.execute('PRAGMA busy_timeout=100')
         try:
             if route['port'] is None:
-                targets, metadata, instance = [], None, None
+                raise ValueError('No observation endpoint configured')
             else:
                 targets = cdp.read_targets(route['port'], timeout=_timeout(deadline))
                 metadata = cdp.local_json(route['port'], '/json/version', timeout=_timeout(deadline))
@@ -252,6 +252,10 @@ def status(root, *, project_root=None, quick_state=None, refresh_now=False, refr
     if error:
         return empty_snapshot(error)
     project, state, descriptor = resolved
+    if operation == 'restore_default' and not (state / 'quick.sqlite').is_file():
+        result = empty_snapshot(binding=descriptor)
+        result.update(status='ok', project_root=project, startup_migration='not_configured')
+        return result
     write = bool(operation or ((refresh_now or refresh_if_due) and (state / 'quick.sqlite').is_file()))
     db = open_database(state, write=write)
     if db is None:
@@ -262,12 +266,17 @@ def status(root, *, project_root=None, quick_state=None, refresh_now=False, refr
         store = SessionStore(db, project, initialize=write)
         if operation == 'configure':
             store.configure(enabled=enabled, port=port, interval_seconds=interval_seconds)
+        elif operation == 'restore_default':
+            migration = store.restore_default()
         elif operation == 'register':
             store.register(chat_id, source='operator_desktop_confirmed', now=stamp)
         elif operation == 'remove':
             store.remove(chat_id)
         refreshed = refresh(store, state, now=stamp, if_due=refresh_if_due) if refresh_now or refresh_if_due else 'cached'
-        return store.snapshot(descriptor, now=stamp, refresh_status=refreshed)
+        result = store.snapshot(descriptor, now=stamp, refresh_status=refreshed)
+        if operation == 'restore_default':
+            result['startup_migration'] = migration
+        return result
     finally:
         db.close()
 
@@ -287,10 +296,10 @@ def main(root, argv=None):
             command.add_argument('--enabled', required=True, choices=('true', 'false'))
             command.add_argument('--port', type=int)
             command.add_argument('--interval-seconds', type=int)
-        else:
+        elif name in ('claude-session-register', 'claude-session-remove'):
             command.add_argument('--chat', required=True)
     args = parser.parse_args(argv)
-    operation = {'claude-observer-config': 'configure', 'claude-session-register': 'register',
+    operation = {'claude-observer-config': 'configure', 'claude-observer-restore-default': 'restore_default', 'claude-session-register': 'register',
                  'claude-session-remove': 'remove'}.get(args.command)
     try:
         result = status(root, project_root=args.project_root, quick_state=args.quick_state,

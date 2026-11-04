@@ -1,6 +1,23 @@
 import Foundation
 import Combine
 
+/// One-time application of the operator's activation request. Subsequent changes persist.
+enum StartupPreferences {
+    static let versionKey = "StartupActivationVersion"
+    static let pilotEnabledKey = "ApplePilotEnabled"
+    static func migrate(_ defaults: UserDefaults) {
+        guard defaults.integer(forKey: versionKey) < 1 else { return }
+        defaults.set(true, forKey: "DesktopLinkedStartup")
+        defaults.set(true, forKey: "SharedCodexStartup")
+        defaults.set(true, forKey: pilotEnabledKey)
+        defaults.set(1, forKey: versionKey)
+    }
+    static func startupFlag(_ key: String, defaults: UserDefaults = .standard) -> Bool {
+        migrate(defaults)
+        return defaults.bool(forKey: key)
+    }
+}
+
 /// Isolated UI controller. The caller supplies trusted bundled executable paths.
 @MainActor
 final class ApplePilotUI: ObservableObject {
@@ -10,12 +27,12 @@ final class ApplePilotUI: ObservableObject {
         let text: String
     }
 
-    @Published var enabled = false
+    @Published var enabled = false { didSet { preferences?.set(enabled, forKey: StartupPreferences.pilotEnabledKey) } }
     @Published var showMemory = false
-    @Published var projectID = ""
-    @Published var workID = ""
-    @Published var checkpointID = ""
-    @Published var skill = "checkpoint-review"
+    @Published var projectID = "" { didSet { saveSelection(projectID, key: "ApplePilotProject", uuid: true) } }
+    @Published var workID = "" { didSet { saveSelection(workID, key: "ApplePilotWork", uuid: true) } }
+    @Published var checkpointID = "" { didSet { saveSelection(checkpointID, key: "ApplePilotCheckpoint", uuid: true) } }
+    @Published var skill = "checkpoint-review" { didSet { saveSelection(skill, key: "ApplePilotSkill", uuid: false) } }
     @Published var prompt = ""
     @Published private(set) var status = "Pilote arrêté."
     @Published private(set) var messages: [Message] = []
@@ -106,6 +123,11 @@ final class ApplePilotUI: ObservableObject {
     @Published private(set) var cancelling = false
     @Published private(set) var cleanupUnconfirmed = false
 
+    private let preferences: UserDefaults?
+    private var knownProjects: Set<String>?
+    private var restoredContext: [String]?
+    private var startupOpenAttempted = false
+    private let validSkills: Set<String> = ["checkpoint-review", "project-summary"]
     private var resettingDraft = false
     private let python: URL
     private let service: URL
@@ -129,18 +151,73 @@ final class ApplePilotUI: ObservableObject {
     private var readEnded = false
     nonisolated private static let maximumFrame = 131_072
 
-    init(python: URL, service: URL, state: URL, requestTimeout: TimeInterval = 90) {
+    init(python: URL, service: URL, state: URL, requestTimeout: TimeInterval = 90, preferences: UserDefaults? = nil) {
+        self.preferences = preferences
         self.python = python
         self.service = service
         self.state = state
         self.requestTimeout = max(0.1, requestTimeout)
+        if let preferences {
+            StartupPreferences.migrate(preferences)
+            enabled = preferences.bool(forKey: StartupPreferences.pilotEnabledKey)
+            let project = preferences.string(forKey: "ApplePilotProject") ?? ""
+            let work = preferences.string(forKey: "ApplePilotWork") ?? ""
+            let checkpoint = preferences.string(forKey: "ApplePilotCheckpoint") ?? ""
+            if canonical(project) { projectID = project }
+            if canonical(work) { workID = work }
+            if preferences.bool(forKey: "ApplePilotCheckpointInvalid") {
+                checkpointID = checkpoint.isEmpty || canonical(checkpoint) ? "invalid" : checkpoint
+            } else if canonical(checkpoint) { checkpointID = checkpoint }
+            if let savedSkill = preferences.string(forKey: "ApplePilotSkill"), validSkills.contains(savedSkill) { skill = savedSkill }
+            restoredContext = [projectID, workID, checkpointID, skill]
+        }
+    }
+
+    private func saveSelection(_ value: String, key: String, uuid: Bool) {
+        guard let preferences else { return }
+        if key == "ApplePilotCheckpoint" {
+            if value.isEmpty {
+                preferences.removeObject(forKey: key)
+                preferences.removeObject(forKey: "ApplePilotCheckpointInvalid")
+            } else if canonical(value) {
+                preferences.set(value, forKey: key)
+                preferences.removeObject(forKey: "ApplePilotCheckpointInvalid")
+            } else {
+                preferences.set(true, forKey: "ApplePilotCheckpointInvalid")
+                preferences.set(value, forKey: key)
+            }
+            return
+        }
+        if value.isEmpty { preferences.removeObject(forKey: key); return }
+        guard uuid ? canonical(value) : validSkills.contains(value) else {
+            preferences.removeObject(forKey: key)
+            return
+        }
+        preferences.set(value, forKey: key)
+    }
+
+    func updateKnownProjects(_ ids: Set<String>) { knownProjects = ids }
+    func openRestoredSessionIfReady() {
+        guard !startupOpenAttempted, let restoredContext,
+              restoredContext == [projectID, workID, checkpointID, skill], canOpen else { return }
+        startupOpenAttempted = true
+        open()
+    }
+    var contextNeedsConfiguration: Bool {
+        !canonical(projectID) || !canonical(workID) || (knownProjects.map { !$0.contains(projectID) } ?? (preferences != nil))
+            || (!checkpointID.isEmpty && !canonical(checkpointID)) || !validSkills.contains(skill)
+    }
+    var contextConfigurationMessage: String {
+        if !checkpointID.isEmpty && !canonical(checkpointID) {
+            return "Corrigez ou effacez l’identifiant du checkpoint."
+        }
+        return "Configuration requise : choisissez un projet disponible et un travail valide."
     }
 
     var hostRunning: Bool { process != nil }
     var canSelect: Bool { !sessionOpen && !busy && !memoryBusy && !closing && !cleanupUnconfirmed && !hostTerminating }
     var canOpen: Bool {
-        enabled && canSelect && canonical(projectID) && canonical(workID)
-            && (checkpointID.isEmpty || canonical(checkpointID))
+        enabled && canSelect && !contextNeedsConfiguration
     }
     var canSend: Bool {
         sessionOpen && !busy && !closing && !cleanupUnconfirmed
