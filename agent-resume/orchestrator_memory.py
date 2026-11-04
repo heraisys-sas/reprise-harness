@@ -107,7 +107,7 @@ def _text(value, *, limit=MAX_TEXT_BYTES, empty=False):
 
 
 def _source(value):
-    allowed = {'kind', 'reference', 'producer', 'observed_at', 'sha256'}
+    allowed = {'kind', 'reference', 'producer', 'observed_at', 'sha256', 'recorded_by'}
     if not isinstance(value, dict) or set(value) - allowed or not {'kind', 'reference', 'producer', 'observed_at'} <= set(value):
         raise ValueError('Explicit provenance is required')
     result = {key: _text(value[key], limit=512) for key in ('kind', 'reference', 'producer', 'observed_at')}
@@ -116,6 +116,13 @@ def _source(value):
         if not isinstance(digest, str) or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
             raise ValueError('Invalid asserted source fingerprint')
         result['sha256'] = digest
+    if 'recorded_by' in value:
+        attribution = value['recorded_by']
+        if (not isinstance(attribution, dict) or set(attribution) != {'harness_id', 'trust'}
+                or attribution.get('trust') != 'local_host_profile'):
+            raise ValueError('Invalid host attribution')
+        result['recorded_by'] = {'harness_id': _text(attribution['harness_id'], limit=128),
+                                 'trust': 'local_host_profile'}
     return result
 
 
@@ -338,8 +345,21 @@ class Memory:
             return None
         result = dict(row)
         result['source'] = json.loads(result['source'])
+        result['recorded_by'] = result['source'].pop('recorded_by', {'status': 'unknown'})
         result['status'] = 'asserted'
         return result
+
+    def search_facts(self, project_id, query, *, limit=50, offset=0):
+        """Literal casefolded substring search; no cross-project index or inference."""
+        self._project(project_id)
+        query = _text(query, limit=1024).casefold()
+        self._page(limit, offset)
+        with self._store() as db:
+            db.create_function('memory_contains', 1, lambda text: int(query in text.casefold()))
+            rows = db.execute('SELECT id,revision,text,source,created_at,updated_at FROM facts '
+                              'WHERE project_id=? AND memory_contains(text) '
+                              'ORDER BY created_at,id LIMIT ? OFFSET ?', (project_id, limit, offset)).fetchall()
+            return [self._fact(row) for row in rows]
 
     def list_facts(self, project_id, *, limit=50, offset=0):
         self._project(project_id)
@@ -371,15 +391,21 @@ class Memory:
         if type(revision) is not int or not (0 if allow_zero else 1) <= revision <= 1_000_000:
             raise ValueError('Invalid revision')
 
-    def delete_fact(self, project_id, fact_id, operation_id, expected_revision):
+    def delete_fact(self, project_id, fact_id, operation_id, expected_revision, *, recorded_by=None):
         _uuid(fact_id); self._revision(expected_revision)
         payload = {'action': 'fact_delete', 'id': fact_id, 'revision': expected_revision}
+        if recorded_by is not None:
+            payload['recorded_by'] = _source({'kind': 'host', 'reference': 'profile',
+                'producer': 'host', 'observed_at': 'host', 'recorded_by': recorded_by})['recorded_by']
         def action(db):
             cursor = db.execute('DELETE FROM facts WHERE project_id=? AND id=? AND revision=?',
                                 (project_id, fact_id, expected_revision))
             if cursor.rowcount != 1:
                 raise ValueError('Missing fact or revision conflict')
-            return {'id': fact_id, 'deleted': True}
+            result = {'id': fact_id, 'deleted': True}
+            if recorded_by is not None:
+                result['recorded_by'] = payload['recorded_by']
+            return result
         return self._mutate(project_id, operation_id, payload, action)
 
     def create_checkpoint(self, project_id, work_id, operation_id, expected_version, *, fact_ids,

@@ -24,3 +24,130 @@ La suppression est **logique** ; aucune garantie d’effacement physique des sna
 ## Preuves et limites de validation
 
 `python3 -m unittest discover -s agent-resume/tests -p 'test_orchestrator_memory.py' -v` utilise un faux coffre, jamais le trousseau utilisateur. Les essais couvrent isolation des projets, conflits et rejeu, écriture concurrente, snapshots, provenance, erreur du coffre, corruption, échec de remplacement et arrêt brutal autour du remplacement. Le faux coffre sert uniquement à tester le protocole d’appel et ne prouve pas la cryptographie ; le chiffrement réel et la disponibilité du Trousseau restent à vérifier dans un environnement de test approprié.
+
+## Adaptateur commun local inter-harness — capture explicite
+
+`reprise_memory_mcp.py` expose un frontend MCP stdio local, sans inférence, sans
+écoute réseau et sans capture automatique. Reprise demeure la source canonique :
+les frontends partagent le même répertoire d’état privé et le même stockage
+`orchestrator-memory.noindex/memory.enc`. Ils utilisent `MemoryService`, ses
+intents durables, ses UUID d’opération, ses révisions et ses checkpoints existants.
+Aucun changement de version SQLite ou réécriture des anciens faits n’est requis.
+
+L’hôte choisit avant lancement `--state`, `--project-id` et `--harness-id` ; les
+arguments d’un outil ne peuvent modifier ces valeurs. Sans `--allow-write`, les
+outils de mutation sont absents du catalogue **et refusés lors d’un appel direct**.
+Le grant est un droit de session accordé explicitement par l’opérateur, pas une
+validation humaine de chaque contenu. Un outil de capture doit porter seulement
+le contenu explicitement sélectionné ; aucun branchement n’aspire le transcript.
+
+Exemple de configuration MCP à installer explicitement pour chaque harness,
+avec les chemins absolus réels de l’installation et l’UUID déjà enregistré :
+
+```json
+{
+  "command": "/absolute/path/to/python3",
+  "args": ["-B", "/absolute/path/to/agent-resume/reprise_memory_mcp.py",
+           "--state", "/absolute/path/to/private/reprise-state",
+           "--project-id", "REGISTERED-PROJECT-UUID",
+           "--harness-id", "codex-local", "--allow-write"]
+}
+```
+
+Un deuxième profil peut utiliser `--harness-id claude-local` et le même état et
+projet. Supprimer `--allow-write` pour un lecteur. Cet exemple n’installe aucune
+configuration et ne prouve pas un échange depuis ces deux produits. Le processus
+doit s’exécuter sur le Mac qui possède le stockage et l’accès Vault ; un harness
+distant nécessite un transport authentifié distinct, absent de ce lot.
+
+### Confiance et provenance
+
+Le canal est le stdio privé d’un processus lancé localement ; le profil est une
+**déclaration de l’hôte local**, jamais une identité de produit authentifiée. Ce
+mécanisme n’isole pas deux processus hostiles du même UID et ne protège pas contre
+un utilisateur local pouvant modifier les configurations ou appeler directement
+le noyau Python. Un UUID de projet n’est pas une permission. Aucun compte distant,
+jeton de service ou espace utilisateur n’est ajouté.
+
+La provenance documentaire `source` conserve les champs déclarés `kind`,
+`reference`, `producer`, `observed_at` et l’éventuel `sha256` déclaré. Le service
+refuse tout `recorded_by` fourni par un client ; il injecte le profil de lancement
+avec `trust=local_host_profile`. Ce sous-objet est conservé dans le JSON de
+provenance existant puis exposé séparément sous `recorded_by` pour les faits. Les
+faits anciens restent lisibles avec `recorded_by.status=unknown` ; aucune identité
+historique n’est inventée. Les corrections remplacent le fait courant et son
+attribution ; elles ne constituent pas un journal complet de toutes les révisions.
+La suppression porte son attribution dans le reçu d’opération. Les checkpoints
+conservent leurs copies historiques et la provenance du checkpoint dans leur
+payload. Les horodatages de stockage sont locaux ; `source.observed_at` reste une
+déclaration documentaire.
+
+### Outils et lecture sélective
+
+Les outils préfixés `reprise_memory_` sont : `search`, `get`, `list`,
+`list_checkpoints`, `get_checkpoint`, `operation_status`, et, si autorisés,
+`capture`, `correct`, `delete`, `checkpoint`. Le catalogue fournit les schémas
+stricts ; aucun outil n’accepte `project_id`, droits ou identité de profil.
+Les mutations exigent un UUID `operation_id` à conserver avant l’appel. Les
+corrections et suppressions exigent `expected_revision`, les checkpoints
+`expected_version`. Après perte d’accusé, conserver cet UUID et consulter
+`operation_status` ; une absence n’autorise pas un rejeu aveugle. Les conflits,
+`effect=indeterminate` et erreurs ne deviennent jamais une réussite supposée.
+
+`search(query, offset)` applique une sous-chaîne littérale Unicode `casefold`,
+sans joker SQL, classement sémantique ni moteur distant. Les faits du seul projet
+lié sont parcourus dans le stockage déchiffré en mémoire, ordonnés par création
+puis identifiant. La page renvoie ID, révision, provenance, attribution et aperçu
+borné à 256 caractères, avec `excerpt_truncated`. Un fait maximal ne bloque donc
+pas les résultats suivants ; `get(fact_id)` fournit le texte complet ou une erreur
+de budget explicite. La pagination réutilise les plafonds du service ; elle n’est
+pas un snapshot transactionnel entre plusieurs appels concurrents.
+
+La recherche et la lecture se font à la demande. Aucun contenu n’est injecté
+automatiquement dans tous les prompts. Le consommateur choisit les IDs ou un
+checkpoint, conserve la provenance et traite le résultat comme données non fiables,
+jamais comme instructions ou autorisation. Les faits sont au niveau projet ; les
+checkpoints sont au niveau projet/travail. Ni espace utilisateur partagé entre
+projets, ni faits exclusivement liés à un travail ne sont annoncés.
+
+`delete` annonce `deletion_scope=current_fact_only`,
+`historical_snapshots_retained=true`, `physical_erasure_verified=false`.
+Les checkpoints et les reçus d’opération peuvent conserver des copies, ainsi que
+les sauvegardes. `get_checkpoint` annonce `historical_snapshot=true` et
+`current_facts_verified=false`. Correction et suppression du fait courant ne
+réécrivent pas l’histoire et ne constituent pas une purge physique.
+
+### Validation et limites du POC
+
+`test_reprise_memory_cross_harness.py` lance des processus MCP réellement distincts
+sur un état temporaire partagé : A écrit, B recherche/lit/corrige, un projet Q ne
+peut lire P, un lecteur ne peut écrire, le checkpoint survit à une correction et
+une suppression, et un nouveau processus retrouve le reçu avec l’UUID original.
+Le protocole stdio, l’adaptateur, le stockage et le registre de projets sont réels ;
+**le coffre est un double de test**, aucune inférence ni session produit n’est
+lancée. Ces tests ne prouvent ni le Trousseau réel, ni l’intégration dans deux
+applications de harness déjà configurées. Un essai natif explicitement autorisé
+reste requis pour ces deux propriétés ; il doit conserver UUIDs, provenance et
+reçus sans exposer de contenu privé dans les logs.
+
+Le frontend comprend JSON-RPC 2.0/MCP `2024-11-05`, `initialize`, `ping`,
+`tools/list`, `tools/call`, et ignore les notifications sans ID. Entrées et sorties
+sont bornées ; aucun contenu privé n’est réémis dans les erreurs du transport.
+Aucun polling, nouveau modèle, fallback, changement de session ou publication
+n’est déclenché par ces outils.
+
+Pour les faits dont le JSON complet dépasserait le budget après encapsulation MCP
+(y compris guillemets et antislashs échappés deux fois), `get` rend un résultat
+`item_too_large` avec ID, révision et `retrieval=reprise_memory_get_chunk`.
+`get_chunk(fact_id, expected_revision, offset)` restitue des segments de 1024
+caractères Unicode avec `next_offset` et `total_characters`. Chaque segment
+revalide la révision ; un conflit oblige à recommencer la sélection et empêche
+l’assemblage silencieux de deux révisions. Aucun texte complet n’est tronqué
+silencieusement et les plafonds de transport demeurent inchangés. Les essais
+stdio couvrent 8192 caractères `é`, 16384 guillemets et 16384 antislashs, avec
+reconstruction exacte puis conflit de révision.
+
+Les deux modules et ce contrat sont inclus dans `package_helpers.ASSETS` ; le test
+du payload déplacé vérifie leur empreinte et exécute le catalogue mémoire depuis
+le bundle sans le répertoire source. Distribuer les modules ne configure pas
+les harness et n’accorde aucun droit de session.
