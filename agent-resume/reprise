@@ -519,9 +519,9 @@ def main():
             claude_result = claude_quota.run_native(db, ROOT, STATE)
             with db:
                 scheduler.put(db, 'claude_desktop_last_observation', dict(claude_result, checked_at=dt.datetime.now().timestamp()))
-        except (ValueError, KeyError, OSError, sqlite3.Error, subprocess.SubprocessError):
+        except Exception as error:
             with db:
-                scheduler.put(db, 'claude_desktop_last_observation', {'status': 'unavailable', 'checked_at': dt.datetime.now().timestamp()})
+                scheduler.put(db, 'claude_desktop_last_observation', {'status': 'unavailable', 'checked_at': dt.datetime.now().timestamp(), 'error': type(error).__name__})
         run_due(db, executable)
         try:
             cleanup(STATE)
