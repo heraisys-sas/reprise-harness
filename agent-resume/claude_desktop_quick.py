@@ -186,7 +186,25 @@ class Endpoint:
                 # explicitly, then pick once again (still exactly one attach).
                 transport.call('Target.createTarget',
                                {'url': 'https://claude.ai' + path})
-                transport.pick_and_attach(chat_id)
+                # The new target takes a moment to register and load; poll
+                # briefly instead of picking immediately (cold-start race).
+                attached = None
+                for _ in range(20):
+                    try:
+                        attached = transport.pick_and_attach(chat_id)
+                        break
+                    except RuntimeError:
+                        time.sleep(0.5)
+                if attached is None:
+                    # Diagnostic: report the actual open targets so a redirect
+                    # or a silent createTarget failure is visible in the receipt.
+                    try:
+                        infos = transport.call('Target.getTargets', {}).get('targetInfos', [])
+                        seen = [str(i.get('url', '')) for i in infos if i.get('type') == 'page']
+                    except Exception as diag_error:
+                        seen = [f'<getTargets échoué: {diag_error}>']
+                    raise RuntimeError(
+                        f'Page claude.ai/chat/{chat_id} introuvable après createTarget ; cibles: {seen}')
             if not claude_desktop_apply.wait_composer(transport):
                 cdp_mod.terminate_chrome(proc)
                 return result | {'dispatch_ok': False, 'stage': 'composeur',
@@ -336,15 +354,47 @@ class Endpoint:
             return {'ok': False, 'status': 'session', 'reason': str(exc)}
 
         try:
-            # Single pick-and-attach: getTargets → select /chat/<uuid> → attachToTarget flatten
-            transport.pick_and_attach(chat_uuid)
+            try:
+                # Single pick-and-attach: getTargets → select /chat/<uuid> → attachToTarget flatten
+                transport.pick_and_attach(chat_uuid)
+            except RuntimeError:
+                # Cold start: launch_chrome opens only https://claude.ai; create
+                # the chat target explicitly, then poll briefly before picking
+                # (the new target takes a moment to register and load).
+                transport.call('Target.createTarget',
+                               {'url': 'https://claude.ai/chat/' + chat_uuid})
+                attached = None
+                for _ in range(20):
+                    try:
+                        attached = transport.pick_and_attach(chat_uuid)
+                        break
+                    except RuntimeError:
+                        time.sleep(0.5)
+                if attached is None:
+                    try:
+                        infos = transport.call('Target.getTargets', {}).get('targetInfos', [])
+                        seen = [str(i.get('url', '')) for i in infos if i.get('type') == 'page']
+                    except Exception as diag_error:
+                        seen = [f'<getTargets échoué: {diag_error}>']
+                    raise RuntimeError(
+                        f'Page claude.ai/chat/{chat_uuid} introuvable après createTarget ; cibles: {seen}')
         except Exception as exc:
             cdp_mod.terminate_chrome(proc)
             return {'ok': False, 'status': 'session', 'reason': str(exc)}
 
+        if not claude_desktop_apply.wait_composer(transport):
+            cdp_mod.terminate_chrome(proc)
+            return {'ok': False, 'status': 'composeur', 'stage': 'composeur',
+                    'detail': 'Composeur indisponible'}
+
         try:
             compose_check = transport.evaluate(
                 "(function(){const el=document.querySelector('[data-testid=compose-textarea]');return el?{hasText:!!el.innerText,textLength:el.innerText.length}:null})()")
+        except Exception as exc:
+            cdp_mod.terminate_chrome(proc)
+            return {'ok': False, 'status': 'send_failed',
+                    'reason': f'compose_check: {exc}', 'exc_type': type(exc).__name__}
+        try:
             if compose_check and compose_check.get("textLength", 0) > 0:
                 stage = 'brouillon'
                 cdp_mod.terminate_chrome(proc)
@@ -355,14 +405,16 @@ class Endpoint:
             # beforeinput/input through the browser input pipeline so the
             # claude.ai React state actually observes the text.
             inserted = claude_desktop_apply._insert(transport, prompt)
-            if not isinstance(inserted, dict) or inserted.get('inserted') is not True:
-                cdp_mod.terminate_chrome(proc)
-                return {'ok': False, 'status': 'composeur', 'stage': 'composeur',
-                        'detail': 'Insertion dans le composeur non confirmée'}
-            stage = 'envoyé'
         except Exception as exc:
             cdp_mod.terminate_chrome(proc)
-            return {'ok': False, 'status': 'send_failed', 'reason': str(exc)}
+            return {'ok': False, 'status': 'send_failed',
+                    'reason': f'insert: {exc}', 'exc_type': type(exc).__name__}
+        if not isinstance(inserted, dict) or inserted.get('inserted') is not True:
+            cdp_mod.terminate_chrome(proc)
+            return {'ok': False, 'status': 'composeur', 'stage': 'composeur',
+                    'detail': 'Insertion dans le composeur non confirmée',
+                    'insert_result': inserted}
+        stage = 'envoyé'
 
         try:
             # Pre-click gate: the send button must be enabled; one Enter

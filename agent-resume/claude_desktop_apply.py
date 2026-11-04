@@ -332,7 +332,13 @@ def _insert(cdp, text):
         catch (error) {}
       }
       current = el.tagName === 'TEXTAREA' ? el.value : readText(el);
-      return {inserted: current === text, length: current.length};
+      // ProseMirror renders paragraph breaks as innerText newlines that can
+      // differ from the raw text; compare a normalized form so equivalent
+      // layout is not rejected.
+      const norm = s => s.replace(/\\r/g, '').replace(/\\u00a0/g, ' ')
+        .replace(/[ \\t]+\\n/g, '\\n').replace(/\\n{2,}/g, '\\n');
+      return {inserted: norm(current) === norm(text),
+              length: current.length, expected_length: text.length};
     })()""")
     result = cdp.evaluate(expression)
     return result if isinstance(result, dict) else {'inserted': False, 'length': 0}
