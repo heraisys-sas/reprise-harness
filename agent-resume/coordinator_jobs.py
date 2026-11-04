@@ -59,6 +59,15 @@ def _proposal(value):
     return proposal
 
 
+def _fingerprint(proposal, authority):
+    return hashlib.sha256(_json({'proposal': proposal, 'authority': authority}).encode('utf-8')).hexdigest()
+
+
+def _request_key(project, operation, fingerprint):
+    # Every proposal revision gets its own request identity; operation_id stays stable.
+    return str(uuid.uuid5(NAMESPACE, 'request:' + project + ':' + operation + ':' + fingerprint))
+
+
 def _authority(value, capability):
     """Validate trusted host claims; neither this function nor a UUID authenticates an operator."""
     keys = {'project_id', 'work_id', 'routing_role', 'routing_actor', 'backend', 'mode', 'billing', 'billing_authorized',
@@ -229,11 +238,10 @@ class Jobs:
         proposal = _proposal(proposal)
         project = authority['project_id']
         self._project(project)
-        payload = {'proposal': proposal, 'authority': authority}
-        fingerprint = hashlib.sha256(_json(payload).encode('utf-8')).hexdigest()
+        fingerprint = _fingerprint(proposal, authority)
         # Operation IDs are scoped by project; the derived identifiers are not credentials.
         job_id = str(uuid.uuid5(NAMESPACE, 'job:' + project + ':' + operation))
-        request_key = str(uuid.uuid5(NAMESPACE, 'request:' + project + ':' + operation))
+        request_key = _request_key(project, operation, fingerprint)
         with self._store(write=True) as data:
             for item in data['jobs']:
                 if item['project_id'] == project and item['operation_id'] == operation:
@@ -244,22 +252,54 @@ class Jobs:
                 raise ValueError('Jobs capacity reached')
             record = {'project_id': project, 'operation_id': operation, 'job_id': job_id,
                       'request_key': request_key, 'fingerprint': fingerprint, 'created_at': time.time(),
-                      'status': 'draft', 'proposal': proposal, 'authority': authority}
+                      'status': 'draft', 'proposal': proposal, 'authority': authority, 'revision': 0}
             data['jobs'].append(record)
             return self._public(record)
+
+    def revise(self, project_id, operation_id, proposal, *, expected_revision):
+        """Durably revise an operator-owned draft with CAS; never dispatch or alter admitted work."""
+        project, operation = _uuid(project_id), _uuid(operation_id)
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError('Invalid expected revision')
+        proposal = _proposal(proposal)
+        self._project(project)
+        job_id = str(uuid.uuid5(NAMESPACE, 'job:' + project + ':' + operation))
+        with self._store(write=True) as data:
+            for row in data['jobs']:
+                if row['project_id'] != project or row['job_id'] != job_id:
+                    continue
+                if row.get('operation_id') not in (None, operation):
+                    raise ValueError('Operation identity mismatch')
+                if row['status'] != 'draft':
+                    raise ValueError('Draft only; admitted missions cannot be revised')
+                fingerprint = _fingerprint(proposal, row['authority'])
+                # An exact replay is a no-op even when its original CAS token is now stale.
+                if row.get('fingerprint') == fingerprint and row['proposal'] == proposal:
+                    return self._public(row)
+                revision = row.get('revision', 0)
+                if type(revision) is not int or revision != expected_revision:
+                    raise ValueError('Revision conflict')
+                row.update(operation_id=operation, proposal=proposal, fingerprint=fingerprint,
+                           request_key=_request_key(project, operation, fingerprint), revision=revision + 1,
+                           revised_at=time.time())
+                return self._public(row)
+            raise ValueError('Job not found')
 
     @staticmethod
     def _public(item):
         # Legacy recorded rows were accepted using only a key and result hash;
         # neither proves the recorded request had this mission's payload.
         legacy_recorded = item['status'] == 'recorded'
-        return {'job_id': item['job_id'], 'request_key': item['request_key'],
+        result = {'job_id': item['job_id'], 'request_key': item['request_key'],
                 'project_id': item['project_id'], 'status': 'indeterminate' if legacy_recorded else item['status'],
                 'created_at': item['created_at'], 'proposal': item['proposal'],
                 'authority': item['authority'], 'revision': item.get('revision', 0),
                 'attempt_id': item.get('attempt_id'), 'result_receipt': None if legacy_recorded else item.get('result_receipt'),
                 'authorization_evidence': item.get('authorization_evidence'),
                 'dispatch_enabled': False}
+        if item.get('operation_id') is not None:
+            result['operation_id'] = item['operation_id']
+        return result
 
     def reserve(self, project_id, job_id, *, expected_revision, attempt_id):
         """Persist an intent before handoff; it does not prove bridge admission."""
