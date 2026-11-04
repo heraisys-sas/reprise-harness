@@ -151,3 +151,31 @@ Les deux modules et ce contrat sont inclus dans `package_helpers.ASSETS` ; le te
 du payload déplacé vérifie leur empreinte et exécute le catalogue mémoire depuis
 le bundle sans le répertoire source. Distribuer les modules ne configure pas
 les harness et n’accorde aucun droit de session.
+
+## Installation gérée DSH et Claude
+
+Les installateurs `harness_integration` et `claude_integration` génèrent le
+connecteur distinct `reprise-memory` depuis une release vérifiée. Le module commun
+`memory_integration` choisit `off/read/write`, vérifie le lien registre
+projet→workspace/harness sans créer de projet ni modifier SQLite, construit la
+commande et sonde seulement le catalogue. Les sélections mémoire installées sont
+conservées quand une option est omise ; un ancien profil sans sélection reste
+`off`. Un nouveau projet ne reçoit pas implicitement un ancien grant d’écriture.
+Le retrait conserve les données et ne réactive pas l’écriture à la réinstallation.
+
+`test_managed_memory_integration.py` crée deux workspaces Git associés, les
+configurations DSH/Claude temporaires et un bundle de test déplacé dans une release.
+Il exécute les deux commandes réellement produites par les plans gérés et vérifie
+capture explicite A→lecture B, provenance, lecture seule, refus d’un autre projet,
+conservation des entrées tierces, mises à jour, conflits et retrait. Le runtime
+s’appuie sur l’interpréteur de test et le binaire Vault est un double protocolaire
+local : ni Trousseau réel, ni chargement dans DSH/Claude, ni modèle invoqué.
+L’échange de deux transports configurés est prouvé ; celui de deux clients produits
+reste à vérifier après activation explicitement autorisée et rechargement coordonné.
+
+Pour cet essai réel, conserver le `operation_id` de la capture d’un nonce de test
+explicitement demandé à A, le reçu, le `fact_id`, puis la lecture de B et sa
+provenance. Vérifier Q séparément. Aucun fait existant ni transcript n’est nécessaire.
+Les vérificateurs gérés n’effectuent pas cet essai : ils rendent catalogue directement
+sondé, client inconnu et échange inconnu, sans transformer la configuration ou
+la disponibilité d’un outil en résultat métier.

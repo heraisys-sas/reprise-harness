@@ -73,3 +73,40 @@ continuations, le planificateur privilégie maintenant claude-desktopd via le m�
 RPC que les harness. Sans capacité d’émission et de validation prouvée, il reste
 bloqué sur `dispatch_driver_unavailable` ; le retour MCP ne remplace pas le pilote
 Quick Apply encore absent.
+
+## Connecteur mémoire séparé
+
+`claude-integration-plan` accepte `--memory-access off|read|write` et
+`--memory-project-id UUID`. La sélection absente préserve le choix installé ;
+pour une installation ancienne, elle reste `off`. La mémoire utilise une seconde
+entrée `mcpServers.reprise-memory`, sans changer les outils ni les droits du
+connecteur `reprise-harness`, ni sa sélection `enable_await`. Les entrées tierces
+sont conservées ; une entrée `reprise-memory` non gérée ou personnalisée est
+refusée plutôt qu’adoptée ou écrasée.
+
+```sh
+reprise claude-integration-plan --home CLAUDE_HOME --project CLAUDE_WORKSPACE \
+  --memory-access read --memory-project-id REGISTERED_UUID
+```
+
+Le projet enregistré doit associer `CLAUDE_WORKSPACE` au harness `claude`, dans le
+même état canonique Reprise que DSH. Le plan et l’application revalident cette
+association en lecture seule. L’UUID ne constitue pas une autorisation ni une
+identité de produit authentifiée. Le manifeste conserve la sélection mémoire et
+l’empreinte propre de l’entrée, toutes deux couvertes par le plan géré et ses
+sauvegardes. La mise à jour utilise la release vérifiée ; le retrait ou `off`
+retire seulement l’entrée possédée et ne supprime pas les faits.
+
+`write` transmet explicitement `--allow-write` au processus MCP ; les demandes de
+capture restent explicites et aucun transcript n’est aspiré. Ce choix persistant
+est un droit du processus configuré, pas une confirmation humaine de chaque fait.
+Les permissions propres à Claude restent à accorder dans son interface.
+Changer la configuration ne révoque pas rétroactivement les arguments d’un
+connecteur déjà chargé : le rechargement doit être coordonné séparément.
+
+`claude-integration-verify` sonde directement le catalogue mémoire sans appel de
+modèle et expose les preuves dans `memory`. Il conserve `client_loaded=unknown`
+et `exchange_confirmed=unknown` : la configuration écrite, son lancement direct,
+le chargement par Claude et une vraie lecture d’un fait sont quatre preuves distinctes.
+Les champs `inspect.memory`, `plan.memory` et `verify.memory` sont les points de
+raccord prévus pour l’interface Reprise, avec le même plan/application gérés.
