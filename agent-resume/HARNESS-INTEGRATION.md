@@ -126,3 +126,61 @@ charger une nouvelle version du plugin. `integration-verify` contrôle le bloc,
 le fichier du plugin et les blocs marqués, puis rapporte
 `asi1_effort.configured` avec `client_loaded: unknown`. Aucun appel d’inférence
 n’est effectué.
+
+## Mémoire de projet partagée, sélection explicite
+
+Le parcours géré accepte désormais `--memory-access off|read|write` et
+`--memory-project-id UUID` dans `integration-plan`. Il ajoute une entrée distincte
+`reprise-memory` / `serverName: reprise_memory`, sans élargir les outils du pont
+expert. `read` expose recherche/lecture ; `write` ajoute capture explicite,
+correction, suppression du fait courant et checkpoint. Aucun transcript n’est
+capturé automatiquement. Une installation ancienne sans sélection mémoire reste
+`off`. Une option mémoire omise conserve la sélection installée ; changer d’UUID
+depuis un grant `write` exige de sélectionner explicitement `write` à nouveau.
+
+Le projet doit déjà exister dans le registre canonique, et son workspace
+`harness` doit correspondre au `--project` choisi. Le plan consulte le registre
+en lecture seule dans un processus séparé : aucune création, migration ou
+association implicite. Un registre WAL, un journal actif, un lien ou une
+association incohérente est refusé, sans sidecar SQLite créé par la sonde.
+
+Exemple de première activation en lecture, après création/association explicite
+du projet par le parcours de registre existant :
+
+```sh
+reprise integration-plan --home DSH_HOME --profile desktop --project WORKSPACE \
+  --action install --memory-access read --memory-project-id REGISTERED_UUID
+```
+
+Appliquer le JSON obtenu avec `integration-apply` par le parcours existant. Pour
+accorder l’écriture au processus MCP, remplacer explicitement `read` par `write`
+dans un nouveau plan relu. Pour la désactiver, préparer un plan
+`--memory-access read` ou `off`. Le grant est transmis au lancement du processus
+MCP par `--allow-write` ; ce n’est ni une autorisation d’inférence, ni une
+validation humaine de chaque contenu, ni une preuve de rechargement du client.
+Une configuration persistante réapplique ce choix aux processus qu’elle lance ;
+un processus déjà chargé conserve ses anciens arguments jusqu’à son rechargement.
+
+Les options CLI de délégation, rôle, continuation et permissions déjà gérées sont
+conservées lorsqu’elles sont omises, afin qu’un plan mémoire seul ne les réinitialise
+pas. L’API Python garde ses arguments explicites de contrôle ; les valeurs mémoire
+se retrouvent dans `plan.memory` et le manifeste. L’interface pourra utiliser ces
+mêmes champs et `inspect.memory`, sans autre chemin d’écriture de configuration.
+
+`integration-verify` contrôle la commande mémoire et son association, puis lance
+`initialize`/`tools/list` directement depuis la release vérifiée, sans lire ni écrire
+un fait. `memory.evidence=direct_probe_tools_schema` ne prouve ni chargement DSH,
+ni découverte par le client, ni échange réel : ces états restent `unknown`.
+La capture ne doit être invoquée que pour une information explicitement sélectionnée.
+Le retrait préserve le stockage, les checkpoints, les reçus et les sauvegardes.
+
+La conservation des options ne transfère pas de permissions vers un autre projet :
+un changement de `--project` avec délégation, écriture workspace, continuation,
+rôle coordinator ou bash-sandbox désactivé exige des choix explicites pour le
+nouveau périmètre. Les inverses CLI, mutuellement exclusifs avec leurs positifs,
+permettent la révocation sans retrait complet : `--no-delegate`,
+`--no-codex-workspace-write`, `--no-output-resume`, `--no-asi1-effort` et
+`--enable-bash-sandbox`. Par exemple, révoquer délégation et écriture ensemble
+respecte la contrainte préexistante selon laquelle un grant workspace nécessite
+la délégation. Une modification de configuration ne révoque pas les processus
+MCP déjà chargés ; leur rechargement reste une opération distincte.
