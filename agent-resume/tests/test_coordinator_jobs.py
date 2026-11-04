@@ -56,6 +56,15 @@ def prepare_worker(state, operation, auth, queue):
         queue.put(('error', type(exc).__name__))
 
 
+def revise_worker(state, project, operation, proposal, expected_revision, queue):
+    try:
+        result = jobs.Jobs(state, crypt=fake_crypt).revise(
+            project, operation, proposal, expected_revision=expected_revision)
+        queue.put(('ok', result['revision'], result['request_key'], result['proposal']['objective']))
+    except Exception as exc:
+        queue.put(('error', type(exc).__name__))
+
+
 def crash_worker(state, operation, auth, when):
     store = jobs.Jobs(state, crypt=fake_crypt)
     original = jobs.os.replace
@@ -112,6 +121,53 @@ class JobsTests(unittest.TestCase):
             self.prepare(operation, capability=CAPABILITY | {'configured':False})
         self.assertEqual(self.store.recover(self.p1, operation), first)
         self.assertIsNone(self.store.recover(self.p1, uid()))
+
+    def test_revision_is_durable_idempotent_and_binds_new_request_key_to_content(self):
+        operation = uid()
+        first = self.prepare(operation)
+        revised_proposal = PROPOSAL | {'objective': 'objectif clarifié', 'questions': ['Quelle plateforme ?']}
+        revised = self.store.revise(self.p1, operation, revised_proposal, expected_revision=0)
+        self.assertEqual(revised['operation_id'], operation)
+        self.assertEqual(revised['job_id'], first['job_id'])
+        self.assertEqual(revised['revision'], 1)
+        self.assertNotEqual(revised['request_key'], first['request_key'])
+        self.assertEqual(self.store.recover(self.p1, operation), revised)
+        reopened = jobs.Jobs(self.state, crypt=fake_crypt)
+        replay = reopened.revise(self.p1, operation, revised_proposal, expected_revision=0)
+        self.assertEqual(replay, revised)
+        self.assertEqual(len(reopened.list(self.p1)), 1)
+        with self.assertRaisesRegex(ValueError, '[Rr]evision conflict'):
+            reopened.revise(self.p1, operation, revised_proposal | {'constraints':['nouvelle contrainte']},
+                            expected_revision=0)
+
+    def test_competing_revisions_use_compare_and_swap(self):
+        operation = uid()
+        first = self.prepare(operation)
+        queue = multiprocessing.Queue()
+        proposals = [PROPOSAL | {'objective': 'clarification A'},
+                     PROPOSAL | {'objective': 'clarification B'}]
+        workers = [multiprocessing.Process(target=revise_worker,
+                   args=(str(self.state), self.p1, operation, proposal, first['revision'], queue))
+                   for proposal in proposals]
+        for worker in workers: worker.start()
+        for worker in workers: worker.join(15); self.assertEqual(worker.exitcode, 0)
+        results = [queue.get(timeout=3) for _ in workers]
+        self.assertEqual(sum(result[0] == 'ok' for result in results), 1)
+        self.assertEqual(sum(result[0] == 'error' for result in results), 1)
+        current = self.store.recover(self.p1, operation)
+        self.assertEqual(current['revision'], 1)
+        self.assertEqual(current['proposal']['objective'], next(result[3] for result in results if result[0] == 'ok'))
+
+    def test_revision_is_refused_after_admission(self):
+        operation = uid(); job = self.prepare(operation); attempt = uid()
+        self.store.reserve(self.p1, job['job_id'], expected_revision=job['revision'], attempt_id=attempt)
+        with self.assertRaisesRegex(ValueError, '[Dd]raft only'):
+            self.store.revise(self.p1, operation, PROPOSAL | {'objective':'mutation interdite'},
+                              expected_revision=job['revision'])
+        current = self.store.recover(self.p1, operation)
+        self.assertEqual(current['status'], 'dispatch_intent')
+        self.assertEqual(current['proposal'], PROPOSAL)
+        self.assertEqual(current['request_key'], job['request_key'])
 
     def test_recorded_transition_rejected_even_with_matching_key_and_result_hash(self):
         job=self.prepare(); attempt=uid()
