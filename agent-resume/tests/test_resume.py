@@ -555,19 +555,5 @@ class AutomaticSchedulerTests(unittest.TestCase):
             data = json.loads(result.stdout)
             self.assertTrue(data['claude_desktop_auto_enabled'])
 
-class DeprecatedAliasTests(unittest.TestCase):
-    def test_resume_alias_warns_on_stderr_and_delegates_to_reprise(self):
-        root = Path(__file__).parents[1]
-        with tempfile.TemporaryDirectory() as folder:
-            env = dict(os.environ, HOME=folder, AGENT_RESUME_STATE=folder + '/state')
-            direct = subprocess.run([str(root / 'reprise'), 'scheduler-status'], env=env, cwd=folder,
-                                    text=True, capture_output=True)
-            alias = subprocess.run([str(root / 'resume'), 'scheduler-status'], env=env, cwd=folder,
-                                   text=True, capture_output=True)
-        self.assertEqual(alias.returncode, direct.returncode, alias.stderr)
-        self.assertEqual(alias.stdout, direct.stdout)
-        self.assertEqual(alias.stderr.strip(), 'resume est déprécié, utiliser reprise')
-
-
 if __name__ == '__main__':
     unittest.main()

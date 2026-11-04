@@ -263,7 +263,7 @@ def report(app):
     lines += ['## Limites', '',
               '- Lecture seule : aucune exécution, aucun lancement de l’application, aucun accès réseau, aucune écriture hors de ce rapport.',
               '- Graphe d’appels heuristique sur code minifié (portée des fonctions approximée par la déclaration précédente) : confirmer chaque lien sur l’extrait cité.',
-              '- Un lien trouvé ne prouve ni l’accessibilité par un processus externe ni l’absence de garde (compte, attestation) : à qualifier dans ASTRA-QUICK-APPLY.md.']
+              '- Un lien trouvé ne prouve ni l’accessibilité par un processus externe ni l’absence de garde (compte, attestation) : à qualifier dans l’analyse du recensement (voir l’historique Git).']
     return '\n'.join(lines) + '\n'
 
 

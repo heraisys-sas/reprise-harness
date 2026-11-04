@@ -15,17 +15,17 @@ historiques et passation. Copier son dossier entier permet de la transmettre
 
 | Sujet | Référence versionnée |
 | --- | --- |
-| Contrat d'installation et limites | [INSTALLATION-CONTRACT](agent-resume/INSTALLATION-CONTRACT.md) |
-| Build autonome, runtime épinglé et artefacts CI | [BUILD-AND-CI](agent-resume/BUILD-AND-CI.md) |
-| Updater CLI inspect/plan/apply/verify/cleanup | [MANAGED-UPDATE](agent-resume/MANAGED-UPDATE.md) |
-| Service launchd et preuve du tick | [SCHEDULER-SERVICE](agent-resume/SCHEDULER-SERVICE.md) |
-| Profil et options DeepSeek Harness | [HARNESS-INTEGRATION](agent-resume/HARNESS-INTEGRATION.md) |
-| Connecteur MCP Claude Desktop et attente | [CLAUDE-CONNECTOR](agent-resume/CLAUDE-CONNECTOR.md) |
-| Backend distinct Claude Code | [CLAUDE-INTEGRATION](agent-resume/CLAUDE-INTEGRATION.md) |
-| Codex et ses routes historiques | [CODEX-INTEGRATION](agent-resume/CODEX-INTEGRATION.md) |
-| Projet UUID, workspaces et limites de migration | [PROJECT-REGISTRY-CONTRACT](agent-resume/PROJECT-REGISTRY-CONTRACT.md) |
-| Reçus, résultats et incertitude | [DELEGATION-PERSISTENCE](agent-resume/DELEGATION-PERSISTENCE.md) |
-| Réservation et checkpoint inter-harness | [HANDOFF-CONTRACT](agent-resume/HANDOFF-CONTRACT.md) |
+| Contrat d'installation et limites | [INSTALLATION-CONTRACT](docs/contracts/INSTALLATION-CONTRACT.md) |
+| Build autonome, runtime épinglé et artefacts CI | [BUILD-AND-CI](docs/runbooks/BUILD-AND-CI.md) |
+| Updater CLI inspect/plan/apply/verify/cleanup | [MANAGED-UPDATE](docs/runbooks/MANAGED-UPDATE.md) |
+| Service launchd et preuve du tick | [SCHEDULER-SERVICE](docs/runbooks/SCHEDULER-SERVICE.md) |
+| Profil et options DeepSeek Harness | [HARNESS-INTEGRATION](docs/integrations/harness/HARNESS-INTEGRATION.md) |
+| Connecteur MCP Claude Desktop et attente | [CLAUDE-CONNECTOR](docs/integrations/claude/CLAUDE-CONNECTOR.md) |
+| Backend distinct Claude Code | [CLAUDE-INTEGRATION](docs/integrations/claude/CLAUDE-INTEGRATION.md) |
+| Codex et ses routes historiques | [CODEX-INTEGRATION](docs/integrations/codex/CODEX-INTEGRATION.md) |
+| Projet UUID, workspaces et limites de migration | [PROJECT-REGISTRY-CONTRACT](docs/contracts/PROJECT-REGISTRY-CONTRACT.md) |
+| Reçus, résultats et incertitude | [DELEGATION-PERSISTENCE](docs/contracts/DELEGATION-PERSISTENCE.md) |
+| Réservation et checkpoint inter-harness | [HANDOFF-CONTRACT](docs/contracts/HANDOFF-CONTRACT.md) |
 
 Les documents historiques peuvent mêler contrat cible, prototype et preuve
 datée. Pour une opération, vérifier les CLI et manifestes du commit/release
