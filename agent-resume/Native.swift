@@ -136,7 +136,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var localSynthesis: [String: Any] = [:]
     var lastSynthesisAt: Date = .distantPast
     @Published var desktopBusy = false
-    @Published var desktopStartup = UserDefaults.standard.bool(forKey: "DesktopLinkedStartup")
+    @Published var desktopStartup = StartupPreferences.startupFlag("DesktopLinkedStartup")
     @Published var chainBusy = false
     @Published var chainNote = ""
     @Published var connectionTab = "codex"  // codex | quickapply
@@ -144,8 +144,12 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var sharedBusy = false
     @Published var sharedNote = ""
     @Published var sharedSession = ""
-    @Published var sharedStartup = UserDefaults.standard.bool(forKey: "SharedCodexStartup")
+    @Published var sharedStartup = StartupPreferences.startupFlag("SharedCodexStartup")
+    var pilotProjectsRequested = false
+    @Published var pilotProjectsLoadFailed = false
     var startupAttempted = false
+    var observerStartupAttempted = false
+    @Published var observerStartupFailed = false
     var refreshPending = false
     @Published var busy = false
     @Published var vaultBusy = false
@@ -247,7 +251,10 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
         if busy { refreshPending = true; return }; busy = true
         refreshClaudeSessionsCache()
+        let restoreObserver = !observerStartupAttempted
+        observerStartupAttempted = true
         DispatchQueue.global(qos: .utility).async {
+            let observerStartup = restoreObserver ? self.execute(["claude-observer-restore-default"]) : nil
             let result = self.execute(["detect"])
             let scheduler = self.execute(["scheduler-status"])
             let connection = self.execute(["connection-status"])
@@ -256,6 +263,15 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             let quotaKnowledge = self.execute(["quota-status"])
             DispatchQueue.main.async {
                 self.busy = false
+                if restoreObserver {
+                    if observerStartup?["status"] as? String == "ok" {
+                        self.observerStartupFailed = false
+                        self.refreshClaudeSessionsCache()
+                    } else {
+                        self.observerStartupFailed = true
+                        self.claudeSessionsNote = "Activation de l’observation non confirmée : " + (observerStartup?["status"] as? String ?? "service indisponible")
+                    }
+                }
                 self.scheduler = scheduler ?? [:]
                 self.connection = connection ?? [:]
                 self.desktopConnection = desktopConnection ?? [:]
@@ -293,6 +309,11 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                 if self.refreshPending { self.refreshPending = false; self.refresh() }
             }
         }
+    }
+    func retryObserverStartup() {
+        guard !busy else { return }
+        observerStartupAttempted = false
+        refresh()
     }
     func refreshClaudeSessionsCache() {
         guard !claudeSessionsCacheReadInFlight, !claudeSessionsRefreshInFlight, !claudeSessionsBusy else { return }

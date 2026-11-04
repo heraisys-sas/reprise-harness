@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -101,10 +102,74 @@ class ObserverTests(unittest.TestCase):
             result = observer.status(self.root, project_root=str(self.project), quick_state=str(state),
                                      now=NOW, refresh_now=True)
             self.listing.assert_not_called(); self.metadata.assert_not_called(); self.connect.assert_not_called()
-        self.assertEqual(result['route']['refresh_status'], 'refreshed')
+        self.assertEqual(result['route']['refresh_status'], 'unavailable')
         self.assertEqual(result['route']['instance_status'], 'unknown')
-        self.assertEqual(result['sessions'][0]['observation']['presence'], 'not_open')
+        self.assertEqual(result['sessions'][0]['observation']['presence'], 'unavailable')
         self.assertEqual(result['route']['last_refresh_at'], NOW)
+
+    def legacy_route(self, **changes):
+        route = self.store.route()
+        route.pop('startup_default_migrated', None)
+        route.update(**changes)
+        with self.db:
+            self.store.save_route(route)
+        return route
+
+    def test_restore_legacy_disabled_route_once_preserves_subsequent_disable(self):
+        original = self.legacy_route(enabled=False, interval_seconds=120)
+        self.assertFalse(original['enabled'])
+        with self.transport():
+            result = self.status(operation='restore_default')
+            self.listing.assert_not_called()
+        self.assertEqual(result['startup_migration'], 'enabled')
+        self.assertTrue(result['route']['enabled'])
+        self.assertEqual(result['route']['port'], original['port'])
+        self.assertEqual(result['route']['interval_seconds'], 120)
+        self.store.configure(enabled=False)
+        revision = self.store.route()['revision']
+        result = self.status(operation='restore_default')
+        self.assertEqual(result['startup_migration'], 'already_migrated')
+        self.assertFalse(result['route']['enabled'])
+        self.assertEqual(self.store.route()['revision'], revision)
+
+    def test_restore_does_not_create_missing_route_or_endpoint(self):
+        empty = self.base / 'missing'
+        result = observer.status(self.root, project_root=str(self.project), quick_state=str(empty),
+                                 operation='restore_default')
+        self.assertEqual(result['startup_migration'], 'not_configured')
+        self.assertFalse(empty.exists())
+        self.legacy_route(enabled=False, port=None)
+        result = self.status(operation='restore_default')
+        self.assertEqual(result['startup_migration'], 'not_configured')
+        self.assertFalse(result['route']['enabled'])
+        self.assertIsNone(result['route']['port'])
+
+    def test_restore_rejects_binding_mismatch(self):
+        self.legacy_route(enabled=False)
+        result = observer.status(self.root, project_root=str(self.project), operation='restore_default')
+        self.assertEqual(result['status'], 'binding_mismatch')
+        self.assertFalse(self.store.route()['enabled'])
+
+    def test_restore_concurrent_only_one_migration(self):
+        self.legacy_route(enabled=False)
+        barrier = threading.Barrier(2)
+        outcomes, errors = [], []
+        def migrate():
+            try:
+                db = open_database(self.state, write=True)
+                try:
+                    store = SessionStore(db, self.project)
+                    barrier.wait(timeout=3)
+                    outcomes.append(store.restore_default())
+                finally:
+                    db.close()
+            except Exception as exc:
+                errors.append(exc)
+        threads = [threading.Thread(target=migrate) for _ in range(2)]
+        for thread in threads: thread.start()
+        for thread in threads: thread.join(timeout=5)
+        self.assertFalse(errors)
+        self.assertEqual(sorted(outcomes), ['already_migrated', 'enabled'])
 
     def test_passive_refresh_is_scoped_and_contains_no_action(self):
         with self.transport(pages=[target(), target(OTHER, 'unknown'), target(CHAT, 'evil', 'https://evil.test')]):
@@ -375,6 +440,9 @@ class ObserverTests(unittest.TestCase):
         result = command('claude-session-register', '--chat', CHAT)
         self.assertEqual(result['sessions'][0]['registration']['source'], 'operator_desktop_confirmed')
         result = command('claude-observer-config', '--enabled', 'true', '--interval-seconds', '120')
+        self.assertEqual(result['route']['interval_seconds'], 120)
+        result = command('claude-observer-restore-default')
+        self.assertEqual(result['startup_migration'], 'already_migrated')
         self.assertEqual(result['route']['interval_seconds'], 120)
         result = command('claude-session-remove', '--chat', CHAT)
         self.assertEqual(result['sessions'], [])

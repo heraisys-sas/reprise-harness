@@ -3,14 +3,19 @@ import SwiftUI
 struct ApplePilotView: View {
     @ObservedObject var app: App
     @ObservedObject var pilot: ApplePilotUI
+    var retryStartupProjects: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Pilote Apple expérimental").font(.headline)
             Text("Assistance locale en lecture seule, non qualifiée pour l’orchestration. Aucun connecteur, aucune délégation et aucune écriture automatique de mémoire.")
                 .foregroundStyle(.secondary)
-            Toggle("Activer le pilote pour cette session", isOn: $pilot.enabled)
+            Toggle("Activer le pilote", isOn: $pilot.enabled)
                 .disabled(!pilot.canSelect || pilot.hostRunning)
+            if app.pilotProjectsLoadFailed {
+                Text("Chargement initial des projets non confirmé.").font(.callout)
+                Button("Réessayer le chargement initial") { retryStartupProjects() }.disabled(app.setupBusy)
+            }
             HStack {
                 Button("Charger les projets") { app.refreshProjects() }
                     .disabled(!pilot.enabled || !pilot.canSelect || app.setupBusy)
@@ -18,6 +23,9 @@ struct ApplePilotView: View {
             }
             Picker("Projet", selection: $pilot.projectID) {
                 Text("Choisir un projet").tag("")
+                if !pilot.projectID.isEmpty && !app.projects.contains(where: { $0["id"] as? String == pilot.projectID }) {
+                    Text("Projet enregistré indisponible : " + pilot.projectID).tag(pilot.projectID)
+                }
                 ForEach(app.projects, id: \.selfID) { project in
                     if let id = project["id"] as? String {
                         Text(project["name"] as? String ?? id).tag(id)
@@ -59,6 +67,7 @@ struct ApplePilotView: View {
                 Button("Ouvrir la session") { pilot.open() }.disabled(!pilot.canOpen)
                 Button("Fermer la session") { pilot.close() }.disabled(pilot.closing || pilot.memoryBusy || !pilot.hostRunning)
             }
+            if pilot.contextNeedsConfiguration { Text(pilot.contextConfigurationMessage).font(.callout) }
             Text(pilot.status).font(.callout).accessibilityLabel("État du pilote : " + pilot.status)
             Divider()
             DisclosureGroup("Mémoire du projet — actions de l’opérateur", isExpanded: $pilot.showMemory) {
@@ -222,7 +231,8 @@ extension ApplePilotUI {
         } else {
             state = app.root.appendingPathComponent("state", isDirectory: true)
         }
-        return ApplePilotUI(python: URL(fileURLWithPath: app.python),
-                            service: app.root.appendingPathComponent("apple_pilot_service.py"), state: state)
+        let pilot = ApplePilotUI(python: URL(fileURLWithPath: app.python),
+                            service: app.root.appendingPathComponent("apple_pilot_service.py"), state: state, preferences: .standard)
+        return pilot
     }
 }

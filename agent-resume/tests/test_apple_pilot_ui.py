@@ -9,6 +9,111 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(os.uname().sysname == 'Darwin', 'requires macOS Swift')
 class ApplePilotUISmokeTests(unittest.TestCase):
+    def test_startup_migration_and_saved_context_without_inference(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            swift = root / 'Startup.swift'
+            swift.write_text('''import Foundation
+@main struct StartupTest {
+  @MainActor static func main() {
+    let suite = "test.reprise.startup." + UUID().uuidString
+    let d = UserDefaults(suiteName: suite)!
+    defer { d.removePersistentDomain(forName: suite) }
+    d.set(false, forKey: "DesktopLinkedStartup")
+    StartupPreferences.migrate(d)
+    precondition(d.bool(forKey: "DesktopLinkedStartup") && d.bool(forKey: "SharedCodexStartup"))
+    d.set(false, forKey: "DesktopLinkedStartup")
+    d.set(false, forKey: StartupPreferences.pilotEnabledKey)
+    StartupPreferences.migrate(d)
+    precondition(!d.bool(forKey: "DesktopLinkedStartup") && !d.bool(forKey: StartupPreferences.pilotEnabledKey))
+    let file = URL(fileURLWithPath: CommandLine.arguments[1])
+    let p = ApplePilotUI(python: file, service: file, state: file, preferences: d)
+    precondition(!p.enabled && p.contextNeedsConfiguration && !p.hostRunning)
+    p.enabled = true
+    p.projectID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    p.workID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    p.checkpointID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    p.skill = "project-summary"
+    precondition(!p.canOpen)
+    p.updateKnownProjects([p.projectID])
+    precondition(p.canOpen)
+    let q = ApplePilotUI(python: file, service: file, state: file, preferences: d)
+    precondition(q.enabled && q.projectID == p.projectID && q.workID == p.workID && q.checkpointID == p.checkpointID && q.skill == p.skill)
+    precondition(q.contextNeedsConfiguration && !q.hostRunning && q.prompt.isEmpty)
+    q.updateKnownProjects([])
+    precondition(!q.canOpen)
+    q.updateKnownProjects([q.projectID])
+    precondition(q.canOpen)
+    q.checkpointID = "partial-uuid"
+    let incomplete = ApplePilotUI(python: file, service: file, state: file, preferences: d)
+    incomplete.updateKnownProjects([incomplete.projectID])
+    precondition(incomplete.checkpointID == "partial-uuid" && !incomplete.canOpen)
+    precondition(incomplete.contextConfigurationMessage == "Corrigez ou effacez l’identifiant du checkpoint.")
+    incomplete.openRestoredSessionIfReady()
+    precondition(!incomplete.hostRunning)
+    incomplete.checkpointID = ""
+    let cleared = ApplePilotUI(python: file, service: file, state: file, preferences: d)
+    cleared.updateKnownProjects([cleared.projectID])
+    precondition(cleared.checkpointID.isEmpty && cleared.canOpen)
+    q.workID = "invalid"
+    precondition(d.string(forKey: "ApplePilotWork") == nil)
+    let invalid = ApplePilotUI(python: file, service: file, state: file, preferences: d)
+    precondition(invalid.workID.isEmpty && !invalid.canOpen)
+    d.set("invalid", forKey: "ApplePilotWork")
+    d.set("unknown", forKey: "ApplePilotSkill")
+    let r = ApplePilotUI(python: file, service: file, state: file, preferences: d)
+    r.updateKnownProjects([r.projectID])
+    precondition(r.workID.isEmpty && r.skill == "checkpoint-review" && !r.canOpen && !r.hostRunning)
+    precondition(!FileManager.default.fileExists(atPath: CommandLine.arguments[1]))
+  }
+}
+''')
+            binary = root / 'startup-test'
+            subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
+                            str(ROOT / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
+            subprocess.run([str(binary), str(root / 'never-created')], check=True)
+
+    def test_restored_context_starts_once_without_inference(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fake = root / 'service.py'
+            fake.write_text("""import json, pathlib, sys
+p = pathlib.Path(sys.argv[sys.argv.index('--state')+1])
+for line in sys.stdin:
+ x = json.loads(line)
+ with (p / 'ops').open('a') as f: f.write(x['op']+'\\n')
+ print(json.dumps({'id':x['id'], 'status':'opened' if x['op']=='open' else 'closed'}), flush=True)
+""")
+            swift = root / 'StartupOpen.swift'
+            swift.write_text('''import Foundation
+@main struct StartupOpen {
+ @MainActor static func main() async {
+  let d = UserDefaults(suiteName: "test.open." + UUID().uuidString)!
+  StartupPreferences.migrate(d)
+  let a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+  d.set(a, forKey: "ApplePilotProject"); d.set(b, forKey: "ApplePilotWork")
+  let args = CommandLine.arguments
+  let p = ApplePilotUI(python: URL(fileURLWithPath: args[1]), service: URL(fileURLWithPath: args[2]), state: URL(fileURLWithPath: args[3]), preferences: d)
+  p.updateKnownProjects([]); p.openRestoredSessionIfReady()
+  precondition(!p.hostRunning)
+  p.updateKnownProjects([a]); p.enabled = false; p.openRestoredSessionIfReady()
+  precondition(!p.hostRunning)
+  p.enabled = true; p.openRestoredSessionIfReady()
+  for _ in 0..<100 { if p.sessionOpen { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  precondition(p.sessionOpen, p.status)
+  p.close()
+  for _ in 0..<100 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  p.openRestoredSessionIfReady()
+  precondition(!p.hostRunning && !p.sessionOpen)
+ }
+}
+''')
+            binary = root / 'startup-open'
+            subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
+                            str(ROOT / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
+            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True)
+            self.assertEqual((root / 'ops').read_text().splitlines(), ['open', 'close'])
+
     def test_process_lifecycle_with_fake_service_and_no_implicit_start(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
