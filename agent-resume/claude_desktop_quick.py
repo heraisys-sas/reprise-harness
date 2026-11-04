@@ -387,6 +387,28 @@ class Endpoint:
             return {'ok': False, 'status': 'composeur', 'stage': 'composeur',
                     'detail': 'Composeur indisponible'}
 
+        # Garde anti-redirection : la page attachée doit être exactement le
+        # chat visé (claude.ai redirige /chat/<uuid> inconnu vers /new — une
+        # insertion là-bas ne laisse aucune trace dans le bon chat).
+        try:
+            on_target = transport.evaluate(
+                "(function(){return location.origin==='https://claude.ai'"
+                " && location.pathname==='/chat/" + chat_uuid + "'"
+                " && !location.search && !location.hash})()")
+        except Exception as exc:
+            cdp_mod.terminate_chrome(proc)
+            return {'ok': False, 'status': 'cible', 'stage': 'cible',
+                    'detail': f'URL de la page non vérifiable: {exc}'}
+        if on_target is not True:
+            try:
+                url_now = transport.evaluate('location.href')
+            except Exception:
+                url_now = None
+            cdp_mod.terminate_chrome(proc)
+            return {'ok': False, 'status': 'cible', 'stage': 'cible',
+                    'detail': 'Page attachée ≠ /chat/' + chat_uuid,
+                    'actual_url': url_now}
+
         try:
             compose_check = transport.evaluate(
                 "(function(){const el=document.querySelector('[data-testid=compose-textarea]');return el?{hasText:!!el.innerText,textLength:el.innerText.length}:null})()")
@@ -420,20 +442,43 @@ class Endpoint:
             # Pre-click gate: the send button must be enabled; one Enter
             # keydown fallback, else honest incertain without a click.
             armed = claude_desktop_apply._arm(transport)
+            # Baseline du compteur user-message mesurée AVANT le clic (une
+            # baseline mesurée après serait déjà incrémentée par l'envoi).
+            try:
+                before_state = transport.evaluate(
+                    "(function(){return {n: document.querySelectorAll("
+                    "'[data-testid^=\"user-message\"]').length,"
+                    " url: location.pathname}})()")
+            except Exception:
+                before_state = {}
             if not isinstance(armed, dict) or armed.get('ready') is not True:
                 stage = 'incertain'
             else:
                 try:
+                    # Clic événementiel complet : React/claude.ai peut
+                    # brancher l'envoi sur pointerdown plutôt que click.
                     click_result = transport.evaluate(
-                        "(function(){const btn=document.querySelector('[data-testid=chat-input-send]');if(!btn)return null;btn.click();return{clicked:true}})()")
+                        "(function(){"
+                        "const btn=document.querySelector('[data-testid=chat-input-send]');"
+                        "if(!btn)return {clicked:false, reason:'bouton absent'};"
+                        "if(btn.disabled)return {clicked:false, reason:'disabled'};"
+                        "const o={bubbles:true,cancelable:true,composed:true,view:window,button:0};"
+                        "btn.dispatchEvent(new PointerEvent('pointerdown',Object.assign({pointerId:1,isPrimary:true,pointerType:'mouse'},o)));"
+                        "btn.dispatchEvent(new MouseEvent('mousedown',o));"
+                        "btn.dispatchEvent(new PointerEvent('pointerup',Object.assign({pointerId:1,isPrimary:true,pointerType:'mouse'},o)));"
+                        "btn.dispatchEvent(new MouseEvent('mouseup',o));"
+                        "btn.dispatchEvent(new MouseEvent('click',o));"
+                        "return {clicked:true}})()")
                     if not click_result or not click_result.get("clicked"):
                         stage = 'incertain'
                 except Exception:
                     stage = 'incertain'
                 try:
-                    # A click is not a send: require composer emptied or
-                    # message in the DOM, else report incertain honestly.
-                    if not claude_desktop_apply._confirm(transport):
+                    # Preuve d'envoi stricte : composeur vidé ET un
+                    # user-message de plus que la baseline ET URL toujours
+                    # /chat/<uuid>. « Composeur vidé » seul confirme aussi
+                    # une redirection vers un nouveau chat — jamais suffisant.
+                    if not claude_desktop_apply._confirm(transport, before_state):
                         stage = 'incertain'
                 except Exception:
                     stage = 'incertain'
@@ -442,11 +487,15 @@ class Endpoint:
         finally:
             cdp_mod.terminate_chrome(proc)
 
-        return {
+        confirm_detail = getattr(transport, 'last_confirm', None)
+        receipt = {
             'ok': True, 'status': 'submitted', 'stage': stage,
             'chatId': chat_uuid, 'submitted': 1,
             'transport': 'cdp-pipe',
             'detail': 'Envoyé' if stage == 'envoyé' else stage}
+        if isinstance(confirm_detail, dict):
+            receipt['confirm'] = confirm_detail
+        return receipt
 
     def _shutdown(self, args):
         """Authenticate shutdown without terminating an unowned Chrome process."""
