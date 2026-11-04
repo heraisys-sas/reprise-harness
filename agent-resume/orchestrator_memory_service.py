@@ -4,6 +4,7 @@ The JSONL host owns request framing, permissions, and an immutable project
 selection. Operation IDs identify mutations and are separate from transport IDs.
 """
 import fcntl
+import copy
 import hashlib
 import hmac
 import json
@@ -22,8 +23,10 @@ INTENT_PURPOSE = 'orchestrator-intent-v1'
 
 MUTATIONS = frozenset(('create_fact', 'update_fact', 'delete_fact', 'create_checkpoint'))
 FIELDS = {
+    'search_facts': {'op', 'query', 'offset'},
     'list_facts': {'op', 'offset'},
     'get_fact': {'op', 'fact_id'},
+    'get_fact_chunk': {'op', 'fact_id', 'expected_revision', 'offset'},
     'create_fact': {'op', 'operation_id', 'text', 'source'},
     'update_fact': {'op', 'operation_id', 'fact_id', 'expected_revision', 'text', 'source'},
     'delete_fact': {'op', 'operation_id', 'fact_id', 'expected_revision'},
@@ -66,6 +69,8 @@ def _mutation_payload(request):
         if op == 'update_fact':
             payload.update(text=orchestrator_memory._text(request['text']),
                            source=orchestrator_memory._source(request['source']))
+        elif request.get('_recorded_by') is not None:
+            payload['recorded_by'] = request['_recorded_by']
         return payload
     if op == 'create_checkpoint':
         work = _uuid(request['work_id'])
@@ -113,12 +118,15 @@ class MemoryService:
     This object is not an IPC authenticator. The caller must authorize its host
     and project, limit concurrency and protect the pipe.
     """
-    def __init__(self, state, project_id, *, memory_factory=orchestrator_memory.Memory):
+    def __init__(self, state, project_id, *, memory_factory=orchestrator_memory.Memory, attribution=None):
         path = Path(state)
         if not path.is_absolute():
             raise ValueError('absolute state path required')
         self.state = path
         self.project_id = _uuid(project_id)
+        self.attribution = (orchestrator_memory._source({'kind': 'host', 'reference': 'profile',
+            'producer': 'host', 'observed_at': 'host', 'recorded_by': attribution})['recorded_by']
+            if attribution is not None else None)
         self.memory_factory = memory_factory
 
     def _memory(self):
@@ -314,7 +322,8 @@ class MemoryService:
         result = []
         for row in rows:
             if facts:
-                row = {key: row[key] for key in ('id', 'revision', 'status', 'source', 'created_at', 'updated_at')}
+                row = {key: row[key] for key in ('id', 'revision', 'status', 'source', 'created_at', 'updated_at')} | {
+                    'recorded_by': row.get('recorded_by', {'status': 'unknown'})}
             candidate = {'status': 'finished', 'items': result + [row], 'next_offset': offset + len(result) + 1, 'pagination_limit_reached': False}
             if _size(candidate) > LIST_BUDGET_BYTES:
                 break
@@ -336,6 +345,14 @@ class MemoryService:
             op = request.get('op')
             if op not in FIELDS or set(request) != FIELDS[op]:
                 return {'status': 'invalid_request'}
+            request = copy.deepcopy(request)
+            if op == 'delete_fact' and self.attribution is not None:
+                request['_recorded_by'] = self.attribution
+            if 'source' in request:
+                if not isinstance(request['source'], dict) or 'recorded_by' in request['source']:
+                    return {'status': 'invalid_request'}
+                if self.attribution is not None:
+                    request['source']['recorded_by'] = self.attribution
             if op in MUTATIONS or op == 'operation_status':
                 _uuid(request['operation_id'])
             mem = self._memory()
@@ -351,18 +368,43 @@ class MemoryService:
                 offset = request['offset']
                 rows = mem.list_facts(project, limit=orchestrator_memory.MAX_LIST, offset=offset)
                 return self._page(rows, offset, facts=True)
-            if op == 'get_fact':
+            if op == 'search_facts':
+                rows = mem.search_facts(project, request['query'], limit=orchestrator_memory.MAX_LIST,
+                                        offset=request['offset'])
+                # Large valid facts must not block pagination. Full text is
+                # obtained by explicit get_fact, never silently truncated there.
+                for row in rows:
+                    text = row.pop('text')
+                    row['excerpt'] = text[:256]
+                    row['excerpt_truncated'] = len(text) > 256
+                return self._page(rows, request['offset'])
+            if op in ('get_fact', 'get_fact_chunk'):
                 item = mem.get_fact(project, request['fact_id'])
                 if item is None:
                     return {'status': 'not_found'}
+                if op == 'get_fact_chunk':
+                    mem._revision(request['expected_revision'])
+                    if item['revision'] != request['expected_revision']:
+                        return {'status': 'version_conflict'}
+                    offset = request['offset']
+                    text = item.pop('text')
+                    if type(offset) is not int or not 0 <= offset <= len(text):
+                        return {'status': 'invalid_request'}
+                    end = min(len(text), offset + 1024)
+                    return {'status': 'finished', 'item': item, 'text_chunk': text[offset:end],
+                            'offset': offset, 'next_offset': end if end < len(text) else None,
+                            'total_characters': len(text)}
                 result = {'status': 'finished', 'item': item}
+                if _size(result) > MAX_OUTPUT_BYTES:
+                    return {'status': 'item_too_large', 'fact_id': item['id'],
+                            'revision': item['revision'], 'retrieval': 'reprise_memory_get_chunk'}
             elif op == 'create_fact':
                 result = {'status': 'finished', 'result': mem.create_fact(project, request['operation_id'], request['text'], request['source'])}
             elif op == 'update_fact':
                 result = {'status': 'finished', 'result': mem.update_fact(project, request['fact_id'], request['operation_id'],
                           request['expected_revision'], request['text'], request['source'])}
             elif op == 'delete_fact':
-                result = {'status': 'finished', 'result': mem.delete_fact(project, request['fact_id'], request['operation_id'], request['expected_revision'])}
+                result = {'status': 'finished', 'result': mem.delete_fact(project, request['fact_id'], request['operation_id'], request['expected_revision'], recorded_by=self.attribution)}
             elif op == 'list_checkpoints':
                 offset = request['offset']
                 rows = mem.list_checkpoints(project, request['work_id'], limit=orchestrator_memory.MAX_LIST, offset=offset)

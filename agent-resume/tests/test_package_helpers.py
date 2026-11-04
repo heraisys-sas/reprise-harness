@@ -58,13 +58,23 @@ class PackageHelpersTests(unittest.TestCase):
             root = moved / 'Contents/Resources/helpers'
             manifest = json.loads((root / 'payload-manifest.json').read_text())
             self.assertEqual(manifest['runtime'], 'external-python-required')
-            for name in ('apple_expert.py', 'apple_pilot.py', 'apple_pilot_service.py', 'apple_pilot_transport.py', 'orchestrator_memory.py', 'orchestrator_memory_service.py'):
+            for name in ('apple_expert.py', 'apple_pilot.py', 'apple_pilot_service.py', 'apple_pilot_transport.py', 'orchestrator_memory.py', 'orchestrator_memory_service.py', 'reprise_memory_adapter.py', 'reprise_memory_mcp.py', 'ORCHESTRATOR-MEMORY-CONTRACT.md'):
                 self.assertTrue((root / name).is_file())
                 self.assertEqual(manifest['files'][name], hashlib.sha256((root / name).read_bytes()).hexdigest())
                 self.assertEqual((root / name).read_bytes(), (SOURCE / name).read_bytes())
             imported = subprocess.run([sys.executable, '-c', 'import codex_expert_mcp, claude_desktop_apply, claude_inbox, websocket_transport, claude_session_store, claude_session_observer, apple_pilot, apple_pilot_transport, apple_pilot_service, orchestrator_memory, orchestrator_memory_service'],
                                       cwd=root, capture_output=True, text=True)
             self.assertEqual(imported.returncode, 0, imported.stderr)
+            memory = subprocess.run([sys.executable, '-B', str(root / 'reprise_memory_mcp.py'),
+                '--state', str(folder), '--project-id', '67e17924-f8a5-4144-a239-71625f618c4d',
+                '--harness-id', 'packaged-reader'],
+                input=json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}) + '\n',
+                cwd=folder, capture_output=True, text=True, timeout=10)
+            self.assertEqual(memory.returncode, 0, memory.stderr)
+            self.assertEqual(memory.stderr, '')
+            names = [tool['name'] for tool in json.loads(memory.stdout)['result']['tools']]
+            self.assertIn('reprise_memory_search', names)
+            self.assertNotIn('reprise_memory_capture', names)
             pilot = subprocess.run([sys.executable, str(root / 'apple_pilot_service.py'), '--state', str(folder)],
                                    input=json.dumps({'id': 'c03aa24b-bdb5-46e1-bca7-16544d55b258', 'op': 'catalog'}) + '\n',
                                    cwd=folder, capture_output=True, text=True, timeout=20)
