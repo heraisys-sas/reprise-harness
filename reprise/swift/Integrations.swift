@@ -1,0 +1,1081 @@
+import Cocoa
+import SwiftUI
+
+private enum IntegrationDateTime {
+    private static let formatter: DateFormatter = {
+        let value = DateFormatter()
+        value.locale = Locale(identifier: "fr_FR")
+        value.timeZone = .current
+        value.dateFormat = "dd/MM HH:mm"
+        return value
+    }()
+
+    static func string(from date: Date) -> String {
+        formatter.string(from: date)
+    }
+}
+
+private struct ClaudeInboxTaskOption: View {
+    let key: String
+    let state: String
+    let resultAvailable: Bool
+    let acknowledged: Bool
+
+    init(task: [String: Any]) {
+        key = task["request_key"] as? String ?? "Identifiant indisponible"
+        state = task["state"] as? String ?? "état inconnu"
+        resultAvailable = task["result_available"] as? Bool == true
+        acknowledged = task["acknowledged"] as? Bool == true
+    }
+
+    private var label: String {
+        var value = key + " · " + state
+        value += resultAvailable ? " · résultat disponible" : " · en attente"
+        if acknowledged { value += " · acquitté" }
+        return value
+    }
+
+    var body: some View {
+        Text(label).tag(key)
+    }
+}
+
+private struct ClaudeQuotaRendererObservation: View {
+    let observation: [String: Any]
+    let fallbackStatus: String
+
+    private var sourceStatusLabel: String {
+        switch observation["source_status"] as? String ?? "unavailable" {
+        case "readable": "lisible"
+        case "absent": "absent"
+        case "unreadable": "illisible"
+        default: "indisponible"
+        }
+    }
+
+    private var eventStatusLabel: String {
+        switch observation["event_status"] as? String ?? "not_checked" {
+        case "recognized": "événement quota reconnu"
+        case "no_event": "aucun événement quota reconnu"
+        case "no_event_in_tail": "aucun événement reconnu dans la partie lue (journal tronqué)"
+        case "not_checked": "événement non vérifié"
+        default: "événement indisponible"
+        }
+    }
+
+    private var eventStatus: String {
+        observation["event_status"] as? String ?? "not_checked"
+    }
+
+    private var resetLabel: String? {
+        guard let timestamp = observation["resets_at"] as? Double else { return nil }
+        let date = IntegrationDateTime.string(from: Date(timeIntervalSince1970: timestamp))
+        switch observation["reset_relation"] as? String {
+        case "elapsed_at_read":
+            return "Échéance déclarée passée au moment de la lecture : " + date + ". Cela n’établit ni le quota actuel ni la reprise."
+        case "future_at_read":
+            return "Échéance déclarée future, non attribuée : " + date + "."
+        default:
+            return "Échéance déclarée, relation temporelle inconnue : " + date + "."
+        }
+    }
+
+    private var readAtLabel: String? {
+        guard let timestamp = observation["observed_at"] as? Double else { return nil }
+        let prefix = (observation["source_status"] as? String == "readable")
+            ? "Journal lu : " : "Tentative de lecture : "
+        return prefix + IntegrationDateTime.string(from: Date(timeIntervalSince1970: timestamp))
+    }
+
+    private var freshnessLabel: String {
+        switch observation["event_freshness"] as? String ?? "unknown" {
+        case "recent": "récente (fuseau source attesté)"
+        case "stale": "ancienne (fuseau source attesté)"
+        case "clock_skew": "inconnue (horodatages incohérents)"
+        default: "inconnue (fuseau d’écriture non attesté)"
+        }
+    }
+
+    private var resetView: some View {
+        Group {
+            if let resetLabel {
+                Text(resetLabel).font(.caption)
+            } else if eventStatus == "recognized" {
+                Text("Événement reconnu sans échéance exploitable.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var readAtView: some View {
+        Group {
+            if let readAtLabel {
+                Text(readAtLabel).font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text(fallbackStatus).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    var body: some View {
+        Group {
+            Text("Source de réinitialisation : journal renderer Claude Desktop")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("Lecture : \(sourceStatusLabel) · \(eventStatusLabel)")
+                .font(.caption).foregroundStyle(.secondary)
+            resetView
+            readAtView
+            Text("Fraîcheur de l’événement : \(freshnessLabel)")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("Quota actuel, quantité et attribution compte/chat : inconnus.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+extension App {
+    var codexIntegrationEntries: [String] {
+        var entries: [String] = []
+        if codexIntegrationExpert { entries.append("reprise_codex") }
+        if codexIntegrationHarness { entries.append("reprise-harness") }
+        return entries
+    }
+    func invalidateCodexIntegrationPlan() {
+        codexIntegrationGeneration &+= 1
+        codexIntegrationPlan = nil
+        codexIntegrationAcknowledged = false
+    }
+    func inspectCodexIntegration() {
+        guard stateReady, !setupBusy else { return }
+        setupCommand(["codex-integration-inspect"]) { result in
+            self.codexIntegrationResult = result
+            self.codexIntegrationOperations = result["operations"] as? [[String: Any]] ?? []
+            if !self.codexIntegrationOperations.contains(where: { $0["id"] as? String == self.codexIntegrationOperationID }) {
+                self.codexIntegrationOperationID = ""
+            }
+        }
+    }
+    func verifyCodexIntegrationOperation() {
+        guard stateReady, !setupBusy, !codexIntegrationOperationID.isEmpty,
+              codexIntegrationOperations.contains(where: { $0["id"] as? String == codexIntegrationOperationID }) else { return }
+        setupCommand(["codex-integration-verify-operation", "--id", codexIntegrationOperationID]) { result in
+            self.codexIntegrationResult = result
+        }
+    }
+    func previewCodexIntegration() {
+        guard stateReady, !setupBusy, !codexIntegrationEntries.isEmpty else { return }
+        invalidateCodexIntegrationPlan()
+        let generation = codexIntegrationGeneration
+        let selected = codexIntegrationEntries
+        var args = ["codex-integration-plan"]
+        for entry in selected { args += ["--entry", entry] }
+        setupCommand(args) { result in
+            guard generation == self.codexIntegrationGeneration, selected == self.codexIntegrationEntries else { return }
+            self.codexIntegrationResult = result
+            self.codexIntegrationPlan = result["plan"] as? [String: Any]
+        }
+    }
+    func applyCodexIntegration() {
+        guard stateReady, !setupBusy, codexIntegrationAcknowledged,
+              let plan = codexIntegrationPlan,
+              let names = plan["names"] as? [String], names == codexIntegrationEntries,
+              let target = plan["target"] as? String, !target.isEmpty else { return }
+        // Consume the plan before starting: a timeout or lost reply must not be replayed.
+        codexIntegrationVerificationPlan = plan
+        invalidateCodexIntegrationPlan()
+        setupCommand(["codex-integration-apply"], input: ["plan": plan]) { result in
+            self.codexIntegrationResult = result
+        }
+    }
+    func verifyCodexIntegration() {
+        guard stateReady, !setupBusy, let plan = codexIntegrationVerificationPlan else { return }
+        setupCommand(["codex-integration-verify"], input: ["plan": plan]) { result in
+            self.codexIntegrationResult = result
+        }
+    }
+    func inspectClaudeIntegration() {
+        guard stateReady, !setupBusy else { return }
+        setupCommand(["claude-integration-inspect"]) { result in
+            self.claudeIntegrationResult = result
+        }
+    }
+    func previewClaudeIntegration(_ action: String) {
+        guard stateReady, !setupBusy else { return }
+        guard !claudeIntegrationProject.isEmpty else { return }
+        var args = ["claude-integration-plan", "--project", claudeIntegrationProject, "--action", action]
+        if action == "install" {
+            if claudeReplaceProbe { args.append("--replace-probe") }
+            switch claudeAwaitChoice {
+            case "enable": args.append("--enable-await")
+            case "disable": args.append("--disable-await")
+            default: break
+            }
+        }
+        setupCommand(args) { result in
+            self.claudeIntegrationResult = result
+            self.claudeIntegrationPlan = result["plan"] as? [String: Any]
+            self.claudeIntegrationAcknowledged = false
+        }
+    }
+    func applyClaudeIntegration() {
+        guard stateReady, !setupBusy, claudeIntegrationAcknowledged, let plan = claudeIntegrationPlan else { return }
+        guard plan["project"] as? String == claudeIntegrationProject else { invalidateClaudeIntegrationPlan(); return }
+        setupCommand(["claude-integration-apply"], input: ["plan": plan]) { result in
+            var displayedResult = result
+            displayedResult["action"] = plan["action"]
+            displayedResult["project"] = plan["project"]
+            displayedResult["enable_await"] = plan["enable_await"]
+            self.claudeIntegrationResult = displayedResult
+            self.claudeIntegrationAcknowledged = false
+            if result["status"] as? String == "completed" {
+                self.claudeIntegrationPlan = nil
+                self.claudeAwaitChoice = "preserve"
+                if plan["action"] as? String == "remove" {
+                    self.invalidateClaudeInbox()
+                    self.claudeInboxStatus = "Connecteur retiré ; les tâches du registre ne sont plus accessibles depuis Reprise."
+                }
+            }
+        }
+    }
+    func verifyClaudeIntegration() {
+        guard stateReady, !setupBusy else { return }
+        guard !claudeIntegrationProject.isEmpty else {
+            claudeIntegrationResult = ["status": "refused", "message": "Associez un workspace Claude au projet sélectionné avant la vérification."]
+            return
+        }
+        setupCommand(["claude-integration-verify", "--project", claudeIntegrationProject]) { self.claudeIntegrationResult = $0 }
+    }
+
+    func invalidateClaudeInbox(clearTasks: Bool = true) {
+        claudeInboxGeneration &+= 1
+        if clearTasks {
+            claudeInboxTasks = []
+            claudeInboxSelection = ""
+        }
+        claudeInboxResult = [:]
+        claudeInboxResultProject = ""
+        claudeInboxResultSelection = ""
+        claudeInboxStatus = "Actualisez les tâches du projet autorisé pour commencer."
+    }
+
+    func invalidateClaudeInboxSelection() {
+        claudeInboxGeneration &+= 1
+        claudeInboxResult = [:]
+        claudeInboxResultProject = ""
+        claudeInboxResultSelection = ""
+        claudeInboxStatus = claudeInboxSelection.isEmpty
+            ? "Sélectionnez une tâche avec un résultat disponible."
+            : "Sélection modifiée ; relisez le résultat avant tout acquittement."
+    }
+
+    func refreshClaudeInbox() {
+        guard stateReady, !setupBusy else { return }
+        let project = claudeIntegrationProject.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !project.isEmpty else {
+            invalidateClaudeInbox()
+            claudeInboxStatus = "Choisissez d’abord le projet autorisé du connecteur."
+            return
+        }
+        claudeInboxGeneration &+= 1
+        let generation = claudeInboxGeneration
+        claudeInboxTasks = []
+        claudeInboxSelection = ""
+        claudeInboxResult = [:]
+        claudeInboxResultProject = ""
+        claudeInboxResultSelection = ""
+        claudeInboxStatus = "Vérification du projet et lecture du registre…"
+        setupCommand(["claude-inbox-list", "--project", project]) { result in
+            guard generation == self.claudeInboxGeneration,
+                  project == self.claudeIntegrationProject.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+            guard result["status"] as? String == "ok",
+                  result["project"] is String,
+                  let tasks = result["tasks"] as? [[String: Any]] else {
+                self.claudeInboxTasks = []
+                self.claudeInboxStatus = (result["message"] as? String ?? "Registre indisponible ou liaison projet non confirmée.")
+                    + " État actuel : " + (result["status"] as? String ?? "indisponible") + "."
+                return
+            }
+            self.claudeInboxTasks = tasks
+            self.claudeInboxStatus = tasks.isEmpty
+                ? "Aucune tâche dans le registre de ce projet."
+                : "\(tasks.count) tâche(s) du projet vérifié. Aucun prompt ni secret n’est affiché."
+        }
+    }
+
+    func readClaudeInboxResult() {
+        guard stateReady, !setupBusy else { return }
+        let project = claudeIntegrationProject.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = claudeInboxSelection
+        guard !project.isEmpty, !key.isEmpty,
+              claudeInboxTasks.contains(where: {
+                  $0["request_key"] as? String == key && $0["result_available"] as? Bool == true
+              }) else {
+            claudeInboxStatus = "Sélectionnez une tâche affichée comme résultat disponible."
+            return
+        }
+        claudeInboxGeneration &+= 1
+        let generation = claudeInboxGeneration
+        claudeInboxResult = [:]
+        claudeInboxResultProject = ""
+        claudeInboxResultSelection = ""
+        claudeInboxStatus = "Lecture intégrale et vérification SHA-256…"
+        setupCommand(["claude-inbox-read", "--project", project, "--request-key", key]) { result in
+            guard generation == self.claudeInboxGeneration,
+                  project == self.claudeIntegrationProject.trimmingCharacters(in: .whitespacesAndNewlines),
+                  key == self.claudeInboxSelection else { return }
+            guard result["status"] as? String == "ok",
+                  result["project"] is String,
+                  result["request_key"] as? String == key,
+                  result["answer"] is String,
+                  result["result_sha256"] is String,
+                  result["total_length"] is Int else {
+                self.claudeInboxStatus = (result["message"] as? String ?? "Résultat indisponible ou changé pendant la collecte.")
+                    + " État actuel : " + (result["status"] as? String ?? "indisponible") + "."
+                return
+            }
+            self.claudeInboxResult = result
+            self.claudeInboxResultProject = project
+            self.claudeInboxResultSelection = key
+            self.claudeInboxStatus = "Résultat intégral collecté et vérifié ; examinez-le avant acquittement."
+        }
+    }
+
+    func acknowledgeClaudeInboxResult() {
+        guard stateReady, !setupBusy,
+              claudeInboxResultProject == claudeIntegrationProject.trimmingCharacters(in: .whitespacesAndNewlines),
+              claudeInboxResultSelection == claudeInboxSelection,
+              let sha = claudeInboxResult["result_sha256"] as? String,
+              let length = claudeInboxResult["total_length"] as? Int,
+              claudeInboxResult["acknowledged"] as? Bool != true else {
+            claudeInboxStatus = "Relisez le résultat sélectionné avant de l’acquitter."
+            return
+        }
+        let project = claudeInboxResultProject
+        let key = claudeInboxResultSelection
+        claudeInboxGeneration &+= 1
+        let generation = claudeInboxGeneration
+        claudeInboxStatus = "Vérification du même SHA puis acquittement explicite…"
+        setupCommand(["claude-inbox-ack", "--project", project, "--request-key", key,
+                      "--result-sha256", sha, "--total-length", String(length), "--confirm-viewed"]) { result in
+            guard generation == self.claudeInboxGeneration,
+                  project == self.claudeIntegrationProject.trimmingCharacters(in: .whitespacesAndNewlines),
+                  key == self.claudeInboxSelection else { return }
+            guard result["status"] as? String == "ok",
+                  result["result_sha256"] as? String == sha,
+                  result["total_length"] as? Int == length,
+                  result["acknowledged"] as? Bool == true else {
+                self.claudeInboxStatus = (result["message"] as? String ?? "Acquittement non confirmé ; relisez et actualisez le résultat.")
+                    + " État actuel : " + (result["status"] as? String ?? "indisponible") + "."
+                if result["status"] as? String == "result_changed" {
+                    self.claudeInboxResult = [:]
+                    self.claudeInboxResultProject = ""
+                    self.claudeInboxResultSelection = ""
+                }
+                return
+            }
+            self.claudeInboxResult["acknowledged"] = true
+            for index in self.claudeInboxTasks.indices where self.claudeInboxTasks[index]["request_key"] as? String == key {
+                self.claudeInboxTasks[index]["acknowledged"] = true
+            }
+            self.claudeInboxStatus = "Résultat consulté et acquitté explicitement."
+        }
+    }
+
+    func saveAAKey() {
+        let value = aaKey
+        guard stateReady, !setupBusy, !value.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        aaNote = "Écriture de la clé…"
+        setupCommand(["aa-key-save"], input: ["key": value]) { result in
+            self.aaKey = ""
+            if result["saved"] as? Bool == true {
+                self.aaNote = "Clé enregistrée hors dépôt. Empreinte SHA-256 : \(result["fingerprint"] as? String ?? "indisponible")."
+            } else {
+                self.aaNote = result["message"] as? String ?? "Enregistrement non confirmé."
+            }
+        }
+    }
+
+    func refreshClaudeQuota() {
+        guard stateReady, !setupBusy else { return }
+        guard runtimeError == nil else {
+            claudeQuotaSourceObservation = [:]
+            claudeQuotaSourceStatus = runtimeError ?? "Runtime indisponible."
+            return
+        }
+        // Clear first so a failed refresh never leaves an older reset looking current.
+        claudeQuotaSourceObservation = [:]
+        claudeQuotaSourceStatus = "Lecture bornée du journal renderer Claude…"
+        setupCommand(["claude-quota-status", "--observe-renderer-log"]) { result in
+            var quotaState = result
+            let sourceObservation = quotaState.removeValue(forKey: "source_observation") as? [String: Any]
+            self.claudeQuotaState = quotaState
+            guard let sourceObservation,
+                  sourceObservation["schema_version"] as? Int == 1,
+                  sourceObservation["source"] as? String == "claude.renderer_log" else {
+                self.claudeQuotaSourceObservation = [:]
+                self.claudeQuotaSourceStatus = (result["message"] as? String)
+                    ?? "Lecture du journal indisponible ; aucune observation récente n’est affichée."
+                return
+            }
+            self.claudeQuotaSourceObservation = sourceObservation
+            self.claudeQuotaSourceStatus = "Observation locale reçue."
+        }
+    }
+    func configureClaudeQuota(_ enabled: Bool, transport: String? = nil) {
+        guard stateReady, !setupBusy else { return }
+        var args = ["claude-quota-config", "--enabled", enabled ? "true" : "false"]
+        if let transport { args += ["--transport", transport] }
+        setupCommand(args) { result in
+            if let transport { self.claudeQuotaState["transport"] = transport }
+            self.claudeQuotaState["enabled"] = result["claude_desktop_auto_enabled"] as? Bool ?? false
+        }
+    }
+
+    func invalidateIntegrationPlan() {
+        integrationPlan = nil
+        integrationAcknowledged = false
+        integrationResult = nil
+        integrationVerification = nil
+    }
+    func invalidateClaudeIntegrationPlan() {
+        claudeIntegrationPlan = nil
+        claudeIntegrationAcknowledged = false
+        let status = claudeIntegrationResult["status"] as? String
+        if !["completed", "verified", "inspected"].contains(status ?? "") {
+            claudeIntegrationResult = [:]
+        }
+    }
+    func chooseIntegrationDirectory(project: Bool) {
+        guard stateReady, !setupBusy else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
+        panel.showsHiddenFiles = !project
+        panel.message = project ? "Choisissez le projet auquel Reprise pourra accéder." : "Choisissez le dossier de configuration Harness."
+        if panel.runModal() == .OK, let url = panel.url {
+            if project { integrationProject = url.path } else { integrationHome = url.path; integrationProfiles = [] }
+            invalidateIntegrationPlan()
+        }
+    }
+    func inspectIntegration() {
+        guard stateReady, !setupBusy else { return }
+        var args = ["integration-inspect", "--home", integrationHome]
+        if !integrationProfile.isEmpty { args += ["--profile", integrationProfile] }
+        setupCommand(args) { result in
+            self.integrationProfiles = result["profiles"] as? [String] ?? []
+            if let project = result["output_resume_project"] as? String { self.integrationOutputResumeProject = project }
+            if let enabled = result["output_resume"] as? Bool { self.integrationOutputResume = enabled }
+            self.integrationAsi1Effort = result["asi1_effort"] as? Bool ?? false
+            if let enabled = result["delegate"] as? Bool { self.integrationDelegate = enabled }
+            self.integrationCodexWorkspaceWrite = result["codex_workspace_write"] as? Bool ?? false
+            if let role = result["agent_role"] as? String { self.integrationAgentRole = role }
+            if self.integrationProject.isEmpty, let project = result["project"] as? String { self.integrationProject = project }
+            self.integrationResult = result
+            self.integrationPlan = result["pending_plan"] as? [String: Any]
+            self.integrationAcknowledged = false
+            self.integrationMessage = result["message"] as? String ?? "Inspection non confirmée."
+            if let diagnostic = result["diagnostic"] as? String { self.integrationMessage += "\n" + diagnostic }
+        }
+    }
+    func previewIntegration(action: String) {
+        guard stateReady, !setupBusy else { return }
+        var args = ["integration-plan", "--home", integrationHome, "--profile", integrationProfile, "--project", integrationProject, "--action", action]
+        if integrationDelegate { args.append("--delegate") }
+        if integrationDelegate && integrationCodexWorkspaceWrite { args.append("--codex-workspace-write") }
+        if integrationOutputResume {
+            args.append("--output-resume")
+            if !integrationOutputResumeProject.isEmpty { args += ["--output-resume-project", integrationOutputResumeProject] }
+        }
+        if integrationAsi1Effort { args.append("--asi1-effort") }
+        args += ["--agent-role", integrationAgentRole]
+        setupCommand(args) { result in
+            self.integrationPlan = result["plan"] as? [String: Any]
+            self.integrationAcknowledged = false
+            self.integrationResult = result
+            self.integrationVerification = nil
+            self.integrationMessage = result["message"] as? String ?? "Plan indisponible."
+            if let diagnostic = result["diagnostic"] as? String { self.integrationMessage += "\n" + diagnostic }
+        }
+    }
+    func applyIntegration() {
+        guard stateReady, !setupBusy, integrationAcknowledged, let plan = integrationPlan else { return }
+        setupCommand(["integration-apply"], input: ["plan": plan]) { result in
+            self.integrationResult = result
+            self.integrationAcknowledged = false
+            self.integrationVerification = nil
+            if let pending = result["pending_plan"] as? [String: Any] { self.integrationPlan = pending }
+            else if result["status"] as? String == "completed" { self.integrationPlan = nil }
+            self.integrationMessage = result["message"] as? String ?? "Application non confirmée."
+            if let diagnostic = result["diagnostic"] as? String { self.integrationMessage += "\n" + diagnostic }
+        }
+    }
+    func verifyIntegration() {
+        guard stateReady, !setupBusy else { return }
+        setupCommand(["integration-verify", "--home", integrationHome, "--profile", integrationProfile]) { result in
+            self.integrationVerification = result
+            self.integrationMessage = result["message"] as? String ?? "Vérification non confirmée."
+            if let diagnostic = result["diagnostic"] as? String { self.integrationMessage += "\n" + diagnostic }
+        }
+    }
+
+    var selectedProject: [String: Any]? {
+        projects.first { $0["id"] as? String == selectedProjectID }
+    }
+
+    func projectResultMessage(_ result: [String: Any], fallback: String) -> String {
+        var parts = [result["message"] as? String ?? fallback]
+        if let diagnostic = result["diagnostic"] as? String, !diagnostic.isEmpty { parts.append(diagnostic) }
+        else if let error = result["error"] as? String, !error.isEmpty { parts.append(error) }
+        return parts.joined(separator: "\n")
+    }
+
+    func projectCommandReady() -> Bool {
+        guard stateReady else { projectMessage = "L’état Reprise n’est pas prêt."; return false }
+        guard !setupBusy else { projectMessage = "Une commande de préparation est déjà en cours."; return false }
+        if let runtimeError { projectMessage = runtimeError; return false }
+        return true
+    }
+
+    func refreshProjects(select projectID: String? = nil, completion: (() -> Void)? = nil) {
+        guard projectCommandReady() else { return }
+        setupCommand(["project-list"]) { result in
+            guard result["status"] as? String == "ok",
+                  let rows = result["projects"] as? [[String: Any]] else {
+                self.projectMessage = self.projectResultMessage(result, fallback: "Impossible de charger les projets.")
+                completion?()
+                return
+            }
+            self.projects = rows
+            if let projectID, rows.contains(where: { $0["id"] as? String == projectID }) {
+                self.selectProject(projectID)
+            } else if !self.selectedProjectID.isEmpty,
+                      !rows.contains(where: { $0["id"] as? String == self.selectedProjectID }) {
+                self.selectProject("")
+            }
+            self.projectMessage = rows.isEmpty ? "Aucun projet enregistré." : "\(rows.count) projet(s) chargé(s)."
+            completion?()
+        }
+    }
+
+    func selectProject(_ projectID: String) {
+        selectedProjectID = projectID
+        projectWorkspaceDraft = ""
+        invalidateClaudeInbox()
+        guard let project = projects.first(where: { $0["id"] as? String == projectID }) else {
+            projectRenameDraft = ""
+            integrationProject = ""
+            claudeIntegrationProject = ""
+            invalidateIntegrationPlan()
+            invalidateClaudeIntegrationPlan()
+            return
+        }
+        projectRenameDraft = project["name"] as? String ?? ""
+        let workspaces = project["workspaces"] as? [String: String] ?? [:]
+        integrationProject = workspaces["harness"] ?? ""
+        claudeIntegrationProject = workspaces["claude"] ?? ""
+        invalidateIntegrationPlan()
+        invalidateClaudeIntegrationPlan()
+    }
+
+    func chooseProjectDirectory(_ target: String) {
+        guard stateReady, !setupBusy else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        let selection = target == "root" ? "Choisissez le dossier racine du projet." :
+            target == "source" ? "Choisissez le dépôt Git source." : "Choisissez le workspace existant à associer."
+        panel.message = selection + " Le dossier peut être synchronisé avec iCloud ; rendez-le disponible localement. Reprise ne vérifie pas son état iCloud."
+        if panel.runModal() == .OK, let url = panel.url {
+            switch target {
+            case "root": projectRootDraft = url.path
+            case "source": projectSourceDraft = url.path
+            default: projectWorkspaceDraft = url.path
+            }
+        }
+    }
+
+    func createProject() {
+        guard projectCommandReady() else { return }
+        guard !projectNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !projectRootDraft.isEmpty, !projectSourceDraft.isEmpty else {
+            projectMessage = "Indiquez un nom, un dossier racine et un dépôt source existants."
+            return
+        }
+        setupCommand(["project-create", "--name", projectNameDraft, "--root", projectRootDraft,
+                      "--source", projectSourceDraft]) { result in
+            guard result["status"] as? String == "ok", let project = result["project"] as? [String: Any],
+                  let projectID = project["id"] as? String else {
+                self.projectMessage = self.projectResultMessage(result, fallback: "Création du projet impossible.")
+                return
+            }
+            self.projectRootDraft = ""
+            self.projectSourceDraft = ""
+            self.projectNameDraft = ""
+            self.projects.removeAll { $0["id"] as? String == projectID }
+            self.projects.append(project)
+            self.projectMessage = self.projectResultMessage(result, fallback: "Projet créé.")
+            self.selectProject(projectID)
+        }
+    }
+
+    func renameProject() {
+        guard projectCommandReady(), !selectedProjectID.isEmpty else { return }
+        setupCommand(["project-rename", "--project-id", selectedProjectID, "--name", projectRenameDraft]) { result in
+            guard result["status"] as? String == "ok", let project = result["project"] as? [String: Any] else {
+                self.projectMessage = self.projectResultMessage(result, fallback: "Renommage du projet impossible.")
+                return
+            }
+            self.projects.removeAll { $0["id"] as? String == self.selectedProjectID }
+            self.projects.append(project)
+            self.projectMessage = self.projectResultMessage(result, fallback: "Projet renommé.")
+        }
+    }
+
+    func associateProjectWorkspace() {
+        guard projectCommandReady(), !selectedProjectID.isEmpty else { return }
+        guard !projectWorkspaceDraft.isEmpty else {
+            projectMessage = "Choisissez un dossier de workspace existant."
+            return
+        }
+        setupCommand(["project-associate", "--project-id", selectedProjectID, "--harness", projectWorkspaceHarness,
+                      "--workspace", projectWorkspaceDraft]) { result in
+            guard result["status"] as? String == "ok", let project = result["project"] as? [String: Any] else {
+                self.projectMessage = self.projectResultMessage(result, fallback: "Association du workspace impossible.")
+                return
+            }
+            self.projects.removeAll { $0["id"] as? String == self.selectedProjectID }
+            self.projects.append(project)
+            self.projectWorkspaceDraft = ""
+            self.projectMessage = self.projectResultMessage(result, fallback: "Workspace associé.")
+            self.selectProject(self.selectedProjectID)
+        }
+    }
+}
+
+struct Integrations: View {
+    @ObservedObject var app: App
+    var hasProfile: Bool { !app.integrationProfile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    func path(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) { Text(label).font(.caption).foregroundStyle(.secondary); Text(value.isEmpty ? "Non choisi" : value).textSelection(.enabled) }
+    }
+    func planDetail(_ value: Any) -> String {
+        if let text = value as? String { return text }
+        guard JSONSerialization.isValidJSONObject(value), let data = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]), let text = String(data: data, encoding: .utf8) else { return String(describing: value) }
+        return text
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            GroupBox("Projets et workspaces") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Picker("Projet", selection: $app.selectedProjectID) {
+                            Text("Choisir un projet…").tag("")
+                            ForEach(app.projects.indices, id: \.self) { index in
+                                let project = app.projects[index]
+                                Text(project["name"] as? String ?? "Projet sans nom")
+                                    .tag(project["id"] as? String ?? "")
+                            }
+                        }
+                        Button("Actualiser") { app.refreshProjects() }
+                    }
+                    if let project = app.selectedProject {
+                        path("Identité stable", project["id"] as? String ?? "")
+                        path("Racine choisie", project["root_path"] as? String ?? "")
+                        path("Dépôt source", project["source_repository"] as? String ?? "")
+                        HStack {
+                            TextField("Nom du projet", text: $app.projectRenameDraft)
+                            Button("Renommer") { app.renameProject() }
+                                .disabled(app.projectRenameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                        let workspaces = project["workspaces"] as? [String: String] ?? [:]
+                        path("Workspace Codex", workspaces["codex"] ?? "")
+                        path("Workspace Harness", workspaces["harness"] ?? "")
+                        path("Workspace Claude", workspaces["claude"] ?? "")
+                        HStack {
+                            Picker("Associer pour", selection: $app.projectWorkspaceHarness) {
+                                Text("Codex").tag("codex")
+                                Text("Harness").tag("harness")
+                                Text("Claude").tag("claude")
+                            }
+                            Button("Choisir un dossier existant…") { app.chooseProjectDirectory("workspace") }
+                        }
+                        path("Workspace à associer", app.projectWorkspaceDraft)
+                        Button("Associer le workspace") { app.associateProjectWorkspace() }
+                            .disabled(app.projectWorkspaceDraft.isEmpty)
+                        Text("Une association déjà renseignée n’est pas remplacée automatiquement ; une autre destination sera refusée par le registre.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Divider()
+                    Text("Créer un projet")
+                        .font(.headline)
+                    TextField("Nom du projet", text: $app.projectNameDraft)
+                    HStack {
+                        Button("Choisir la racine…") { app.chooseProjectDirectory("root") }
+                        Text(app.projectRootDraft.isEmpty ? "Racine non choisie" : app.projectRootDraft)
+                            .font(.caption).textSelection(.enabled)
+                    }
+                    HStack {
+                        Button("Choisir le dépôt source…") { app.chooseProjectDirectory("source") }
+                        Text(app.projectSourceDraft.isEmpty ? "Dépôt source non choisi" : app.projectSourceDraft)
+                            .font(.caption).textSelection(.enabled)
+                    }
+                    Button("Créer le projet") { app.createProject() }
+                        .disabled(app.projectNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                                  app.projectRootDraft.isEmpty || app.projectSourceDraft.isEmpty)
+                    Text(app.projectMessage).font(.caption).textSelection(.enabled)
+                    Text("Le dossier choisi peut être synchronisé avec iCloud. Rendez-le disponible localement avant de créer le projet ou d’associer un workspace. Cette interface ne vérifie pas son état iCloud.")
+                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    Text("Cette identité commune organise les associations de workspaces ; les registres de délégation restent actuellement indexés par chemin. Elle ne partage pas encore les demandes ni les résultats entre workspaces.")
+                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }.padding(6)
+            }
+            SettingsCard(title: "Profil Harness",
+                         status: hasProfile ? "Profil : " + app.integrationProfile : "Aucun profil",
+                         ok: hasProfile) {
+                HStack {
+                    path("Dossier Harness", app.integrationHome)
+                    Spacer()
+                    Button("Choisir le dossier…") { app.chooseIntegrationDirectory(project: false) }
+                }
+                HStack(spacing: 10) {
+                    TextField("Profil Harness", text: $app.integrationProfile).frame(maxWidth: 260)
+                    if !app.integrationProfiles.isEmpty {
+                        Picker("Profils détectés", selection: $app.integrationProfile) {
+                            ForEach(app.integrationProfiles, id: \.self) { profile in Text(profile).tag(profile) }
+                        }.labelsHidden().frame(maxWidth: 220)
+                    }
+                    Spacer()
+                    Button("Relire la configuration") { app.inspectIntegration() }
+                }
+                SettingsHint(
+                    text: "Reprise lit ce dossier pour connaître votre configuration ; elle ne l’applique pas.",
+                    detail: "L’inspection n’écrit rien et ne lance aucune inférence. Elle relève les profils présents, les outils déjà exposés et le dernier plan éventuellement en attente.")
+            }
+            SettingsCard(title: "Délégation vers un expert externe",
+                         status: app.integrationDelegate ? "Exposée" : "Désactivée",
+                         ok: true) {
+                Toggle("Exposer les outils de délégation", isOn: $app.integrationDelegate)
+                SettingsHint(
+                    text: "Par défaut, seuls l’observation et les reçus sont exposés. La délégation peut consommer du quota.",
+                    detail: "Autoriser l’exposition n’exécute aucune inférence : c’est le client qui décide d’appeler. Configurer un outil ne vaut pas autorisation de l’utiliser.")
+                Toggle("Autoriser l’écriture dans le projet sélectionné", isOn: $app.integrationCodexWorkspaceWrite)
+                    .disabled(!app.integrationDelegate)
+                SettingsHint(
+                    text: "Les revues restent en lecture seule ; seul le mode implémentation écrit.",
+                    detail: "Le mode implémentation autorise les modifications et vérifications locales dans ce projet. Les approbations natives restent requises ; cette option n’autorise pas implicitement un push, une fusion ou un déploiement.")
+                Toggle("Reprendre après une limite de tokens de sortie", isOn: $app.integrationOutputResume)
+                if app.integrationOutputResume {
+                    TextField("Projet de reprise (vide : projet du connecteur)", text: $app.integrationOutputResumeProject)
+                }
+                SettingsHint(
+                    text: "Deux reprises consécutives au maximum.",
+                    detail: "Une reprise poursuit le même chat après une limite de tokens de sortie confirmée. La pause automatique de Reprise reste prioritaire et s’applique d’abord.")
+                Toggle("Forcer un effort de raisonnement bas pour asi1", isOn: $app.integrationAsi1Effort)
+                SettingsHint(
+                    text: "S’applique au profil asi1-orchestrator uniquement.",
+                    detail: "Déclare asi1 comme modèle raisonneur, ajoute les champs de compatibilité et insère le greffon dans le preset asi1-orchestrator pour forcer reasoning_effort=low. La route asi-cloud/asi1 et le preset doivent déjà exister. Le modèle par défaut n’est pas modifié ; rechargez le profil Harness pour charger une nouvelle version du greffon.")
+                HStack(spacing: 10) {
+                    Text("Rôle de l’agent").font(.callout)
+                    Picker("Rôle de l’agent", selection: $app.integrationAgentRole) {
+                        Text("Standard").tag("standard")
+                        Text("Coordinateur").tag("coordinator")
+                    }.labelsHidden().frame(maxWidth: 200)
+                    Spacer()
+                }
+                SettingsHint(
+                    text: "Le rôle est un label que vous attribuez ; il ne change pas le modèle.",
+                    detail: "Coordinateur désigne l’agent qui répartit le travail. Ce rôle est indépendant du modèle utilisé et n’accorde aucun droit de délégation supplémentaire.")
+            }
+            SettingsCard(title: "Clé Artificial Analysis",
+                         status: app.aaNote.contains("empreinte") ? "Enregistrée" : "Non vérifiée",
+                         ok: app.aaNote.contains("empreinte")) {
+                HStack {
+                    SecureField("Clé (masquée)", text: $app.aaKey)
+                    Button("Enregistrer") { app.saveAAKey() }.disabled(app.setupBusy || app.aaKey.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if !app.aaNote.isEmpty { Text(app.aaNote).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+                SettingsHint(
+                    text: "Écrite hors dépôt, permissions 0600, sauvegarde avant écrasement.",
+                    detail: "Emplacement : REPRISE_SUPPORT/credentials/artificial-analysis.key. La clé est vérifiée par empreinte SHA-256 et n’est jamais affichée ni journalisée.")
+            }
+            SchedulerService(app: app)
+            SettingsCard(title: "Connecteur Codex", status: "Chargement client inconnu", ok: false) {
+                SettingsHint(text: "La configuration locale peut être vérifiée ; son chargement par Codex reste inconnu.",
+                             detail: "La mise à jour conserve les projets et autorisations des entrées reconnues. Elle ne recharge ni ne redémarre Codex. En cas de réponse perdue, vérifiez l’état avant toute nouvelle opération.")
+                Toggle("Mettre à jour reprise_codex", isOn: $app.codexIntegrationExpert)
+                Toggle("Mettre à jour reprise-harness", isOn: $app.codexIntegrationHarness)
+                HStack {
+                    Button("Relire l’état") { app.inspectCodexIntegration() }
+                    Button("Prévisualiser…") { app.previewCodexIntegration() }
+                        .disabled(app.codexIntegrationEntries.isEmpty)
+                    Button("Vérifier la configuration") { app.verifyCodexIntegration() }
+                        .disabled(app.codexIntegrationVerificationPlan == nil)
+                }
+                if !app.codexIntegrationOperations.isEmpty {
+                    Picker("Opération enregistrée", selection: $app.codexIntegrationOperationID) {
+                        Text("Choisir une opération…").tag("")
+                        ForEach(app.codexIntegrationOperations.indices, id: \.self) { index in
+                            let operation = app.codexIntegrationOperations[index]
+                            let identifier = operation["id"] as? String ?? ""
+                            let status = operation["status"] as? String ?? "indeterminate"
+                            Text(identifier + " · " + (status == "recorded" ? "reçu enregistré" : "état indéterminé"))
+                                .tag(identifier)
+                        }
+                    }
+                    Button("Vérifier l’opération enregistrée") { app.verifyCodexIntegrationOperation() }
+                        .disabled(app.codexIntegrationOperationID.isEmpty)
+                    SettingsHint(text: "La conformité actuelle ne prouve pas qu’une opération indéterminée a écrit la configuration.")
+                }
+                if let plan = app.codexIntegrationPlan {
+                    let target = plan["target"] as? String ?? "Cible non disponible"
+                    path("Release cible", target)
+                    path("Identité de la release", URL(fileURLWithPath: target).lastPathComponent)
+                    SettingsHint(text: "Vérifiez les entrées et chemins avant application.", detail: planDetail(plan), detailLabel: "Plan exact")
+                    Toggle("J’ai vérifié les entrées et leurs changements", isOn: $app.codexIntegrationAcknowledged)
+                    Button("Appliquer le plan") { app.applyCodexIntegration() }
+                        .disabled(!app.codexIntegrationAcknowledged)
+                }
+                if let operationStatus = app.codexIntegrationResult["operation_status"] as? String {
+                    let proof = operationStatus == "recorded" ? "Reçu de l’opération enregistré." : "Opération indéterminée : écriture non attribuée."
+                    let current = app.codexIntegrationResult["configuration_written"] as? Bool == true ? " Configuration actuelle conforme." : " Configuration actuelle non confirmée."
+                    Text(proof + current).font(.caption)
+                }
+                if !app.codexIntegrationResult.isEmpty {
+                    SettingsHint(text: app.codexIntegrationResult["message"] as? String ?? "Résultat local ; chargement client inconnu.",
+                                 detail: planDetail(app.codexIntegrationResult), detailLabel: "Réponse complète")
+                }
+            }
+            SettingsCard(title: "Connecteur Claude Desktop",
+                         status: app.claudeIntegrationResult["status"] as? String == "verified" ? "Release vérifiée" :
+                             app.claudeIntegrationResult["status"] as? String == "completed" ?
+                                 ((app.claudeIntegrationResult["action"] as? String == "remove") ? "Retrait appliqué" : "Plan appliqué") : "État inconnu",
+                         ok: ["completed", "verified"].contains(app.claudeIntegrationResult["status"] as? String ?? "")) {
+                HStack {
+                    path("Workspace Claude du projet sélectionné", app.claudeIntegrationProject)
+                }
+                HStack(spacing: 10) {
+                    Button("Relire l’état") { app.inspectClaudeIntegration() }
+                    Button("Installer ou mettre à jour…") { app.previewClaudeIntegration("install") }.disabled(app.claudeIntegrationProject.isEmpty)
+                    Button("Retirer…") { app.previewClaudeIntegration("remove") }.disabled(app.claudeIntegrationProject.isEmpty)
+                    Button("Vérifier") { app.verifyClaudeIntegration() }.disabled(app.claudeIntegrationProject.isEmpty)
+                }
+                SettingsHint(
+                    text: "Les autorisations se donnent dans Claude, pas ici.",
+                    detail: "Un seul connecteur suffit : il reçoit les tâches, rend les résultats et demande une expertise aux autres harness configurés. L’exécution Python est incluse ; aucun Python système n’est requis. Dans Claude, autorisez les outils du connecteur reprise-harness. Reprise ne peut pas accorder ces autorisations à votre place et n’arrête pas Claude : la nouvelle configuration y est chargée après un rechargement. Une vérification de version ne prouve pas le chargement dans Claude ; le déclenchement Quick Apply reste une capacité distincte.",
+                    detailLabel: "Autorisations et limites")
+                Toggle("Remplacer le connecteur Reprise déjà reconnu (sauvegardé)", isOn: $app.claudeReplaceProbe)
+                if app.claudeIntegrationPlan?["action"] as? String != "remove" {
+                    Picker("Outil d’attente await_task", selection: $app.claudeAwaitChoice) {
+                        Text("Conserver le réglage actuel").tag("preserve")
+                        Text("Activer").tag("enable")
+                        Text("Désactiver").tag("disable")
+                    }
+                    SettingsHint(
+                        text: "Le choix s’applique à l’installation ou à la mise à jour du connecteur.",
+                        detail: "Conserver préserve le réglage géré actuel ; pour une nouvelle installation, await_task reste désactivé. Cette option ne change pas get_task, submit_result ni get_result.",
+                        detailLabel: "Réglage await_task")
+                } else {
+                    SettingsHint(text: "Le retrait du connecteur n’utilise pas le réglage await_task.")
+                }
+                if let plan = app.claudeIntegrationPlan {
+                    SettingsHint(text: "Un plan est prêt ; il attend votre accord.",
+                                 detail: planDetail(plan), detailLabel: "Plan exact du connecteur")
+                    if plan["action"] as? String == "install" {
+                        let awaitLabel = plan["enable_await"] as? Bool == true ? "activé" : "désactivé"
+                        let preview = "Aperçu : await_task est " + awaitLabel + " dans cette configuration."
+                        Text(preview).font(.caption)
+                    } else {
+                        Text("Aperçu : l’entrée gérée sera retirée ; le réglage await_task ne s’applique pas.").font(.caption)
+                    }
+                    Toggle("J’ai vérifié le projet et les changements du connecteur", isOn: $app.claudeIntegrationAcknowledged)
+                    Button("Appliquer le plan") { app.applyClaudeIntegration() }.disabled(!app.claudeIntegrationAcknowledged)
+                }
+                if app.claudeIntegrationResult["status"] as? String == "completed" {
+                    let changed = app.claudeIntegrationResult["changed"] as? Bool == true
+                    let action = app.claudeIntegrationResult["action"] as? String ?? "install"
+                    let enabled = app.claudeIntegrationResult["enable_await"] as? Bool == true
+                    if action == "remove" {
+                        SettingsHint(text: changed ? "Connecteur retiré de la configuration locale." : "Le connecteur était déjà retiré.",
+                                     detail: "Le réglage await_task n’a pas été utilisé. Chargement par Claude Desktop : non observé.",
+                                     detailLabel: "Dernier résultat")
+                    } else {
+                        SettingsHint(text: changed ? "Configuration locale écrite ; await_task est " + (enabled ? "activé." : "désactivé.")
+                                                   : "Configuration locale déjà conforme ; aucune écriture. await_task est " + (enabled ? "activé." : "désactivé."),
+                                     detail: "Ce résultat concerne le dernier plan appliqué. Chargement par Claude Desktop : non observé ; recharger Claude et vérifier l’outil dans le client.",
+                                     detailLabel: "Dernier résultat")
+                    }
+                } else if app.claudeIntegrationResult["status"] as? String == "verified" {
+                    let exposed = app.claudeIntegrationResult["await_tool_exposed"] as? Bool == true
+                    SettingsHint(text: "Vérification locale : await_task " + (exposed ? "exposé" : "désactivé") + " dans la release testée.",
+                                 detail: "La release a répondu à initialize/tools/list sans inférence. Chargement par Claude Desktop : non observé ; recharger Claude et vérifier l’outil dans le client.",
+                                 detailLabel: "Dernière vérification")
+                } else if app.claudeIntegrationResult["status"] as? String == "inspected" {
+                    if app.claudeIntegrationResult["managed"] as? Bool == true {
+                        let enabled = app.claudeIntegrationResult["enable_await"] as? Bool == true
+                        SettingsHint(text: "Réglage géré actuel : await_task " + (enabled ? "activé." : "désactivé."),
+                                     detail: "Inspection de la configuration locale ; chargement par Claude Desktop non observé.",
+                                     detailLabel: "Dernière inspection")
+                    } else {
+                        SettingsHint(text: "Aucun connecteur géré actif ; une nouvelle installation reste désactivée si vous choisissez Conserver.",
+                                     detailLabel: "Dernière inspection")
+                    }
+                }
+                if !app.claudeIntegrationResult.isEmpty {
+                    SettingsHint(text: app.claudeIntegrationResult["message"] as? String ?? "Dernier résultat du connecteur.",
+                                 detail: planDetail(app.claudeIntegrationResult), detailLabel: "Réponse complète")
+                }
+                Divider()
+                Text("Collecter un résultat").font(.headline)
+                SettingsHint(
+                    text: "La collecte lit le registre du socket déjà actif ; elle ne démarre ni service ni client Claude.",
+                    detail: "Reprise compare le projet sélectionné et l’empreinte d’état du socket au manifeste géré avant chaque opération. Cela vérifie le rattachement local, pas le chargement du connecteur dans Claude.",
+                    detailLabel: "Portée et preuve")
+                Button("Actualiser les tâches du projet") { app.refreshClaudeInbox() }
+                    .disabled(app.setupBusy || app.claudeIntegrationProject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if !app.claudeInboxTasks.isEmpty {
+                    Picker("Tâche", selection: Binding(
+                        get: { app.claudeInboxSelection },
+                        set: { value in
+                            guard value != app.claudeInboxSelection else { return }
+                            app.claudeInboxSelection = value
+                            app.invalidateClaudeInboxSelection()
+                        })) {
+                        Text("Choisir une tâche…").tag("")
+                        ForEach(Array(app.claudeInboxTasks.enumerated()), id: \.offset) { entry in
+                            ClaudeInboxTaskOption(task: entry.element)
+                        }
+                    }
+                    Button("Lire intégralement et vérifier") { app.readClaudeInboxResult() }
+                        .disabled(app.setupBusy || app.claudeInboxSelection.isEmpty ||
+                                  !app.claudeInboxTasks.contains(where: {
+                                      $0["request_key"] as? String == app.claudeInboxSelection && $0["result_available"] as? Bool == true
+                                  }))
+                }
+                Text(app.claudeInboxStatus).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                if app.claudeInboxResultProject == app.claudeIntegrationProject.trimmingCharacters(in: .whitespacesAndNewlines),
+                   app.claudeInboxResultSelection == app.claudeInboxSelection,
+                   let answer = app.claudeInboxResult["answer"] as? String,
+                   let sha = app.claudeInboxResult["result_sha256"] as? String,
+                   let length = app.claudeInboxResult["total_length"] as? Int {
+                    Text("Résultat complet · \(length) caractères dans la représentation vérifiée")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("SHA-256 : " + sha).font(.caption.monospaced()).textSelection(.enabled)
+                    ScrollView {
+                        Text(answer).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 260)
+                    .padding(8)
+                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                    if app.claudeInboxResult["acknowledged"] as? Bool == true {
+                        SettingsHint(text: "Ce résultat a été acquitté.")
+                    } else {
+                        Button("Acquitter après consultation") { app.acknowledgeClaudeInboxResult() }
+                            .disabled(app.setupBusy)
+                    }
+                }
+            }.disabled(app.setupBusy)
+            SettingsCard(title: "Reprise après quota Claude Desktop",
+                         status: app.claudeQuotaState["enabled"] as? Bool == true ? "Active" : "En pause",
+                         ok: true) {
+                Toggle("Poursuivre le chat après le renouvellement gratuit", isOn: Binding(
+                    get: { app.claudeQuotaState["enabled"] as? Bool ?? true },
+                    set: { app.configureClaudeQuota($0) }))
+                Picker("Canal de reprise", selection: Binding(
+                    get: { app.claudeQuotaState["transport"] as? String ?? "quick-apply" },
+                    set: { app.configureClaudeQuota(app.claudeQuotaState["enabled"] as? Bool ?? true, transport: $0) })) {
+                    Text("Quick Apply (claude-desktopd)").tag("quick-apply")
+                }
+                SettingsHint(
+                    text: "La pause globale reste prioritaire.",
+                    detail: "Quick Apply passe par le même service que les autres harness et exige une capacité d’émission vérifiée. Reprise examine le dernier message du chat affiché et son bouton Continuer, sans saisir de texte à votre place.")
+                if let events = app.claudeQuotaState["events"] as? [[String: Any]], let latest = events.first,
+                   let due = latest["due"] as? Double {
+                    HStack(spacing: 16) {
+                        Text("Prochaine tentative : " + Date(timeIntervalSince1970: due).formatted(date: .abbreviated, time: .shortened))
+                        Text("État : " + (latest["status"] as? String ?? "inconnu")).foregroundStyle(.secondary)
+                    }.font(.caption)
+                }
+                if let observation = app.claudeQuotaState["observation"] as? [String: Any], let state = observation["status"] as? String {
+                    Text("Observation de reprise : " + state).font(.caption).foregroundStyle(.secondary)
+                }
+                ClaudeQuotaRendererObservation(
+                    observation: app.claudeQuotaSourceObservation,
+                    fallbackStatus: app.claudeQuotaSourceStatus)
+                Button("Actualiser le suivi et lire le journal") { app.refreshClaudeQuota() }
+            }.disabled(app.setupBusy).onAppear { app.refreshProjects { app.refreshClaudeQuota() } }
+            if app.setupBusy { InlineStatus(busy: true, message: "Opération en cours…") }
+            SettingsCard(title: "Appliquer la configuration",
+                         status: app.integrationPlan == nil ? "Aucun plan en attente" : "Plan en attente",
+                         ok: app.integrationPlan == nil) {
+                HStack(spacing: 10) {
+                    Button("Prévisualiser l’installation…") { app.previewIntegration(action: "install") }
+                    Button("Prévisualiser le retrait…") { app.previewIntegration(action: "remove") }
+                    Spacer()
+                }.disabled(!hasProfile || app.integrationProject.isEmpty)
+                if let plan = app.integrationPlan {
+                    Divider()
+                    HStack(spacing: 24) {
+                        path("Action", plan["action"] as? String ?? "")
+                        path("Profil", plan["profile"] as? String ?? "")
+                    }
+                    Text("Rôle : " + ((plan["agent_role"] as? String == "coordinator") ? "Coordinateur" : "Standard"))
+                    SettingsHint(
+                        text: "Les modifications ci-dessous sont exactes et réversibles.",
+                        detail: planDetail((plan["changes"] as? [[String: Any]] ?? [])), detailLabel: "Fichiers avant / après")
+                    if let project = plan["output_resume_project"] as? String { path("Projet de reprise", project) }
+                    Text("Reprise après limite de sortie : " + ((plan["output_resume"] as? Bool == true) ? "autorisée" : "désactivée"))
+                    Text("Effort ASI1 bas : " + ((plan["asi1_effort"] as? Bool == true) ? "installé" : "non installé"))
+                    Text("Délégation : " + ((plan["delegate"] as? Bool == true) ? "exposée" : "non exposée"))
+                    if let release = plan["release"], let state = plan["state"] {
+                        SettingsHint(text: "Version et état utilisés par le connecteur.",
+                                     detail: planDetail(release) + "\n\n" + planDetail(state), detailLabel: "Détail technique")
+                    }
+                    Text("Empreinte du plan : " + (plan["fingerprint"] as? String ?? "indisponible")).font(.caption)
+                    Toggle("J’autorise les modifications de ce plan sur le profil affiché.", isOn: $app.integrationAcknowledged)
+                    Button("Appliquer ce plan") { app.applyIntegration() }.disabled(!app.integrationAcknowledged)
+                }
+                if let result = app.integrationResult {
+                    if let backup = result["backup"] as? String { path("Sauvegarde", backup) }
+                    ForEach(result["backups"] as? [String] ?? [], id: \.self) { path("Sauvegarde", $0) }
+                }
+                Divider()
+                Button("Vérifier la configuration sans inférence") { app.verifyIntegration() }.disabled(!hasProfile)
+                if let verification = app.integrationVerification {
+                    let levels = verification["levels"] as? [String: Any] ?? [:]
+                    SettingsHint(
+                        text: "Ce qui est prouvé, et ce qui reste à confirmer.",
+                        detail: [
+                            "Configuration écrite : " + ((levels["configuration_written"] as? Bool == true) ? "vérifiée" : "non confirmée"),
+                            "Intégration chargée par Harness : inconnue",
+                            "Outils découverts par le client : inconnu",
+                            "Échange confirmé avec le client : inconnu",
+                            (verification["bridge_tools"] as? [String]).map { "Outils annoncés : " + $0.joined(separator: ", ") } ?? "",
+                            "Le test de version ne prouve pas le chargement par Harness ni un échange depuis le client. Le profil complet et ses surcharges restent à valider dans Harness."
+                        ].filter { !$0.isEmpty }.joined(separator: "\n"),
+                        detailLabel: "Bornes de preuve")
+                }
+            }
+        }
+        .disabled(app.setupBusy || !app.stateReady)
+        .onChange(of: app.codexIntegrationExpert) { _, _ in app.invalidateCodexIntegrationPlan() }
+        .onChange(of: app.codexIntegrationHarness) { _, _ in app.invalidateCodexIntegrationPlan() }
+        .onChange(of: app.integrationProfile) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.integrationOutputResumeProject) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.integrationOutputResume) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.integrationAgentRole) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.integrationCodexWorkspaceWrite) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.integrationDelegate) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.selectedProjectID) { _, projectID in app.selectProject(projectID) }
+        .onChange(of: app.integrationProject) { _, _ in
+            app.invalidateClaudeIntegrationPlan()
+            app.invalidateClaudeInbox()
+        }
+        .onChange(of: app.claudeIntegrationProject) { _, _ in
+            app.invalidateClaudeIntegrationPlan()
+            app.invalidateClaudeInbox()
+        }
+        .onChange(of: app.claudeAwaitChoice) { _, _ in app.invalidateClaudeIntegrationPlan() }
+        .onChange(of: app.claudeReplaceProbe) { _, _ in app.invalidateClaudeIntegrationPlan() }
+    }
+}

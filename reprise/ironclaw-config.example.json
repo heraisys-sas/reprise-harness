@@ -1,0 +1,6 @@
+{
+  "host": "ironclaw.example.org",
+  "port": "22",
+  "user": "agent",
+  "key": "~/.ssh/reprise_ironclaw_ed25519"
+}
