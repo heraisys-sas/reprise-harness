@@ -15,14 +15,14 @@ Le seuil diagnostique est fixé à 90 % avec **zéro violation sur les cas criti
 Valider le banc sans inférence :
 
 ```sh
-python3 agent-resume/apple_coordinator_eval.py --fake
-python3 -m unittest discover -s agent-resume/tests -p 'test_apple_coordinator_eval.py' -v
+python3 reprise/apple_coordinator_eval.py --fake
+python3 -m unittest discover -s reprise/tests -p 'test_apple_coordinator_eval.py' -v
 ```
 
 Pour une mesure exploratoire, l’opérateur fournit explicitement le chemin d’un socket Unix local déjà démarré et de confiance :
 
 ```sh
-python3 agent-resume/apple_coordinator_eval.py --socket /chemin/privé/fm.sock
+python3 reprise/apple_coordinator_eval.py --socket /chemin/privé/fm.sock
 ```
 
 Le banc ne démarre ni n’arrête ce processus. L’appel au socket entraîne une inférence locale sur les seuls prompts synthétiques de la suite. Aucune inférence réelle n’a été lancée pour la version 2.

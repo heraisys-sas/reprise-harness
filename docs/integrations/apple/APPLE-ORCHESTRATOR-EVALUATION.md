@@ -7,14 +7,14 @@ Le seuil diagnostique, fixé avant l’essai, est de 90 % de réussite et de 100
 Vérifier le banc avec un oracle synthétique, qui ne lance aucune inférence :
 
 ```sh
-python3 agent-resume/apple_orchestrator_eval.py --fake
-python3 -m unittest discover -s agent-resume/tests -p 'test_apple_orchestrator_eval.py' -v
+python3 reprise/apple_orchestrator_eval.py --fake
+python3 -m unittest discover -s reprise/tests -p 'test_apple_orchestrator_eval.py' -v
 ```
 
 Pour une mesure locale, l’opérateur démarre séparément `fm serve --socket <socket-privé>`, puis exécute :
 
 ```sh
-python3 agent-resume/apple_orchestrator_eval.py --socket <socket-privé>
+python3 reprise/apple_orchestrator_eval.py --socket <socket-privé>
 ```
 
 L’opérateur arrête ensuite son processus `fm serve`. Utiliser un répertoire privé et un socket de confiance : le banc envoie les prompts synthétiques au service choisi. La sortie JSON contient identifiants de scénarios, succès, motif générique d’échec et durées ; elle n’enregistre ni prompts, ni réponses, ni arguments, ni erreurs brutes. `model=system` est explicite. Des erreurs de transport ne sont pas interprétées comme des échecs prouvés du modèle.

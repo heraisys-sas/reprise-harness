@@ -5,7 +5,7 @@
 Exécution d'essai manuelle **sans inférence**, avec un dossier d'état absolu existant :
 
 ```sh
-printf '%s\n' '{"id":"c03aa24b-bdb5-46e1-bca7-16544d55b258","op":"catalog"}' | python3 agent-resume/apple_pilot_service.py --state /private/tmp
+printf '%s\n' '{"id":"c03aa24b-bdb5-46e1-bca7-16544d55b258","op":"catalog"}' | python3 reprise/apple_pilot_service.py --state /private/tmp
 ```
 
 ## Protocole
@@ -23,7 +23,7 @@ Chaque ligne UTF-8 est un objet JSON de 65 536 octets au maximum, retour ligne c
 
 ## Vérifications et limites
 
-`python3 -m unittest discover -s agent-resume/tests -p test_apple_pilot_service.py -v` : douze tests, avec backend et mémoire simulés ; un sous-processus réel ne demande que le catalogue. Deux sous-processus testent un backend et une sortie artificiellement bloqués et vérifient une sortie non nulle bornée. Ils couvrent l'opt-in, le périmètre, plusieurs tours, l'annulation, la fermeture, un nettoyage non confirmé, les identifiants, les tailles et le JSON. Aucun modèle, coffre utilisateur, socket `fm` réel, ni GUI n'ont été sollicités par ce lot. Les tests du noyau, du transport et de la mémoire apportent des preuves complémentaires, à exécuter sur leur état courant. La concurrence, l'accès aux droits, le nettoyage après crash brutal et la confidentialité de l'interface finale nécessitent une revue et des validations intégrées avant activation.
+`python3 -m unittest discover -s reprise/tests -p test_apple_pilot_service.py -v` : douze tests, avec backend et mémoire simulés ; un sous-processus réel ne demande que le catalogue. Deux sous-processus testent un backend et une sortie artificiellement bloqués et vérifient une sortie non nulle bornée. Ils couvrent l'opt-in, le périmètre, plusieurs tours, l'annulation, la fermeture, un nettoyage non confirmé, les identifiants, les tailles et le JSON. Aucun modèle, coffre utilisateur, socket `fm` réel, ni GUI n'ont été sollicités par ce lot. Les tests du noyau, du transport et de la mémoire apportent des preuves complémentaires, à exécuter sur leur état courant. La concurrence, l'accès aux droits, le nettoyage après crash brutal et la confidentialité de l'interface finale nécessitent une revue et des validations intégrées avant activation.
 
 
 ## Interface expérimentale
@@ -42,4 +42,4 @@ Un worker mémoire distinct n’accepte qu’une opération à la fois ; un appe
 
 Les listes sont bornées en octets et paginées ; les faits listés ne comprennent pas leur texte. `item_too_large` refuse un détail au-delà de la limite au lieu de tronquer ses contraintes. La pagination par offset ne garantit pas un instantané si les données changent entre pages. Le coffre fermé renvoie `vault_unavailable` ; il n’y a alors ni intention en clair ni mutation, si le refus intervient avant l’admission ; les conflits de version `version_conflict`, sans texte privé ; l’autorisation du Trousseau reste une action séparée de l’opérateur. Les erreurs non reconnues restent génériques ; les mutations signalent `effect: not_admitted` si elles n’ont pas été lancées, `effect: recorded` si le reçu est enregistré et `effect: indeterminate` lorsque leur effet ne peut pas être affirmé. Ces indications portent sur la tentative courante : `not_admitted` sur un rejeu n’efface jamais l’incertitude d’une tentative précédente. Une écriture ayant échoué après son remplacement atomique peut déjà être enregistrée.
 
-Les essais utilisent un coffre fictif, sans solliciter le Trousseau : `python3 -m unittest discover -s agent-resume/tests -p 'test_orchestrator_memory_service.py' -v` et `python3 -m unittest discover -s agent-resume/tests -p 'test_apple_pilot_memory_jsonl.py' -v`. Ce raccord n’ajoute pas encore d’éditeur mémoire à l’interface graphique et ne qualifie pas le modèle comme orchestrateur.
+Les essais utilisent un coffre fictif, sans solliciter le Trousseau : `python3 -m unittest discover -s reprise/tests -p 'test_orchestrator_memory_service.py' -v` et `python3 -m unittest discover -s reprise/tests -p 'test_apple_pilot_memory_jsonl.py' -v`. Ce raccord n’ajoute pas encore d’éditeur mémoire à l’interface graphique et ne qualifie pas le modèle comme orchestrateur.

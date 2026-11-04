@@ -3,11 +3,11 @@
 Le build à utiliser pour les vérifications produit est celui de `release_build.py`, pas le lancement de développement de `native-install --open`.
 
 ```sh
-python3 agent-resume/release_build.py build --runtime-archive /chemin/archive-python-epinglee.tar.gz
-sh agent-resume/relaunch
+python3 reprise/release_build.py build --runtime-archive /chemin/archive-python-epinglee.tar.gz
+sh reprise/relaunch
 ```
 
-La commande de build affiche le chemin exact `agent-resume/builds/EMPREINTE/Reprise.app`. Elle copie les sources dans une zone temporaire, construit les quatre binaires et le runtime épinglé, déplace le bundle et vérifie le CLI sur un HOME/registre jetable. Elle refuse une source modifiée pendant le build et publie dans un nouveau répertoire sans remplacer un bundle ouvert. Le bundle contient `Contents/Resources/build-evidence.json` : commit observé, empreinte exacte des sources (y compris changements locaux), empreintes du bundle et preuve du smoke CLI. Le commit seul ne prouve donc pas un arbre propre.
+La commande de build affiche le chemin exact `reprise/builds/EMPREINTE/Reprise.app`. Elle copie les sources dans une zone temporaire, construit les quatre binaires et le runtime épinglé, déplace le bundle et vérifie le CLI sur un HOME/registre jetable. Elle refuse une source modifiée pendant le build et publie dans un nouveau répertoire sans remplacer un bundle ouvert. Le bundle contient `Contents/Resources/build-evidence.json` : commit observé, empreinte exacte des sources (y compris changements locaux), empreintes du bundle et preuve du smoke CLI. Le commit seul ne prouve donc pas un arbre propre.
 
 `relaunch` vérifie les sources et l’intégrité du bundle avant ouverture sans arguments de développement ; aucun daemon ni réglage d’automatisation n’est modifié. Le lancement normal de Reprise peut fermer une autre instance Reprise (comportement de l’application), sans toucher à Codex/Harness/Claude. Aucun lancement n’est inclus dans la compilation ou la CI. En cas de build périmé, reconstruire. Les anciens builds sont conservés ; aucune purge automatique.
 

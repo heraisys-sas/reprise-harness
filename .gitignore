@@ -18,15 +18,15 @@
 *.log
 /private/
 /harness-router-test/
-/deepseek-harness-config/evaluation-*/
-/deepseek-harness-config/ASI-*.json
+/harness/evaluation-*/
+/harness/ASI-*.json
 
-/routing/plugin/lib/
-/routing/plugin/native/RouteEmbedding
+/routing/embeddings/plugin/lib/
+/routing/embeddings/plugin/native/RouteEmbedding
 
-/routing/plugin/native/sentence-prototypes.plist
+/routing/embeddings/plugin/native/sentence-prototypes.plist
 
-/role-routing/plugin/lib/
+/routing/roles/plugin/lib/
 
 # Immutable local standalone builds and publication staging
-/agent-resume/builds/
+/reprise/builds/

@@ -23,7 +23,7 @@ La suppression est **logique** ; aucune garantie d’effacement physique des sna
 
 ## Preuves et limites de validation
 
-`python3 -m unittest discover -s agent-resume/tests -p 'test_orchestrator_memory.py' -v` utilise un faux coffre, jamais le trousseau utilisateur. Les essais couvrent isolation des projets, conflits et rejeu, écriture concurrente, snapshots, provenance, erreur du coffre, corruption, échec de remplacement et arrêt brutal autour du remplacement. Le faux coffre sert uniquement à tester le protocole d’appel et ne prouve pas la cryptographie ; le chiffrement réel et la disponibilité du Trousseau restent à vérifier dans un environnement de test approprié.
+`python3 -m unittest discover -s reprise/tests -p 'test_orchestrator_memory.py' -v` utilise un faux coffre, jamais le trousseau utilisateur. Les essais couvrent isolation des projets, conflits et rejeu, écriture concurrente, snapshots, provenance, erreur du coffre, corruption, échec de remplacement et arrêt brutal autour du remplacement. Le faux coffre sert uniquement à tester le protocole d’appel et ne prouve pas la cryptographie ; le chiffrement réel et la disponibilité du Trousseau restent à vérifier dans un environnement de test approprié.
 
 ## Adaptateur commun local inter-harness — capture explicite
 
@@ -47,7 +47,7 @@ avec les chemins absolus réels de l’installation et l’UUID déjà enregistr
 ```json
 {
   "command": "/absolute/path/to/python3",
-  "args": ["-B", "/absolute/path/to/agent-resume/reprise_memory_mcp.py",
+  "args": ["-B", "/absolute/path/to/reprise/reprise_memory_mcp.py",
            "--state", "/absolute/path/to/private/reprise-state",
            "--project-id", "REGISTERED-PROJECT-UUID",
            "--harness-id", "codex-local", "--allow-write"]
