@@ -70,6 +70,32 @@ class SchedulerTests(unittest.TestCase):
             cleanup.assert_called_once_with(Path(folder))
             watch.assert_called_once_with(db, module.ROOT)
 
+    def test_tick_survives_various_quota_failures_without_unboundlocal(self):
+        failures = [ValueError('socket unavailable'),
+                    subprocess.SubprocessError('spawn failed'),
+                    RuntimeError('unexpected')]
+        for expected in failures:
+            with self.subTest(error=type(expected).__name__), \
+                 tempfile.TemporaryDirectory() as folder, \
+                 patch.object(module, 'STATE', Path(folder)):
+                db = module.database()
+                with patch.object(module, 'database', return_value=db), \
+                     patch.object(module, 'codex_executable', return_value=None), \
+                     patch.object(module, 'run_due') as run_due, \
+                     patch.object(scheduler, 'refresh_external'), \
+                     patch.object(claude_quota, 'run_native', side_effect=expected), \
+                     patch.object(private_search, 'cleanup'), \
+                     patch.object(reprise_health, 'watch'), \
+                     patch.object(sys, 'argv', ['reprise', 'tick']):
+                    module.main()
+                with sqlite3.connect(Path(folder) / 'tasks.sqlite') as reopened:
+                    observation = scheduler.get(reopened, 'claude_desktop_last_observation')
+                self.assertEqual(observation['status'], 'unavailable')
+                self.assertEqual(observation['error'], type(expected).__name__)
+                self.assertIsInstance(observation['checked_at'], float)
+                run_due.assert_called_once_with(db, None)
+                db.close()
+
     def test_backup_restore_pauses_and_share_excludes_state(self):
         with tempfile.TemporaryDirectory() as folder:
             import os
