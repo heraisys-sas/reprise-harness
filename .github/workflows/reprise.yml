@@ -2,9 +2,9 @@ name: Reprise bundle
 on:
   push:
     branches: [dev, main]
-    paths: ['agent-resume/**', '.github/workflows/reprise.yml']
+    paths: ['reprise/**', '.github/workflows/reprise.yml']
   pull_request:
-    paths: ['agent-resume/**', '.github/workflows/reprise.yml']
+    paths: ['reprise/**', '.github/workflows/reprise.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -23,11 +23,11 @@ jobs:
         run: |
           test "$(uname -m)" = arm64
           xcrun --sdk macosx --show-sdk-version
-          python3 agent-resume/native_contract.py --check-sdk "$(xcrun --sdk macosx --show-sdk-version)"
+          python3 reprise/native_contract.py --check-sdk "$(xcrun --sdk macosx --show-sdk-version)"
       - uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/reprise-runtime.tar.gz
-          key: reprise-runtime-${{ hashFiles('agent-resume/python-runtime.lock.json') }}
+          key: reprise-runtime-${{ hashFiles('reprise/python-runtime.lock.json') }}
       - name: Fetch pinned official runtime if absent
         env:
           RUNTIME_ARCHIVE: ${{ runner.temp }}/reprise-runtime.tar.gz
@@ -35,30 +35,30 @@ jobs:
           python3 - <<'PY'
           import json, os, urllib.request
           from pathlib import Path
-          lock = json.loads(Path('agent-resume/python-runtime.lock.json').read_text())['targets']['arm64']
+          lock = json.loads(Path('reprise/python-runtime.lock.json').read_text())['targets']['arm64']
           archive = Path(os.environ['RUNTIME_ARCHIVE'])
           if not archive.exists():
               urllib.request.urlretrieve(lock['url'], archive)
           import sys
-          sys.path.insert(0, 'agent-resume')
+          sys.path.insert(0, 'reprise')
           from package_runtime import verify_archive
           verify_archive(archive, lock['sha256'])
           PY
       - name: Check patch and launch script syntax
         run: |
           git diff --check
-          sh -n agent-resume/native-install agent-resume/restart-chain agent-resume/relaunch
+          sh -n reprise/native-install reprise/restart-chain reprise/relaunch
       - name: Deterministic tests with real archive, no services or inference
         env:
           REPRISE_TEST_RUNTIME_ARCHIVE: ${{ runner.temp }}/reprise-runtime.tar.gz
           PYTHONDONTWRITEBYTECODE: '1'
-        run: python3 agent-resume/ci_test.py
+        run: python3 reprise/ci_test.py
       - name: Build isolated standalone bundle and relocated CLI smoke
-        run: python3 agent-resume/release_build.py build --runtime-archive "$RUNNER_TEMP/reprise-runtime.tar.gz"
+        run: python3 reprise/release_build.py build --runtime-archive "$RUNNER_TEMP/reprise-runtime.tar.gz"
       - name: Archive exact build with provenance
         run: |
-          APP=$(python3 -c 'import sys;sys.path.insert(0,"agent-resume");import release_build as b;print(b.ROOT/"builds"/b.identity(b.inputs(b.ROOT))/"Reprise.app")')
-          python3 agent-resume/release_build.py check --app "$APP"
+          APP=$(python3 -c 'import sys;sys.path.insert(0,"reprise");import release_build as b;print(b.ROOT/"builds"/b.identity(b.inputs(b.ROOT))/"Reprise.app")')
+          python3 reprise/release_build.py check --app "$APP"
           ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/Reprise-${GITHUB_SHA}.zip"
           shasum -a 256 "$RUNNER_TEMP/Reprise-${GITHUB_SHA}.zip" > "$RUNNER_TEMP/Reprise-${GITHUB_SHA}.zip.sha256"
       - uses: actions/upload-artifact@v4
