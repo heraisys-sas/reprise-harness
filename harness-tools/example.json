@@ -1,1 +1,0 @@
-{"checks":[{"name":"verifier-tests","argv":["python3","-m","unittest","discover","-s","harness-tools/tests"],"timeout":30}]}
