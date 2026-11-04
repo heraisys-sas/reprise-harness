@@ -1,119 +1,90 @@
 # Reprise & Harness
 
-Outils macOS pour suivre les sessions d’agents, rechercher leurs diagnostics localement et préparer un routage de modèles économique.
+Reprise est une application macOS de supervision des agents et de continuité des tâches. Elle rassemble des observations locales, des diagnostics après mise à jour, des reprises planifiées et des connecteurs vers plusieurs harness. Chaque action dépend des capacités et des preuves propres à son adaptateur : une configuration ou un accusé de soumission ne prouve ni le chargement du connecteur ni l’achèvement d’un travail.
 
-## Composants
+## Vue d’ensemble
 
-| Dossier | État |
-| --- | --- |
-| `agent-resume/` | Application native SwiftUI/AppKit, collecte locale, quotas disponibles, recherche privée et cache d’analyse chiffrés |
-| `deepseek-harness-config/` | Instructions et compétences de développement, DevOps, sécurité, preuves scientifiques, orchestration, portage Rust et maintenance Reprise ; configuration de référence |
-| `routing/` | Routeur expérimental avec embeddings Apple locaux, tests et comparaisons |
-| `role-routing/` | Routage optionnel par rôles planner/executor, désactivé par défaut |
-| `harness-tools/` | Outils de vérification et pilotes d’évaluation |
+```mermaid
+flowchart LR
+    Sources["Sessions, journaux et quotas locaux"] --> Observe["Reprise : collecte et analyse"]
+    Observe --> UI["Application, CLI et outils MCP"]
+    UI --> Humain["Diagnostic et action humaine"]
+    UI --> Adapter["Adaptateur disponible et activé"]
+    Adapter --> Harness["Codex, Harness ou Claude"]
+    Harness --> Receipt["Événement ou résultat vérifiable"]
+    Receipt --> Observe
+```
 
-Le routage par embeddings Apple est implémenté et testé dans un profil Harness isolé. Il reste expérimental et n’est pas activé dans le profil quotidien. Le modèle génératif Apple Intelligence ne participe pas au routage.
+Le schéma résume les chemins possibles. La portée de lecture, le contrôle d’action et le niveau de preuve varient selon le harness ; certains parcours restent expérimentaux ou manuels.
 
-Le contrat du prototype de registre de projets et ses limites sont décrits dans [`agent-resume/PROJECT-REGISTRY-CONTRACT.md`](agent-resume/PROJECT-REGISTRY-CONTRACT.md).
+## Fonctions et état
 
-Pour installer, migrer, diagnostiquer ou transmettre la maintenance : [index des procédures et skill portable](MAINTENANCE.md).
+| Domaine | Fonction | État et limites |
+| --- | --- | --- |
+| Supervision locale | Observe des sessions et journaux pris en charge, reconstruit certains travaux interrompus, affiche les diagnostics et la santé après mise à jour. Recherche et cache d’analyse locaux chiffrés ; explications génératives Foundation Models facultatives, avec les règles déterministes comme référence. | La veille signale les actions à examiner ; elle ne pilote pas les interfaces. Le chiffrement ne couvre pas les journaux, instructions de tâches ni bases des applications sources. |
+| Reprises et quotas | Planifie des continuations Codex après certains refus de quota, conserve l’événement et contrôle le résultat natif ; propose une reprise CLI Harness explicite avec profil existant. | La reprise automatique sur quota est limitée à Codex et reste soumise à l’authentification, aux permissions et à la disponibilité du compte. Une fin de tour n’établit pas la réussite métier. Les autres adaptateurs peuvent être en détection seule. |
+| Délégation | `reprise_delegate` et les outils associés fournissent des appels et suivis Codex avec reçus durables. Le connecteur Claude Desktop combine Quick Apply pour demander la transmission d’un tour et MCP pour réclamer une tâche et rendre le résultat. | Quick Apply seul confirme au plus une admission/soumission. Pour une tâche MCP, seul `submit_result` accepté établit le retour ; un état incertain ne déclenche pas de renvoi automatique. L’existence d’un connecteur ne prouve ni son chargement dans le client ni un échange réel. |
+| Projets, mémoire et checkpoints | Un registre prototype associe des UUID de projets à des workspaces existants. Une API locale expérimentale conserve des faits et des checkpoints chiffrés, explicitement liés au projet et au travail. | L’association de projet n’installe pas de connecteur. L’API mémoire n’est pas exposée comme outil au modèle et ne déclenche pas d’inférence. La lecture mémoire exige le pilote activé et une action explicite avec projet et travail sélectionnés. L’orchestration et la délégation Apple automatiques ne sont pas raccordées. |
+| Route `foundation-models/system` | `reprise_delegate` propose un appel local explicite à `/usr/bin/fm`, avec contexte borné et reçu récupérable. | Disponible sur macOS 27+ lorsque le modèle est pris en charge par l’appareil. La présence de l’exécutable ne garantit pas la disponibilité du modèle ni une génération. Cette route n’a ni outils, ni suivi conversationnel, ni repli automatique. |
+| Pilote conversationnel Apple | Pilote local expérimental pour consulter un projet ou un checkpoint dans une session conversationnelle volatile. | La migration initiale des préférences l’active par défaut, sans démarrer le pilote ni lancer d’inférence. La réouverture automatique d’une session sauvegardée exige que les sélections de projet, travail, checkpoint éventuel et compétence soient inchangées, et que le contexte soit ouvrable. La lecture d’un checkpoint reste une action explicite. La disponibilité du modèle dépend de l’appareil. |
+| Intégrations et mises à jour | Les parcours gérés inspectent, planifient, appliquent, vérifient et retirent des composants ; les procédures de build et de mise à jour conservent les états et distinguent les releases. | Vérifier séparément la configuration écrite, le chargement client, la découverte des outils et un échange de bout en bout. La CI produit un artefact de validation ; elle ne publie ni ne déploie l’application. |
+| Routage expérimental | Des embeddings Apple locaux classent certaines demandes courtes dans un profil Harness isolé ; un routage optionnel par rôles est également fourni. | Le pilote d’embeddings n’est pas activé dans le profil quotidien. Il estime une catégorie par similarité, pas la difficulté ni la probabilité de succès. La délégation Apple automatique n’est pas branchée. |
 
-## Démarrage de Reprise
+### Claude Desktop : admission, dispatch et retour
 
-Sur macOS 26+ ARM64 avec les outils Swift/SDK 26+ et Python de build, construire puis lancer le bundle autonome :
+Ce schéma décrit un chemin supervisé et conditionnel. Le dispatch CDP dépend des capacités présentes (notamment d’un stockage de tâches lié au projet et de Chrome) ; son reçu ne contient pas la réponse du modèle. La configuration écrite, le connecteur effectivement chargé, la livraison de la tâche et le résultat sont des preuves distinctes.
+
+```mermaid
+flowchart LR
+    A["Reprise admet une tâche"] --> B["Transmission Quick Apply demandée"]
+    B -. "si la capacité CDP est présente et l’envoi aboutit" .-> C["Prompt soumis au chat web"]
+    C -. "si le connecteur est chargé et la tâche reçue" .-> D["Tâche réclamée via MCP"]
+    D --> E["Claude exécute le travail"]
+    E --> F["submit_result accepté et enregistré"]
+    F --> G["Résultat récupérable"]
+    B -. "sinon : échec ou état incertain" .-> H["Réconciliation requise"]
+```
+
+Le chemin Quick Apply → MCP ne garantit pas une exécution de bout en bout, et une soumission au chat n’est pas une réponse. Seul `submit_result` accepté et enregistré établit le résultat d’une tâche MCP. Work/Cowork est une capacité distincte, dont le lancement réel reste à démontrer. Les détails des garanties et des états incertains figurent dans le [contrat de persistance des délégations](agent-resume/DELEGATION-PERSISTENCE.md) et le [connecteur Claude Desktop](agent-resume/CLAUDE-CONNECTOR.md).
+
+## Construire et lancer
+
+Sur macOS 26+ ARM64 avec les outils Swift/SDK 26+ et Python de build, construire puis lancer le bundle autonome avec une archive Python épinglée :
 
 ```sh
 python3 agent-resume/release_build.py build --runtime-archive /chemin/archive-python-epinglee.tar.gz
 sh agent-resume/relaunch
 ```
 
-Voir [build autonome, archive épinglée et CI](agent-resume/BUILD-AND-CI.md). La compilation ne lance rien ; `relaunch` refuse un build périmé et ouvre le bundle sans arguments de développement, avec son runtime et son état séparé. `native-install --open` reste réservé au mode développement historique. Les reprises automatiques restent explicitement autorisées séparément.
+La compilation ne lance pas l’application. `relaunch` vérifie le build avant ouverture. Pour la chaîne de développement, voir `native-install` dans la [documentation de build et CI](agent-resume/BUILD-AND-CI.md). Pour installer, migrer ou diagnostiquer Reprise, commencer par [MAINTENANCE.md](MAINTENANCE.md) et le [contrat d’installation](agent-resume/INSTALLATION-CONTRACT.md).
+
+Lancer la suite Python avec :
 
 ```sh
 python3 -m unittest discover -s agent-resume/tests -q
 ```
 
-## Daemon Quick Apply (`claude-desktopd`)
+## Dépôt
 
-Le serveur `agent-resume/claude_desktop_quick.py` accepte, sur un socket UNIX privé, des charges utiles Quick Entry validées (prompt, images, fichiers, chat cible) sans plafond quotidien local de soumissions. Il ne pilote pas l’interface de Claude Desktop : la soumission réelle dans l’overlay Quick Entry exige des autorisations macOS (Accessibilité, Capture d’écran) accordées par l’opérateur, et reste du ressort d’un pilote supervisé.
+| Chemin | Rôle |
+| --- | --- |
+| [`agent-resume/`](agent-resume/README.md) | Application SwiftUI/AppKit, helpers Python, supervision, planification, recherche, connecteurs et intégrations gérées. |
+| [`deepseek-harness-config/`](deepseek-harness-config/CONFIGURATION.md) | Configuration et compétences de référence pour DeepSeek Harness ; les modèles déclarés ne garantissent ni disponibilité ni authentification. |
+| [`routing/`](routing/README.md) | Routeur local par embeddings Apple, expérimental et opt-in. |
+| [`role-routing/`](role-routing/README.md) | Routage optionnel par rôles planner/executor. |
+| [`harness-tools/`](harness-tools/README.md) | Outils de vérification, d’analyse locale et pilotes d’évaluation. |
 
-L’installateur historique écrit le LaunchAgent `com.example.reprise.quick-entry`. Sans `RunAtLoad`, `KeepAlive` ou déclencheur, son chargement seul ne programme pas un démarrage au login. L’écriture du plist ne démarre aucun daemon. Pour démarrer explicitement le daemon, utiliser `python3 agent-resume/reprise quick-apply-daemon-start` ; vérifier avec `quick-apply-daemon-status`. Les identifiants historiques `quick-entry` restent utilisés dans les chemins et le protocole.
+## Documentation pratique
 
-Installation (écriture du plist uniquement, sans démarrage) :
+- [Architecture cible de supervision multi-harness](agent-resume/HARNESS-SUPERVISION-ARCHITECTURE.md) — contrat de conception, avec matrice des capacités par adaptateur ; ce n’est pas une annonce d’implémentation complète.
+- [Quotas et fraîcheur des observations](agent-resume/QUOTA-KNOWLEDGE.md) — distingue quota observé, disponibilité actuelle et résultat d’une reprise.
+- [Intégration Codex](agent-resume/CODEX-INTEGRATION.md) et [intégration Harness](agent-resume/HARNESS-INTEGRATION.md).
+- [Registre de projets](agent-resume/PROJECT-REGISTRY-CONTRACT.md) et [mémoire/checkpoints](agent-resume/ORCHESTRATOR-MEMORY-CONTRACT.md) — prototypes et frontières d’accès.
+- [Pilote Apple](agent-resume/APPLE-PILOT-SERVICE.md) et [route Apple Intelligence](agent-resume/APPLE-INTELLIGENCE-INTEGRATION.md) — deux fonctions expérimentales distinctes.
+- [Planificateur](agent-resume/SCHEDULER-SERVICE.md) et [mise à jour gérée](agent-resume/MANAGED-UPDATE.md).
 
-```sh
-python3 agent-resume/install-quick-entry.py
-launchctl load ~/Library/LaunchAgents/com.example.reprise.quick-entry.plist
-```
+## Configuration, confidentialité et contribution
 
-Le script refuse d’écraser un plist existant sans `--force`, et se contente de proposer la commande `launchctl load` ; il ne l’exécute jamais. Désinstallation :
+Les fichiers de configuration sont des modèles sans identifiants. Vérifier les profils, permissions et capacités réellement disponibles avant activation ; aucun coût ou quota fournisseur n’est garanti. Reprise chiffre l’index de recherche et le cache d’analyse, pas les sources locales qui les alimentent. Les conversations, bases, clés du Trousseau, captures et binaires locaux sont exclus du dépôt.
 
-```sh
-launchctl unload ~/Library/LaunchAgents/com.example.reprise.quick-entry.plist
-rm ~/Library/LaunchAgents/com.example.reprise.quick-entry.plist
-```
-
-Test manuel du serveur, dans un terminal :
-
-```sh
-python3 agent-resume/claude_desktop_quick.py \
-  --socket ~/.claude-desktop/quick-entry.sock \
-  --state agent-resume/quick-state --daily-limit 8
-```
-
-Un autre terminal peut alors joindre le socket avec `agent-resume/claude_desktop_rpc.py` (méthode `ping` ou `quick_entry/submit`) ; aucune requête au modèle n’est envoyée par ce test. Le serveur n’ouvre ni ne pilote l’UI Claude Desktop, et aucune relance automatique n’est prévue : toute reprise est explicitement programmée.
-
-## Analyse des journaux et santé post-update
-
-Reprise lit les journaux locaux de Claude Desktop (aucune permission d’écran, aucune Accessibilité) pour trois usages :
-
-- **Reprise des tâches** : `reprise_logs.resumable()` reconstruit les soumissions Quick Entry interrompues (garde déclenchée, dispatch manquant) ; `reprise_history()` explique les travaux récents des Harness et leurs interactions via Reprise.
-- **Santé après mise à jour** : `reprise_health.check()` compare les versions installées (Claude Desktop, Claude Code, Codex…), vérifie si les serveurs supervisés doivent être relancés (par leur socket, pas `ps`) et si les signatures de logs surveillées sont toujours présentes.
-- **Veille** : `reprise_health.watch()`, lancée par le `tick` (intervalle 60 s), signale un changement de version post-update et persiste un rapport. Elle ne relance jamais rien ; elle liste les **actions requérant un humain**.
-
-Une couche **générative optionnelle** (`FoundationExplain.swift`, API Foundation Models sur l’appareil) explique l’activité et les actions humaines. Elle se désactive proprement si le modèle est indisponible ; la couche déterministe reste la source de vérité. Aucun de ces composants ne pilote l’interface ni n’automatise la soumission Quick Entry — cela exige des autorisations macOS accordées séparément par l’opérateur.
-
-Exposition : outils MCP `reprise_resume`, `reprise_history`, `reprise_health` ; sous-commandes CLI `./reprise reprise-resume|reprise-history|reprise-health|health-watch` ; onglet **Santé post-update** dans l’application.
-
-## Redémarrage de la chaîne
-
-`agent-resume/restart-chain` construit et ouvre par défaut le bundle autonome vérifié, sans redémarrer de daemon :
-
-```sh
-cd agent-resume
-./restart-chain --runtime-archive /chemin/archive-python-epinglee.tar.gz
-./restart-chain --no-build   # ouvre uniquement un build courant vérifié
-./restart-chain --server     # action explicite sur Quick Apply uniquement
-./restart-chain --development # chaîne historique de développement
-```
-
-Le planificateur et les intégrations MCP se maintiennent séparément depuis Intégrations. Aucun redémarrage de codexd, aucune suppression aveugle de socket ni arrêt forcé de Claude Desktop/Harness/Codex Desktop. L’ouverture de Reprise peut fermer son autre instance existante. Détails et limites dans [BUILD-AND-CI.md](agent-resume/BUILD-AND-CI.md).
-
-## Délégation et retour des analyses
-
-Codex fournit un aller-retour exploitable via `reprise_delegate`, sans plafond local quotidien d’appels. Les contrôles fournisseur existants restent actifs (`quota_blocked`). Le paramètre historique `--daily-limit` du pont ne concerne plus Codex.
-
-Pour Claude Desktop, l’architecture recommandée par Astra combine trois composants : **Quick Apply déclenche** le tour, **MCP `get_task`/`submit_result` transporte** la demande et le résultat, **SQLite conserve** l’état durable. Un accusé de soumission Quick Apply ne signifie pas que l’analyse est terminée : seul un `submit_result` validé et enregistré marque l’achèvement.
-
-Le prototype MCP existe dans `agent-resume/ux_review_probe.py`. Le contrat complet reste à implémenter : instantanés des fichiers, manifeste et `request_hash`, résultat lié à la bonne tentative, écriture atomique et revalidation à la lecture. Le branchement `reprise_ux_review` dans Claude Desktop reste à valider par l’opérateur. Aucun renvoi automatique après une soumission incertaine. Voir [l’avis Astra et le contrat prévu](agent-resume/ARCHITECTURE-QUESTION-PENDING.md).
-
-La supervision et la reprise doivent suivre un [socle commun multi-harness](agent-resume/HARNESS-SUPERVISION-ARCHITECTURE.md) : quotas, checkpoints, consommation, boucles et contexte, avec capacités vérifiées par adaptateur. Ce contrat est une cible de développement, pas une annonce de prise en charge complète.
-
-## Contribution
-
-Travailler sur `dev`, puis intégrer via la MR `dev` → `main`. Ne pas committer directement sur `main`.
-
-## Configuration Harness
-
-Lire [les instructions](deepseek-harness-config/CONFIGURATION.md). Les fichiers sont des modèles sans identifiants. L’installateur refuse d’écraser un profil déjà personnalisé ; fusionner ses paramètres après inspection. La présence d’un modèle dans la configuration ne prouve ni sa disponibilité ni l’authentification du compte. Aucun coût ou quota n’est garanti par les instructions.
-
-## Confidentialité
-
-Le dépôt contient uniquement les sources et la documentation sélectionnées. Les conversations, caches, bases, clés du Trousseau, captures et binaires locaux sont exclus. Le chiffrement de Reprise couvre l’index de recherche et le cache d’analyse ; il ne couvre pas les journaux, instructions de tâches ou bases des applications sources.
-
-## Routage local expérimental
-
-Règles françaises → comparaison locale par embeddings → repli standard en cas d’ambiguïté → politique déterministe de modèles autorisés. Aucun serveur réseau ou MCP nécessaire. Voir [la compilation, les tests et les limites](routing/README.md).
-
-
-Décision actuelle : un [point d’entrée Reprise commun et bidirectionnel](agent-resume/HARNESS-SUPERVISION-ARCHITECTURE.md) permettra à chaque harness de recevoir des tâches, rendre ses résultats et solliciter les autres. Priorité : aller-retour Claude Desktop, y compris compte gratuit, sans repli payant. Le regroupement des prototypes reste à implémenter.
+Contribuer sur `dev`, puis intégrer via la MR `dev` → `main`. Ne pas committer directement sur `main`.
