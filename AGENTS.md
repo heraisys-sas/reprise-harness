@@ -34,12 +34,12 @@ Tous les agents partagent le compte GitHub `heraisys-sas` : l'assigné ne distin
 | **Quick Entry / Quick Apply** | Reprise → Claude Desktop | **unidirectionnel** : soumet un tour, ne relit PAS la réponse (`response: None`) |
 | **MCP `get_task`/`submit_result`** | aller-retour via SQLite | 1 fichier joint, 1 réponse/tâche ; Claude doit invoquer l'outil (pas push) |
 
-`sampling/createMessage` est refusé par le client MCP Desktop (`-32601`). Pas d'API d'inférence publique. Voir `agent-resume/CLAUDE-MCP-PROBE.md`, `ARCHITECTURE-QUESTION-PENDING.md`, `reprise-delegation.md`.
+`sampling/createMessage` est refusé par le client MCP Desktop (`-32601`). Pas d'API d'inférence publique. Voir `docs/integrations/claude/CLAUDE-MCP-PROBE.md` et `docs/integrations/harness/reprise-delegation.md`.
 
 ## Contraintes d'environnement (à connaître avant de coder)
 - **Sandbox** : écriture limitée au workspace. Bloqué : `~/.claude-desktop` (socket orphinel impossible à `rm`), `~/.dsh`, `Documents/ChatGPT/productivité`. Un agent qui l'ignore boucle — c'est arrivé.
 - **`ps` / `osascript` bloqués** — pas d'inspection de processus fine. Vérifier l'état par **connexion au socket** (`connect()`), pas par existence du fichier socket.
-- **Clone du pont MCP** (`Documents/ChatGPT/productivité` = même dossier que `~/Library/Mobile Documents/…/productivité`, inode `.git` identique) = `project_root` du pont `reprise_delegate`. **Synchronisé le 20/10** : `18ff0b4` → `2702215` par `fetch` + `merge --ff-only`, après vérification d'un **chevauchement vide** avec les **7 fichiers modifiés localement non committés** (préservés). Les fichiers créés après `18ff0b4` (`ARCHITECTURE-QUESTION-PENDING.md`, `ux_review_probe.py`, `UX-UI-ANALYSIS.md`) sont donc présents → `reprise_delegate` avec `paths` résout (`resolve(strict=True)`). Avant tout futur `merge`, revérifier le chevauchement incoming ↔ 7 fichiers sales.
+- **Clone du pont MCP** (`Documents/ChatGPT/productivité` = même dossier que `~/Library/Mobile Documents/…/productivité`, inode `.git` identique) = `project_root` du pont `reprise_delegate`. Son état de synchronisation se lit dans l'historique Git et les issues, pas dans ce fichier : avant tout `merge` dans ce clone, revérifier le chevauchement entre les changements entrants et les fichiers modifiés non committés (préservés), puis vérifier que `reprise_delegate` avec `paths` résout (`resolve(strict=True)`).
 
 ## Nomenclature (Unix) — respecter
 - **Services/daemons** : `codexd` (daemon Codex / `app-server daemon`), `claude-desktopd` (daemon Quick Apply).
@@ -54,9 +54,9 @@ Tous les agents partagent le compte GitHub `heraisys-sas` : l'assigné ne distin
 - Les timestamps de l'UI sont en **heure locale 24h** (helpers `localTime`/`localDateTime` dans `Dashboard.swift`).
 - `runtime.terminate()` doit être résilient (un `killpg` refusé ne doit pas écraser le retour de l'appelant) — corrigé, source du bug des quotas manquants.
 
-## Quick Apply — architecture réelle (prouvée le 02/11/2026, issue #102)
+## Quick Apply — architecture réelle
 - Le CDP ne vise **jamais l'app Claude Desktop** (port CDP protégé par Anthropic). Le dispatcher pilote un **Google Chrome dédié**, profil isolé `~/.local/share/claude-cdp/chrome`, lancé par `claude_cdp_pipe.launch_chrome()` avec `--remote-debugging-pipe` (pipe fd 3/4, **pas de port TCP**) et `--app=https://claude.ai`. Voir `claude_cdp_pipe.py::build_chrome_args`.
-- `claude_desktop_applyd.py` = **supprimé** (03/11/2026) : le dispatch CDP pipe est fait en direct par `claude_desktop_quick.py` ; tout socket applyd résiduel est orphelin et sans rôle.
+- `claude_desktop_applyd.py` = **supprimé** : le dispatch CDP pipe est fait en direct par `claude_desktop_quick.py` ; tout socket applyd résiduel est orphelin et sans rôle.
 - **`claude-desktopd` = `claude_desktop_quick.py`**, lancé par Reprise avec `--socket ~/.claude-desktop/quick-entry.sock --state …/Reprise/quick-state --project-root …` ; c'est lui l'unique point d'entrée Quick Apply (`quick-entry.sock`) et le pilote CDP pipe.
 - Diagnostic dispatch : un `Connection refused` dans le reçu (`dispatch_error`) après une admission OK vient de la **connexion CDP vers le Chrome dédié**. Vérifier que le **Chrome dédié est lancé** (aucun process `Google Chrome` avec `--user-data-dir=...claude-cdp` = cause des échecs du 02/11) via `cdp/resume`/`launch_chrome`, jamais à la main sans le profil dédié.
 - `claude_desktop_apply.launch()` / `shutdown()` **refusent** (`return False`) : adoption d'un navigateur non possédé interdite tant que le lifecycle n'est pas implémenté.
@@ -74,9 +74,7 @@ Tous les agents partagent le compte GitHub `heraisys-sas` : l'assigné ne distin
 - **Pas de repli implicite Reprise → Flash** : un refus de quota remonte au coordinateur. Revues de code/architecture et diagnostics ambigus ne se dégradent pas silencieusement vers Flash (même angle mort sur un second avis identique) — changer d'expert, pas de modèle léger. Restent au coordinateur : merges/push, décisions, arbitrage entre issues ; à l'opérateur : écritures hors sandbox.
 
 ## État et suivi
-- Issues GitHub #2–#5 : symptômes UI, architecture de retour (avis Astra obtenu le 20/10 — voir plus bas), canal MCP UX review (prêt, non branché), analyse UX/UI.
-- Revue UX/UI : les 4 priorités sont traitées (badges + résumé Santé, nomenclature, accessibilité + feedback, fusion onglets). Détails dans `agent-resume/UX-UI-ANALYSIS.md`.
-- Conseil architectural **Astra obtenu le 20/10** (`gpt-6-astra` high, thread `01a15938…`) : **A + B** — Quick Apply déclenche, MCP `get_task`/`submit_result` reçoit, SQLite registre ; seul `submit_result` vaut retour. Réponse intégrale + invariant dans `agent-resume/ARCHITECTURE-QUESTION-PENDING.md`. **Suite : implémenter le manifeste/`request_hash` et brancher `reprise_ux_review` (validation opérateur)**. Suivi via `codex_followup` sur ce thread.
+L'état courant des issues se lit sur GitHub (labels `agent:*` et commentaires). Les réserves de conception consolidées vivent dans `docs/contracts/HARNESS-SUPERVISION-ARCHITECTURE.md` ; les contrats font foi, les documents de session datés ne sont plus dans l'arbre (historique Git).
 
 ## Points de vigilance
 - Ne pas supposer un résultat de test non exécuté ; annoncer précisément les contrôles.
@@ -84,11 +82,11 @@ Tous les agents partagent le compte GitHub `heraisys-sas` : l'assigné ne distin
 - Ne pas inventer d'identifiant de modèle, de chemin ou de fonctionnalité — vérifier dans le code/config.
 
 ## Orientation actualisée — service bidirectionnel
-- Contrat de référence : `agent-resume/HARNESS-SUPERVISION-ARCHITECTURE.md`. Même service logique Reprise pour réception, retour et délégation inter-harness ; prototypes encore séparés.
+- Contrat de référence : `docs/contracts/HARNESS-SUPERVISION-ARCHITECTURE.md`. Même service logique Reprise pour réception, retour et délégation inter-harness ; prototypes encore séparés.
 - Priorité : question/réponse Claude Desktop récupérable, compte gratuit compris, sans repli payant. Work/Cowork réel reste une capacité distincte à démontrer.
 - Registre durable des résultats non réclamés ; contrôle des dépendances, budgets et cycles ; aucun verrou de retour conservé pendant une inférence.
 
-- Décision quota actualisée : Après refus, conserver la cause et l’échéance puis tenter la reprise à l’échéance sans mesure préalable obligatoire. Une nouvelle session avec checkpoint est permise lorsque pertinente ; suspendre les rotations qui répètent les mêmes échecs sans progrès. Aucun repli payant implicite. Voir le contrat HARNESS-ROLES-CONTRACT.md (rôles, reprise et archivage proposé dans l’interface).
+- Décision quota actualisée : Après refus, conserver la cause et l’échéance puis tenter la reprise à l’échéance sans mesure préalable obligatoire. Une nouvelle session avec checkpoint est permise lorsque pertinente ; suspendre les rotations qui répètent les mêmes échecs sans progrès. Aucun repli payant implicite. Voir le contrat docs/contracts/HARNESS-ROLES-CONTRACT.md (rôles, reprise et archivage proposé dans l’interface).
 
 ## Discipline d’exécution et arrêt des boucles
 
@@ -109,7 +107,7 @@ ASI1 coordonne les tâches techniques ; il confie leur analyse et leur résoluti
 1. Découvrir les capacités Reprise et déléguer au niveau approprié ; poursuivre le même chat distant pour le même sujet et niveau. Ne pas multiplier les avis équivalents.
 2. Si aucune route Reprise appropriée n’est disponible, utiliser un sous-agent Harness avec le modèle Morph DeepSeek V4.1 Flash réellement disponible, ou un nouveau chat utilisant cette route si le sous-agent ne peut pas l’utiliser. Dans le profil desktop : provider `morph` (renommé depuis `deepseek` le 27/10/2026 pour lever l'ambiguïté avec le DeepSeek officiel ; les projections de sessions antérieures peuvent encore porter l'ancien identifiant), modèle `morph-dsv41flash-1017`, endpoint Morph ; revérifier le catalogue et l’accès au moment du choix. « Configuré localement » ne signifie pas inférence exécutée sur le Mac. **La route Flash refuse `reasoning_effort` (refus observé le 26/10/2026, issue #81) : ne jamais passer ce paramètre au lancement du sous-agent, ni l’évoquer comme consigne dans son prompt.**
 3. Réserver la route gratuite aux lots bornés ; sa limite exacte reste non mesurée. L’utilisateur observe une limite par session sur Morph Flash 1017 ; autoriser une session de remplacement avec checkpoint sans extrapoler cette propriété à tous les quotas.
-4. Après refus, conserver la cause et l’échéance puis tenter la reprise à l’échéance sans mesure préalable obligatoire. Une nouvelle session avec checkpoint est permise lorsque pertinente ; suspendre les rotations qui répètent les mêmes échecs sans progrès. Aucun repli payant implicite. Voir le contrat HARNESS-ROLES-CONTRACT.md (rôles, reprise et archivage proposé dans l’interface).
+4. Après refus, conserver la cause et l’échéance puis tenter la reprise à l’échéance sans mesure préalable obligatoire. Une nouvelle session avec checkpoint est permise lorsque pertinente ; suspendre les rotations qui répètent les mêmes échecs sans progrès. Aucun repli payant implicite. Voir le contrat docs/contracts/HARNESS-ROLES-CONTRACT.md (rôles, reprise et archivage proposé dans l’interface).
 
 Le succès se mesure au lot validé et au coût total, pas au nombre de délégations. Après deux échecs sur le même volet, changer de méthode ou d’expert ; ne pas ramener à ASI1 un problème complexe qu’il ne sait pas résoudre.
 
@@ -135,7 +133,7 @@ Si un plugin mémoire est disponible, y enregistrer ce checkpoint et vérifier s
 
 ## Passation entre harness
 
-Suivre [le contrat de passation](agent-resume/HANDOFF-CONTRACT.md) : issue comme point de coordination, branche liée via `gh issue develop`, un responsable `agent:*` et un état `work:active|available|blocked`. Avant de suspendre un lot et de le proposer à un autre harness, pousser les commits autorisés, vérifier le SHA distant, publier un checkpoint (preuves, non publié, actions incertaines, prochaine action), puis libérer le label du responsable. Ne pas prendre le travail d’un agent actif sans coordination. Les labels ne constituent pas un verrou atomique.
+Suivre [le contrat de passation](docs/contracts/HANDOFF-CONTRACT.md) : issue comme point de coordination, branche liée via `gh issue develop`, un responsable `agent:*` et un état `work:active|available|blocked`. Avant de suspendre un lot et de le proposer à un autre harness, pousser les commits autorisés, vérifier le SHA distant, publier un checkpoint (preuves, non publié, actions incertaines, prochaine action), puis libérer le label du responsable. Ne pas prendre le travail d’un agent actif sans coordination. Les labels ne constituent pas un verrou atomique.
 
 ## Garde-fous courts du coordinateur
 

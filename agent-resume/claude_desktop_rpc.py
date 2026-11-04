@@ -10,7 +10,7 @@ from pathlib import Path
 
 from engines import Unavailable, socket_path
 
-# Injected native dispatch socket (QUICK-ENTRY-TAKEOVER-PLAN.md §2.1):
+# Injected native dispatch socket (archive/issue-102/QUICK-ENTRY-TAKEOVER-PLAN.md §2.1):
 # greeting {"hello":true}, then one JSON request per line, one reply per line.
 REPRISE_DISPATCH_SOCKET = Path.home() / '.claude-desktop/quick-entry-reprise.sock'
 DISPATCH_LIMIT = 8 * 1024 * 1024

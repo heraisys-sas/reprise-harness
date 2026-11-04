@@ -12,6 +12,15 @@ START = '# BEGIN REPRISE EXPERTISE'
 END = '# END REPRISE EXPERTISE'
 
 
+DOC_PATHS = {
+    'reprise-delegation.md': 'docs/integrations/harness/reprise-delegation.md',
+    'REPRISE-AGENTS.template.md': 'docs/templates/REPRISE-AGENTS.template.md',
+    'CODEX-EXECUTION-CONTRACT.md': 'docs/contracts/CODEX-EXECUTION-CONTRACT.md',
+    'HANDOFF-CONTRACT.md': 'docs/contracts/HANDOFF-CONTRACT.md',
+    'HARNESS-ROLES-CONTRACT.md': 'docs/contracts/HARNESS-ROLES-CONTRACT.md',
+}
+
+
 def install(home, project, profile='desktop'):
     if not profile or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' for c in profile):
         raise ValueError('Invalid profile name')
@@ -19,6 +28,9 @@ def install(home, project, profile='desktop'):
     if not project.is_dir():
         raise ValueError('Project directory required')
     home, source = Path(home), Path(__file__).resolve().parent
+    def doc(name):
+        direct = source / name
+        return direct if direct.is_file() else source.parent / DOC_PATHS[name]
     target = home/'profiles'/profile/'cordis.patch.yml'
     original = target.read_text()
     if original.count(START) != original.count(END) or original.count(START) > 1:
@@ -41,11 +53,11 @@ def install(home, project, profile='desktop'):
         '        failOnStartupError: false', '        reconnect:', '          enabled: false', END, ''])
     updated = base.rstrip()+'\n'+block
     skill = home/'skills/reprise-delegation/SKILL.md'
-    files = [(target, updated), (skill, (source/'reprise-delegation.md').read_text())]
-    files.append((skill.parent / 'REPRISE-AGENTS.template.md', (source / 'REPRISE-AGENTS.template.md').read_text()))
-    files.append((skill.parent / 'CODEX-EXECUTION-CONTRACT.md', (source / 'CODEX-EXECUTION-CONTRACT.md').read_text()))
-    files.append((skill.parent / 'HANDOFF-CONTRACT.md', (source / 'HANDOFF-CONTRACT.md').read_text()))
-    files.append((skill.parent / 'HARNESS-ROLES-CONTRACT.md', (source / 'HARNESS-ROLES-CONTRACT.md').read_text()))
+    files = [(target, updated), (skill, doc('reprise-delegation.md').read_text())]
+    files.append((skill.parent / 'REPRISE-AGENTS.template.md', doc('REPRISE-AGENTS.template.md').read_text()))
+    files.append((skill.parent / 'CODEX-EXECUTION-CONTRACT.md', doc('CODEX-EXECUTION-CONTRACT.md').read_text()))
+    files.append((skill.parent / 'HANDOFF-CONTRACT.md', doc('HANDOFF-CONTRACT.md').read_text()))
+    files.append((skill.parent / 'HARNESS-ROLES-CONTRACT.md', doc('HARNESS-ROLES-CONTRACT.md').read_text()))
     if all(path.exists() and path.read_text() == text for path, text in files):
         return {'changed': False, 'project_root': str(project)}
     backup = home/'backups'/('reprise-expertise-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f'))

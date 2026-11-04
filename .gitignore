@@ -11,6 +11,7 @@
 **/quick-state/
 **/ux-state/
 **/backups/
+**/evidence/
 **/*.app/
 *.zip
 *.png

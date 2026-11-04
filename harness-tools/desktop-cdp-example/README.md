@@ -7,7 +7,7 @@ sous-processus, n’ouvrent aucun socket et ne pilotent aucune fenêtre.
 
 Pour le parcours produit, utilisez uniquement la CLI Reprise
 `agent-resume/reprise desktop-apply` et sa documentation
-[`CLAUDE-DESKTOP-APPLY.md`](../../agent-resume/CLAUDE-DESKTOP-APPLY.md). Le
+[`CLAUDE-DESKTOP-APPLY.md`](../../docs/integrations/claude/CLAUDE-DESKTOP-APPLY.md). Le
 code actif de cet exemple n’est pas une alternative à cette CLI.
 
 L’historique du prototype provient de la source PR86

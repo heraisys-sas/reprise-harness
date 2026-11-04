@@ -1,7 +1,7 @@
 # Jeu de décisions annoté V1 — spécification
 
 > Statut : spécification consolidée (28/10/2026), issue de deux sous-agents (asi1 : conception du protocole ; asi1-mini : inventaire des sources de données). Conflit identifié et tranché ci-dessous.
-> Cadre de référence : `SUPER-DECIDER-INTEGRATION.md` §7 (décisions faisant autorité) et `PROTOCOL.md` (interprétation à deux couches).
+> Cadre de référence : `docs/contracts/HARNESS-ROLES-CONTRACT.md` (routage, corrections faisant autorité) et `PROTOCOL.md` (interprétation à deux couches).
 
 ## 0. Conflit des sources — constat de l'inventaire
 
@@ -72,11 +72,11 @@ Sinon : **B inutilisé**, bras A priorisé (§7.2 : A est le candidat par défau
 
 > **Résolu (28/10/2026)** : oui — les tests de fumée (`harness-tools/foundation-models-smoke/RESULTS.md`) montrent que `@Generable` expose `confidence` nativement. L'ECE du bras A est mesurable sans échantillonnage multiple.
 
-## 7. Journalisation des décisions (contrat §7.5 de SUPER-DECIDER-INTEGRATION.md)
+## 7. Journalisation des décisions (contrat de routage, voir `docs/contracts/HARNESS-ROLES-CONTRACT.md`)
 
 Trois types d'événements alimentent le jeu annoté : `routed` (décision du routeur local, avec `confidence`), `explicit` (route forcée par l'appelant et disponible), `routing_substituted` (route forcée indisponible → équivalent disponible, avec route demandée → servie + motif). Les cas `explicit` et `routing_substituted` sont étiquetables a posteriori comme les `routed` et enrichissent la phase 0 sans activer le scheduler.
 
-## 8. Corrections Astra du 28/10/2026 (font autorité, cf. §7.6 de SUPER-DECIDER-INTEGRATION.md)
+## 8. Corrections Astra du 28/10/2026 (font autorité, consolidées dans `docs/contracts/HARNESS-ROLES-CONTRACT.md`)
 
 La revue `gpt-6-astra` corrige ce document :
 

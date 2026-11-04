@@ -95,8 +95,9 @@ class SourceExportTests(unittest.TestCase):
     def test_export_closes_build_and_local_import_dependencies(self):
         tree = ast.parse((ROOT / 'reprise').read_text())
         function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'share_files')
-        namespace = {}
-        exec(compile(ast.Module(body=[function], type_ignores=[]), 'share_files', 'exec'), namespace)
+        source_function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'share_source')
+        namespace = {'ROOT': ROOT}
+        exec(compile(ast.Module(body=[function, source_function], type_ignores=[]), 'share', 'exec'), namespace)
         names = set(namespace['share_files']())
         from package_helpers import ASSETS
         self.assertTrue(set(ASSETS) <= names)
@@ -108,7 +109,7 @@ class SourceExportTests(unittest.TestCase):
                                   (ROOT / 'native-install').read_text()))
         self.assertTrue(required <= names, required - names)
         for name in names:
-            self.assertTrue((ROOT / name).is_file(), name)
+            self.assertTrue(namespace['share_source'](name).is_file(), name)
             if name.endswith('.py') or name == 'reprise':
                 for node in ast.walk(ast.parse((ROOT / name).read_text())):
                     imports = ([a.name for a in node.names] if isinstance(node, ast.Import)

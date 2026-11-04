@@ -27,6 +27,10 @@ def inputs(root):
     if not vendor.is_symlink() and not yaml.is_symlink():
         for name, value in yaml_hashes(root).items():
             files[f'vendor/yaml/{name}'] = value
+    docs = root.parent / 'docs'
+    if docs.is_dir():
+        for p in sorted(docs.rglob('*.md')):
+            files[f'docs/{p.relative_to(docs)}'] = sha(p)
     return files
 
 

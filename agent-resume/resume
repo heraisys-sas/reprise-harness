@@ -1,4 +1,0 @@
-#!/bin/sh
-# Alias de transition : l'ancien nom reste utilisable pendant une release.
-echo "resume est déprécié, utiliser reprise" >&2
-exec "$(dirname "$0")/reprise" "$@"
