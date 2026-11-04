@@ -10,7 +10,7 @@ Les routes d'observation, associations Claude et connaissances de quota sont sto
 
 ## Commandes présentes dans le code local
 
-Depuis `agent-resume/`, avec le `resume` correspondant au clone :
+Depuis `reprise/`, avec le `resume` correspondant au clone :
 
 ```sh
 ./resume claude-sessions-status

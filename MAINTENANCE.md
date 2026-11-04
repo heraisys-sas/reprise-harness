@@ -5,11 +5,11 @@ plans, reçus, logs, chemins personnels et résultats de sessions restent privé
 Un ancien checkpoint décrit une opération passée, pas l'installation courante.
 
 Point d'entrée pour un agent : la skill portable
-[reprise-maintenance](deepseek-harness-config/skills/reprise-maintenance/SKILL.md).
+[reprise-maintenance](harness/skills/reprise-maintenance/SKILL.md).
 Elle couvre préparation, plans gérés, vérification réelle, diagnostic, portées
 historiques et passation. Copier son dossier entier permet de la transmettre
 à Codex, DeepSeek Harness ou Claude ; les modalités et limites sont dans
-[sharing.md](deepseek-harness-config/skills/reprise-maintenance/references/sharing.md).
+[sharing.md](harness/skills/reprise-maintenance/references/sharing.md).
 
 ## Où se trouve l'information ?
 

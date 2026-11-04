@@ -3,7 +3,7 @@
 Instructions de projet pour les agents qui travaillent sur ce dépôt. Complète (sans écraser) les préférences globales de Harness (`~/.dsh/AGENTS.md`). Répondre en français, identifiants techniques en anglais.
 
 ## Ce projet est
-Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui suit les sessions d'agents, détecte les anomalies post-update, lit les journaux locaux de Claude Desktop et sert de canal de délégation vers des experts externes (Codex, Claude). `agent-resume/` = l'app native + les modules Python ; `deepseek-harness-config/` = config Harness ; `routing/`, `harness-tools/` = routage et outils.
+Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui suit les sessions d'agents, détecte les anomalies post-update, lit les journaux locaux de Claude Desktop et sert de canal de délégation vers des experts externes (Codex, Claude). `reprise/` = l'app native + les modules Python ; `harness/` = config Harness ; `routing/embeddings/`, `tools/` = routage et outils.
 
 ## Workflow Git
 - **Branche de travail : `dev`** — pas de commit direct sur `main`.
@@ -11,11 +11,11 @@ Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui s
 - **Prise en charge d’une issue par un agent** : ajouter le label `agent:<nom>` (ex. `agent:codex`, `agent:claude`) et utiliser `gh issue develop` pour créer une branche liée à l’issue, basée sur `dev` et nommée `codex/<numero>-<sujet>` ; exemple : `gh issue develop <numero> --base dev --name codex/<numero>-<sujet>`. Vérifier le lien avec `gh issue develop <numero> --list`. Cette branche temporaire doit être intégrée à `dev` avant le parcours habituel vers `main`. Préserver le travail concurrent ; ne pas changer la branche d’un workspace utilisé par un autre agent. Le label désigne l’agent responsable ; le lien GitHub désigne la branche, sans déclencher automatiquement un chat.
 - **Layout Git par workspace** : chaque agent possède son propre clone dans `<workspace>/source/` (son propre `.git`, branche de travail), jamais un `.git` partagé hors workspace — la sandbox DSH (`workspace-write`) limite l'écriture à la racine du workspace de session, et un `.git` extérieur (ex. `~/Projets/reprise-harness/source/`) impose une approbation par opération Git. La coordination inter-agents passe par `origin` (push/fetch), pas par des branches locales partagées.
 - **Worktrees temporaires** : pour un merge, une revalidation ou toute manipulation hors branche de workspace, créer un worktree dédié sous `<workspace>/tmp/<sujet>/` (ex. `workspaces/harness/tmp/merge-99`), jamais dans un autre worktree d'agent ni dans `/private/tmp` (purgé au reboot). Le clone `source/` étant dans le workspace, ces worktrees restent dans le périmètre inscriptible. Supprimer le worktree après usage (`git worktree remove`).
-- Tests : `python3 -m unittest discover -s agent-resume/tests -q` (suite fusionnée : 1144 OK, 6 skipped — le chiffre évolue, ne pas le figer).
-- CLI : l'entrée utilisateur est `agent-resume/reprise` ; `agent-resume/resume` n'est qu'un wrapper déprécié qui l'exécute (#99).
+- Tests : `python3 -m unittest discover -s reprise/tests -q` (suite fusionnée : 1144 OK, 6 skipped — le chiffre évolue, ne pas le figer).
+- CLI : l'entrée utilisateur est `reprise/reprise` ; `reprise/resume` n'est qu'un wrapper déprécié qui l'exécute (#99).
 - Compile Swift (sans relancer l'app) : `sh native-install` ; `--open` pour lancer l'app.
-- Check syntaxe Swift : `swiftc -parse -module-cache-path /private/tmp/agent-resume-swift-cache Native.swift Dashboard.swift` (dans `agent-resume/`).
-- Relancer Reprise : `./restart-chain --runtime-archive FILE` construit un bundle autonome vérifié puis lance l'application ; `./restart-chain --no-build` lance seulement le dernier build vérifié. `--server` (service Quick Apply) et `--development` sont des chemins historiques explicites. Le script ne redémarre jamais `codexd` (chats propriétaires préservés) ; voir `agent-resume/BUILD-AND-CI.md`.
+- Check syntaxe Swift : `swiftc -parse -module-cache-path /private/tmp/agent-resume-swift-cache Native.swift Dashboard.swift` (dans `reprise/`).
+- Relancer Reprise : `./restart-chain --runtime-archive FILE` construit un bundle autonome vérifié puis lance l'application ; `./restart-chain --no-build` lance seulement le dernier build vérifié. `--server` (service Quick Apply) et `--development` sont des chemins historiques explicites. Le script ne redémarre jamais `codexd` (chats propriétaires préservés) ; voir `reprise/BUILD-AND-CI.md`.
 
 ## Prise en charge des issues (agents)
 Tous les agents partagent le compte GitHub `heraisys-sas` : l'assigné ne distingue personne. Le propriétaire d'une issue se lit donc dans trois signaux, du plus important au moins important.

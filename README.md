@@ -52,8 +52,8 @@ Le chemin Quick Apply → MCP ne garantit pas une exécution de bout en bout, et
 Sur macOS 26+ ARM64 avec les outils Swift/SDK 26+ et Python de build, construire puis lancer le bundle autonome avec une archive Python épinglée :
 
 ```sh
-python3 agent-resume/release_build.py build --runtime-archive /chemin/archive-python-epinglee.tar.gz
-sh agent-resume/relaunch
+python3 reprise/release_build.py build --runtime-archive /chemin/archive-python-epinglee.tar.gz
+sh reprise/relaunch
 ```
 
 La compilation ne lance pas l'application. `relaunch` vérifie le build avant ouverture. Pour la chaîne de développement, voir `native-install` dans la [documentation de build et CI](docs/runbooks/BUILD-AND-CI.md). Pour installer, migrer ou diagnostiquer Reprise, commencer par [MAINTENANCE.md](MAINTENANCE.md) et le [contrat d'installation](docs/contracts/INSTALLATION-CONTRACT.md).
@@ -61,19 +61,19 @@ La compilation ne lance pas l'application. `relaunch` vérifie le build avant ou
 Lancer la suite Python avec :
 
 ```sh
-python3 -m unittest discover -s agent-resume/tests -q
+python3 -m unittest discover -s reprise/tests -q
 ```
 
 ## Dépôt
 
 | Chemin | Rôle |
 | --- | --- |
-| [`agent-resume/`](agent-resume/README.md) | Application SwiftUI/AppKit, helpers Python, supervision, planification, recherche, connecteurs et intégrations gérées. |
+| [`reprise/`](reprise/README.md) | Application SwiftUI/AppKit, helpers Python, supervision, planification, recherche, connecteurs et intégrations gérées. |
 | [`docs/`](docs/) | Documentation durable : contrats, intégrations par canal, runbooks, gabarits. |
-| [`deepseek-harness-config/`](deepseek-harness-config/CONFIGURATION.md) | Configuration et compétences de référence pour DeepSeek Harness ; les modèles déclarés ne garantissent ni disponibilité ni authentification. |
-| [`routing/`](routing/README.md) | Routeur local par embeddings Apple, expérimental et opt-in. |
-| [`role-routing/`](role-routing/README.md) | Routage optionnel par rôles planner/executor. |
-| [`harness-tools/`](harness-tools/README.md) | Outils de vérification, d'analyse locale et pilotes d'évaluation. |
+| [`harness/`](harness/profile/CONFIGURATION.md) | Configuration et compétences de référence pour DeepSeek Harness ; les modèles déclarés ne garantissent ni disponibilité ni authentification. |
+| [`routing/embeddings/`](routing/embeddings/README.md) | Routeur local par embeddings Apple, expérimental et opt-in. |
+| [`routing/roles/`](routing/roles/README.md) | Routage optionnel par rôles planner/executor. |
+| [`tools/`](tools/README.md) | Outils de vérification, d'analyse locale et pilotes d'évaluation. |
 | [`archive/`](archive/) | Composants retirés conservés pour référence (y compris les documents de travail en attente de transfert vers leurs issues). |
 
 L'historique des versions est consolidé dans le [CHANGELOG](CHANGELOG.md) ; les documents datés de session ne vivent pas dans l'arbre.

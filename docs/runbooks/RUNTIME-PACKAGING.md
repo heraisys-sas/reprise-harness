@@ -10,7 +10,7 @@ L’archive officielle `install_only` est fournie explicitement au build. Aucun 
 
 ```sh
 curl -fL 'https://github.com/astral-sh/python-build-standalone/releases/download/20261020/cpython-3.13.16%2B20261020-aarch64-apple-darwin-install_only.tar.gz' -o /private/tmp/reprise-python.tar.gz
-sh agent-resume/native-install --runtime-archive /private/tmp/reprise-python.tar.gz
+sh reprise/native-install --runtime-archive /private/tmp/reprise-python.tar.gz
 ```
 
 Le build exige encore Python >= 3.11 et Swift sur le poste développeur ; le lancement du bundle construit utilise son propre Python. Sans archive, un build conserve et vérifie le runtime déjà présent. En son absence, il reste un build de développement dont le manifeste indique `external-python-required` ; le lancement embarqué refuse alors explicitement l’absence du runtime. `--open` conserve le lancement de développement historique ; aucune de ces validations ne l’a utilisé.

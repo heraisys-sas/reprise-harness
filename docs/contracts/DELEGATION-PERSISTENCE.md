@@ -44,7 +44,7 @@ Le choix de distinguer résultat reçu et exécution incertaine suit la sémanti
 
 Tests de panne : `tests/test_delegation_persistence.py` ; suites existantes du pont, de Quick Apply, de l’installateur et du prototype UX adaptées au nouveau contrat. Validation réelle du pilote Claude, compte gratuit, permissions macOS, réception autonome et reprise après panne de machine encore à confirmer. Aucun résultat visible dans les logs ou sur disque n’est promu en reçu MCP.
 
-Validation finale du 21/10 : `python3 -m unittest discover -s agent-resume/tests -q` hors sandbox : **276 tests, OK, 1 skipped**, dont 19 tests de persistance et de concurrence. `git diff --check` et `py_compile` des sept modules Python modifiés passent. Le premier passage sandbox rencontrait des refus d’accès aux sockets de santé/scheduler ; le passage autorisé hors sandbox est vert. Des `ResourceWarning` de fixtures existantes subsistent, sans échec. Ruff, Gitleaks et Semgrep ne sont pas installés ; aucun résultat de scanner de sécurité n’est revendiqué. Aucun Swift modifié, donc aucune compilation ni relance native.
+Validation finale du 21/10 : `python3 -m unittest discover -s reprise/tests -q` hors sandbox : **276 tests, OK, 1 skipped**, dont 19 tests de persistance et de concurrence. `git diff --check` et `py_compile` des sept modules Python modifiés passent. Le premier passage sandbox rencontrait des refus d’accès aux sockets de santé/scheduler ; le passage autorisé hors sandbox est vert. Des `ResourceWarning` de fixtures existantes subsistent, sans échec. Ruff, Gitleaks et Semgrep ne sont pas installés ; aucun résultat de scanner de sécurité n’est revendiqué. Aucun Swift modifié, donc aucune compilation ni relance native.
 
 
 ## Résultats longs — issue #32

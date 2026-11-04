@@ -165,7 +165,7 @@ On resumption, the **View** and **Go** menus exposed no Quick Entry command. The
 
 The six targeted job/App probe tests were rerun successfully, including interrupted-claim handling, late-result acceptance and persistent single dispatch. These tests validate local state handling, not unattended Desktop operation.
 
-Full regression on resumption: `python3 -W error::ResourceWarning -m unittest discover -s agent-resume/tests -v` completed with **168 tests, OK, 2 skipped** in the current environment.
+Full regression on resumption: `python3 -W error::ResourceWarning -m unittest discover -s reprise/tests -v` completed with **168 tests, OK, 2 skipped** in the current environment.
 
 Further trigger inspection: the **Window** menu also contained no Quick Entry entry. A fresh screenshot request succeeded, but returned a transformed view of the application window without the macOS status bar; it therefore supplied no usable target for the Claude status icon. The app accessibility tree likewise exposed no status-icon action. The draft `i ` remained unchanged, no shortcut was changed during this inspection, and no message was sent.
 

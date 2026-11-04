@@ -144,7 +144,7 @@ sandbox avec son propre `ps` — c'est Reprise, non sandboxée, qui produit la v
 
 Tests ciblés des nouveaux modules, puis régressions `test_codex_expert_mcp.py`, `test_reprise_health.py`,
 `test_desktop_mode.py`, `test_runtime.py`, `test_engines.py`, `test_restart_chain.py`, puis suite
-complète (`python3 -m unittest discover -s agent-resume/tests -q`) et `swiftc -parse Native.swift
+complète (`python3 -m unittest discover -s reprise/tests -q`) et `swiftc -parse Native.swift
 Dashboard.swift` (ajouter le futur helper natif aux vérifications de compilation ; `swiftc -parse` seul
 ne valide ni types ni API système). Essais macOS requis : attribution des instances, refus d'arrêt,
 récupération après interruption, fonctionnement GUI fermée.

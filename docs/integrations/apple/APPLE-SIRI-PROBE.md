@@ -5,8 +5,8 @@ Cette sonde construit un bundle de test indépendant, avec une action App Intent
 Depuis le dépôt, choisir un chemin absolu **qui n'existe pas**, dont le parent existe :
 
 ```sh
-python3 agent-resume/siri_intents_probe.py --output /private/tmp/reprise-siri-exemple
-python3 -m unittest discover -s agent-resume/tests -p test_siri_intents_probe.py -v
+python3 reprise/siri_intents_probe.py --output /private/tmp/reprise-siri-exemple
+python3 -m unittest discover -s reprise/tests -p test_siri_intents_probe.py -v
 ```
 
 Le répertoire est créé exclusivement ; tout chemin déjà présent, y compris un lien symbolique, est refusé. Un échec laisse les artefacts partiels dans ce nouveau répertoire pour diagnostic et ne les efface pas. Utiliser un nouveau nom pour un nouvel essai. Le script requiert macOS, Xcode et son SDK, ainsi que `swiftc`, `xcodebuild` et `appintentsmetadataprocessor`. Il s'appuie sur la liste de protocoles livrée dans la toolchain active et échoue si elle ne correspond pas au format attendu. Les caches de compilation demandés par la sonde sont créés dans le répertoire de sortie.
@@ -22,7 +22,7 @@ Apple décrit l'extraction des métadonnées lors de la construction dans [Explo
 Pour reproduire la sonde statique d'une extension distincte ciblant macOS 27 :
 
 ```sh
-python3 agent-resume/siri_intents_probe.py --extension --output /private/tmp/reprise-siri-extension-exemple
+python3 reprise/siri_intents_probe.py --extension --output /private/tmp/reprise-siri-extension-exemple
 ```
 
 L'option construit un `.appex` sans l'embarquer dans une application hôte. Le code déclare `AppIntentsExtension` et limite l'intention à `.appIntentsExtension` via `allowedExecutionTargets` ; le SDK installé expose ce réglage à partir de macOS 27. L'extraction vérifie que `allowedTargets` désigne `com.apple.appintents-extension` et que `openAppWhenRun` est faux. Le fichier Info.plist utilise le point d'extension déclaré par le modèle macOS d'Xcode. Le mode sans cette option reste une application de test ciblant macOS 26.
