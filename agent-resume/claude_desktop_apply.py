@@ -365,28 +365,49 @@ def _arm(cdp):
     return result if isinstance(result, dict) else {'ready': False}
 
 
-def _confirm(cdp):
-    """Post-click send evidence: composer emptied or a user message in the DOM.
+def _confirm(cdp, before_state=None):
+    """Post-click send evidence: composer emptied AND a new user message AND
+    still on the expected chat path.
 
-    Returns True only on positive evidence; any failure or absence of evidence
-    is False so the caller reports incertain, never envoyé.
+    'Composer emptied' alone also confirms a redirect to a fresh chat, so it
+    is never sufficient: the message counter must have increased since the
+    pre-click baseline and the URL must still be the attached chat. Any
+    failure or absence of evidence returns False so the caller reports
+    incertain, never envoyé.
     """
+    before = before_state if isinstance(before_state, dict) else {}
+    expected_url = before.get('url') if isinstance(before.get('url'), str) else None
     try:
         result = cdp.evaluate("(async () => {" + JS_HELPERS + """
       const messages = () => document.querySelectorAll('[data-testid^="user-message"]').length;
-      const before = messages();
-      const deadline = Date.now() + 2000;
+      const deadline = Date.now() + 4000;
+      let outcome = {confirmed: false, url: location.href,
+                     user_messages: messages(), user_messages_before: """ + str(int(before.get('n', -1))) + """,
+                     composer_left: -1};
       while (Date.now() < deadline) {
         const el = composer();
-        const remaining = el ? readText(el).length : 0;
-        if (remaining === 0 || messages() > before) return {confirmed: true};
+        outcome.composer_left = el ? readText(el).length : 0;
+        const n = messages();
+        const grew = outcome.user_messages_before >= 0 ? n > outcome.user_messages_before : null;
+        if (outcome.composer_left === 0 && (grew === true || (grew === null && n > 0))) {
+          outcome.confirmed = true; outcome.user_messages = n; break;
+        }
         await new Promise(resolve => setTimeout(resolve, 100));
       }
-      return {confirmed: false};
+      outcome.user_messages = messages();
+      outcome.url = location.href;
+      if (outcome.confirmed && """ + ('true' if expected_url else 'false') + """) {
+        outcome.confirmed = location.pathname === """ + json.dumps(expected_url) + """;
+        outcome.url_match = location.pathname === """ + json.dumps(expected_url) + """;
+      }
+      return outcome;
     })()""")
     except (OSError, ValueError, WSError, TimeoutError, RuntimeError):
         return False
-    return isinstance(result, dict) and result.get('confirmed') is True
+    if not isinstance(result, dict) or result.get('confirmed') is not True:
+        return False
+    cdp.last_confirm = result
+    return True
 
 
 def _result(stage, *, ok=False, staged=False, dispatch_attempted=False,
