@@ -35,7 +35,7 @@ def inspect(path, now=None, details=None):
                 continue
             kind = payload.get('type')
             if kind in ('task_started', 'task_complete', 'turn_aborted', 'token_count',
-                        'item_completed', 'thread_settings_applied'):
+                        'item_completed', 'thread_settings_applied', 'thread_goal_updated'):
                 recognized += 1
             else:
                 unknown += 1
