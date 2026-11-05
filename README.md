@@ -89,6 +89,6 @@ L'historique des versions est consolidé dans le [CHANGELOG](CHANGELOG.md) ; les
 
 ## Configuration, confidentialité et contribution
 
-Les fichiers de configuration sont des modèles sans identifiants. Vérifier les profils, permissions et capacités réellement disponibles avant activation ; aucun coût ou quota fournisseur n'est garanti. Reprise chiffre l'index de recherche et le cache d'analyse, pas les sources locales qui les alimentent. Les conversations, bases, clés du Trousseau, captures et binaires locaux sont exclus du dépôt.
+Les règles de placement et d'hygiène de l'arbre sont dans [USAGE.md](USAGE.md). Les fichiers de configuration sont des modèles sans identifiants. Vérifier les profils, permissions et capacités réellement disponibles avant activation ; aucun coût ou quota fournisseur n'est garanti. Reprise chiffre l'index de recherche et le cache d'analyse, pas les sources locales qui les alimentent. Les conversations, bases, clés du Trousseau, captures et binaires locaux sont exclus du dépôt.
 
 Contribuer sur `dev`, puis intégrer via la MR `dev` → `main`. Ne pas committer directement sur `main`.

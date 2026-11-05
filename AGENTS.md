@@ -2,6 +2,8 @@
 
 Instructions de projet pour les agents qui travaillent sur ce dépôt. Complète (sans écraser) les préférences globales de Harness (`~/.dsh/AGENTS.md`). Répondre en français, identifiants techniques en anglais.
 
+Règles de placement et d'hygiène de l'arbre : [USAGE.md](USAGE.md).
+
 ## Ce projet est
 Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui suit les sessions d'agents, détecte les anomalies post-update, lit les journaux locaux de Claude Desktop et sert de canal de délégation vers des experts externes (Codex, Claude). `reprise/` = l'app native + les modules Python ; `harness/` = config Harness ; `routing/embeddings/`, `tools/` = routage et outils.
 
