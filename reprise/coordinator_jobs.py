@@ -265,8 +265,10 @@ class Jobs:
         return {'context': context, 'context_sha256': hashlib.sha256(_json(context).encode()).hexdigest()}
 
     def consent(self, project_id, operation_id, *, authorization_id, expected_revision,
-                expected_proposal_sha256, host_context, expected_context_sha256):
+                expected_proposal_sha256, host_context, expected_context_sha256, backend="codex"):
         """Record operator consent only, atomically and without an execution authority."""
+        if backend not in ("codex", "foundation-models"):
+            raise ValueError("Explicit supported consent backend required")
         project, operation, authorization = _uuid(project_id), _uuid(operation_id), _uuid(authorization_id)
         if type(expected_revision) is not int or expected_revision < 0:
             raise ValueError('Invalid expected revision')
@@ -281,7 +283,7 @@ class Jobs:
             raise ValueError('Host context changed')
         identity = {'authorization_id': authorization, 'preparation_revision': expected_revision,
                     'proposal_sha256': expected_proposal_sha256, 'context_sha256': expected_context_sha256,
-                    'host_context': current['context'], 'backend': 'codex', 'mode': 'expertise',
+                    'host_context': current['context'], 'backend': backend, 'mode': 'expertise',
                     'billing_verification': 'not_performed', 'execution_authorized': False}
         digest = hashlib.sha256(_json(identity).encode()).hexdigest()
         with self._store(write=True) as data:
@@ -307,6 +309,76 @@ class Jobs:
                 row.update(status='consented', authority=None, authorization_kind='operator_consent_v1',
                     operator_authorization=authorization_record, fingerprint=fingerprint,
                     request_key=_request_key(project, operation, fingerprint), revision=expected_revision + 1)
+                return self._public(row)
+            raise ValueError('Job not found')
+
+    def reserve_local(self, project_id, operation_id, *, run_id, expected_revision, manifest):
+        """Persist one execution intent; only Store.guarded_handoff admits it."""
+        project, operation, run = _uuid(project_id), _uuid(operation_id), _uuid(run_id)
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError('Invalid expected revision')
+        snapshot = json.loads(_json(manifest))
+        identity = hashlib.sha256(_json(snapshot).encode()).hexdigest()
+        self._project(project)
+        with self._store(write=True) as data:
+            for row in data['jobs']:
+                if row['project_id'] != project or row.get('operation_id') != operation: continue
+                prior = row.get('local_execution')
+                if prior:
+                    if prior['run_id'] != run or prior['manifest_sha256'] != identity:
+                        raise ValueError('Execution identity conflict')
+                    return self._public(row), False
+                consent = row.get('operator_authorization') or {}
+                if (row['status'] != 'consented' or consent.get('backend') != 'foundation-models'
+                        or consent.get('execution_authorized') is not False):
+                    raise ValueError('Explicit local consent required')
+                if row.get('revision') != expected_revision: raise ValueError('Revision conflict')
+                host = consent['host_context']
+                if (snapshot.get('project_id') != project or snapshot.get('work_id') != host['work_id']
+                        or snapshot.get('project_root') != host['project_root']
+                        or snapshot.get('adapter') != 'native-foundation-explain'
+                        or snapshot.get('mode') != 'expertise' or snapshot.get('tools') is not False
+                        or snapshot.get('automatic_fallback') is not False
+                        or snapshot.get('stop_on_deadline') is not True
+                        or type(snapshot.get('max_requests')) is not int or snapshot['max_requests'] != 1
+                        or type(snapshot.get('max_seconds')) is not int or not 1 <= snapshot['max_seconds'] <= 120
+                        or snapshot.get('supervision_contract') != 'foundation-explain-v1-self-deadline'
+                        or snapshot.get('cost_policy') != 'local_helper_only_no_provider_route'):
+                    raise ValueError('Execution manifest mismatch')
+                if (snapshot.get('job_id') != row['job_id'] or snapshot.get('request_key') != row['request_key']
+                        or snapshot.get('consent_id') != consent['authorization_id']
+                        or snapshot.get('context_sha256') != consent['context_sha256']
+                        or snapshot.get('proposal_sha256') != hashlib.sha256(_json(row['proposal']).encode()).hexdigest()
+                        or snapshot.get('backend') != 'foundation-models'):
+                    raise ValueError('Execution manifest mismatch')
+                row['local_execution'] = {'run_id': run, 'manifest_sha256': identity,
+                    'manifest': snapshot, 'stage': 'intent', 'stop_requested': False,
+                    'created_at': time.time(), 'receipt': None}
+                row.update(status='local_pending', revision=expected_revision + 1)
+                return self._public(row), True
+            raise ValueError('Job not found')
+
+    def local_update(self, project_id, operation_id, run_id, *, stage=None, receipt=None, stop=False):
+        """Host projection only; never establishes an admission or repeats work."""
+        project, operation, run = _uuid(project_id), _uuid(operation_id), _uuid(run_id)
+        if stage not in (None, 'admitted', 'running', 'recorded', 'indeterminate'):
+            raise ValueError('Invalid execution stage')
+        with self._store(write=True) as data:
+            for row in data['jobs']:
+                if row['project_id'] != project or row.get('operation_id') != operation: continue
+                execution = row.get('local_execution')
+                if not execution or execution['run_id'] != run: raise ValueError('Execution identity conflict')
+                if execution['stage'] == 'recorded': return self._public(row)
+                if stop: execution['stop_requested'] = True
+                if stage:
+                    execution['stage'] = stage
+                    row['status'] = 'local_' + stage
+                if receipt is not None:
+                    if stage != 'recorded': raise ValueError('Terminal receipt required')
+                    if receipt.get('run_id') != run or receipt.get('request_key') != row['request_key']:
+                        raise ValueError('Receipt identity mismatch')
+                    execution['receipt'] = json.loads(_json(receipt))
+                row['revision'] = row.get('revision', 0) + 1
                 return self._public(row)
             raise ValueError('Job not found')
 
@@ -400,7 +472,8 @@ class Jobs:
                 'dispatch_enabled': False,
                 'proposal_sha256': hashlib.sha256(_json(item['proposal']).encode()).hexdigest(),
                 'authorization_kind': item.get('authorization_kind'),
-                'operator_authorization': item.get('operator_authorization')}
+                'operator_authorization': item.get('operator_authorization'),
+                'local_execution': item.get('local_execution')}
         if item.get('operation_id') is not None:
             result['operation_id'] = item['operation_id']
         return result

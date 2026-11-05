@@ -423,6 +423,12 @@ class Store:
         # Session IDs differ on a handoff; they must not conceal an equivalent delegation.
         semantic = {k: v for k, v in payload.items() if k not in ('tool', 'thread_id', 'wait_seconds', 'inactivity_seconds',
                                                                   'execution_seconds', 'stop_on_deadline')}
+        if (payload.get('backend') == 'foundation-models' and isinstance(semantic.get('manifest'), dict)
+                and semantic['manifest'].get('adapter') == 'native-foundation-explain'):
+            # Per-job identities bind admission, but must not conceal an equivalent
+            # local request whose previous execution still needs reconciliation.
+            semantic['manifest'] = {k:v for k,v in semantic['manifest'].items()
+                                    if k not in ('job_id', 'request_key', 'consent_id')}
         semantic.setdefault('backend', 'codex')
         semantic.setdefault('kind', 'review' if payload.get('tool') == 'codex_review' else 'expertise')
         semantic.setdefault('level', 'standard')
@@ -628,6 +634,18 @@ class Store:
         self.active_key = key
         if handoff:
             return GuardedHandoff(snapshot)
+
+    def guarded_receipt(self, grant_id, binding, job_id, key, payload_identity):
+        """Read an attributable receipt, never admit, acknowledge or redispatch."""
+        encoded = json.dumps(binding, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+        row = self.db.execute("""SELECT a.grant_id,a.job_id,a.identity,g.binding,g.payload_identity,r.identity
+            FROM guarded_admissions a JOIN guarded_grants g ON a.scope=g.scope AND a.grant_id=g.grant_id
+            JOIN delegation_requests r ON r.scope=a.scope AND r.request_key=a.request_key
+            WHERE a.scope=? AND a.request_key=?""", (self.scope, key)).fetchone()
+        if row != (grant_id, job_id, payload_identity, encoded, payload_identity, payload_identity):
+            raise ValueError('Guarded receipt identity mismatch')
+        return {'grant_id': grant_id, 'job_id': job_id, 'payload_identity': payload_identity,
+                'receipt': self.lookup({'request_key': key})}
 
     def finish(self, key, result):
         result = dict(result, request_key=key)

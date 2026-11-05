@@ -137,9 +137,36 @@ struct ApplePilotView: View {
                         .disabled(!pilot.enabled || pilot.projectID.isEmpty || pilot.workID.isEmpty || pilot.preparationBusy || pilot.preparationUncertain)
                     if let root = pilot.consentContext["project_root"] as? String {
                         Text("Projet : \(root) · travail : \(pilot.workID)").font(.caption).textSelection(.enabled)
-                        Text("Consentement pour Codex, expertise sans écriture. Disponibilité, budget et facturation non vérifiés. Aucune exécution autorisée.").font(.caption)
+                        Picker("Cible du consentement", selection: $pilot.consentBackend) {
+                            Text("Codex — exécution indisponible").tag("codex")
+                            Text("Apple local — sans repli").tag("foundation-models")
+                        }
+                        Text("Expertise sans outils ni écriture. La cible est explicite ; aucune substitution automatique. Disponibilité non vérifiée.").font(.caption)
                         Button("Enregistrer mon consentement") { pilot.authorizePreparation() }
                             .disabled(!pilot.canConsent)
+                    }
+                }
+                if (pilot.preparationJob["operator_authorization"] as? [String: Any])?["backend"] as? String == "foundation-models" {
+                    if pilot.preparationJob["status"] as? String == "consented" {
+                        Stepper("Échéance et arrêt : \(pilot.localMaxSeconds) s", value: $pilot.localMaxSeconds, in: 1...120)
+                            .disabled(pilot.preparationBusy || pilot.preparationUncertain)
+                        Button("Préparer le manifeste local") { pilot.planLocalExecution() }
+                            .disabled(pilot.preparationBusy || pilot.preparationUncertain)
+                        if let manifest = pilot.localPlan["manifest"] as? [String: Any] {
+                            Text("Foundation Models local · une exécution · aucun outil ni repli · arrêt à l’échéance").font(.caption)
+                            Text(manifest["helper_path"] as? String ?? "").font(.caption).textSelection(.enabled)
+                            Text("SHA-256 : \(manifest["helper_sha256"] as? String ?? "")").font(.caption).textSelection(.enabled)
+                            Button("Autoriser et exécuter une fois localement") { pilot.startLocalExecution() }.disabled(!pilot.canStartLocal)
+                        }
+                    }
+                    if let execution = pilot.preparationJob["local_execution"] as? [String: Any] {
+                        if execution["stage"] as? String != "recorded" {
+                            Button("Demander l’arrêt local") { pilot.stopLocalExecution() }.disabled(pilot.preparationBusy)
+                        }
+                        if let receipt = execution["receipt"] as? [String: Any] {
+                            Text("Reçu : \(receipt["run_id"] as? String ?? "") · \(receipt["status"] as? String ?? "inconnu")").font(.caption).textSelection(.enabled)
+                            if let answer = receipt["response"] as? String { Text(answer).textSelection(.enabled) }
+                        }
                     }
                 }
                 if let questions = pilot.preparationJob["proposal"] as? [String: Any],

@@ -1,5 +1,35 @@
 import Foundation
 import FoundationModels
+import Darwin
+
+// Local execution uses a process-owned timer: the lifetime remains bounded even
+// if the GUI/Python owner dies. This capability query never reads model state.
+if CommandLine.arguments == [CommandLine.arguments[0], "--supervision-contract"] {
+    let value: [String: Any] = ["contract": "foundation-explain-v1-self-deadline", "max_seconds": 120,
+        "on_device": true, "tools": false, "automatic_fallback": false]
+    FileHandle.standardOutput.write(try! JSONSerialization.data(withJSONObject: value))
+    exit(0)
+}
+let outputLock = NSLock()
+var outputSent = false
+@discardableResult func writeOutput(_ value: [String: Any]) -> Bool {
+    outputLock.lock(); defer { outputLock.unlock() }
+    guard !outputSent else { return false }
+    outputSent = true
+    FileHandle.standardOutput.write(try! JSONSerialization.data(withJSONObject: value))
+    return true
+}
+var executionTimer: DispatchSourceTimer?
+if let index = CommandLine.arguments.firstIndex(of: "--deadline-seconds") {
+    guard CommandLine.arguments.count == 3, index == 1,
+          let seconds = Int(CommandLine.arguments[2]), (1...120).contains(seconds) else { exit(64) }
+    let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInitiated))
+    timer.schedule(deadline: .now() + .seconds(seconds))
+    // Never wait for stdout, an output lock or cooperative model cancellation.
+    timer.setEventHandler { Darwin._exit(124) }
+    executionTimer = timer
+    timer.resume()
+}
 
 // Explains recent Reprise activity and human-required actions using the on-device
 // Foundation Models generative API. Input JSON: {"facts": "...", "question": "..."}.
@@ -11,7 +41,7 @@ func emit(_ available: Bool, _ reason: String? = nil, code: String? = nil) {
     if let reason { result["reason"] = reason }
     if let code { result["reason_code"] = code }
     if CommandLine.arguments.contains("--status") { result["operation"] = "availability" }
-    FileHandle.standardOutput.write(try! JSONSerialization.data(withJSONObject: result))
+    writeOutput(result)
 }
 func fail(_ reason: String, code: String = "generation_failed") {
     emit(false, reason, code: code)
@@ -54,7 +84,7 @@ if #available(macOS 26.0, *) {
         do {
             let r = try await session.respond(to: prompt)
             let out: [String: Any] = ["answer": r.content, "available": true]
-            FileHandle.standardOutput.write(try! JSONSerialization.data(withJSONObject: out))
+            writeOutput(out)
         } catch {
             fail(String(describing: error))
         }

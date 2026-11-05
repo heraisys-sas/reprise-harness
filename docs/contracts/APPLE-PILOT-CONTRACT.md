@@ -90,3 +90,91 @@ nouveau contrôleur Swift après perte de réponse, rejet d'un reçu d'autorisat
 étranger, sélection modifiée et absence d'appel modèle. Elle utilise un coffre
 et des transports simulés ; elle ne démontre ni permissions système réelles,
 ni facturation fournisseur, ni délégation native.
+
+
+## Première exécution Apple locale supervisée
+
+Une nouvelle préparation peut recevoir un consentement explicitement ciblé
+`foundation-models` via `job_authorize_local`. Les consentements `codex`
+existants et leur identité sont conservés ; ils ne deviennent pas admissibles
+au moteur local et ne déclenchent aucun repli. Le consentement seul reste sans
+exécution. Les outils AFM de conversation n'exposent pas ces commandes hôte.
+
+Le parcours opérateur ajoute `job_local_plan`, puis `job_local_start` avec un
+`run_id` durable, une révision CAS et le hash du manifeste relu à l'écran.
+Le service retient le manifeste côté hôte ; aucun chemin exécutable ou payload
+fourni par le client n'est accepté comme substitut. La planification vérifie
+uniquement le fichier helper et son contrat statique `--supervision-contract` ;
+elle n'appelle ni génération ni API de disponibilité du modèle. Un ancien
+helper sans ce contrat est refusé. La présence du binaire ne prouve pas la
+disponibilité ni la réussite d'une génération.
+
+Le manifeste lie projet, travail, racine du registre, proposition, consentement,
+job/requête, adaptateur `native-foundation-explain`, exécutable et SHA-256,
+une admission maximum et une échéance entière de 1 à 120 secondes. La route
+utilise le helper natif connu, `SystemLanguageModel.default`, sans outils,
+configuration de fournisseur externe ni fallback. Cette politique décrit le
+chemin réellement autorisé ; elle n'attribue pas un prix vérifié ou une
+capacité financière à une autre route. La garde financière Codex reste intacte.
+
+Jobs persiste d'abord une intention chiffrée `local_pending`, qui ne prouve
+ni admission ni départ. L'admission effective réutilise les transactions
+`create_guarded_grant`/`guarded_handoff` du Store : droit lié au payload,
+budget unitaire et unicité de mission sont vérifiés et consommés atomiquement.
+Seul un handoff neuf et committé donne un snapshot au superviseur. Il contient
+le payload et le manifeste immuables ; un rejeu n'en produit pas un nouveau.
+Les identités de job/requête ne masquent pas une demande locale équivalente
+encore incertaine lors du contrôle de cycle/déduplication du Store.
+
+Avant départ, le superviseur revalide le contexte et le helper, copie ses octets
+dans un répertoire privé, contrôle le SHA et le contrat de cette copie, puis
+exécute uniquement cette copie avec une commande fermée et un environnement
+réduit. Il conserve son `Popen`, surveille sortie bornée, annulation et échéance,
+puis récupère le processus. Aucun verrou/transaction SQLite n'est conservé
+pendant l'inférence. Les connexions SQLite possèdent les descripteurs d'une
+base existante ; aucune fermeture de fd brut de cet inode ne doit libérer les
+verrous POSIX d'un autre thread. La création initiale privée est sérialisée
+avant ouverture des connexions.
+
+`job_local_stop` vise exactement le `run_id` connu. Le drapeau persistant conserve la demande ; dans le propriétaire courant, le
+contrôle local est synchronisé avec l'admission et le dernier départ. Un
+travail déjà admis est arrêté par son propriétaire. La requête d'arrêt n'est
+pas une preuve d'arrêt. Le superviseur signale seulement son groupe enfant
+possédé et exige `wait/reap` avant de rapporter une interruption confirmée.
+Un échec de nettoyage reste indéterminé. Aucun PID relu dans un ancien reçu
+n'est tué. Sans propriétaire vivant, la récupération conserve l'incertitude.
+
+Le helper natif arme aussi son propre timer avant l'accès au modèle :
+`--deadline-seconds` borne sa durée même si le propriétaire Python meurt.
+Le handler termine le processus avec le code 124 sans attendre stdout, un
+verrou de sortie ou une annulation coopérative du modèle. Cette preuve borne
+le processus applicatif possédé ; elle ne prouve pas l'arrêt de toute activité
+interne d'un service système Apple. Une mort du propriétaire ne fabrique pas
+un reçu terminal : l'intention reste indéterminée et n'est jamais relancée.
+L'inscription et le démarrage des threads d'exécution sont atomiques avec
+`job_closing`, afin qu'une admission déjà en préparation ne puisse échapper
+au drain de fermeture.
+
+Le reçu final est relu via `guarded_receipt` avec grant, job, binding complet
+et identité immuable du payload. Il distingue processus démarré/récupéré,
+code de sortie, cause d'arrêt, résultat et travail achevé. La réponse est
+chiffrée dans le reçu durable et dans la projection Jobs ; son SHA est vérifié
+à la récupération. Une perte de la projection après le reçu Store permet de
+retrouver le résultat sans génération supplémentaire. Un crash avant cette
+preuve conserve `local_indeterminate`, sans recréer d'admission ou de processus.
+
+La GUI journalise l'identité `local_start` avant émission. Sa récupération
+compare run, manifeste, contexte/travail et révision ; un reçu étranger ne
+résout pas l'intention. Le suivi automatique ne fait que lire les états actifs,
+sans inférence ni rejeu, et s'arrête aux états enregistrés/indéterminés.
+Un état `finished` avec réponse valide prouve une génération capturée, pas la
+satisfaction de tous les critères métier. La limite unitaire est par mission,
+pas un budget financier ou un plafond agrégé entre plusieurs missions.
+
+Les tests de développement utilisent exclusivement des helpers simulés, des
+registres temporaires et un coffre de test. Le timer natif est testé en compilant
+son préfixe sans aucun appel d'API modèle. Ils couvrent concurrence, non-rejeu,
+arrêt pendant exécution, échéance après mort du propriétaire, course de
+fermeture, verrous POSIX, perte de projection et récupération GUI. Ces tests ne
+constituent pas une preuve E2E avec le modèle Apple réel ; celle-ci reste un essai
+opérateur distinct, explicitement autorisé, sans publication automatique.

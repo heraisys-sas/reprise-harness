@@ -102,8 +102,8 @@ private final class PreparationIntentJournal {
                 guard intent.project == project,
                       intent.attempt == nil || UUID(uuidString: intent.attempt!)?.uuidString.lowercased() == intent.attempt,
                       UUID(uuidString: intent.operation)?.uuidString.lowercased() == intent.operation,
-                      ["prepare", "revise", "authorize"].contains(intent.kind), intent.revision >= 0,
-                      intent.kind != "authorize" || (intent.authorizationID != nil && intent.work != nil && UUID(uuidString: intent.authorizationID ?? "")?.uuidString.lowercased() == intent.authorizationID && UUID(uuidString: intent.work ?? "")?.uuidString.lowercased() == intent.work && intent.contextSHA256?.count == 64 && intent.contextSHA256!.allSatisfy({ $0.isHexDigit && !$0.isUppercase })),
+                      ["prepare", "revise", "authorize", "authorize_local", "local_start"].contains(intent.kind), intent.revision >= 0,
+                      !["authorize", "authorize_local", "local_start"].contains(intent.kind) || (intent.authorizationID != nil && intent.work != nil && UUID(uuidString: intent.authorizationID ?? "")?.uuidString.lowercased() == intent.authorizationID && UUID(uuidString: intent.work ?? "")?.uuidString.lowercased() == intent.work && intent.contextSHA256?.count == 64 && intent.contextSHA256!.allSatisfy({ $0.isHexDigit && !$0.isUppercase })),
                       intent.fingerprint.count == 64,
                       intent.fingerprint.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
                       ["finished", "not_admitted"].contains(receipt.effect), !receipt.status.isEmpty,
@@ -254,8 +254,8 @@ private final class PreparationIntentJournal {
            intent.project == project,
            intent.attempt == nil || UUID(uuidString: intent.attempt!)?.uuidString.lowercased() == intent.attempt,
            UUID(uuidString: intent.operation)?.uuidString.lowercased() == intent.operation,
-           ["prepare", "revise", "authorize"].contains(intent.kind), intent.revision >= 0,
-                      intent.kind != "authorize" || (intent.authorizationID != nil && intent.work != nil && UUID(uuidString: intent.authorizationID ?? "")?.uuidString.lowercased() == intent.authorizationID && UUID(uuidString: intent.work ?? "")?.uuidString.lowercased() == intent.work && intent.contextSHA256?.count == 64 && intent.contextSHA256!.allSatisfy({ $0.isHexDigit && !$0.isUppercase })),
+           ["prepare", "revise", "authorize", "authorize_local", "local_start"].contains(intent.kind), intent.revision >= 0,
+                      !["authorize", "authorize_local", "local_start"].contains(intent.kind) || (intent.authorizationID != nil && intent.work != nil && UUID(uuidString: intent.authorizationID ?? "")?.uuidString.lowercased() == intent.authorizationID && UUID(uuidString: intent.work ?? "")?.uuidString.lowercased() == intent.work && intent.contextSHA256?.count == 64 && intent.contextSHA256!.allSatisfy({ $0.isHexDigit && !$0.isUppercase })),
            intent.fingerprint.count == 64,
            intent.fingerprint.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) {
             return intent
@@ -297,6 +297,10 @@ final class ApplePilotUI: ObservableObject {
     @Published var checkpointID = "" { didSet { saveSelection(checkpointID, key: "ApplePilotCheckpoint", uuid: true) } }
     @Published var skill = "checkpoint-review" { didSet { saveSelection(skill, key: "ApplePilotSkill", uuid: false) } }
     @Published var prompt = ""
+    @Published var consentBackend = "codex"
+    @Published var localMaxSeconds = 60 { didSet { localPlan = [:] } }
+    @Published private(set) var localPlan: [String: Any] = [:]
+    private var localSelections: [String: [String]] = [:]
     @Published var proposalObjective = ""
     @Published var proposalAcceptance = ""
     @Published var proposalConstraints = ""
@@ -748,8 +752,13 @@ final class ApplePilotUI: ObservableObject {
             "operation_id": preparationOperationID, "proposal": proposal, "expected_revision": revision])
     }
 
+    private func authorizationBackend(_ job: [String: Any]) -> String? {
+        (job["operator_authorization"] as? [String: Any])?["backend"] as? String
+    }
+
     private func clearConsentContext() {
         consentContext = [:]
+        localPlan = [:]
         consentContextSHA256 = ""
     }
 
@@ -778,10 +787,56 @@ final class ApplePilotUI: ObservableObject {
               let digest = preparationJob["proposal_sha256"] as? String, startHost() else { return }
         preparationBusy = true
         preparationStatus = "Enregistrement du consentement opérateur ; aucune exécution…"
-        request("job_authorize", fields: ["enabled": true, "project_id": projectID, "work_id": workID,
+        request(consentBackend == "foundation-models" ? "job_authorize_local" : "job_authorize", fields: ["enabled": true, "project_id": projectID, "work_id": workID,
             "operation_id": preparationOperationID, "authorization_id": UUID().uuidString.lowercased(),
             "expected_revision": revision, "expected_proposal_sha256": digest,
             "expected_context_sha256": consentContextSHA256])
+    }
+
+    var canStartLocal: Bool {
+        enabled && !preparationBusy && !preparationUncertain && !preparationJournalUnavailable
+            && preparationJob["status"] as? String == "consented"
+            && (preparationJob["operator_authorization"] as? [String: Any])?["backend"] as? String == "foundation-models"
+            && (localPlan["manifest"] as? [String: Any])?["request_key"] as? String == preparationJob["request_key"] as? String
+            && localPlan["manifest_sha256"] as? String != nil
+    }
+
+    func planLocalExecution() {
+        guard enabled, !preparationBusy, !preparationUncertain,
+              (preparationJob["operator_authorization"] as? [String: Any])?["backend"] as? String == "foundation-models",
+              preparationJob["status"] as? String == "consented", startHost() else { return }
+        preparationBusy = true
+        let id = request("job_local_plan", fields: ["enabled": true, "project_id": projectID,
+            "operation_id": preparationOperationID, "max_seconds": localMaxSeconds])
+        localSelections[id] = [projectID, preparationOperationID]
+    }
+
+    func startLocalExecution() {
+        guard canStartLocal, let revision = preparationJob["revision"] as? Int,
+              let digest = localPlan["manifest_sha256"] as? String, startHost() else { return }
+        preparationBusy = true
+        request("job_local_start", fields: ["enabled": true, "project_id": projectID,
+            "operation_id": preparationOperationID, "run_id": UUID().uuidString.lowercased(),
+            "expected_revision": revision, "expected_manifest_sha256": digest])
+    }
+
+    func stopLocalExecution() {
+        guard enabled, !preparationBusy,
+              let execution = preparationJob["local_execution"] as? [String: Any],
+              let run = execution["run_id"] as? String, startHost() else { return }
+        preparationBusy = true
+        request("job_local_stop", fields: ["enabled": true, "project_id": projectID,
+            "operation_id": preparationOperationID, "run_id": run])
+    }
+
+    private func scheduleLocalStatus() {
+        guard ["local_pending", "local_admitted", "local_running"].contains(preparationJob["status"] as? String ?? "") else { return }
+        let project = projectID, operation = preparationOperationID
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self, self.enabled, !self.preparationBusy, !self.preparationUncertain,
+                  self.projectID == project, self.preparationOperationID == operation else { return }
+            self.loadPreparation()
+        }
     }
 
     func listCheckpoints() {
@@ -841,7 +896,7 @@ final class ApplePilotUI: ObservableObject {
               var bytes = try? JSONSerialization.data(withJSONObject: payload), bytes.count < 65536 else {
             status = "Requête invalide ou trop volumineuse."
             busy = false
-            if ["job_prepare", "job_recover", "job_revise", "job_authorize", "job_consent_context"].contains(operation) {
+            if ["job_prepare", "job_recover", "job_revise", "job_authorize", "job_authorize_local", "job_consent_context", "job_local_plan", "job_local_start", "job_local_stop"].contains(operation) {
                 preparationBusy = false
                 preparationStatus = "La requête locale n’a pas été envoyée ; conservez la même identité."
             }
@@ -856,17 +911,28 @@ final class ApplePilotUI: ObservableObject {
             return ident
         }
         bytes.append(10)
-        if ["job_prepare", "job_recover", "job_revise", "job_authorize"].contains(operation),
+        if ["job_prepare", "job_recover", "job_revise", "job_authorize", "job_authorize_local", "job_local_start", "job_local_stop"].contains(operation),
            let project = fields["project_id"] as? String, let preparation = fields["operation_id"] as? String {
             var intent: PreparationIntent?
             do {
-                if operation == "job_authorize" {
+                if operation == "job_local_start" {
+                    guard let run = fields["run_id"] as? String,
+                          let expected = fields["expected_revision"] as? Int,
+                          let fingerprint = fields["expected_manifest_sha256"] as? String,
+                          let manifest = localPlan["manifest"] as? [String: Any],
+                          let context = manifest["context_sha256"] as? String,
+                          let work = manifest["work_id"] as? String else { throw PreparationIntentJournal.JournalError.writeFailed }
+                    let record = PreparationIntent(project: project, operation: preparation, kind: "local_start",
+                        revision: expected + 1, fingerprint: fingerprint, attempt: UUID().uuidString.lowercased(),
+                        authorizationID: run, contextSHA256: context, work: work)
+                    try preparationJournal.write(record); intent = record
+                } else if operation == "job_authorize" || operation == "job_authorize_local" {
                     guard let authorization = fields["authorization_id"] as? String,
                           let work = fields["work_id"] as? String,
                           let context = fields["expected_context_sha256"] as? String,
                           let fingerprint = fields["expected_proposal_sha256"] as? String,
                           let expected = fields["expected_revision"] as? Int else { throw PreparationIntentJournal.JournalError.writeFailed }
-                    let record = PreparationIntent(project: project, operation: preparation, kind: "authorize",
+                    let record = PreparationIntent(project: project, operation: preparation, kind: operation == "job_authorize_local" ? "authorize_local" : "authorize",
                         revision: expected + 1, fingerprint: fingerprint, attempt: UUID().uuidString.lowercased(),
                         authorizationID: authorization, contextSHA256: context, work: work)
                     try preparationJournal.write(record)
@@ -958,6 +1024,19 @@ final class ApplePilotUI: ObservableObject {
             return
         }
         switch operation {
+        case "job_local_plan":
+            preparationBusy = false
+            guard let selection = localSelections.removeValue(forKey: ident), selection == [projectID, preparationOperationID] else { return }
+            if result == "finished", let plan = object["local_plan"] as? [String: Any],
+               let manifest = plan["manifest"] as? [String: Any], manifest["backend"] as? String == "foundation-models",
+               manifest["project_id"] as? String == projectID, manifest["work_id"] as? String == workID,
+               manifest["request_key"] as? String == preparationJob["request_key"] as? String {
+                localPlan = plan
+                preparationStatus = "Exécutable local identifié ; disponibilité de génération non vérifiée. Relisez le manifeste avant exécution."
+            } else {
+                localPlan = [:]
+                preparationStatus = "Plan local indisponible (\(result)) ; aucune inférence lancée."
+            }
         case "job_consent_context":
             preparationBusy = false
             guard let selection = consentSelections.removeValue(forKey: ident), selection == [projectID, workID] else { return }
@@ -971,7 +1050,7 @@ final class ApplePilotUI: ObservableObject {
                 clearConsentContext()
                 preparationStatus = "Contexte local indisponible (\(result)) ; consentement bloqué."
             }
-        case "job_prepare", "job_recover", "job_revise", "job_authorize":
+        case "job_prepare", "job_recover", "job_revise", "job_authorize", "job_authorize_local", "job_local_start", "job_local_stop":
             guard let context = preparationPending.removeValue(forKey: ident) else { ioFailed(generation: current); return }
             preparationBusy = false
             guard context.project == projectID, context.project == preparationProjectID,
@@ -982,7 +1061,8 @@ final class ApplePilotUI: ObservableObject {
                 preparationJob = job
                 if let intent = context.intent {
                     let authorization = job["operator_authorization"] as? [String: Any]
-                    let authorizationProof = intent.kind == "authorize"
+                    let authorizationProof = ["authorize", "authorize_local"].contains(intent.kind)
+                        && (intent.kind != "authorize_local" || authorization?["backend"] as? String == "foundation-models")
                         && job["status"] as? String == "consented"
                         && job["authorization_kind"] as? String == "operator_consent_v1"
                         && authorization?["execution_authorized"] as? Bool == false
@@ -991,7 +1071,16 @@ final class ApplePilotUI: ObservableObject {
                         && authorization?["authorization_id"] as? String == intent.authorizationID
                         && authorization?["context_sha256"] as? String == intent.contextSHA256
                         && (authorization?["host_context"] as? [String: Any])?["work_id"] as? String == intent.work
-                    let exactProof = authorizationProof || (intent.kind != "authorize" && job["status"] as? String == "preparation"
+                    let execution = job["local_execution"] as? [String: Any]
+                    let manifest = execution?["manifest"] as? [String: Any]
+                    let localProof = intent.kind == "local_start"
+                        && execution?["run_id"] as? String == intent.authorizationID
+                        && execution?["manifest_sha256"] as? String == intent.fingerprint
+                        && manifest?["context_sha256"] as? String == intent.contextSHA256
+                        && manifest?["work_id"] as? String == intent.work
+                        && manifest?["backend"] as? String == "foundation-models"
+                        && (job["revision"] as? Int ?? -1) >= intent.revision
+                    let exactProof = authorizationProof || localProof || (!["authorize", "authorize_local", "local_start"].contains(intent.kind) && job["status"] as? String == "preparation"
                         && job["revision"] as? Int == intent.revision
                         && (job["proposal"] as? [String: Any]).flatMap(proposalFingerprint) == intent.fingerprint)
                     if exactProof {
@@ -1010,7 +1099,14 @@ final class ApplePilotUI: ObservableObject {
                     preparationStatus = "Préparation \(job["status"] as? String ?? "chargée") · révision \(job["revision"] as? Int ?? 0) · sans autorité ni dispatch."
                 }
                 if job["status"] as? String == "consented", !preparationUncertain {
-                    preparationStatus = "Consentement enregistré ; exécution pas encore disponible. Facturation non vérifiée."
+                    preparationStatus = authorizationBackend(job) == "foundation-models"
+                        ? "Consentement Apple local enregistré ; aucune exécution avant validation du manifeste."
+                        : "Consentement enregistré ; exécution pas encore disponible. Facturation non vérifiée."
+                }
+                if let execution = job["local_execution"] as? [String: Any], !preparationUncertain {
+                    let receipt = execution["receipt"] as? [String: Any]
+                    preparationStatus = "Exécution locale : \(execution["stage"] as? String ?? "inconnue") · \(receipt?["status"] as? String ?? "résultat non capturé")"
+                    scheduleLocalStatus()
                 }
             } else if result == "not_found" {
                 preparationJob = [:]

@@ -59,7 +59,7 @@ class PackageHelpersTests(unittest.TestCase):
             root = moved / 'Contents/Resources/helpers'
             manifest = json.loads((root / 'payload-manifest.json').read_text())
             self.assertEqual(manifest['runtime'], 'external-python-required')
-            for name in ('apple_expert.py', 'apple_pilot.py', 'apple_pilot_service.py', 'apple_pilot_transport.py', 'orchestrator_memory.py', 'orchestrator_memory_service.py', 'reprise_memory_adapter.py', 'reprise_memory_mcp.py', 'memory_integration.py', 'memory_admin.py', 'coordinator_jobs.py'):
+            for name in ('apple_expert.py', 'apple_pilot.py', 'apple_pilot_service.py', 'apple_pilot_transport.py', 'orchestrator_memory.py', 'orchestrator_memory_service.py', 'reprise_memory_adapter.py', 'reprise_memory_mcp.py', 'memory_integration.py', 'memory_admin.py', 'coordinator_jobs.py', 'coordinator_local.py'):
                 self.assertTrue((root / name).is_file())
                 self.assertEqual(manifest['files'][name], hashlib.sha256((root / name).read_bytes()).hexdigest())
                 self.assertEqual((root / name).read_bytes(), (SOURCE / name).read_bytes())

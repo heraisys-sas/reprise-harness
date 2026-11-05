@@ -12,6 +12,7 @@ from pathlib import Path
 import apple_pilot
 import apple_pilot_transport
 import coordinator_jobs
+import coordinator_local
 import orchestrator_memory
 import orchestrator_memory_service
 
@@ -51,7 +52,7 @@ class _Backend:
 class Service:
     """Single scoped session; the writer callback must be thread-safe."""
     def __init__(self, state, emit, *, memory_factory=orchestrator_memory.Memory,
-                 backend_factory=apple_pilot_transport.LocalFM, jobs_factory=coordinator_jobs.Jobs):
+                 backend_factory=apple_pilot_transport.LocalFM, jobs_factory=coordinator_jobs.Jobs, local_factory=coordinator_local.LocalExecution):
         self.state = Path(state)
         if not self.state.is_absolute():
             raise ValueError('absolute state path required')
@@ -59,6 +60,9 @@ class Service:
         self.memory_factory = memory_factory
         self.backend_factory = backend_factory
         self.jobs_factory = jobs_factory
+        self.local_factory = local_factory
+        self.local_plans = {}
+        self.local_runs = {}
         self.lock = threading.Lock()
         self.ids = set()
         self.pilot = None
@@ -95,6 +99,11 @@ class Service:
             'memory_bind': {'id', 'op', 'enabled', 'project_id'},
             'memory_call': {'id', 'op', 'request'},
             'job_consent_context': {'id', 'op', 'enabled', 'project_id', 'work_id'},
+            'job_authorize_local': {'id', 'op', 'enabled', 'project_id', 'work_id', 'operation_id',
+                'authorization_id', 'expected_revision', 'expected_proposal_sha256', 'expected_context_sha256'},
+            'job_local_plan': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'max_seconds'},
+            'job_local_start': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'run_id', 'expected_revision', 'expected_manifest_sha256'},
+            'job_local_stop': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'run_id'},
             'job_authorize': {'id', 'op', 'enabled', 'project_id', 'work_id', 'operation_id',
                 'authorization_id', 'expected_revision', 'expected_proposal_sha256', 'expected_context_sha256'},
             'job_prepare': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'proposal'},
@@ -110,7 +119,7 @@ class Service:
             self._reply(ident, 'error')
 
     def _dispatch(self, ident, op, request):
-        if op in ('job_prepare', 'job_recover', 'job_revise', 'job_consent_context', 'job_authorize'):
+        if op in ('job_prepare', 'job_recover', 'job_revise', 'job_consent_context', 'job_authorize', 'job_authorize_local', 'job_local_plan', 'job_local_start', 'job_local_stop'):
             if request.get('enabled') is not True:
                 self._reply(ident, 'not_enabled')
                 return
@@ -302,7 +311,7 @@ class Service:
                 with self.lock:
                     self.consent_binding = result
                 response = {'status': 'finished', **result}
-            elif op == 'job_authorize':
+            elif op in ('job_authorize', 'job_authorize_local'):
                 with self.lock:
                     binding = copy.deepcopy(self.consent_binding)
                 if (not binding or binding['context']['project_id'] != project
@@ -312,11 +321,60 @@ class Service:
                 result = jobs.consent(project, operation, authorization_id=request['authorization_id'],
                     expected_revision=request['expected_revision'],
                     expected_proposal_sha256=request['expected_proposal_sha256'],
-                    expected_context_sha256=request['expected_context_sha256'], host_context=binding['context'])
+                    expected_context_sha256=request['expected_context_sha256'], host_context=binding['context'],
+                    **({'backend': 'foundation-models'} if op == 'job_authorize_local' else {}))
+            elif op == 'job_local_plan':
+                plan = self.local_factory(jobs).plan(project, operation, request['max_seconds'])
+                with self.lock: self.local_plans[(project, operation)] = plan
+                response = {'status': 'finished', 'local_plan': plan}
+            elif op == 'job_local_start':
+                run = _uuid(request['run_id'])
+                existing = jobs.recover(project, operation)
+                if existing and existing.get('local_execution'):
+                    execution = existing['local_execution']
+                    if execution['run_id'] != run or execution['manifest_sha256'] != request['expected_manifest_sha256']:
+                        raise ValueError('Execution identity conflict')
+                    with self.lock: active = self.local_runs.get((project, operation))
+                    result = self.local_factory(jobs).recover(project, operation, active=bool(active and active[2].is_alive()))
+                    self.emit({'id': ident, 'status': 'finished', 'job': result})
+                    return
+                with self.lock: plan = copy.deepcopy(self.local_plans.get((project, operation)))
+                if not plan or plan['manifest_sha256'] != request['expected_manifest_sha256']:
+                    raise ValueError('Execution manifest mismatch')
+                # Re-read helper/context without invoking it; never accept a client-supplied manifest.
+                fresh = self.local_factory(jobs).plan(project, operation, plan['manifest']['max_seconds'])
+                if fresh != plan: raise ValueError('Execution manifest mismatch')
+                result, created = jobs.reserve_local(project, operation, run_id=run,
+                    expected_revision=request['expected_revision'], manifest=plan['manifest'])
+                if created:
+                    control = coordinator_local.Control()
+                    thread = threading.Thread(target=self._local_run, args=(project, operation, run, control), daemon=True)
+                    with self.lock:
+                        # Registration and start are atomic with closing. A start
+                        # already preparing may not escape shutdown's snapshot.
+                        if self.job_closing:
+                            result = jobs.local_update(project, operation, run, stop=True, stage='indeterminate')
+                        else:
+                            self.local_runs[(project, operation)] = (run, control, thread)
+                            thread.start()
+            elif op == 'job_local_stop':
+                run = _uuid(request['run_id'])
+                with self.lock: active = self.local_runs.get((project, operation))
+                if active and active[0] == run and active[2].is_alive():
+                    with active[1].lock:
+                        result = jobs.local_update(project, operation, run, stop=True)
+                        active[1].cancelled.set()
+                else:
+                    result = jobs.local_update(project, operation, run, stop=True)
+                    result = self.local_factory(jobs).recover(project, operation)
             elif op == 'job_prepare':
                 result = jobs.prepare_proposal(project, operation, request['proposal'])
             elif op == 'job_recover':
                 result = jobs.recover(project, operation)
+                if result and result.get('local_execution'):
+                    with self.lock: active = self.local_runs.get((project, operation))
+                    result = self.local_factory(jobs).recover(project, operation,
+                        active=bool(active and active[2].is_alive()))
                 if result is None:
                     response = {'status': 'not_found'}
                     result = None
@@ -325,13 +383,13 @@ class Service:
             else:
                 result = jobs.revise(project, operation, request['proposal'],
                                      expected_revision=request['expected_revision'])
-            if op != 'job_consent_context' and (op != 'job_recover' or result is not None):
+            if op not in ('job_consent_context', 'job_local_plan') and (op != 'job_recover' or result is not None):
                 response = {'status': 'finished', 'job': result}
         except coordinator_jobs.WriteUncertainError:
             response = {'status': 'write_uncertain', 'effect': 'indeterminate'}
         except ValueError as exc:
             message = str(exc)
-            if op in ('job_authorize', 'job_consent_context'):
+            if op in ('job_authorize', 'job_authorize_local', 'job_consent_context', 'job_local_plan', 'job_local_start', 'job_local_stop'):
                 statuses = {'Revision conflict': 'revision_conflict', 'Mission locked': 'mission_locked',
                     'Authorization conflict': 'authorization_conflict', 'Clarification required': 'clarification_required',
                     'Host context changed': 'host_context_changed', 'Host context unavailable': 'host_context_unavailable',
@@ -346,7 +404,7 @@ class Service:
             else:
                 status = 'invalid_proposal'
             response = {'status': status}
-            if validation_only or op in ('job_authorize', 'job_consent_context'):
+            if validation_only or op in ('job_authorize', 'job_authorize_local', 'job_consent_context', 'job_local_plan'):
                 response['effect'] = 'not_admitted'
         except Exception:
             response = {'status': 'job_unavailable'}
@@ -357,6 +415,13 @@ class Service:
         finally:
             with self.lock:
                 self.job_worker = None
+
+    def _local_run(self, project, operation, run, control):
+        try:
+            self.local_factory(self.jobs_factory(self.state)).run(project, operation, run, control)
+        except Exception:
+            # A failed owner is observable by recovery; never replace it with a new run.
+            pass
 
     def shutdown(self, timeout=70):
         deadline = time.monotonic() + timeout
@@ -371,12 +436,15 @@ class Service:
             worker = self.worker
             memory_worker = self.memory_worker
             job_worker = self.job_worker
-        for pending in (worker, memory_worker, job_worker):
+            local_runs = list(self.local_runs.values())
+        for _, control, _ in local_runs:
+            with control.lock: control.cancelled.set()
+        for pending in (worker, memory_worker, job_worker, *(x[2] for x in local_runs)):
             if pending:
                 pending.join(timeout=max(0, deadline - time.monotonic()))
         return (worker is None or not worker.is_alive()) and (
             memory_worker is None or not memory_worker.is_alive()) and (
-            job_worker is None or not job_worker.is_alive()) and not self.poisoned
+            job_worker is None or not job_worker.is_alive()) and all(not x[2].is_alive() for x in local_runs) and not self.poisoned
 
 
 def serve(input_stream, output_stream, state, *, memory_factory=orchestrator_memory.Memory,

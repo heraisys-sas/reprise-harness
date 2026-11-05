@@ -9,6 +9,85 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(os.uname().sysname == 'Darwin', 'requires macOS Swift')
 class ApplePilotUISmokeTests(unittest.TestCase):
+    def test_local_start_journal_recovers_exact_run_without_resubmission(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp); fake=root/'service.py'
+            fake.write_text("""import json,sys,hashlib,os
+from pathlib import Path
+state=Path(sys.argv[sys.argv.index('--state')+1]); saved=state/'job.json'
+for line in sys.stdin:
+ x=json.loads(line); op=x['op']
+ with (state/'ops').open('a') as f:f.write(op+'\\n')
+ if op=='job_prepare':
+  row={'status':'preparation','project_id':x['project_id'],'operation_id':x['operation_id'],'revision':0,
+       'proposal':x['proposal'],'proposal_sha256':hashlib.sha256(json.dumps(x['proposal'],sort_keys=True,separators=(',',':')).encode()).hexdigest()}
+  saved.write_text(json.dumps(row)); out={'job':row}
+ elif op=='job_consent_context':
+  out={'context':{'project_id':x['project_id'],'work_id':x['work_id'],'project_root':'/test','execution_verification':'not_performed'},'context_sha256':'a'*64}
+ elif op=='job_authorize_local':
+  row=json.loads(saved.read_text());row.update(status='consented',revision=1,request_key='local-key',authorization_kind='operator_consent_v1',
+    operator_authorization={'authorization_id':x['authorization_id'],'backend':'foundation-models','context_sha256':'a'*64,'execution_authorized':False,'host_context':{'work_id':x['work_id']}})
+  saved.write_text(json.dumps(row));out={'job':row}
+ elif op=='job_local_plan':
+  row=json.loads(saved.read_text());manifest={'project_id':x['project_id'],'work_id':row['operator_authorization']['host_context']['work_id'],
+      'request_key':'local-key','backend':'foundation-models','context_sha256':'a'*64}
+  (state/'plan.json').write_text(json.dumps(manifest));out={'local_plan':{'manifest':manifest,'manifest_sha256':'b'*64}}
+ elif op=='job_local_start':
+  row=json.loads(saved.read_text());row.update(status='local_running',revision=2,local_execution={'run_id':x['run_id'],
+      'manifest_sha256':'b'*64,'manifest':json.loads((state/'plan.json').read_text()),'stage':'running'})
+  saved.write_text(json.dumps(row));os._exit(0)
+ elif op=='job_recover':
+  row=json.loads(saved.read_text())
+  if not (state/'wrong').exists():(state/'wrong').touch();row['local_execution']['run_id']='foreign'
+  else:row.update(status='local_recorded',revision=3);row['local_execution'].update(stage='recorded',receipt={'status':'finished','response':'local ui result'})
+  out={'job':row}
+ elif op=='close':print(json.dumps({'id':x['id'],'status':'closed'}),flush=True);continue
+ else:raise AssertionError(op)
+ print(json.dumps({'id':x['id'],'status':'finished',**out}),flush=True)
+""")
+            swift=root/'LocalUI.swift'
+            swift.write_text('''import Foundation
+@main struct LocalUI {
+ @MainActor static func main() async {
+  let a=CommandLine.arguments,d=UserDefaults(suiteName:"test.local.ui."+UUID().uuidString)!
+  func make()->ApplePilotUI { ApplePilotUI(python:URL(fileURLWithPath:a[1]),service:URL(fileURLWithPath:a[2]),state:URL(fileURLWithPath:a[3]),requestTimeout:2,preferences:d) }
+  func wait(_ p:ApplePilotUI) async {for _ in 0..<150{if !p.preparationBusy{break};try? await Task.sleep(nanoseconds:20_000_000)}}
+  let p=make();p.enabled=true;p.projectID="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";p.workID="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+  p.newPreparation();let operation=p.preparationOperationID;p.proposalObjective="objective";p.proposalAcceptance="proof"
+  p.savePreparation();await wait(p);p.loadConsentContext();await wait(p)
+  p.consentBackend="foundation-models";p.authorizePreparation();await wait(p)
+  precondition(!p.preparationUncertain && p.preparationJob["status"] as? String == "consented")
+  p.planLocalExecution();await wait(p);precondition(p.canStartLocal)
+  p.startLocalExecution();await wait(p);precondition(p.preparationUncertain)
+  let q=make();q.enabled=true;precondition(q.preparationUncertain && q.preparationOperationID==operation)
+  q.loadPreparation();await wait(q);precondition(q.preparationUncertain,"foreign run must not clear journal")
+  q.loadPreparation();await wait(q);precondition(!q.preparationUncertain)
+  precondition(q.preparationJob["status"] as? String == "local_recorded")
+  precondition((q.preparationJob["local_execution"] as? [String:Any])?["receipt"] is [String:Any])
+  precondition(!q.canStartLocal);q.startLocalExecution();q.close()
+ }
+}
+''')
+            binary=root/'local-ui'
+            subprocess.run(['swiftc','-parse-as-library','-module-cache-path',str(root/'cache'),str(ROOT/'swift'/'ApplePilotUI.swift'),str(swift),'-o',str(binary)],check=True)
+            subprocess.run([str(binary),'/usr/bin/python3',str(fake),str(root)],check=True,timeout=12)
+            self.assertEqual((root/'ops').read_text().splitlines().count('job_local_start'),1)
+
+    def test_native_local_helper_contract_and_self_deadline_without_inference(self):
+        # Compile only the real timer/contract prefix, before any model API call.
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            prefix=(ROOT/'swift'/'FoundationExplain.swift').read_text().split('// Explains recent Reprise activity')[0]
+            source=root/'Deadline.swift'; source.write_text(prefix+'\nThread.sleep(forTimeInterval: 10)\n')
+            binary=root/'deadline'
+            subprocess.run(['swiftc','-module-cache-path',str(root/'cache'),str(source),'-o',str(binary)],check=True)
+            contract=subprocess.run([str(binary),'--supervision-contract'],capture_output=True,text=True,check=True)
+            import json
+            self.assertEqual(json.loads(contract.stdout)['contract'],'foundation-explain-v1-self-deadline')
+            expired=subprocess.run([str(binary),'--deadline-seconds','1'],capture_output=True,text=True,timeout=3)
+            self.assertEqual(expired.returncode,124)
+            self.assertEqual(expired.stdout, '')  # expiry never blocks behind an output pipe/lock
+
     def test_terminal_receipt_process_boundaries_and_sync_failures(self):
         # Exercise the production journal directly, with a fresh executable
         # process for every write/recovery boundary and no UserDefaults.
