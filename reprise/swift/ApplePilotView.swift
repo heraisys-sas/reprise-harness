@@ -8,7 +8,7 @@ struct ApplePilotView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Pilote Apple expérimental").font(.headline)
-            Text("Pilote expérimental. Vous pouvez enregistrer et corriger une préparation locale ; cette interface ne choisit aucun backend ou droit, ne crée aucune autorisation et ne déclenche aucun envoi.")
+            Text("Pilote expérimental. Préparez et clarifiez la demande sans exécution. Après votre consentement explicite, vous pouvez relire le manifeste et autoriser une exécution Apple locale, sans repli.")
                 .foregroundStyle(.secondary)
             Toggle("Activer le pilote", isOn: $pilot.enabled)
                 .disabled(!pilot.canSelect || pilot.hostRunning)
@@ -95,9 +95,9 @@ struct ApplePilotView: View {
     }
 
     private var preparationPanel: some View {
-        GroupBox("Préparation et consentement — sans exécution") {
+        GroupBox("Préparation, consentement et exécution locale") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Le brouillon reste distinct d’une mission admise. Les questions sont conservées comme points à clarifier.")
+                Text("La préparation et le consentement seuls ne lancent aucune exécution. Résolvez les questions avant de consentir, puis validez le manifeste pour exécuter localement.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("Nouvelle préparation") { pilot.newPreparation() }
@@ -165,7 +165,12 @@ struct ApplePilotView: View {
                         }
                         if let receipt = execution["receipt"] as? [String: Any] {
                             Text("Reçu : \(receipt["run_id"] as? String ?? "") · \(receipt["status"] as? String ?? "inconnu")").font(.caption).textSelection(.enabled)
-                            if let answer = receipt["response"] as? String { Text(answer).textSelection(.enabled) }
+                            if let answer = receipt["response"] as? String {
+                                Text("Réponse générée").font(.caption.bold())
+                                Text(answer).textSelection(.enabled)
+                                Text("Cette réponse ne prouve pas la réussite de l’objectif. Elle n’est pas enregistrée comme fait ou checkpoint dans la mémoire partagée.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }

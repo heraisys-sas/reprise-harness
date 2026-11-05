@@ -7,6 +7,19 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class ApplePilotViewCopyTests(unittest.TestCase):
+    def test_local_execution_copy_distinguishes_consent_response_and_memory(self):
+        view = (ROOT / 'swift' / 'ApplePilotView.swift').read_text()
+        self.assertNotIn('cette interface ne choisit aucun backend ou droit', view)
+        self.assertNotIn('Préparation et consentement — sans exécution', view)
+        self.assertIn('La préparation et le consentement seuls ne lancent aucune exécution.', view)
+        self.assertIn('autoriser une exécution Apple locale, sans repli.', view)
+        receipt = view.split('if let answer = receipt["response"] as? String', 1)[1]
+        self.assertIn('Réponse générée', receipt)
+        self.assertIn('ne prouve pas la réussite de l’objectif', receipt)
+        self.assertIn('pas enregistrée comme fait ou checkpoint dans la mémoire partagée', receipt)
+
+
 @unittest.skipUnless(os.uname().sysname == 'Darwin', 'requires macOS Swift')
 class ApplePilotUISmokeTests(unittest.TestCase):
     def test_local_start_journal_recovers_exact_run_without_resubmission(self):
