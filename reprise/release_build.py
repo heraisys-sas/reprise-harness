@@ -12,6 +12,12 @@ from yaml_contract import YAML_FILES, yaml_hashes
 ROOT = Path(__file__).resolve().parent
 
 
+def docs_directory(root):
+    root = Path(root)
+    staged = root / 'docs'
+    return staged if staged.is_dir() else root.parent / 'docs'
+
+
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -27,7 +33,7 @@ def inputs(root):
     if not vendor.is_symlink() and not yaml.is_symlink():
         for name, value in yaml_hashes(root).items():
             files[f'vendor/yaml/{name}'] = value
-    docs = root.parent / 'docs'
+    docs = docs_directory(root)
     if docs.is_dir():
         for p in sorted(docs.rglob('*.md')):
             files[f'docs/{p.relative_to(docs)}'] = sha(p)
@@ -36,6 +42,14 @@ def inputs(root):
 
 def identity(files):
     return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
+
+
+def input_path(root, name):
+    """Resolve declared build inputs from the app tree or adjacent repo docs."""
+    path = root / name
+    if name.startswith('docs/'):
+        return docs_directory(root) / name.removeprefix('docs/')
+    return path
 
 
 def bundle_files(app):
@@ -93,7 +107,7 @@ def build(archive, root=ROOT):
         for name in source:
             target = stage / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(root / name, target)
+            shutil.copy2(input_path(root, name), target)
         if inputs(stage) != source:
             raise ValueError('Sources modifiées pendant la copie ; recommencer.')
         subprocess.run(['/bin/sh', str(stage / 'native-install'), '--runtime-archive', str(archive)], check=True)
