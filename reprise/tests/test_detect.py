@@ -53,6 +53,37 @@ class QuotaCompletionTests(unittest.TestCase):
         self.assertEqual(self.inspect([{'type': 'task_complete', 'completed_at': 1000,
             'error': {'codex_error_info': 'other'}}])['state'], 'failed')
 
+class GoalModeTests(unittest.TestCase):
+    def inspect(self, events, **kwargs):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'rollout.jsonl'
+            path.write_text('\n'.join(json.dumps({'type': 'event_msg', 'payload': e}) for e in events))
+            return module.inspect(path, **kwargs)
+
+    def test_goal_updates_recognized_and_quota_confirmed(self):
+        events = [
+            {'type': 'task_started', 'started_at': 1},
+            {'type': 'token_count', 'rate_limits': {'primary': {'used_percent': 100, 'window_minutes': 300, 'resets_at': 3000},
+                                                    'secondary': {'used_percent': 10, 'window_minutes': 10080, 'resets_at': 90000}}},
+            {'type': 'thread_goal_updated', 'goal': 'objectif en cours'},
+            {'type': 'task_complete', 'turn_id': 'turn', 'completed_at': 1000,
+             'error': {'codex_error_info': 'usage_limit_exceeded', 'message': 'quota 5h'}},
+        ]
+        details = {}
+        value = self.inspect(events, now=2000, details=details)
+        self.assertEqual(value['state'], 'quota_confirmed')
+        self.assertEqual(value['retry_at'], 3120)
+        self.assertEqual(value['interrupted_at'], 1000)
+        self.assertEqual(details['coverage'], 'recognized')
+        self.assertEqual(details['unknown_events'], 0)
+
+    def test_goal_updates_alone_keep_session_recognized(self):
+        details = {}
+        self.assertIsNone(self.inspect([{'type': 'thread_goal_updated', 'goal': 'objectif en cours'}], now=2000, details=details))
+        self.assertEqual(details['coverage'], 'recognized')
+        self.assertEqual(details['unknown_events'], 0)
+
+
 class HarnessDetectionTests(unittest.TestCase):
     def test_output_limit_is_distinct_from_provider_quota(self):
         result = module.harness_status({}, {'kind': 'max-tokens', 'seq': 6598,
