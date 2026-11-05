@@ -100,7 +100,7 @@ class LocalExecution:
             raise ValueError('Host context changed')
         path, _, sha = _helper(self.helper)
         _probe(path)
-        manifest = {'version': 1, 'backend': 'foundation-models', 'adapter': 'native-foundation-explain',
+        manifest = {'version': 1, 'prompt_format': 'operator-question-v2', 'backend': 'foundation-models', 'adapter': 'native-foundation-explain',
             'mode': 'expertise', 'project_id': project, 'work_id': context['context']['work_id'],
             'project_root': context['context']['project_root'], 'job_id': row['job_id'],
             'request_key': row['request_key'], 'consent_id': consent['authorization_id'],
@@ -154,9 +154,20 @@ class LocalExecution:
         execution = row['local_execution']; manifest = execution['manifest']
         binding = {key: manifest[key] for key in ('project_id', 'work_id', 'job_id', 'request_key', 'project_root', 'backend', 'mode')}
         binding.update(socket='owned-local-process', workspace_write=False)
+        # Missing format is the historical byte representation, including its question.
+        # Recovery must reconstruct that identity, never reinterpret or reissue it.
+        version = manifest.get('prompt_format')
+        if version is None:
+            model_input = {'facts': jobs_module._json(row['proposal']),
+                           'question': 'Réponds à l’objectif décrit dans ces données et précise les limites de ta réponse.'}
+        elif version == 'operator-question-v2':
+            model_input = {'prompt_format': version,
+                           'facts': jobs_module._json({key: value for key, value in row['proposal'].items() if key != 'objective'}),
+                           'question': row['proposal']['objective']}
+        else:
+            raise ValueError('Unsupported local prompt format')
         payload = {'backend': 'foundation-models', 'mode': 'expertise', 'manifest': manifest,
-                   'input': {'facts': jobs_module._json(row['proposal']),
-                             'question': 'Réponds à l’objectif décrit dans ces données et précise les limites de ta réponse.'}}
+                   'input': model_input}
         return execution['run_id'], manifest, binding, payload
 
     def recover(self, project, operation, *, active=False):

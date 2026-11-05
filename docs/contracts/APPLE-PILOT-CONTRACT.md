@@ -178,3 +178,22 @@ arrêt pendant exécution, échéance après mort du propriétaire, course de
 fermeture, verrous POSIX, perte de projection et récupération GUI. Ces tests ne
 constituent pas une preuve E2E avec le modèle Apple réel ; celle-ci reste un essai
 opérateur distinct, explicitement autorisé, sans publication automatique.
+
+### Format de la demande locale et lecture historique
+
+Les nouveaux manifestes portent `prompt_format: operator-question-v2`. Ce champ
+participe au hash du manifeste et à l’identité du payload admis. L’objectif de la
+proposition consentie est la demande `operator_question` ; les autres champs
+(contexte, critères, contraintes déclarées) restent des données non fiables.
+Le helper les encode dans une enveloppe JSON distincte et ne demande aucune
+explication supplémentaire contradictoire avec l’objectif. Cette séparation
+n’est pas une preuve de résistance du modèle à toute injection ; les permissions,
+les outils désactivés et l’absence de repli restent imposés hors du modèle.
+
+Un manifeste sans `prompt_format` conserve exactement le payload et le format
+historiques pour la lecture et la vérification de son reçu. Il n’est ni migré ni
+réémis. Une version inconnue est refusée. La récupération et un nouvel appel du
+même run admis ne lancent aucune génération ; une modification du format exige
+une nouvelle préparation et un nouveau consentement explicites, jamais une
+relance automatique d’un état incertain. Un reçu `finished` atteste une réponse
+valide du helper, pas la satisfaction des critères métier ni l’absence de refus.
