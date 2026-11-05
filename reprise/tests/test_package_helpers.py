@@ -18,6 +18,14 @@ SOURCE = Path(__file__).parents[1]
 
 
 class PackageHelpersTests(unittest.TestCase):
+    def test_doc_asset_resolves_release_stage_docs(self):
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / 'source'
+            staged = source / 'docs/contracts/contract.md'
+            staged.parent.mkdir(parents=True)
+            staged.write_text('staged contract')
+            self.assertEqual(package_helpers.doc_asset(source, 'docs/contracts/contract.md'), staged)
+
     def test_yaml_package_is_closed_and_refuses_missing_or_symlinked_files(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
