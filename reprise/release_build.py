@@ -28,6 +28,11 @@ def inputs(root):
     files = {p.name: sha(p) for p in sorted(root.iterdir())
              if not p.is_symlink() and p.is_file()
              and (p.suffix in suffixes or p.name in ('VERSION', 'native-install', 'reprise'))}
+    swift = root / 'swift'
+    if swift.is_dir() and not swift.is_symlink():
+        for path in sorted(swift.glob('*.swift')):
+            if path.is_file() and not path.is_symlink():
+                files[f'swift/{path.name}'] = sha(path)
     vendor = root / 'vendor'
     yaml = vendor / 'yaml'
     if not vendor.is_symlink() and not yaml.is_symlink():
