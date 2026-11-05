@@ -27,6 +27,10 @@ def inputs(root):
     if not vendor.is_symlink() and not yaml.is_symlink():
         for name, value in yaml_hashes(root).items():
             files[f'vendor/yaml/{name}'] = value
+    swift = root / 'swift'
+    if not swift.is_symlink() and swift.is_dir():
+        for p in sorted(swift.rglob('*.swift')):
+            files[f'swift/{p.relative_to(swift)}'] = sha(p)
     docs = root.parent / 'docs'
     if docs.is_dir():
         for p in sorted(docs.rglob('*.md')):
@@ -91,9 +95,12 @@ def build(archive, root=ROOT):
         stage = Path(folder) / 'source'
         stage.mkdir()
         for name in source:
-            target = stage / name
+            # docs/ vit à la racine du dépôt : inputs() la collecte et la relit
+            # via root.parent — le staging la place au même niveau relatif.
+            in_docs = name.startswith('docs/')
+            target = (stage.parent if in_docs else stage) / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(root / name, target)
+            shutil.copy2((root.parent if in_docs else root) / name, target)
         if inputs(stage) != source:
             raise ValueError('Sources modifiées pendant la copie ; recommencer.')
         subprocess.run(['/bin/sh', str(stage / 'native-install'), '--runtime-archive', str(archive)], check=True)
