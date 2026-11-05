@@ -36,7 +36,10 @@ DOCS = (
 )
 
 def doc_asset(source, rel):
-    """Documentation embarquée : à plat dans un export partagé, sinon à la racine du dépôt."""
+    """Documentation embarquée depuis un stage, un export partagé ou la racine du dépôt."""
+    staged = source / rel
+    if staged.is_file():
+        return staged
     flat = source / rel.rsplit('/', 1)[-1]
     return flat if flat.is_file() else source.parent / rel
 
