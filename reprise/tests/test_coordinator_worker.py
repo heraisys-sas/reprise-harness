@@ -104,6 +104,18 @@ class WorkerTests(unittest.TestCase):
     def worker(self, bridge=None, gate=None):
         return Worker(self.store, bridge or Bridge(self.repo), gate=gate)
 
+    def test_consented_is_refused_before_any_bridge_or_payload_calculation(self):
+        operation = uid()
+        row = self.store.prepare_proposal(self.project, operation, PROPOSAL)
+        context = self.store.consent_context(self.project, self.work)
+        row = self.store.consent(self.project, operation, authorization_id=uid(), expected_revision=0,
+            expected_proposal_sha256=row['proposal_sha256'], host_context=context['context'],
+            expected_context_sha256=context['context_sha256'])
+        with patch('coordinator_worker._payload', side_effect=AssertionError('payload forbidden')):
+            worker = Worker(self.store, object(), gate=object())
+            self.assertEqual(worker.run_once(self.project, row['job_id']),
+                {'status': 'execution_not_authorized', 'dispatched': False})
+
     def test_no_verifier_means_no_dispatch_or_attempt(self):
         bridge=Bridge(self.repo)
         result=self.worker(bridge).run_once(self.project,self.job['job_id'])

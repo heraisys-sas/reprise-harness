@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
+import sys
 import time
 import uuid
 
@@ -238,6 +240,76 @@ class Jobs:
             if folder is not None: os.close(folder)
             os.close(root)
 
+    def consent_context(self, project_id, work_id):
+        """Read the existing registry only; work is the explicit operator selection.
+
+        This binding is not evidence that a model, billing or execution is available.
+        The probe lives in a separate process so SQLite lock ownership is preserved.
+        """
+        project, work = _uuid(project_id), _uuid(work_id)
+        try:
+            response = subprocess.run([sys.executable, '-I', '-c', orchestrator_memory._REGISTRY_PROBE],
+                input=_json({'state': str(self.state), 'project_id': project, 'include_root': True}),
+                text=True, capture_output=True, timeout=5, check=False)
+            found = json.loads(response.stdout)
+            if (response.returncode != 0 or not isinstance(found, dict)
+                    or set(found) != {'status', 'root_path', 'temp_store'}
+                    or found['status'] != 'ok' or found['temp_store'] != 2):
+                raise ValueError('Host context unavailable')
+            root = Path(found['root_path']).resolve(strict=True)
+            if not root.is_dir(): raise ValueError('Host context unavailable')
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, TypeError) as exc:
+            raise ValueError('Host context unavailable') from exc
+        context = {'schema': 1, 'source': 'operator_gui', 'project_id': project,
+                   'work_id': work, 'project_root': str(root), 'execution_verification': 'not_performed'}
+        return {'context': context, 'context_sha256': hashlib.sha256(_json(context).encode()).hexdigest()}
+
+    def consent(self, project_id, operation_id, *, authorization_id, expected_revision,
+                expected_proposal_sha256, host_context, expected_context_sha256):
+        """Record operator consent only, atomically and without an execution authority."""
+        project, operation, authorization = _uuid(project_id), _uuid(operation_id), _uuid(authorization_id)
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError('Invalid expected revision')
+        for digest in (expected_proposal_sha256, expected_context_sha256):
+            if not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest):
+                raise ValueError('Invalid consent identity')
+        if (not isinstance(host_context, dict) or set(host_context) !=
+                {'schema', 'source', 'project_id', 'work_id', 'project_root', 'execution_verification'}):
+            raise ValueError('Invalid host context')
+        current = self.consent_context(project, host_context['work_id'])
+        if current['context'] != host_context or current['context_sha256'] != expected_context_sha256:
+            raise ValueError('Host context changed')
+        identity = {'authorization_id': authorization, 'preparation_revision': expected_revision,
+                    'proposal_sha256': expected_proposal_sha256, 'context_sha256': expected_context_sha256,
+                    'host_context': current['context'], 'backend': 'codex', 'mode': 'expertise',
+                    'billing_verification': 'not_performed', 'execution_authorized': False}
+        digest = hashlib.sha256(_json(identity).encode()).hexdigest()
+        with self._store(write=True) as data:
+            for row in data['jobs']:
+                if row['project_id'] != project or row.get('operation_id') != operation: continue
+                previous = row.get('operator_authorization')
+                if previous and previous['authorization_id'] == authorization:
+                    if previous['authorization_sha256'] != digest:
+                        raise ValueError('Authorization conflict')
+                    return self._public(row)
+                if row['status'] != 'preparation':
+                    raise ValueError('Mission locked')
+                if row.get('revision', 0) != expected_revision:
+                    raise ValueError('Revision conflict')
+                proposal_digest = hashlib.sha256(_json(row['proposal']).encode()).hexdigest()
+                if proposal_digest != expected_proposal_sha256:
+                    raise ValueError('Proposal identity changed')
+                if row['proposal']['questions']:
+                    raise ValueError('Clarification required')
+                authorization_record = dict(identity, authorization_sha256=digest, authorized_at=time.time())
+                fingerprint = hashlib.sha256(_json({'proposal': row['proposal'],
+                    'operator_authorization': identity}).encode()).hexdigest()
+                row.update(status='consented', authority=None, authorization_kind='operator_consent_v1',
+                    operator_authorization=authorization_record, fingerprint=fingerprint,
+                    request_key=_request_key(project, operation, fingerprint), revision=expected_revision + 1)
+                return self._public(row)
+            raise ValueError('Job not found')
+
     def prepare(self, operation_id, proposal, *, authority, capability):
         """Persist an idempotent draft and key; never invoke any model, bridge or worker."""
         operation = _uuid(operation_id)
@@ -325,7 +397,10 @@ class Jobs:
                 'authority': item.get('authority'), 'revision': item.get('revision', 0),
                 'attempt_id': item.get('attempt_id'), 'result_receipt': None if legacy_recorded else item.get('result_receipt'),
                 'authorization_evidence': item.get('authorization_evidence'),
-                'dispatch_enabled': False}
+                'dispatch_enabled': False,
+                'proposal_sha256': hashlib.sha256(_json(item['proposal']).encode()).hexdigest(),
+                'authorization_kind': item.get('authorization_kind'),
+                'operator_authorization': item.get('operator_authorization')}
         if item.get('operation_id') is not None:
             result['operation_id'] = item['operation_id']
         return result

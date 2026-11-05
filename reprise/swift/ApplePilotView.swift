@@ -95,7 +95,7 @@ struct ApplePilotView: View {
     }
 
     private var preparationPanel: some View {
-        GroupBox("Préparation de mission — locale, sans autorisation ni envoi") {
+        GroupBox("Préparation et consentement — sans exécution") {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Le brouillon reste distinct d’une mission admise. Les questions sont conservées comme points à clarifier.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -131,6 +131,16 @@ struct ApplePilotView: View {
                     }
                     Text("Aucune requête : \(pilot.preparationJob["request_key"] is NSNull || pilot.preparationJob["request_key"] == nil ? "oui" : "non")")
                         .font(.caption)
+                }
+                if pilot.preparationJob["status"] as? String == "preparation" {
+                    Button("Valider le contexte sélectionné") { pilot.loadConsentContext() }
+                        .disabled(!pilot.enabled || pilot.projectID.isEmpty || pilot.workID.isEmpty || pilot.preparationBusy || pilot.preparationUncertain)
+                    if let root = pilot.consentContext["project_root"] as? String {
+                        Text("Projet : \(root) · travail : \(pilot.workID)").font(.caption).textSelection(.enabled)
+                        Text("Consentement pour Codex, expertise sans écriture. Disponibilité, budget et facturation non vérifiés. Aucune exécution autorisée.").font(.caption)
+                        Button("Enregistrer mon consentement") { pilot.authorizePreparation() }
+                            .disabled(!pilot.canConsent)
+                    }
                 }
                 if let questions = pilot.preparationJob["proposal"] as? [String: Any],
                    let items = questions["questions"] as? [String], !items.isEmpty {

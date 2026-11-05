@@ -68,12 +68,16 @@ def run():
             if (not schema or schema[0] != 'table' or not required <= columns.keys()
                     or columns['id'][2].upper() != 'TEXT' or columns['id'][5] != 1):
                 return {'status': 'malformed'}
-            found = connection.execute('SELECT id FROM projects WHERE id=?', (request['project_id'],)).fetchall()
+            found = connection.execute('SELECT id,root_path FROM projects WHERE id=?', (request['project_id'],)).fetchall()
             current = os.stat('projects.sqlite', dir_fd=statefd, follow_symlinks=False)
             if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
                 return {'status': 'refused'}
             if len(found) != 1 or found[0][0] != request['project_id']:
                 return {'status': 'unknown'}
+            if request.get('include_root') is True:
+                root = Path(found[0][1]).resolve(strict=True)
+                if not root.is_dir(): return {'status': 'refused'}
+                return {'status': 'ok', 'root_path': str(root), 'temp_store': temp_store}
             return {'status': 'ok', 'temp_store': temp_store}
         finally:
             connection.close()

@@ -294,6 +294,81 @@ import Darwin
             subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True, timeout=8)
             self.assertEqual((root / 'ops').read_text().splitlines(), ['job_recover', 'close'])
 
+    def test_consent_journal_recovers_exact_authorization_after_lost_reply(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fake = root / 'service.py'
+            fake.write_text("""import hashlib, json, os, sys
+from pathlib import Path
+state=Path(sys.argv[sys.argv.index('--state')+1]); stored=state/'consent.json'
+for line in sys.stdin:
+ x=json.loads(line); op=x['op']
+ with (state/'ops').open('a') as log: log.write(op+'\\n')
+ if op=='job_prepare':
+  sha=hashlib.sha256(json.dumps(x['proposal'],sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
+  row={'status':'preparation','project_id':x['project_id'],'operation_id':x['operation_id'],
+       'request_key':None,'authority':None,'revision':0,'proposal':x['proposal'],'proposal_sha256':sha}
+  stored.write_text(json.dumps(row)); result={'job':row}
+ elif op=='job_consent_context':
+  result={'context':{'project_id':x['project_id'],'work_id':x['work_id'],'project_root':'/test',
+                    'execution_verification':'not_performed'},'context_sha256':'a'*64}
+ elif op=='job_authorize':
+  row=json.loads(stored.read_text()); row.update(status='consented',revision=1,
+   authorization_kind='operator_consent_v1',operator_authorization={
+    'authorization_id':x['authorization_id'],'context_sha256':x['expected_context_sha256'],
+    'execution_authorized':False,'host_context':{'work_id':x['work_id']}})
+  stored.write_text(json.dumps(row)); os._exit(0)
+ elif op=='job_recover':
+  row=json.loads(stored.read_text())
+  if not (state/'wrong-seen').exists():
+   (state/'wrong-seen').touch(); row['operator_authorization']['authorization_id']='wrong'
+  result={'job':row}
+ elif op=='close':
+  print(json.dumps({'id':x['id'],'status':'closed'}),flush=True); continue
+ else: raise AssertionError(op)
+ print(json.dumps({'id':x['id'],'status':'finished',**result}),flush=True)
+""")
+            swift = root / 'Consent.swift'
+            swift.write_text('''import Foundation
+@main struct ConsentRecovery {
+ @MainActor static func main() async {
+  let a=CommandLine.arguments
+  let d=UserDefaults(suiteName: "test.consent." + UUID().uuidString)!
+  func make() -> ApplePilotUI { ApplePilotUI(python:URL(fileURLWithPath:a[1]),service:URL(fileURLWithPath:a[2]),state:URL(fileURLWithPath:a[3]),requestTimeout:2,preferences:d) }
+  func wait(_ p:ApplePilotUI) async { for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds:20_000_000) } }
+  let p=make(); p.enabled=true
+  p.projectID="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; p.workID="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+  p.newPreparation(); let operation=p.preparationOperationID
+  p.proposalObjective="objective"; p.proposalAcceptance="proof"; p.savePreparation(); await wait(p)
+  precondition(!p.preparationUncertain && !p.canConsent)
+  p.loadConsentContext(); await wait(p); precondition(p.canConsent)
+  p.proposalQuestions="question"; precondition(!p.canConsent); p.proposalQuestions=""
+  let work=p.workID; p.workID="cccccccc-cccc-4ccc-8ccc-cccccccccccc"; precondition(!p.canConsent)
+  p.workID=work; p.loadConsentContext(); await wait(p); precondition(p.canConsent)
+  p.authorizePreparation(); await wait(p)
+  precondition(p.preparationUncertain)
+  let q=make(); q.enabled=true
+  precondition(q.preparationUncertain && q.preparationOperationID==operation)
+  q.loadPreparation(); await wait(q)
+  precondition(q.preparationUncertain, "foreign authorization must not resolve journal")
+  q.newPreparation(); precondition(q.preparationOperationID==operation)
+  q.loadPreparation(); await wait(q)
+  precondition(!q.preparationUncertain && q.preparationJob["status"] as? String == "consented")
+  precondition(!q.canConsent && !q.preparationCanEdit)
+  precondition(q.preparationStatus.contains("exécution pas encore disponible"))
+  q.close()
+ }
+}
+''')
+            binary = root / 'consent-recovery'
+            subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root/'cache'),
+                            str(ROOT/'swift'/'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
+            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True, timeout=10)
+            ops=(root/'ops').read_text().splitlines()
+            self.assertEqual(ops.count('job_authorize'), 1)
+            self.assertEqual(ops.count('job_recover'), 2)
+            self.assertTrue(set(ops) <= {'job_prepare','job_consent_context','job_authorize','job_recover','close'})
+
     def test_inflight_marker_survives_restart_without_ack_until_recovery(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

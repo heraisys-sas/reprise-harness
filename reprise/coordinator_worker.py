@@ -103,6 +103,8 @@ class Worker:
         job = self.jobs.get(project_id, job_id)
         if job is None:
             return {'status': 'not_found'}
+        if job['status'] == 'consented':
+            return {'status': 'execution_not_authorized', 'dispatched': False}
         if job['status'] == 'preparation':
             return {'status': 'preparation_not_authorized', 'dispatched': False}
         if job['status'] != 'draft':

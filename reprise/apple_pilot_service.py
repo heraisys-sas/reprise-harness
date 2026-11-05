@@ -71,6 +71,7 @@ class Service:
         self.memory_closing = False
         self.job_worker = None
         self.job_closing = False
+        self.consent_binding = None
 
     def _reply(self, ident, status, **values):
         self.emit({'id': ident, 'status': status, **values})
@@ -93,6 +94,9 @@ class Service:
             'close': {'id', 'op'},
             'memory_bind': {'id', 'op', 'enabled', 'project_id'},
             'memory_call': {'id', 'op', 'request'},
+            'job_consent_context': {'id', 'op', 'enabled', 'project_id', 'work_id'},
+            'job_authorize': {'id', 'op', 'enabled', 'project_id', 'work_id', 'operation_id',
+                'authorization_id', 'expected_revision', 'expected_proposal_sha256', 'expected_context_sha256'},
             'job_prepare': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'proposal'},
             'job_recover': {'id', 'op', 'enabled', 'project_id', 'operation_id'},
             'job_revise': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'proposal', 'expected_revision'},
@@ -106,16 +110,16 @@ class Service:
             self._reply(ident, 'error')
 
     def _dispatch(self, ident, op, request):
-        if op in ('job_prepare', 'job_recover', 'job_revise'):
+        if op in ('job_prepare', 'job_recover', 'job_revise', 'job_consent_context', 'job_authorize'):
             if request.get('enabled') is not True:
                 self._reply(ident, 'not_enabled')
                 return
             project = _uuid(request['project_id'])
-            operation = _uuid(request['operation_id'])
+            operation = _uuid(request['operation_id']) if op != 'job_consent_context' else None
             if op == 'job_revise' and (type(request['expected_revision']) is not int or request['expected_revision'] < 0):
                 self._reply(ident, 'invalid_request')
                 return
-            if op != 'job_recover' and not isinstance(request.get('proposal'), dict):
+            if op in ('job_prepare', 'job_revise') and not isinstance(request.get('proposal'), dict):
                 self._reply(ident, 'invalid_request')
                 return
             with self.lock:
@@ -285,7 +289,7 @@ class Service:
                 self.memory_worker = None
 
     def _job_call(self, ident, op, project, operation, request):
-        validation_only = op != 'job_recover'
+        validation_only = op in ('job_prepare', 'job_revise')
         try:
             if validation_only:
                 coordinator_jobs._proposal(request['proposal'])
@@ -293,7 +297,23 @@ class Service:
                     raise ValueError('Invalid expected revision')
             validation_only = False
             jobs = self.jobs_factory(self.state)
-            if op == 'job_prepare':
+            if op == 'job_consent_context':
+                result = jobs.consent_context(project, _uuid(request['work_id']))
+                with self.lock:
+                    self.consent_binding = result
+                response = {'status': 'finished', **result}
+            elif op == 'job_authorize':
+                with self.lock:
+                    binding = copy.deepcopy(self.consent_binding)
+                if (not binding or binding['context']['project_id'] != project
+                        or binding['context']['work_id'] != _uuid(request['work_id'])
+                        or binding['context_sha256'] != request['expected_context_sha256']):
+                    raise ValueError('Host context changed')
+                result = jobs.consent(project, operation, authorization_id=request['authorization_id'],
+                    expected_revision=request['expected_revision'],
+                    expected_proposal_sha256=request['expected_proposal_sha256'],
+                    expected_context_sha256=request['expected_context_sha256'], host_context=binding['context'])
+            elif op == 'job_prepare':
                 result = jobs.prepare_proposal(project, operation, request['proposal'])
             elif op == 'job_recover':
                 result = jobs.recover(project, operation)
@@ -305,13 +325,19 @@ class Service:
             else:
                 result = jobs.revise(project, operation, request['proposal'],
                                      expected_revision=request['expected_revision'])
-            if op != 'job_recover' or result is not None:
+            if op != 'job_consent_context' and (op != 'job_recover' or result is not None):
                 response = {'status': 'finished', 'job': result}
         except coordinator_jobs.WriteUncertainError:
             response = {'status': 'write_uncertain', 'effect': 'indeterminate'}
         except ValueError as exc:
             message = str(exc)
-            if 'Revision conflict' in message:
+            if op in ('job_authorize', 'job_consent_context'):
+                statuses = {'Revision conflict': 'revision_conflict', 'Mission locked': 'mission_locked',
+                    'Authorization conflict': 'authorization_conflict', 'Clarification required': 'clarification_required',
+                    'Host context changed': 'host_context_changed', 'Host context unavailable': 'host_context_unavailable',
+                    'Proposal identity changed': 'proposal_identity_changed', 'Job not found': 'not_found'}
+                status = statuses.get(message, 'invalid_authorization')
+            elif 'Revision conflict' in message:
                 status = 'revision_conflict'
             elif 'admitted' in message or 'Draft only' in message:
                 status = 'mission_locked'
@@ -320,7 +346,7 @@ class Service:
             else:
                 status = 'invalid_proposal'
             response = {'status': status}
-            if validation_only:
+            if validation_only or op in ('job_authorize', 'job_consent_context'):
                 response['effect'] = 'not_admitted'
         except Exception:
             response = {'status': 'job_unavailable'}

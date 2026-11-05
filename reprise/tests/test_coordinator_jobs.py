@@ -76,6 +76,21 @@ def crash_worker(state, operation, auth, when):
     store.prepare(operation, PROPOSAL, authority=auth, capability=CAPABILITY)
 
 
+def consent_worker(state, project, operation, values, queue, crash=None):
+    store = jobs.Jobs(state, crypt=fake_crypt)
+    original = jobs.os.replace
+    def replace(source, dest, **kw):
+        if crash == 'before': os._exit(70)
+        original(source, dest, **kw)
+        if crash == 'after': os._exit(71)
+    if crash: jobs.os.replace = replace
+    try:
+        row = store.consent(project, operation, **values)
+        queue.put(('ok', row['operator_authorization']['authorization_id']))
+    except Exception as exc:
+        queue.put(('error', str(exc)))
+
+
 class JobsTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -96,6 +111,98 @@ class JobsTests(unittest.TestCase):
         return self.store.prepare(operation or uid(), kw.get('proposal', PROPOSAL),
                                   authority=kw.get('authority', self.auth),
                                   capability=kw.get('capability', CAPABILITY))
+
+    def consent_values(self, row, authorization=None):
+        context = self.store.consent_context(self.p1, self.work)
+        return dict(authorization_id=authorization or uid(), expected_revision=row['revision'],
+            expected_proposal_sha256=row['proposal_sha256'], host_context=context['context'],
+            expected_context_sha256=context['context_sha256'])
+
+    def test_consent_is_distinct_durable_idempotent_and_without_execution_claims(self):
+        operation = uid()
+        row = self.store.prepare_proposal(self.p1, operation, PROPOSAL)
+        values = self.consent_values(row)
+        result = self.store.consent(self.p1, operation, **values)
+        self.assertEqual(result['status'], 'consented')
+        self.assertEqual(result['revision'], 1)
+        self.assertIsNone(result['authority'])
+        self.assertFalse(result['dispatch_enabled'])
+        self.assertFalse(result['operator_authorization']['execution_authorized'])
+        self.assertEqual(result['operator_authorization']['billing_verification'], 'not_performed')
+        self.assertNotIn('max_cost_minor', result['operator_authorization'])
+        self.assertEqual(jobs.Jobs(self.state, crypt=fake_crypt).recover(self.p1, operation), result)
+        self.assertEqual(self.store.consent(self.p1, operation, **values), result)
+        with self.assertRaisesRegex(ValueError, 'Mission locked'):
+            self.store.consent(self.p1, operation, **dict(values, authorization_id=uid()))
+        with self.assertRaisesRegex(ValueError, 'Authorization conflict'):
+            self.store.consent(self.p1, operation, **dict(values, expected_revision=1))
+        with self.assertRaisesRegex(ValueError, 'Draft only'):
+            self.store.revise(self.p1, operation, PROPOSAL, expected_revision=1)
+
+    def test_consent_rejects_questions_stale_revision_digest_and_context(self):
+        operation = uid()
+        row = self.store.prepare_proposal(self.p1, operation, PROPOSAL)
+        values = self.consent_values(row)
+        for override in ({'expected_revision': True}, {'expected_revision': 1},
+                         {'expected_proposal_sha256': 'a'*64}, {'expected_context_sha256': 'b'*64},
+                         {'host_context': dict(values['host_context'], project_id=self.p2)}):
+            with self.assertRaises(ValueError): self.store.consent(self.p1, operation, **dict(values, **override))
+        self.assertEqual(self.store.recover(self.p1, operation)['status'], 'preparation')
+        question_op = uid()
+        question = self.store.prepare_proposal(self.p1, question_op, dict(PROPOSAL, questions=['choisir']))
+        with self.assertRaisesRegex(ValueError, 'Clarification required'):
+            self.store.consent(self.p1, question_op, **self.consent_values(question))
+
+    def test_consent_context_requires_existing_readonly_registry_and_root(self):
+        registry_bytes = (self.state / 'projects.sqlite').read_bytes()
+        context = self.store.consent_context(self.p1, self.work)
+        self.assertEqual(context['context']['project_root'], str((Path(self.tmp.name)/'repo1').resolve()))
+        self.assertEqual(registry_bytes, (self.state/'projects.sqlite').read_bytes())
+        with self.assertRaises(ValueError): self.store.consent_context(uid(), self.work)
+        repo = Path(self.tmp.name)/'repo1'
+        repo.rename(repo.with_name('renamed'))
+        with self.assertRaises(ValueError): self.store.consent_context(self.p1, self.work)
+
+    def test_concurrent_consent_promotes_only_once(self):
+        operation = uid(); row = self.store.prepare_proposal(self.p1, operation, PROPOSAL)
+        values = self.consent_values(row); queue = multiprocessing.Queue()
+        processes = [multiprocessing.Process(target=consent_worker,
+            args=(str(self.state), self.p1, operation, dict(values, authorization_id=uid()), queue)) for _ in range(2)]
+        for process in processes: process.start()
+        for process in processes: process.join(10); self.assertEqual(process.exitcode, 0)
+        results = [queue.get(timeout=2) for _ in processes]
+        self.assertEqual(sum(result[0] == 'ok' for result in results), 1)
+        self.assertEqual(self.store.recover(self.p1, operation)['revision'], 1)
+
+    def test_consent_crash_before_and_after_replace_recovery(self):
+        for boundary in ('before', 'after'):
+            operation = uid(); row = self.store.prepare_proposal(self.p1, operation, PROPOSAL)
+            values = self.consent_values(row); queue = multiprocessing.Queue()
+            process = multiprocessing.Process(target=consent_worker,
+                args=(str(self.state), self.p1, operation, values, queue, boundary))
+            process.start(); process.join(10)
+            self.assertEqual(process.exitcode, 70 if boundary == 'before' else 71)
+            recovered = self.store.recover(self.p1, operation)
+            self.assertEqual(recovered['status'], 'preparation' if boundary == 'before' else 'consented')
+            committed = self.store.consent(self.p1, operation, **values)
+            self.assertEqual(committed['revision'], 1)
+
+    def test_consent_fsync_uncertainty_preserves_mutation_identity(self):
+        operation = uid(); row = self.store.prepare_proposal(self.p1, operation, PROPOSAL)
+        values = self.consent_values(row); original = jobs.os.fsync
+        replaced = False
+        original_replace = jobs.os.replace
+        def after_replace(*args, **kw):
+            nonlocal replaced
+            original_replace(*args, **kw); replaced = True
+        def fail_directory(fd):
+            if replaced and stat.S_ISDIR(os.fstat(fd).st_mode): raise OSError('directory sync')
+            original(fd)
+        with patch.object(jobs.os, 'replace', side_effect=after_replace), patch.object(jobs.os, 'fsync', side_effect=fail_directory):
+            with self.assertRaises(jobs.WriteUncertainError): self.store.consent(self.p1, operation, **values)
+        recovered = self.store.recover(self.p1, operation)
+        self.assertEqual(recovered['status'], 'consented')
+        self.assertEqual(self.store.consent(self.p1, operation, **values), recovered)
 
     def test_durable_idempotent_draft_and_scope(self):
         operation = uid()

@@ -101,6 +101,37 @@ class PilotServiceTests(unittest.TestCase):
         self.assertEqual(self.factories, [])
         self.assertEqual(self.backend.calls, 0)
 
+    def test_operator_consent_is_bound_to_local_context_without_backend_calls(self):
+        class Jobs:
+            def __init__(self): self.calls = []
+            def consent_context(inner, project, work):
+                inner.calls.append(('context', project, work))
+                return {'context': {'project_id': project, 'work_id': work, 'project_root': '/test'},
+                        'context_sha256': 'a'*64}
+            def consent(inner, project, operation, **values):
+                inner.calls.append(('consent', project, operation, values))
+                return {'status': 'consented', 'authority': None, 'dispatch_enabled': False}
+        jobs = Jobs()
+        host = service.Service('/private/tmp', self.output.append,
+            backend_factory=lambda: self.fail('backend must not be created'), jobs_factory=lambda _: jobs)
+        self.addCleanup(host.shutdown)
+        fields = dict(enabled=True, project_id=self.project, work_id=self.work, operation_id=uid(),
+            authorization_id=uid(), expected_revision=0, expected_proposal_sha256='b'*64,
+            expected_context_sha256='a'*64)
+        def call(op, **kw): return self.await_response(self.send_on(host, op, **kw))
+        self.assertEqual(call('job_authorize', **fields)['status'], 'host_context_changed')
+        self.assertEqual(jobs.calls, [])
+        context = call('job_consent_context', enabled=True, project_id=self.project, work_id=self.work)
+        self.assertEqual(context['context']['project_id'], self.project)
+        self.assertEqual(call('job_authorize', **dict(fields, work_id=uid()))['status'], 'host_context_changed')
+        self.assertEqual(call('job_authorize', **dict(fields, host_context={}))['status'], 'invalid_request')
+        self.assertEqual(call('job_authorize', **dict(fields, permission_verified=True))['status'], 'invalid_request')
+        result = call('job_authorize', **fields)
+        self.assertEqual(result['job']['status'], 'consented')
+        self.assertEqual(jobs.calls[-1][3]['host_context'], context['context'])
+        self.assertEqual(len([item for item in jobs.calls if item[0] == 'consent']), 1)
+        self.assertEqual(self.backend.calls, 0)
+
     def test_preparation_jsonl_operations_are_local_and_never_call_backend(self):
         class Jobs:
             def __init__(self): self.row = None; self.calls = []; self.fail_after_replace = False

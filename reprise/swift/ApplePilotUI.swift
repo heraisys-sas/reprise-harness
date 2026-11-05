@@ -28,10 +28,14 @@ private struct PreparationIntent: Codable, Equatable {
     let revision: Int
     let fingerprint: String
     let attempt: String?
+    let authorizationID: String?
+    let contextSHA256: String?
+    let work: String?
 
-    init(project: String, operation: String, kind: String, revision: Int, fingerprint: String, attempt: String? = nil) {
+    init(project: String, operation: String, kind: String, revision: Int, fingerprint: String, attempt: String? = nil, authorizationID: String? = nil, contextSHA256: String? = nil, work: String? = nil) {
         self.project = project; self.operation = operation; self.kind = kind
         self.revision = revision; self.fingerprint = fingerprint; self.attempt = attempt
+        self.authorizationID = authorizationID; self.contextSHA256 = contextSHA256; self.work = work
     }
 }
 
@@ -98,7 +102,8 @@ private final class PreparationIntentJournal {
                 guard intent.project == project,
                       intent.attempt == nil || UUID(uuidString: intent.attempt!)?.uuidString.lowercased() == intent.attempt,
                       UUID(uuidString: intent.operation)?.uuidString.lowercased() == intent.operation,
-                      ["prepare", "revise"].contains(intent.kind), intent.revision >= 0,
+                      ["prepare", "revise", "authorize"].contains(intent.kind), intent.revision >= 0,
+                      intent.kind != "authorize" || (intent.authorizationID != nil && intent.work != nil && UUID(uuidString: intent.authorizationID ?? "")?.uuidString.lowercased() == intent.authorizationID && UUID(uuidString: intent.work ?? "")?.uuidString.lowercased() == intent.work && intent.contextSHA256?.count == 64 && intent.contextSHA256!.allSatisfy({ $0.isHexDigit && !$0.isUppercase })),
                       intent.fingerprint.count == 64,
                       intent.fingerprint.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
                       ["finished", "not_admitted"].contains(receipt.effect), !receipt.status.isEmpty,
@@ -244,12 +249,13 @@ private final class PreparationIntentJournal {
             data.append(buffer, count: count)
         }
         let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        if let object, [Set(["project", "operation", "kind", "revision", "fingerprint"]), Set(["project", "operation", "kind", "revision", "fingerprint", "attempt"])].contains(Set(object.keys)),
+        if let object, [Set(["project", "operation", "kind", "revision", "fingerprint"]), Set(["project", "operation", "kind", "revision", "fingerprint", "attempt"]), Set(["project", "operation", "kind", "revision", "fingerprint", "attempt", "authorizationID", "contextSHA256", "work"])].contains(Set(object.keys)),
            let intent = try? JSONDecoder().decode(PreparationIntent.self, from: data),
            intent.project == project,
            intent.attempt == nil || UUID(uuidString: intent.attempt!)?.uuidString.lowercased() == intent.attempt,
            UUID(uuidString: intent.operation)?.uuidString.lowercased() == intent.operation,
-           ["prepare", "revise"].contains(intent.kind), intent.revision >= 0,
+           ["prepare", "revise", "authorize"].contains(intent.kind), intent.revision >= 0,
+                      intent.kind != "authorize" || (intent.authorizationID != nil && intent.work != nil && UUID(uuidString: intent.authorizationID ?? "")?.uuidString.lowercased() == intent.authorizationID && UUID(uuidString: intent.work ?? "")?.uuidString.lowercased() == intent.work && intent.contextSHA256?.count == 64 && intent.contextSHA256!.allSatisfy({ $0.isHexDigit && !$0.isUppercase })),
            intent.fingerprint.count == 64,
            intent.fingerprint.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) {
             return intent
@@ -286,8 +292,8 @@ final class ApplePilotUI: ObservableObject {
 
     @Published var enabled = false { didSet { preferences?.set(enabled, forKey: StartupPreferences.pilotEnabledKey) } }
     @Published var showMemory = false
-    @Published var projectID = "" { didSet { saveSelection(projectID, key: "ApplePilotProject", uuid: true); selectPreparationProject(projectID) } }
-    @Published var workID = "" { didSet { saveSelection(workID, key: "ApplePilotWork", uuid: true) } }
+    @Published var projectID = "" { didSet { saveSelection(projectID, key: "ApplePilotProject", uuid: true); selectPreparationProject(projectID); clearConsentContext() } }
+    @Published var workID = "" { didSet { saveSelection(workID, key: "ApplePilotWork", uuid: true); clearConsentContext() } }
     @Published var checkpointID = "" { didSet { saveSelection(checkpointID, key: "ApplePilotCheckpoint", uuid: true) } }
     @Published var skill = "checkpoint-review" { didSet { saveSelection(skill, key: "ApplePilotSkill", uuid: false) } }
     @Published var prompt = ""
@@ -298,6 +304,9 @@ final class ApplePilotUI: ObservableObject {
     @Published private(set) var preparationOperationID = ""
     @Published private(set) var preparationStatus = "Aucune préparation chargée."
     @Published private(set) var preparationJob: [String: Any] = [:]
+    @Published private(set) var consentContext: [String: Any] = [:]
+    @Published private(set) var consentContextSHA256 = ""
+    private var consentSelections: [String: [String]] = [:]
     @Published private(set) var preparationBusy = false
     @Published private(set) var preparationUncertain = false
     @Published private(set) var preparationJournalUnavailable = false
@@ -739,6 +748,42 @@ final class ApplePilotUI: ObservableObject {
             "operation_id": preparationOperationID, "proposal": proposal, "expected_revision": revision])
     }
 
+    private func clearConsentContext() {
+        consentContext = [:]
+        consentContextSHA256 = ""
+    }
+
+    var canConsent: Bool {
+        enabled && !preparationBusy && !preparationUncertain && !preparationJournalUnavailable
+            && preparationJob["status"] as? String == "preparation"
+            && consentContext["project_id"] as? String == projectID
+            && consentContext["work_id"] as? String == workID
+            && consentContextSHA256.count == 64
+            && (preparationJob["proposal"] as? [String: Any])?["questions"] as? [String] == []
+            && (preparationJob["proposal"] as? [String: Any]).flatMap(canonicalProposalData) == canonicalProposalData(proposalPayload())
+    }
+
+    func loadConsentContext() {
+        guard enabled, canonical(projectID), canonical(workID), !preparationBusy,
+              !preparationUncertain, startHost() else { return }
+        clearConsentContext()
+        preparationBusy = true
+        preparationStatus = "Validation locale du projet et du travail sélectionnés…"
+        let id = request("job_consent_context", fields: ["enabled": true, "project_id": projectID, "work_id": workID])
+        consentSelections[id] = [projectID, workID]
+    }
+
+    func authorizePreparation() {
+        guard canConsent, let revision = preparationJob["revision"] as? Int,
+              let digest = preparationJob["proposal_sha256"] as? String, startHost() else { return }
+        preparationBusy = true
+        preparationStatus = "Enregistrement du consentement opérateur ; aucune exécution…"
+        request("job_authorize", fields: ["enabled": true, "project_id": projectID, "work_id": workID,
+            "operation_id": preparationOperationID, "authorization_id": UUID().uuidString.lowercased(),
+            "expected_revision": revision, "expected_proposal_sha256": digest,
+            "expected_context_sha256": consentContextSHA256])
+    }
+
     func listCheckpoints() {
         guard enabled && canSelect && canonical(projectID) && canonical(workID), startHost() else { return }
         busy = true
@@ -796,7 +841,7 @@ final class ApplePilotUI: ObservableObject {
               var bytes = try? JSONSerialization.data(withJSONObject: payload), bytes.count < 65536 else {
             status = "Requête invalide ou trop volumineuse."
             busy = false
-            if operation == "job_prepare" || operation == "job_recover" || operation == "job_revise" {
+            if ["job_prepare", "job_recover", "job_revise", "job_authorize", "job_consent_context"].contains(operation) {
                 preparationBusy = false
                 preparationStatus = "La requête locale n’a pas été envoyée ; conservez la même identité."
             }
@@ -811,11 +856,22 @@ final class ApplePilotUI: ObservableObject {
             return ident
         }
         bytes.append(10)
-        if ["job_prepare", "job_recover", "job_revise"].contains(operation),
+        if ["job_prepare", "job_recover", "job_revise", "job_authorize"].contains(operation),
            let project = fields["project_id"] as? String, let preparation = fields["operation_id"] as? String {
             var intent: PreparationIntent?
             do {
-                if operation == "job_prepare" || operation == "job_revise" {
+                if operation == "job_authorize" {
+                    guard let authorization = fields["authorization_id"] as? String,
+                          let work = fields["work_id"] as? String,
+                          let context = fields["expected_context_sha256"] as? String,
+                          let fingerprint = fields["expected_proposal_sha256"] as? String,
+                          let expected = fields["expected_revision"] as? Int else { throw PreparationIntentJournal.JournalError.writeFailed }
+                    let record = PreparationIntent(project: project, operation: preparation, kind: "authorize",
+                        revision: expected + 1, fingerprint: fingerprint, attempt: UUID().uuidString.lowercased(),
+                        authorizationID: authorization, contextSHA256: context, work: work)
+                    try preparationJournal.write(record)
+                    intent = record
+                } else if operation == "job_prepare" || operation == "job_revise" {
                     guard let proposal = fields["proposal"] as? [String: Any],
                           let fingerprint = proposalFingerprint(proposal) else { throw PreparationIntentJournal.JournalError.writeFailed }
                     let revision: Int
@@ -902,7 +958,20 @@ final class ApplePilotUI: ObservableObject {
             return
         }
         switch operation {
-        case "job_prepare", "job_recover", "job_revise":
+        case "job_consent_context":
+            preparationBusy = false
+            guard let selection = consentSelections.removeValue(forKey: ident), selection == [projectID, workID] else { return }
+            if result == "finished", let context = object["context"] as? [String: Any],
+               context["project_id"] as? String == projectID, context["work_id"] as? String == workID,
+               context["execution_verification"] as? String == "not_performed",
+               let digest = object["context_sha256"] as? String, digest.count == 64 {
+                consentContext = context; consentContextSHA256 = digest
+                preparationStatus = "Contexte local validé ; disponibilité et facturation non vérifiées."
+            } else {
+                clearConsentContext()
+                preparationStatus = "Contexte local indisponible (\(result)) ; consentement bloqué."
+            }
+        case "job_prepare", "job_recover", "job_revise", "job_authorize":
             guard let context = preparationPending.removeValue(forKey: ident) else { ioFailed(generation: current); return }
             preparationBusy = false
             guard context.project == projectID, context.project == preparationProjectID,
@@ -912,9 +981,19 @@ final class ApplePilotUI: ObservableObject {
                job["operation_id"] as? String == context.operation {
                 preparationJob = job
                 if let intent = context.intent {
-                    let exactProof = job["status"] as? String == "preparation"
+                    let authorization = job["operator_authorization"] as? [String: Any]
+                    let authorizationProof = intent.kind == "authorize"
+                        && job["status"] as? String == "consented"
+                        && job["authorization_kind"] as? String == "operator_consent_v1"
+                        && authorization?["execution_authorized"] as? Bool == false
                         && job["revision"] as? Int == intent.revision
-                        && (job["proposal"] as? [String: Any]).flatMap(proposalFingerprint) == intent.fingerprint
+                        && job["proposal_sha256"] as? String == intent.fingerprint
+                        && authorization?["authorization_id"] as? String == intent.authorizationID
+                        && authorization?["context_sha256"] as? String == intent.contextSHA256
+                        && (authorization?["host_context"] as? [String: Any])?["work_id"] as? String == intent.work
+                    let exactProof = authorizationProof || (intent.kind != "authorize" && job["status"] as? String == "preparation"
+                        && job["revision"] as? Int == intent.revision
+                        && (job["proposal"] as? [String: Any]).flatMap(proposalFingerprint) == intent.fingerprint)
                     if exactProof {
                         applyProposalToEditor(job)
                         let markerCleared = clearPreparationIntent(intent, effect: "finished", status: result)
@@ -929,6 +1008,9 @@ final class ApplePilotUI: ObservableObject {
                 } else {
                     applyProposalToEditor(job)
                     preparationStatus = "Préparation \(job["status"] as? String ?? "chargée") · révision \(job["revision"] as? Int ?? 0) · sans autorité ni dispatch."
+                }
+                if job["status"] as? String == "consented", !preparationUncertain {
+                    preparationStatus = "Consentement enregistré ; exécution pas encore disponible. Facturation non vérifiée."
                 }
             } else if result == "not_found" {
                 preparationJob = [:]
