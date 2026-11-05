@@ -21,6 +21,10 @@ MAX_JOBS = 5000
 NAMESPACE = uuid.UUID('309d6c9e-dade-4d6b-8e07-cc7d293c0e03')
 
 
+class WriteUncertainError(OSError):
+    """Atomic replacement happened but durability could not be confirmed."""
+
+
 def _uuid(value):
     if not isinstance(value, str):
         raise ValueError('Canonical UUID required')
@@ -217,7 +221,10 @@ class Jobs:
                     with os.fdopen(tmp, 'wb') as stream:
                         stream.write(encrypted); stream.flush(); os.fsync(stream.fileno())
                     os.replace(name, 'jobs.enc', src_dir_fd=folder, dst_dir_fd=folder)
-                    os.fsync(folder)
+                    try:
+                        os.fsync(folder)
+                    except OSError as exc:
+                        raise WriteUncertainError('Jobs replacement durability uncertain') from exc
                 finally:
                     try:
                         os.unlink(name, dir_fd=folder)
@@ -256,6 +263,27 @@ class Jobs:
             data['jobs'].append(record)
             return self._public(record)
 
+    def prepare_proposal(self, project_id, operation_id, proposal):
+        """Persist operator-authored preparation without authority or request identity."""
+        project, operation = _uuid(project_id), _uuid(operation_id)
+        proposal = _proposal(proposal)
+        self._project(project)
+        job_id = str(uuid.uuid5(NAMESPACE, 'job:' + project + ':' + operation))
+        fingerprint = _fingerprint(proposal, None)
+        with self._store(write=True) as data:
+            for row in data['jobs']:
+                if row['project_id'] == project and row['operation_id'] == operation:
+                    if row['status'] != 'preparation' or row['fingerprint'] != fingerprint:
+                        raise ValueError('Operation ID bound to another preparation')
+                    return self._public(row)
+            if len(data['jobs']) >= MAX_JOBS:
+                raise ValueError('Jobs capacity reached')
+            row = {'project_id': project, 'operation_id': operation, 'job_id': job_id,
+                   'request_key': None, 'fingerprint': fingerprint, 'created_at': time.time(),
+                   'status': 'preparation', 'proposal': proposal, 'authority': None, 'revision': 0}
+            data['jobs'].append(row)
+            return self._public(row)
+
     def revise(self, project_id, operation_id, proposal, *, expected_revision):
         """Durably revise an operator-owned draft with CAS; never dispatch or alter admitted work."""
         project, operation = _uuid(project_id), _uuid(operation_id)
@@ -270,9 +298,9 @@ class Jobs:
                     continue
                 if row.get('operation_id') not in (None, operation):
                     raise ValueError('Operation identity mismatch')
-                if row['status'] != 'draft':
+                if row['status'] not in ('draft', 'preparation'):
                     raise ValueError('Draft only; admitted missions cannot be revised')
-                fingerprint = _fingerprint(proposal, row['authority'])
+                fingerprint = _fingerprint(proposal, row.get('authority'))
                 # An exact replay is a no-op even when its original CAS token is now stale.
                 if row.get('fingerprint') == fingerprint and row['proposal'] == proposal:
                     return self._public(row)
@@ -280,7 +308,8 @@ class Jobs:
                 if type(revision) is not int or revision != expected_revision:
                     raise ValueError('Revision conflict')
                 row.update(operation_id=operation, proposal=proposal, fingerprint=fingerprint,
-                           request_key=_request_key(project, operation, fingerprint), revision=revision + 1,
+                           request_key=(_request_key(project, operation, fingerprint)
+                                        if row['status'] == 'draft' else None), revision=revision + 1,
                            revised_at=time.time())
                 return self._public(row)
             raise ValueError('Job not found')
@@ -290,10 +319,10 @@ class Jobs:
         # Legacy recorded rows were accepted using only a key and result hash;
         # neither proves the recorded request had this mission's payload.
         legacy_recorded = item['status'] == 'recorded'
-        result = {'job_id': item['job_id'], 'request_key': item['request_key'],
+        result = {'job_id': item['job_id'], 'request_key': item.get('request_key'),
                 'project_id': item['project_id'], 'status': 'indeterminate' if legacy_recorded else item['status'],
                 'created_at': item['created_at'], 'proposal': item['proposal'],
-                'authority': item['authority'], 'revision': item.get('revision', 0),
+                'authority': item.get('authority'), 'revision': item.get('revision', 0),
                 'attempt_id': item.get('attempt_id'), 'result_receipt': None if legacy_recorded else item.get('result_receipt'),
                 'authorization_evidence': item.get('authorization_evidence'),
                 'dispatch_enabled': False}

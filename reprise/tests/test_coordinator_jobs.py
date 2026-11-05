@@ -115,6 +115,53 @@ class JobsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.prepare(operation, authority=self.auth | {'max_requests':4})
 
+    def test_preparation_has_no_authority_or_request_key_and_revises_durably(self):
+        operation = uid()
+        first = self.store.prepare_proposal(self.p1, operation, PROPOSAL)
+        self.assertEqual(first['status'], 'preparation')
+        self.assertIsNone(first['authority'])
+        self.assertIsNone(first['request_key'])
+        self.assertFalse(first['dispatch_enabled'])
+        self.assertEqual(self.store.prepare_proposal(self.p1, operation, PROPOSAL), first)
+        changed = PROPOSAL | {'objective': 'objectif corrigé', 'questions': ['Quelle portée ?']}
+        revised = self.store.revise(self.p1, operation, changed, expected_revision=0)
+        self.assertEqual(revised['operation_id'], operation)
+        self.assertEqual(revised['revision'], 1)
+        self.assertEqual(revised['status'], 'preparation')
+        self.assertIsNone(revised['authority'])
+        self.assertIsNone(revised['request_key'])
+        reopened = jobs.Jobs(self.state, crypt=fake_crypt)
+        self.assertEqual(reopened.recover(self.p1, operation), revised)
+        self.assertEqual(reopened.revise(self.p1, operation, changed, expected_revision=0), revised)
+        with self.assertRaisesRegex(ValueError, 'conflict'):
+            reopened.revise(self.p1, operation, changed | {'constraints': ['autre']}, expected_revision=0)
+        with self.assertRaisesRegex(ValueError, 'another preparation'):
+            reopened.prepare_proposal(self.p1, operation, PROPOSAL)
+
+    def test_preparation_cannot_overwrite_authorized_draft(self):
+        operation = uid()
+        authorized = self.prepare(operation)
+        with self.assertRaisesRegex(ValueError, 'another preparation'):
+            self.store.prepare_proposal(self.p1, operation, PROPOSAL)
+        self.assertEqual(self.store.recover(self.p1, operation), authorized)
+
+    def test_post_replace_fsync_failure_is_explicitly_uncertain_and_recoverable(self):
+        operation = uid()
+        original = jobs.os.fsync
+        calls = 0
+        def fail_directory_sync(fd):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise OSError('simulated directory fsync failure')
+            return original(fd)
+        with patch.object(jobs.os, 'fsync', side_effect=fail_directory_sync):
+            with self.assertRaises(jobs.WriteUncertainError):
+                self.store.prepare_proposal(self.p1, operation, PROPOSAL)
+        recovered = jobs.Jobs(self.state, crypt=fake_crypt).recover(self.p1, operation)
+        self.assertIsNotNone(recovered)
+        self.assertEqual(recovered['status'], 'preparation')
+
     def test_recovery_survives_revoked_capability_without_dispatch(self):
         operation = uid(); first = self.prepare(operation)
         with self.assertRaises(ValueError):

@@ -101,6 +101,73 @@ class PilotServiceTests(unittest.TestCase):
         self.assertEqual(self.factories, [])
         self.assertEqual(self.backend.calls, 0)
 
+    def test_preparation_jsonl_operations_are_local_and_never_call_backend(self):
+        class Jobs:
+            def __init__(self): self.row = None; self.calls = []; self.fail_after_replace = False
+            def prepare_proposal(self, project, operation, proposal):
+                self.calls.append(('prepare', project, operation, proposal))
+                if self.fail_after_replace:
+                    raise service.coordinator_jobs.WriteUncertainError('uncertain')
+                self.row = {'status': 'preparation', 'project_id': project, 'operation_id': operation,
+                            'request_key': None, 'authority': None, 'revision': 0, 'proposal': proposal}
+                return self.row
+            def recover(self, project, operation):
+                self.calls.append(('recover', project, operation)); return self.row
+            def revise(self, project, operation, proposal, *, expected_revision):
+                self.calls.append(('revise', project, operation, expected_revision))
+                self.row = dict(self.row, proposal=proposal, revision=expected_revision + 1)
+                return self.row
+        jobs = Jobs()
+        host = service.Service('/private/tmp', self.output.append,
+            memory_factory=lambda _: self.memory, backend_factory=lambda: self.backend,
+            jobs_factory=lambda _: jobs)
+        self.addCleanup(host.shutdown)
+        operation = uid()
+        proposal = {'objective': 'objectif', 'acceptance': ['preuve'], 'constraints': [], 'questions': ['choisir']}
+        prepared = self.await_response(self.send_on(host, 'job_prepare', enabled=True, project_id=self.project,
+            operation_id=operation, proposal=proposal))
+        self.assertEqual(prepared['status'], 'finished')
+        self.assertIsNone(prepared['job']['request_key'])
+        self.assertIsNone(prepared['job']['authority'])
+        loaded = self.await_response(self.send_on(host, 'job_recover', enabled=True, project_id=self.project,
+            operation_id=operation))
+        self.assertEqual(loaded['job'], prepared['job'])
+        revised = dict(proposal, objective='corrigé')
+        changed = self.await_response(self.send_on(host, 'job_revise', enabled=True, project_id=self.project,
+            operation_id=operation, proposal=revised, expected_revision=0))
+        self.assertEqual(changed['job']['revision'], 1)
+        self.assertEqual([item[0] for item in jobs.calls], ['prepare', 'recover', 'revise'])
+        self.assertEqual(self.backend.calls, 0)
+        jobs.fail_after_replace = True
+        uncertain = self.await_response(self.send_on(host, 'job_prepare', enabled=True, project_id=self.project,
+            operation_id=uid(), proposal=proposal))
+        self.assertEqual(uncertain['status'], 'write_uncertain')
+        self.assertEqual(uncertain['effect'], 'indeterminate')
+        self.assertEqual(self.backend.calls, 0)
+
+    def test_preparation_rejection_proof_is_limited_to_validation(self):
+        class Jobs:
+            def prepare_proposal(self, *args):
+                raise ValueError('internal failure after possible write')
+            def recover(self, *args):
+                raise ValueError('Invalid proposal fields')
+        host = service.Service('/private/tmp', self.output.append,
+            jobs_factory=lambda _: Jobs())
+        self.addCleanup(host.shutdown)
+        common = dict(enabled=True, project_id=self.project, operation_id=uid())
+        invalid = self.await_response(self.send_on(host, 'job_prepare', proposal={}, **common))
+        self.assertEqual(invalid['effect'], 'not_admitted')
+        valid = {'objective': 'objectif', 'acceptance': ['preuve'], 'constraints': [], 'questions': []}
+        internal = self.await_response(self.send_on(host, 'job_prepare', proposal=valid, **common))
+        self.assertNotIn('effect', internal)
+        recovered = self.await_response(self.send_on(host, 'job_recover', **common))
+        self.assertNotIn('effect', recovered)
+
+    def send_on(self, host, op, **fields):
+        ident = uid()
+        host.handle({'id': ident, 'op': op, **fields})
+        return ident
+
     def test_scope_and_multi_turn(self):
         self.assertEqual(self.open(work_id=uid())['status'], 'invalid_checkpoint')
         self.assertEqual(self.open()['status'], 'opened')

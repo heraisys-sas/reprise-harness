@@ -9,6 +9,542 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(os.uname().sysname == 'Darwin', 'requires macOS Swift')
 class ApplePilotUISmokeTests(unittest.TestCase):
+    def test_terminal_receipt_process_boundaries_and_sync_failures(self):
+        # Exercise the production journal directly, with a fresh executable
+        # process for every write/recovery boundary and no UserDefaults.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            prefix = (ROOT / 'swift' / 'ApplePilotUI.swift').read_text().split('/// Isolated UI controller.')[0]
+            swift = root / 'Journal.swift'
+            swift.write_text(prefix + r'''
+@main struct JournalTest {
+ static func main() throws {
+  let a = CommandLine.arguments, state = URL(fileURLWithPath: a[1])
+  let project = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+  let intent = PreparationIntent(project: project, operation: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      kind: "prepare", revision: 0, fingerprint: String(repeating: "a", count: 64),
+      attempt: "cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+  let journal = PreparationIntentJournal(state: state)
+  if a[2] == "write" { try journal.write(intent); return }
+  if a[2] == "terminal" {
+   var count = 0
+   let failing = PreparationIntentJournal(state: state, syncFD: { fd in
+    count += 1
+    if count == Int(a[3])! { return -1 }
+    return Darwin.fsync(fd)
+   })
+   do { try failing.recordTerminal(intent, effect: "not_admitted", status: "invalid_proposal") }
+   catch { Darwin._exit(0) }
+   // Exit immediately at the boundary before unlink, or after unlink/fsync failure.
+   if a[3] == "4" { precondition(!failing.clear(intent)) }
+   if a[3] == "5" {
+    let unlinkFailed = PreparationIntentJournal(state: state, unlinkMarker: { _, _ in -1 })
+    precondition(!unlinkFailed.clear(intent))
+   }
+   Darwin._exit(0)
+  }
+  if a[2] == "uncertain" {
+   precondition(try journal.read(project: project) == intent)
+   precondition(try journal.terminal(project: project) == nil)
+   return
+  }
+  if a[2] == "resolve" {
+   precondition(try journal.terminal(project: project) == intent)
+   precondition(journal.clear(intent))
+   precondition(try journal.read(project: project) == nil)
+   return
+  }
+  if a[2] == "oldwriter" {
+   FileManager.default.createFile(atPath: a[1] + "/old-ready", contents: Data())
+   for _ in 0..<500 {
+    if FileManager.default.fileExists(atPath: a[1] + "/next-written") { break }
+    usleep(10_000)
+   }
+   precondition(FileManager.default.fileExists(atPath: a[1] + "/next-written"))
+   do { try journal.recordTerminal(intent, effect: "not_admitted", status: "invalid_proposal"); preconditionFailure() }
+   catch {}
+   precondition(!journal.clear(intent))
+   FileManager.default.createFile(atPath: a[1] + "/old-done", contents: Data())
+   return
+  }
+  if a[2] == "retry" || a[2] == "newwriter" {
+   if a[2] == "newwriter" {
+    for _ in 0..<500 {
+     if FileManager.default.fileExists(atPath: a[1] + "/old-ready") { break }
+     usleep(10_000)
+    }
+    precondition(FileManager.default.fileExists(atPath: a[1] + "/old-ready"))
+   }
+   let next = PreparationIntent(project: project, operation: intent.operation, kind: intent.kind,
+       revision: intent.revision, fingerprint: intent.fingerprint, attempt: UUID().uuidString.lowercased())
+   try journal.write(next)
+   if a[2] == "newwriter" {
+    FileManager.default.createFile(atPath: a[1] + "/next-written", contents: Data())
+    for _ in 0..<500 {
+     if FileManager.default.fileExists(atPath: a[1] + "/old-done") { break }
+     usleep(10_000)
+    }
+    precondition(FileManager.default.fileExists(atPath: a[1] + "/old-done"))
+   }
+   precondition(try journal.terminal(project: project) == nil)
+   do { try journal.recordTerminal(intent, effect: "not_admitted", status: "invalid_proposal"); preconditionFailure() }
+   catch {}
+   precondition(!journal.clear(intent))
+   precondition(try journal.read(project: project) == next)
+   return
+  }
+  if a[2] == "error" {
+   do { _ = try journal.terminal(project: project); preconditionFailure() } catch {}
+   precondition(try journal.read(project: project) == intent)
+  }
+ }
+}
+'''.replace('precondition(try ', 'precondition(try! '))
+            binary = root / 'journal'
+            subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
+                            str(swift), '-o', str(binary)], check=True)
+            for boundary in (0, 1, 2, 3, 4, 5):
+                state = root / str(boundary)
+                state.mkdir(mode=0o700)
+                def run(mode, *args):
+                    subprocess.run([str(binary), str(state), mode, *map(str, args)], check=True, timeout=5)
+                run('write')
+                run('terminal', boundary)
+                if boundary in (1, 2):
+                    run('uncertain')
+                else:
+                    run('resolve')
+                    run('resolve')  # idempotent across another fresh process
+                    run('retry')  # stale response cannot resolve a new admission
+            state = root / 'concurrent'
+            state.mkdir(mode=0o700)
+            run('write')
+            run('terminal', 0)
+            run('resolve')
+            old = subprocess.Popen([str(binary), str(state), 'oldwriter'])
+            try:
+                run('newwriter')
+                self.assertEqual(old.wait(timeout=5), 0)
+            finally:
+                if old.poll() is None:
+                    old.kill()
+                    old.wait()
+            state = root / 'errors'
+            state.mkdir(mode=0o700)
+            run('write')
+            receipt = state / 'apple-pilot-intents.noindex' / 'terminal-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.json'
+            receipt.write_text('{}')
+            receipt.chmod(0o600)
+            run('error')
+            receipt.unlink()
+            receipt.symlink_to(root / 'missing')
+            run('error')
+
+    def test_identical_revise_is_local_noop_before_journal_or_dispatch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fake = root / 'service.py'
+            fake.write_text("""import json, pathlib, sys
+state = pathlib.Path(sys.argv[sys.argv.index('--state')+1])
+for line in sys.stdin:
+ x = json.loads(line)
+ with (state / 'ops').open('a') as f: f.write(x['op']+'\\n')
+ if x['op'] == 'job_prepare':
+  if x['proposal']['objective'] == 'rejet':
+   print(json.dumps({'id':x['id'], 'status':'invalid_proposal', 'effect':'not_admitted'}), flush=True); continue
+  job = {'status':'preparation', 'project_id':x['project_id'], 'operation_id':x['operation_id'],
+         'request_key':None, 'authority':None, 'revision':0, 'proposal':x['proposal']}
+  print(json.dumps({'id':x['id'], 'status':'finished', 'job':job}), flush=True)
+ elif x['op'] == 'job_recover': print(json.dumps({'id':x['id'], 'status':'finished', 'job':job}), flush=True)
+ elif x['op'] == 'close': print(json.dumps({'id':x['id'], 'status':'closed'}), flush=True)
+""")
+            swift = root / 'IdenticalRevise.swift'
+            swift.write_text('''import Foundation
+@main struct IdenticalRevise {
+ @MainActor static func main() async {
+  let d = UserDefaults(suiteName: "test.preparation.identical." + UUID().uuidString)!
+  StartupPreferences.migrate(d); d.set(false, forKey: StartupPreferences.pilotEnabledKey)
+  let args = CommandLine.arguments
+  var failClear = false
+  var syncCount = 0
+  let p = ApplePilotUI(python: URL(fileURLWithPath: args[1]), service: URL(fileURLWithPath: args[2]), state: URL(fileURLWithPath: args[3]), preferences: d, journalSync: { fd in
+   if failClear { syncCount += 1; if syncCount == 8 { failClear = false; return -1 } }
+   return Darwin.fsync(fd)
+  })
+  p.enabled = true; p.projectID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; p.newPreparation()
+  p.proposalObjective = "rejet"; p.proposalAcceptance = "preuve"; p.savePreparation()
+  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  precondition(!p.preparationUncertain && p.preparationStatus.contains("refusée"))
+  failClear = true
+  p.proposalObjective = "objectif"; p.proposalAcceptance = "preuve"; p.savePreparation()
+  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  precondition(p.preparationUncertain)
+  p.loadPreparation()
+  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  precondition(p.preparationJob["revision"] as? Int == 0 && !p.preparationUncertain)
+  p.revisePreparation()
+  precondition(!p.preparationBusy && p.preparationStatus.contains("identique"))
+  precondition(!FileManager.default.fileExists(atPath: args[3] + "/apple-pilot-intents.noindex/intent-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.json"))
+  p.close()
+ }
+}
+''')
+            binary = root / 'identical-revise'
+            subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
+                            str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
+            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True, timeout=8)
+            self.assertEqual((root / 'ops').read_text().splitlines(), ['job_prepare', 'job_prepare', 'close'])
+
+    def test_intent_journal_survives_process_exit_before_response(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            seen = root / 'prepare-seen'
+            fake = root / 'service.py'
+            fake.write_text("""import json, pathlib, sys, time
+seen = pathlib.Path(sys.argv[sys.argv.index('--state')+1]) / 'prepare-seen'
+for line in sys.stdin:
+ x = json.loads(line)
+ if x['op'] == 'job_prepare':
+  seen.write_text('yes')
+  time.sleep(5)
+ elif x['op'] == 'job_recover': print(json.dumps({'id':x['id'], 'status':'not_found'}), flush=True)
+ elif x['op'] == 'close': print(json.dumps({'id':x['id'], 'status':'closed'}), flush=True)
+""")
+            swift = root / 'ProcessCrash.swift'
+            swift.write_text('''import Foundation
+import Darwin
+@main struct ProcessCrash {
+ @MainActor static func main() async {
+  let args = CommandLine.arguments, project = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+  let d = UserDefaults(suiteName: "test.preparation.crash." + args[4])!
+  StartupPreferences.migrate(d); d.set(false, forKey: StartupPreferences.pilotEnabledKey)
+  let p = ApplePilotUI(python: URL(fileURLWithPath: args[1]), service: URL(fileURLWithPath: args[2]), state: URL(fileURLWithPath: args[3]), requestTimeout: 10, preferences: d)
+  p.enabled = true; p.projectID = project
+  if args[5] == "write" {
+   p.newPreparation(); p.proposalObjective = "objectif"; p.proposalAcceptance = "preuve"; p.savePreparation()
+   for _ in 0..<250 {
+    if FileManager.default.fileExists(atPath: args[3] + "/prepare-seen") { Darwin._exit(0) }
+    try? await Task.sleep(nanoseconds: 20_000_000)
+   }
+   preconditionFailure("service did not receive preparation")
+  }
+  let operation = p.preparationOperationID
+  precondition(!operation.isEmpty && p.preparationUncertain)
+  p.newPreparation(); precondition(p.preparationOperationID == operation)
+  p.loadPreparation()
+  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  precondition(p.preparationUncertain && p.preparationOperationID == operation)
+  p.newPreparation(); precondition(p.preparationOperationID == operation)
+  p.close()
+ }
+}
+''')
+            binary = root / 'process-crash'
+            subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
+                            str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
+            suite = root.name
+            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root), suite, 'write'], check=True, timeout=8)
+            self.assertTrue(seen.exists())
+            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root), suite, 'read'], check=True, timeout=8)
+
+    def test_fsync_failure_refuses_emit_and_not_found_stays_blocked(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fake = root / 'service.py'
+            fake.write_text("""import json, pathlib, sys
+state = pathlib.Path(sys.argv[sys.argv.index('--state')+1])
+for line in sys.stdin:
+ x = json.loads(line)
+ with (state / 'ops').open('a') as f: f.write(x['op']+'\\n')
+ if x['op'] == 'job_recover': print(json.dumps({'id':x['id'], 'status':'not_found'}), flush=True)
+ elif x['op'] == 'job_prepare':
+  job = {'status':'preparation', 'project_id':x['project_id'], 'operation_id':x['operation_id'],
+         'request_key':None, 'authority':None, 'revision':0, 'proposal':x['proposal']}
+  print(json.dumps({'id':x['id'], 'status':'finished', 'job':job}), flush=True)
+ elif x['op'] == 'close': print(json.dumps({'id':x['id'], 'status':'closed'}), flush=True)
+""")
+            swift = root / 'FsyncRetry.swift'
+            swift.write_text('''import Foundation
+import Darwin
+@main struct FsyncRetry {
+ @MainActor static func main() async {
+  let args = CommandLine.arguments, project = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+  let d = UserDefaults(suiteName: "test.preparation.fsync." + UUID().uuidString)!
+  StartupPreferences.migrate(d); d.set(false, forKey: StartupPreferences.pilotEnabledKey)
+  var failOnce = true
+  let p = ApplePilotUI(python: URL(fileURLWithPath: args[1]), service: URL(fileURLWithPath: args[2]), state: URL(fileURLWithPath: args[3]), requestTimeout: 5, preferences: d, journalSync: { fd in
+   if failOnce { failOnce = false; return -1 }; return Darwin.fsync(fd)
+  })
+  p.enabled = true; p.projectID = project; p.newPreparation(); let operation = p.preparationOperationID
+  p.proposalObjective = "objectif"; p.proposalAcceptance = "preuve"; p.savePreparation()
+  precondition(p.preparationUncertain && p.preparationJournalUnavailable && !p.preparationBusy)
+  precondition(!FileManager.default.fileExists(atPath: args[3] + "/ops"))
+  p.loadPreparation()
+  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  precondition(p.preparationUncertain && p.preparationOperationID == operation)
+  p.savePreparation()
+  precondition(p.preparationBusy == false && p.preparationOperationID == operation)
+  p.close()
+ }
+}
+''')
+            binary = root / 'fsync-retry'
+            subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
+                            str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
+            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True, timeout=8)
+            self.assertEqual((root / 'ops').read_text().splitlines(), ['job_recover', 'close'])
+
+    def test_inflight_marker_survives_restart_without_ack_until_recovery(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fake = root / 'service.py'
+            fake.write_text("""import json, sys, time
+for line in sys.stdin:
+ x = json.loads(line)
+ if x['op'] == 'job_prepare':
+  time.sleep(.5)
+  job = {'status':'preparation', 'project_id':x['project_id'], 'operation_id':x['operation_id'],
+         'request_key':None, 'authority':None, 'revision':0, 'proposal':x['proposal']}
+  print(json.dumps({'id':x['id'], 'status':'finished', 'job':job}), flush=True)
+ elif x['op'] == 'job_recover':
+  job = {'status':'preparation', 'project_id':x['project_id'], 'operation_id':x['operation_id'],
+         'request_key':None, 'authority':None, 'revision':0,
+         'proposal':{'objective':'objectif', 'acceptance':['preuve'], 'constraints':[], 'questions':[]}}
+  print(json.dumps({'id':x['id'], 'status':'finished', 'job':job}), flush=True)
+ elif x['op'] == 'close': print(json.dumps({'id':x['id'], 'status':'closed'}), flush=True)
+""")
+            swift = root / 'InflightRecovery.swift'
+            swift.write_text('''import Foundation
+@main struct InflightRecovery {
+ @MainActor static func main() async {
+  let project = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+  let d = UserDefaults(suiteName: "test.preparation.inflight." + UUID().uuidString)!
+  StartupPreferences.migrate(d); d.set(false, forKey: StartupPreferences.pilotEnabledKey)
+  let args = CommandLine.arguments
+  func make() -> ApplePilotUI { ApplePilotUI(python: URL(fileURLWithPath: args[1]), service: URL(fileURLWithPath: args[2]), state: URL(fileURLWithPath: args[3]), requestTimeout: 5, preferences: d) }
+  let p = make(); p.enabled = true; p.projectID = project; p.newPreparation(); let operation = p.preparationOperationID
+  p.proposalObjective = "objectif"; p.proposalAcceptance = "preuve"; p.savePreparation()
+  let restarted = make()
+  precondition(restarted.preparationUncertain && restarted.preparationOperationID == operation)
+  restarted.enabled = true; restarted.newPreparation()
+  precondition(restarted.preparationOperationID == operation)
+  restarted.loadPreparation()
+  for _ in 0..<100 { if !restarted.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  precondition(!restarted.preparationUncertain && restarted.preparationOperationID == operation,
+               "recovery status=\\(restarted.preparationStatus), busy=\\(restarted.preparationBusy), op=\\(restarted.preparationOperationID), expected=\\(operation)")
+  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  p.close(); restarted.close()
+ }
+}
+''')
+            binary = root / 'inflight-recovery'
+            subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
+                            str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
+            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True)
+
+    def test_late_preparation_response_stays_bound_to_its_project(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fake = root / 'service.py'
+            fake.write_text("""import json, sys, time
+for line in sys.stdin:
+ x = json.loads(line)
+ if x['op'] == 'job_prepare':
+  time.sleep(.2)
+  job = {'status':'preparation', 'project_id':x['project_id'], 'operation_id':x['operation_id'],
+         'request_key':None, 'authority':None, 'revision':0, 'proposal':x['proposal']}
+  print(json.dumps({'id':x['id'], 'status':'finished', 'job':job}), flush=True)
+ elif x['op'] == 'close': print(json.dumps({'id':x['id'], 'status':'closed'}), flush=True)
+""")
+            swift = root / 'ProjectBinding.swift'
+            swift.write_text('''import Foundation
+@main struct ProjectBinding {
+ @MainActor static func main() async {
+  let a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+  let d = UserDefaults(suiteName: "test.preparation.binding." + UUID().uuidString)!
+  StartupPreferences.migrate(d); d.set(false, forKey: StartupPreferences.pilotEnabledKey)
+  let args = CommandLine.arguments
+  let p = ApplePilotUI(python: URL(fileURLWithPath: args[1]), service: URL(fileURLWithPath: args[2]), state: URL(fileURLWithPath: args[3]), preferences: d)
+  p.enabled = true; p.projectID = a; p.newPreparation(); let operation = p.preparationOperationID
+  p.proposalObjective = "A"; p.proposalAcceptance = "preuve"; p.savePreparation()
+  p.projectID = b
+  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  precondition(p.preparationJob.isEmpty && p.preparationOperationID.isEmpty)
+  p.projectID = a
+  precondition(p.preparationOperationID == operation && p.preparationJob.isEmpty)
+  p.close()
+ }
+}
+''')
+            binary = root / 'project-binding'
+            subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
+                            str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
+            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True)
+
+    def test_uncertain_preparation_requires_recovery_across_ui_restart(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fake = root / 'service.py'
+            fake.write_text("""import json, pathlib, sys, threading, time
+state = pathlib.Path(sys.argv[sys.argv.index('--state')+1]); record = state / 'delayed-job.json'
+for line in sys.stdin:
+ x = json.loads(line)
+ if x['op'] == 'job_prepare':
+  job = {'status':'preparation', 'project_id':x['project_id'], 'operation_id':x['operation_id'],
+         'request_key':None, 'authority':None, 'revision':0, 'proposal':x['proposal']}
+  threading.Thread(target=lambda: (time.sleep(.7), record.write_text(json.dumps(job))), daemon=False).start()
+  print(json.dumps({'id':x['id'], 'status':'write_uncertain', 'effect':'indeterminate'}), flush=True)
+ elif x['op'] == 'job_recover':
+  if record.exists(): print(json.dumps({'id':x['id'], 'status':'finished', 'job':json.loads(record.read_text())}), flush=True)
+  else: print(json.dumps({'id':x['id'], 'status':'not_found'}), flush=True)
+ elif x['op'] == 'close': print(json.dumps({'id':x['id'], 'status':'closed'}), flush=True)
+""")
+            swift = root / 'PreparationRecovery.swift'
+            swift.write_text('''import Foundation
+@main struct PreparationRecovery {
+ @MainActor static func main() async {
+  let project = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+  let d = UserDefaults(suiteName: "test.preparation.recovery." + UUID().uuidString)!
+  StartupPreferences.migrate(d); d.set(false, forKey: StartupPreferences.pilotEnabledKey)
+  let args = CommandLine.arguments
+  let p = ApplePilotUI(python: URL(fileURLWithPath: args[1]), service: URL(fileURLWithPath: args[2]), state: URL(fileURLWithPath: args[3]), preferences: d)
+  p.enabled = true; p.projectID = project; p.newPreparation(); let operation = p.preparationOperationID
+  p.proposalObjective = "objectif"; p.proposalAcceptance = "preuve"; p.savePreparation()
+  for _ in 0..<100 { if p.preparationUncertain { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  precondition(p.preparationUncertain)
+  p.close()
+  let q = ApplePilotUI(python: URL(fileURLWithPath: args[1]), service: URL(fileURLWithPath: args[2]), state: URL(fileURLWithPath: args[3]), preferences: d)
+  precondition(q.preparationOperationID == operation && q.preparationUncertain)
+  q.enabled = true; q.loadPreparation()
+  for _ in 0..<100 { if !q.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  precondition(q.preparationUncertain && q.preparationOperationID == operation)
+  q.newPreparation(); precondition(q.preparationOperationID == operation)
+  for _ in 0..<100 { if FileManager.default.fileExists(atPath: args[3] + "/delayed-job.json") { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  q.loadPreparation()
+  for _ in 0..<100 { if !q.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  precondition(!q.preparationUncertain && q.preparationOperationID == operation)
+  q.newPreparation(); precondition(q.preparationOperationID != operation)
+  q.close()
+ }
+}
+''')
+            binary = root / 'preparation-recovery'
+            subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
+                            str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
+            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True)
+
+    def test_delayed_revise_recovery_requires_exact_revision_and_fingerprint(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fake = root / 'service.py'
+            fake.write_text("""import json, pathlib, sys, threading, time
+state = pathlib.Path(sys.argv[sys.argv.index('--state')+1]); committed = state / 'committed-revision.json'
+current = None; revised = None; recoveries = 0
+for line in sys.stdin:
+ x = json.loads(line); op = x['op']
+ if op == 'job_prepare':
+  current = {'status':'preparation', 'project_id':x['project_id'], 'operation_id':x['operation_id'],
+             'request_key':None, 'authority':None, 'revision':0, 'proposal':x['proposal']}
+  print(json.dumps({'id':x['id'], 'status':'finished', 'job':current}), flush=True)
+ elif op == 'job_revise':
+  revised = {'status':'preparation', 'project_id':x['project_id'], 'operation_id':x['operation_id'],
+             'request_key':None, 'authority':None, 'revision':1, 'proposal':x['proposal']}
+  threading.Thread(target=lambda: (time.sleep(.5), committed.write_text(json.dumps(revised)), None), daemon=True).start()
+  print(json.dumps({'id':x['id'], 'status':'write_uncertain', 'effect':'indeterminate'}), flush=True)
+ elif op == 'job_recover':
+  recoveries += 1
+  if recoveries == 1:
+   print(json.dumps({'id':x['id'], 'status':'invalid_proposal', 'effect':'not_admitted'}), flush=True); continue
+  elif recoveries == 2: result = current
+  elif recoveries == 3:
+   result = dict(current, revision=1, proposal={'objective':'concurrent autre', 'acceptance':['preuve'], 'constraints':[], 'questions':[]})
+  else:
+   deadline = time.monotonic() + 2
+   while not committed.exists() and time.monotonic() < deadline: time.sleep(.01)
+   result = json.loads(committed.read_text())
+  print(json.dumps({'id':x['id'], 'status':'finished', 'job':result}), flush=True)
+ elif op == 'close': print(json.dumps({'id':x['id'], 'status':'closed'}), flush=True)
+""")
+            swift = root / 'ReviseRecovery.swift'
+            swift.write_text('''import Foundation
+@main struct ReviseRecovery {
+ @MainActor static func main() async {
+  let project = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+  let d = UserDefaults(suiteName: "test.preparation.revise-recovery." + UUID().uuidString)!
+  StartupPreferences.migrate(d); d.set(false, forKey: StartupPreferences.pilotEnabledKey)
+  let args = CommandLine.arguments
+  let p = ApplePilotUI(python: URL(fileURLWithPath: args[1]), service: URL(fileURLWithPath: args[2]), state: URL(fileURLWithPath: args[3]), preferences: d)
+  p.enabled = true; p.projectID = project; p.newPreparation(); let operation = p.preparationOperationID
+  p.proposalObjective = "objectif"; p.proposalAcceptance = "preuve"; p.savePreparation()
+  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  precondition(!p.preparationUncertain && p.preparationJob["revision"] as? Int == 0)
+  p.proposalObjective = "objectif révisé"; p.revisePreparation()
+  for _ in 0..<100 { if p.preparationUncertain { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  precondition(p.preparationUncertain && p.preparationOperationID == operation)
+  p.loadPreparation()
+  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  precondition(p.preparationUncertain && p.preparationJob["revision"] as? Int == 0 && p.proposalObjective == "objectif révisé")
+  p.loadPreparation()
+  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  precondition(p.preparationUncertain && p.preparationJob["revision"] as? Int == 0 && p.proposalObjective == "objectif révisé")
+  p.loadPreparation()
+  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  precondition(p.preparationUncertain && p.preparationJob["revision"] as? Int == 1 && p.proposalObjective == "objectif révisé")
+  p.loadPreparation()
+  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  precondition(!p.preparationUncertain && p.preparationOperationID == operation)
+  precondition(p.preparationJob["revision"] as? Int == 1 && p.proposalObjective == "objectif révisé")
+  p.close()
+ }
+}
+''')
+            binary = root / 'revise-recovery'
+            subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
+                            str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
+            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True, timeout=10)
+
+    def test_legacy_intent_is_recoverable_but_never_cleared_by_unproven_result(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+            operation = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+            journal = root / 'apple-pilot-intents.noindex'
+            journal.mkdir(mode=0o700)
+            (journal / f'intent-{project}.json').write_text(f'{project}\n{operation}\n')
+            fake = root / 'service.py'
+            fake.write_text("""import json, sys
+for line in sys.stdin:
+ x = json.loads(line)
+ if x['op'] == 'job_recover':
+  job = {'status':'preparation', 'project_id':x['project_id'], 'operation_id':x['operation_id'],
+         'request_key':None, 'authority':None, 'revision':0,
+         'proposal':{'objective':'objectif', 'acceptance':['preuve'], 'constraints':[], 'questions':[]}}
+  print(json.dumps({'id':x['id'], 'status':'finished', 'job':job}), flush=True)
+ elif x['op'] == 'close': print(json.dumps({'id':x['id'], 'status':'closed'}), flush=True)
+""")
+            swift = root / 'LegacyIntent.swift'
+            swift.write_text(f'''import Foundation
+@main struct LegacyIntent {{
+ @MainActor static func main() async {{
+  let d = UserDefaults(suiteName: "test.preparation.legacy." + UUID().uuidString)!
+  StartupPreferences.migrate(d); d.set(false, forKey: StartupPreferences.pilotEnabledKey)
+  let args = CommandLine.arguments
+  let p = ApplePilotUI(python: URL(fileURLWithPath: args[1]), service: URL(fileURLWithPath: args[2]), state: URL(fileURLWithPath: args[3]), preferences: d)
+  p.enabled = true; p.projectID = "{project}"
+  precondition(p.preparationOperationID == "{operation}" && p.preparationUncertain)
+  p.loadPreparation()
+  for _ in 0..<100 {{ if !p.preparationBusy {{ break }}; try? await Task.sleep(nanoseconds: 20_000_000) }}
+  precondition(p.preparationUncertain && p.preparationOperationID == "{operation}")
+  precondition(FileManager.default.fileExists(atPath: args[3] + "/apple-pilot-intents.noindex/intent-{project}.json"))
+  p.close()
+ }}
+}}
+''')
+            binary = root / 'legacy-intent'
+            subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
+                            str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
+            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True, timeout=8)
+
     def test_startup_migration_and_saved_context_without_inference(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -64,14 +600,26 @@ class ApplePilotUISmokeTests(unittest.TestCase):
     let r = ApplePilotUI(python: file, service: file, state: file, preferences: d)
     r.updateKnownProjects([r.projectID])
     precondition(r.workID.isEmpty && r.skill == "checkpoint-review" && !r.canOpen && !r.hostRunning)
-    precondition(!FileManager.default.fileExists(atPath: CommandLine.arguments[1]))
+    let projectA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", projectB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    q.enabled = true; q.projectID = projectA; q.newPreparation()
+    let operationA = q.preparationOperationID
+    q.proposalObjective = "secret A"
+    q.projectID = projectB
+    precondition(q.preparationOperationID.isEmpty && q.proposalObjective.isEmpty)
+    q.newPreparation(); let operationB = q.preparationOperationID
+    precondition(!operationB.isEmpty && operationB != operationA)
+    q.projectID = projectA
+    precondition(q.preparationOperationID == operationA && q.proposalObjective.isEmpty)
+    q.projectID = projectB
+    precondition(q.preparationOperationID == operationB && q.proposalObjective.isEmpty)
+    precondition(!FileManager.default.fileExists(atPath: CommandLine.arguments[1] + "/apple-pilot-intents.noindex"))
   }
 }
 ''')
             binary = root / 'startup-test'
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), str(root / 'never-created')], check=True)
+            subprocess.run([str(binary), str(root)], check=True)
 
     def test_restored_context_starts_once_without_inference(self):
         with tempfile.TemporaryDirectory() as temp:

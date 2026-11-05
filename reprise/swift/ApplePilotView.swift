@@ -8,7 +8,7 @@ struct ApplePilotView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Pilote Apple expérimental").font(.headline)
-            Text("Assistance locale en lecture seule, non qualifiée pour l’orchestration. Aucun connecteur, aucune délégation et aucune écriture automatique de mémoire.")
+            Text("Pilote expérimental. Vous pouvez enregistrer et corriger une préparation locale ; cette interface ne choisit aucun backend ou droit, ne crée aucune autorisation et ne déclenche aucun envoi.")
                 .foregroundStyle(.secondary)
             Toggle("Activer le pilote", isOn: $pilot.enabled)
                 .disabled(!pilot.canSelect || pilot.hostRunning)
@@ -65,10 +65,12 @@ struct ApplePilotView: View {
             }.disabled(!pilot.enabled || !pilot.canSelect)
             HStack {
                 Button("Ouvrir la session") { pilot.open() }.disabled(!pilot.canOpen)
-                Button("Fermer la session") { pilot.close() }.disabled(pilot.closing || pilot.memoryBusy || !pilot.hostRunning)
+                Button("Fermer la session") { pilot.close() }.disabled(pilot.closing || pilot.memoryBusy || pilot.preparationBusy || !pilot.hostRunning)
             }
             if pilot.contextNeedsConfiguration { Text(pilot.contextConfigurationMessage).font(.callout) }
             Text(pilot.status).font(.callout).accessibilityLabel("État du pilote : " + pilot.status)
+            Divider()
+            preparationPanel
             Divider()
             DisclosureGroup("Mémoire du projet — actions de l’opérateur", isExpanded: $pilot.showMemory) {
                 memoryPanel
@@ -90,6 +92,56 @@ struct ApplePilotView: View {
                 Button("Annuler le tour") { pilot.cancel() }.disabled(!pilot.sessionOpen || !pilot.busy || pilot.closing || pilot.cancelling)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var preparationPanel: some View {
+        GroupBox("Préparation de mission — locale, sans autorisation ni envoi") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Le brouillon reste distinct d’une mission admise. Les questions sont conservées comme points à clarifier.")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Nouvelle préparation") { pilot.newPreparation() }
+                        .disabled(!pilot.enabled || pilot.projectID.isEmpty || pilot.preparationBusy)
+                    Button("Charger cette opération") { pilot.loadPreparation() }
+                        .disabled(!pilot.enabled || pilot.preparationOperationID.isEmpty || pilot.preparationBusy)
+                    Text(pilot.preparationOperationID.isEmpty ? "Aucune opération" : pilot.preparationOperationID)
+                        .font(.caption).textSelection(.enabled)
+                }
+                TextField("Objectif", text: $pilot.proposalObjective, axis: .vertical)
+                    .textFieldStyle(.roundedBorder).lineLimit(2...4)
+                    .disabled(pilot.preparationBusy || (!pilot.preparationJob.isEmpty && !pilot.preparationCanEdit))
+                TextField("Critères d’acceptation, un par ligne", text: $pilot.proposalAcceptance, axis: .vertical)
+                    .textFieldStyle(.roundedBorder).lineLimit(2...4)
+                    .disabled(pilot.preparationBusy || (!pilot.preparationJob.isEmpty && !pilot.preparationCanEdit))
+                TextField("Contraintes, une par ligne", text: $pilot.proposalConstraints, axis: .vertical)
+                    .textFieldStyle(.roundedBorder).lineLimit(2...4)
+                    .disabled(pilot.preparationBusy || (!pilot.preparationJob.isEmpty && !pilot.preparationCanEdit))
+                TextField("Questions non résolues, une par ligne", text: $pilot.proposalQuestions, axis: .vertical)
+                    .textFieldStyle(.roundedBorder).lineLimit(2...5)
+                    .disabled(pilot.preparationBusy || (!pilot.preparationJob.isEmpty && !pilot.preparationCanEdit))
+                HStack {
+                    Button(pilot.preparationJob.isEmpty ? "Enregistrer le brouillon" : "Réviser le brouillon") {
+                        if pilot.preparationJob.isEmpty { pilot.savePreparation() } else { pilot.revisePreparation() }
+                    }
+                    .disabled(!pilot.enabled || pilot.preparationOperationID.isEmpty || pilot.projectID.isEmpty
+                              || pilot.preparationBusy || pilot.preparationUncertain
+                              || (!pilot.preparationJob.isEmpty && !pilot.preparationCanEdit))
+                    if let revision = pilot.preparationJob["revision"] as? Int {
+                        Text("Révision \(revision)").font(.caption)
+                    }
+                    Text("Aucune requête : \(pilot.preparationJob["request_key"] is NSNull || pilot.preparationJob["request_key"] == nil ? "oui" : "non")")
+                        .font(.caption)
+                }
+                if let questions = pilot.preparationJob["proposal"] as? [String: Any],
+                   let items = questions["questions"] as? [String], !items.isEmpty {
+                    Text("À clarifier").font(.caption.bold())
+                    ForEach(Array(items.enumerated()), id: \.offset) { _, question in
+                        Text("• " + question).font(.caption).textSelection(.enabled)
+                    }
+                }
+                Text(pilot.preparationStatus).font(.callout)
+            }
+        }
     }
 
     private var memoryPanel: some View {

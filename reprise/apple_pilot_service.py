@@ -11,6 +11,7 @@ from pathlib import Path
 
 import apple_pilot
 import apple_pilot_transport
+import coordinator_jobs
 import orchestrator_memory
 import orchestrator_memory_service
 
@@ -50,13 +51,14 @@ class _Backend:
 class Service:
     """Single scoped session; the writer callback must be thread-safe."""
     def __init__(self, state, emit, *, memory_factory=orchestrator_memory.Memory,
-                 backend_factory=apple_pilot_transport.LocalFM):
+                 backend_factory=apple_pilot_transport.LocalFM, jobs_factory=coordinator_jobs.Jobs):
         self.state = Path(state)
         if not self.state.is_absolute():
             raise ValueError('absolute state path required')
         self.emit = emit
         self.memory_factory = memory_factory
         self.backend_factory = backend_factory
+        self.jobs_factory = jobs_factory
         self.lock = threading.Lock()
         self.ids = set()
         self.pilot = None
@@ -67,6 +69,8 @@ class Service:
         self.memory_service = None
         self.memory_worker = None
         self.memory_closing = False
+        self.job_worker = None
+        self.job_closing = False
 
     def _reply(self, ident, status, **values):
         self.emit({'id': ident, 'status': status, **values})
@@ -89,6 +93,9 @@ class Service:
             'close': {'id', 'op'},
             'memory_bind': {'id', 'op', 'enabled', 'project_id'},
             'memory_call': {'id', 'op', 'request'},
+            'job_prepare': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'proposal'},
+            'job_recover': {'id', 'op', 'enabled', 'project_id', 'operation_id'},
+            'job_revise': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'proposal', 'expected_revision'},
         }
         if op not in keys or set(request) != keys[op]:
             self._reply(ident, 'invalid_request')
@@ -99,6 +106,33 @@ class Service:
             self._reply(ident, 'error')
 
     def _dispatch(self, ident, op, request):
+        if op in ('job_prepare', 'job_recover', 'job_revise'):
+            if request.get('enabled') is not True:
+                self._reply(ident, 'not_enabled')
+                return
+            project = _uuid(request['project_id'])
+            operation = _uuid(request['operation_id'])
+            if op == 'job_revise' and (type(request['expected_revision']) is not int or request['expected_revision'] < 0):
+                self._reply(ident, 'invalid_request')
+                return
+            if op != 'job_recover' and not isinstance(request.get('proposal'), dict):
+                self._reply(ident, 'invalid_request')
+                return
+            with self.lock:
+                if self.job_closing:
+                    status = 'job_closing'
+                elif self.job_worker is not None:
+                    status = 'job_busy'
+                else:
+                    worker = threading.Thread(target=self._job_call,
+                        args=(ident, op, project, operation, copy.deepcopy(request)), daemon=True)
+                    self.job_worker = worker
+                    status = None
+            if status:
+                self._reply(ident, status)
+            else:
+                worker.start()
+            return
         if op == 'catalog':
             self._reply(ident, 'finished', skills=apple_pilot.catalog(), experimental=True)
             return
@@ -250,10 +284,59 @@ class Service:
             with self.lock:
                 self.memory_worker = None
 
+    def _job_call(self, ident, op, project, operation, request):
+        validation_only = op != 'job_recover'
+        try:
+            if validation_only:
+                coordinator_jobs._proposal(request['proposal'])
+                if op == 'job_revise' and (type(request['expected_revision']) is not int or request['expected_revision'] < 0):
+                    raise ValueError('Invalid expected revision')
+            validation_only = False
+            jobs = self.jobs_factory(self.state)
+            if op == 'job_prepare':
+                result = jobs.prepare_proposal(project, operation, request['proposal'])
+            elif op == 'job_recover':
+                result = jobs.recover(project, operation)
+                if result is None:
+                    response = {'status': 'not_found'}
+                    result = None
+                else:
+                    response = {'status': 'finished', 'job': result}
+            else:
+                result = jobs.revise(project, operation, request['proposal'],
+                                     expected_revision=request['expected_revision'])
+            if op != 'job_recover' or result is not None:
+                response = {'status': 'finished', 'job': result}
+        except coordinator_jobs.WriteUncertainError:
+            response = {'status': 'write_uncertain', 'effect': 'indeterminate'}
+        except ValueError as exc:
+            message = str(exc)
+            if 'Revision conflict' in message:
+                status = 'revision_conflict'
+            elif 'admitted' in message or 'Draft only' in message:
+                status = 'mission_locked'
+            elif 'not found' in message:
+                status = 'not_found'
+            else:
+                status = 'invalid_proposal'
+            response = {'status': status}
+            if validation_only:
+                response['effect'] = 'not_admitted'
+        except Exception:
+            response = {'status': 'job_unavailable'}
+        try:
+            self.emit({'id': ident, **response})
+        except OSError:
+            pass
+        finally:
+            with self.lock:
+                self.job_worker = None
+
     def shutdown(self, timeout=70):
         deadline = time.monotonic() + timeout
         with self.lock:
             self.memory_closing = True
+            self.job_closing = True
             if self.cancel_event:
                 self.cancel_event.set()
             if self.pilot:
@@ -261,11 +344,13 @@ class Service:
                 self.pilot = None
             worker = self.worker
             memory_worker = self.memory_worker
-        for pending in (worker, memory_worker):
+            job_worker = self.job_worker
+        for pending in (worker, memory_worker, job_worker):
             if pending:
                 pending.join(timeout=max(0, deadline - time.monotonic()))
         return (worker is None or not worker.is_alive()) and (
-            memory_worker is None or not memory_worker.is_alive()) and not self.poisoned
+            memory_worker is None or not memory_worker.is_alive()) and (
+            job_worker is None or not job_worker.is_alive()) and not self.poisoned
 
 
 def serve(input_stream, output_stream, state, *, memory_factory=orchestrator_memory.Memory,

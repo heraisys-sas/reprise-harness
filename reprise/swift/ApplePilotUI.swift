@@ -1,5 +1,7 @@
 import Foundation
 import Combine
+import CryptoKit
+import Darwin
 
 /// One-time application of the operator's activation request. Subsequent changes persist.
 enum StartupPreferences {
@@ -18,9 +20,264 @@ enum StartupPreferences {
     }
 }
 
+/// Crash-durable identity marker written before any preparation request is emitted.
+private struct PreparationIntent: Codable, Equatable {
+    let project: String
+    let operation: String
+    let kind: String
+    let revision: Int
+    let fingerprint: String
+    let attempt: String?
+
+    init(project: String, operation: String, kind: String, revision: Int, fingerprint: String, attempt: String? = nil) {
+        self.project = project; self.operation = operation; self.kind = kind
+        self.revision = revision; self.fingerprint = fingerprint; self.attempt = attempt
+    }
+}
+
+private final class PreparationIntentJournal {
+    enum JournalError: Error { case invalidDirectory, unsafeFile, writeFailed, identityConflict }
+    private let state: URL
+    private let folderName = "apple-pilot-intents.noindex"
+    private let syncFD: (Int32) -> Int32
+    private let unlinkMarker: (Int32, String) -> Int32
+
+    init(state: URL, syncFD: @escaping (Int32) -> Int32 = { Darwin.fsync($0) },
+         unlinkMarker: @escaping (Int32, String) -> Int32 = { Darwin.unlinkat($0, $1, 0) }) {
+        self.state = state
+        self.syncFD = syncFD
+        self.unlinkMarker = unlinkMarker
+    }
+
+    func read(project: String) throws -> PreparationIntent? {
+        try withFolder(create: false) { folder in try readIntent(folder: folder, project: project) }
+    }
+
+    private struct TerminalReceipt: Codable {
+        let intent: PreparationIntent
+        let effect: String
+        let status: String
+    }
+
+    // The receipt contains identity and a protocol status only, never proposal text.
+    func recordTerminal(_ intent: PreparationIntent, effect: String, status: String) throws {
+        guard ["finished", "not_admitted"].contains(effect), !status.isEmpty,
+              status.count <= 64, status.allSatisfy({ $0.isASCII && ($0.isLetter || $0 == "_") }) else {
+            throw JournalError.unsafeFile
+        }
+        try withFolder(create: true) { folder in
+            try withLock(folder: folder) {
+                guard try readIntent(folder: folder, project: intent.project) == intent else {
+                    throw JournalError.identityConflict
+                }
+                try atomicWrite(TerminalReceipt(intent: intent, effect: effect, status: status),
+                                folder: folder, name: terminalName(intent.project))
+            }
+        }
+    }
+
+    func terminal(project: String) throws -> PreparationIntent? {
+        try withFolder(create: false) { folder in
+            guard folder >= 0 else { return nil }
+            return try withLock(folder: folder) {
+                let fd = Darwin.openat(folder, terminalName(project), O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+                if fd < 0 && errno == ENOENT { return nil }
+                guard fd >= 0 else { throw JournalError.unsafeFile }
+                defer { _ = Darwin.close(fd) }
+                try checkFile(fd)
+                var data = Data(), buffer = [UInt8](repeating: 0, count: 1024)
+                while true {
+                    let count = Darwin.read(fd, &buffer, buffer.count)
+                    if count < 0 && errno == EINTR { continue }
+                    guard count >= 0, data.count + count <= 2048 else { throw JournalError.unsafeFile }
+                    if count == 0 { break }
+                    data.append(buffer, count: count)
+                }
+                let receipt = try JSONDecoder().decode(TerminalReceipt.self, from: data)
+                let intent = receipt.intent
+                guard intent.project == project,
+                      intent.attempt == nil || UUID(uuidString: intent.attempt!)?.uuidString.lowercased() == intent.attempt,
+                      UUID(uuidString: intent.operation)?.uuidString.lowercased() == intent.operation,
+                      ["prepare", "revise"].contains(intent.kind), intent.revision >= 0,
+                      intent.fingerprint.count == 64,
+                      intent.fingerprint.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
+                      ["finished", "not_admitted"].contains(receipt.effect), !receipt.status.isEmpty,
+                      receipt.status.count <= 64,
+                      receipt.status.allSatisfy({ $0.isASCII && ($0.isLetter || $0 == "_") }) else {
+                    throw JournalError.unsafeFile
+                }
+                // Retry durability after a previous rename followed by failed fsync.
+                guard syncFD(fd) == 0, syncFD(folder) == 0 else { throw JournalError.writeFailed }
+                return intent
+            }
+        }
+    }
+
+    func write(_ intent: PreparationIntent) throws {
+        try withFolder(create: true) { folder in
+            try withLock(folder: folder) {
+                if let existing = try readIntent(folder: folder, project: intent.project), existing != intent {
+                    throw JournalError.identityConflict
+                }
+                // Retrying the same identity/proposal is a new attempt: an old
+                // refusal must never resolve it. Retain the old receipt as history.
+                if Darwin.renameat(folder, terminalName(intent.project), folder,
+                                   ".terminal-history-" + UUID().uuidString.lowercased()) != 0 && errno != ENOENT {
+                    throw JournalError.writeFailed
+                }
+                guard syncFD(folder) == 0 else { throw JournalError.writeFailed }
+                try atomicWrite(intent, folder: folder, name: markerName(intent.project))
+            }
+        }
+    }
+
+    private func terminalName(_ project: String) -> String { "terminal-\(project).json" }
+
+    private func atomicWrite<T: Encodable>(_ value: T, folder: Int32, name: String) throws {
+        let temporary = ".intent-" + UUID().uuidString.lowercased()
+        let fd = Darwin.openat(folder, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(0o600))
+        guard fd >= 0 else { throw JournalError.writeFailed }
+        defer { _ = Darwin.close(fd); _ = Darwin.unlinkat(folder, temporary, 0) }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(value)
+        try data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { throw JournalError.writeFailed }
+            var written = 0
+            while written < raw.count {
+                let count = Darwin.write(fd, base.advanced(by: written), raw.count - written)
+                if count < 0 && errno == EINTR { continue }
+                guard count > 0 else { throw JournalError.writeFailed }
+                written += count
+            }
+        }
+        guard syncFD(fd) == 0 else { throw JournalError.writeFailed }
+        guard Darwin.renameat(folder, temporary, folder, name) == 0 else { throw JournalError.writeFailed }
+        guard syncFD(folder) == 0 else { throw JournalError.writeFailed }
+    }
+
+    func clear(_ intent: PreparationIntent) -> Bool {
+        do {
+            return try withFolder(create: false) { folder in
+                if folder < 0 { return true }
+                return try withLock(folder: folder) {
+                    guard let existing = try readIntent(folder: folder, project: intent.project) else { return syncFD(folder) == 0 }
+                    guard existing == intent else { return false }
+                    guard unlinkMarker(folder, markerName(intent.project)) == 0 else { return false }
+                    return syncFD(folder) == 0
+                }
+            }
+        } catch { return false }
+    }
+
+    private func markerName(_ project: String) -> String { "intent-\(project).json" }
+
+    private func withFolder<T>(create: Bool, _ body: (Int32) throws -> T) throws -> T {
+        let root = Darwin.open(state.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard root >= 0 else { throw JournalError.invalidDirectory }
+        defer { _ = Darwin.close(root) }
+        try checkDirectory(root)
+        if create {
+            let created = Darwin.mkdirat(root, folderName, mode_t(0o700))
+            if created != 0 && errno != EEXIST {
+                throw JournalError.invalidDirectory
+            }
+            // Also sync after EEXIST: a previous mkdir may have succeeded while
+            // its parent fsync failed, so the directory is not yet proven durable.
+            guard syncFD(root) == 0 else { throw JournalError.writeFailed }
+        }
+        let folder = Darwin.openat(root, folderName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        if folder < 0 && !create && errno == ENOENT { return try body(-1) }
+        guard folder >= 0 else { throw JournalError.invalidDirectory }
+        defer { _ = Darwin.close(folder) }
+        try checkDirectory(folder)
+        return try body(folder)
+    }
+
+    private func checkDirectory(_ fd: Int32) throws {
+        var info = stat()
+        guard Darwin.fstat(fd, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
+              info.st_uid == getuid(), (info.st_mode & mode_t(0o077)) == 0 else {
+            throw JournalError.invalidDirectory
+        }
+    }
+
+    private func withLock<T>(folder: Int32, _ body: () throws -> T) throws -> T {
+        let fd = Darwin.openat(folder, "lock", O_RDWR | O_CREAT | O_NOFOLLOW, mode_t(0o600))
+        guard fd >= 0 else { throw JournalError.unsafeFile }
+        defer { _ = Darwin.close(fd) }
+        try checkFile(fd)
+        var lock = flock()
+        lock.l_type = Int16(F_WRLCK)
+        lock.l_whence = Int16(SEEK_SET)
+        // This runs on the main actor. Never wait indefinitely for a lock held
+        // by another or suspended process; fail closed and let the operator retry.
+        guard Darwin.fcntl(fd, F_SETLK, &lock) == 0 else { throw JournalError.writeFailed }
+        defer {
+            lock.l_type = Int16(F_UNLCK)
+            _ = Darwin.fcntl(fd, F_SETLK, &lock)
+        }
+        return try body()
+    }
+
+    private func checkFile(_ fd: Int32) throws {
+        var info = stat()
+        guard Darwin.fstat(fd, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              info.st_uid == getuid(), info.st_nlink == 1, (info.st_mode & mode_t(0o077)) == 0 else {
+            throw JournalError.unsafeFile
+        }
+    }
+
+    private func readIntent(folder: Int32, project: String) throws -> PreparationIntent? {
+        guard folder >= 0 else { return nil }
+        let fd = Darwin.openat(folder, markerName(project), O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        if fd < 0 && errno == ENOENT { return nil }
+        guard fd >= 0 else { throw JournalError.unsafeFile }
+        defer { _ = Darwin.close(fd) }
+        try checkFile(fd)
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 128)
+        while true {
+            let count = Darwin.read(fd, &buffer, buffer.count)
+            if count < 0 && errno == EINTR { continue }
+            guard count >= 0, data.count + count <= 1024 else { throw JournalError.unsafeFile }
+            if count == 0 { break }
+            data.append(buffer, count: count)
+        }
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        if let object, [Set(["project", "operation", "kind", "revision", "fingerprint"]), Set(["project", "operation", "kind", "revision", "fingerprint", "attempt"])].contains(Set(object.keys)),
+           let intent = try? JSONDecoder().decode(PreparationIntent.self, from: data),
+           intent.project == project,
+           intent.attempt == nil || UUID(uuidString: intent.attempt!)?.uuidString.lowercased() == intent.attempt,
+           UUID(uuidString: intent.operation)?.uuidString.lowercased() == intent.operation,
+           ["prepare", "revise"].contains(intent.kind), intent.revision >= 0,
+           intent.fingerprint.count == 64,
+           intent.fingerprint.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) {
+            return intent
+        }
+        // A prior journal only stored the UUID. Keep it recoverable, but never
+        // treat it as evidence that a particular mutation has completed.
+        if let text = String(data: data, encoding: .utf8) {
+            let parts = text.split(separator: "\n", omittingEmptySubsequences: false)
+            if parts.count == 3, String(parts[0]) == project, parts[2].isEmpty,
+               let operation = UUID(uuidString: String(parts[1])),
+               operation.uuidString.lowercased() == String(parts[1]) {
+                return PreparationIntent(project: project, operation: operation.uuidString.lowercased(),
+                                         kind: "legacy", revision: -1, fingerprint: "")
+            }
+        }
+        throw JournalError.unsafeFile
+    }
+}
+
 /// Isolated UI controller. The caller supplies trusted bundled executable paths.
 @MainActor
 final class ApplePilotUI: ObservableObject {
+    private struct PendingPreparation {
+        let project: String
+        let operation: String
+        let intent: PreparationIntent?
+    }
+
     struct Message: Identifiable {
         let id = UUID()
         let role: String
@@ -29,11 +286,21 @@ final class ApplePilotUI: ObservableObject {
 
     @Published var enabled = false { didSet { preferences?.set(enabled, forKey: StartupPreferences.pilotEnabledKey) } }
     @Published var showMemory = false
-    @Published var projectID = "" { didSet { saveSelection(projectID, key: "ApplePilotProject", uuid: true) } }
+    @Published var projectID = "" { didSet { saveSelection(projectID, key: "ApplePilotProject", uuid: true); selectPreparationProject(projectID) } }
     @Published var workID = "" { didSet { saveSelection(workID, key: "ApplePilotWork", uuid: true) } }
     @Published var checkpointID = "" { didSet { saveSelection(checkpointID, key: "ApplePilotCheckpoint", uuid: true) } }
     @Published var skill = "checkpoint-review" { didSet { saveSelection(skill, key: "ApplePilotSkill", uuid: false) } }
     @Published var prompt = ""
+    @Published var proposalObjective = ""
+    @Published var proposalAcceptance = ""
+    @Published var proposalConstraints = ""
+    @Published var proposalQuestions = ""
+    @Published private(set) var preparationOperationID = ""
+    @Published private(set) var preparationStatus = "Aucune préparation chargée."
+    @Published private(set) var preparationJob: [String: Any] = [:]
+    @Published private(set) var preparationBusy = false
+    @Published private(set) var preparationUncertain = false
+    @Published private(set) var preparationJournalUnavailable = false
     @Published private(set) var status = "Pilote arrêté."
     @Published private(set) var messages: [Message] = []
     @Published private(set) var checkpoints: [[String: Any]] = []
@@ -125,6 +392,8 @@ final class ApplePilotUI: ObservableObject {
 
     private let preferences: UserDefaults?
     private var knownProjects: Set<String>?
+    private var preparationProjectID = ""
+    private var preparationPending: [String: PendingPreparation] = [:]
     private var restoredContext: [String]?
     private var startupOpenAttempted = false
     private let validSkills: Set<String> = ["checkpoint-review", "project-summary"]
@@ -132,6 +401,7 @@ final class ApplePilotUI: ObservableObject {
     private let python: URL
     private let service: URL
     private let state: URL
+    private let preparationJournal: PreparationIntentJournal
     private let requestTimeout: TimeInterval
     private var process: Process?
     private var hostTerminating = false
@@ -151,11 +421,13 @@ final class ApplePilotUI: ObservableObject {
     private var readEnded = false
     nonisolated private static let maximumFrame = 131_072
 
-    init(python: URL, service: URL, state: URL, requestTimeout: TimeInterval = 90, preferences: UserDefaults? = nil) {
+    init(python: URL, service: URL, state: URL, requestTimeout: TimeInterval = 90,
+         preferences: UserDefaults? = nil, journalSync: @escaping (Int32) -> Int32 = { Darwin.fsync($0) }) {
         self.preferences = preferences
         self.python = python
         self.service = service
         self.state = state
+        self.preparationJournal = PreparationIntentJournal(state: state, syncFD: journalSync)
         self.requestTimeout = max(0.1, requestTimeout)
         if let preferences {
             StartupPreferences.migrate(preferences)
@@ -163,6 +435,8 @@ final class ApplePilotUI: ObservableObject {
             let project = preferences.string(forKey: "ApplePilotProject") ?? ""
             let work = preferences.string(forKey: "ApplePilotWork") ?? ""
             let checkpoint = preferences.string(forKey: "ApplePilotCheckpoint") ?? ""
+            let prepOperation = preferences.string(forKey: "ApplePilotPreparationOperation") ?? ""
+            let prepProject = preferences.string(forKey: "ApplePilotPreparationProject") ?? ""
             if canonical(project) { projectID = project }
             if canonical(work) { workID = work }
             if preferences.bool(forKey: "ApplePilotCheckpointInvalid") {
@@ -170,6 +444,17 @@ final class ApplePilotUI: ObservableObject {
             } else if canonical(checkpoint) { checkpointID = checkpoint }
             if let savedSkill = preferences.string(forKey: "ApplePilotSkill"), validSkills.contains(savedSkill) { skill = savedSkill }
             restoredContext = [projectID, workID, checkpointID, skill]
+            if canonical(prepOperation) && canonical(prepProject) {
+                var operations = preferences.dictionary(forKey: "ApplePilotPreparationOperations") as? [String: String] ?? [:]
+                operations[prepProject] = prepOperation
+                preferences.set(operations, forKey: "ApplePilotPreparationOperations")
+                if prepProject == projectID {
+                    preparationOperationID = prepOperation
+                    preparationProjectID = prepProject
+                    preparationUncertain = (preferences.dictionary(forKey: "ApplePilotPreparationUncertainOperations") as? [String: String])?[prepProject] == prepOperation
+                }
+            }
+            if canonical(projectID) { restorePreparationIntent(projectID) }
         }
     }
 
@@ -215,7 +500,7 @@ final class ApplePilotUI: ObservableObject {
     }
 
     var hostRunning: Bool { process != nil }
-    var canSelect: Bool { !sessionOpen && !busy && !memoryBusy && !closing && !cleanupUnconfirmed && !hostTerminating }
+    var canSelect: Bool { !sessionOpen && !busy && !memoryBusy && !preparationBusy && !closing && !cleanupUnconfirmed && !hostTerminating }
     var canOpen: Bool {
         enabled && canSelect && !contextNeedsConfiguration
     }
@@ -284,6 +569,176 @@ final class ApplePilotUI: ObservableObject {
         }
     }
 
+    private func selectPreparationProject(_ project: String) {
+        guard preparationProjectID != project else { return }
+        preparationProjectID = project
+        let operations = preferences?.dictionary(forKey: "ApplePilotPreparationOperations") as? [String: String] ?? [:]
+        preparationOperationID = operations[project] ?? ""
+        preparationJob = [:]
+        proposalObjective = ""
+        proposalAcceptance = ""
+        proposalConstraints = ""
+        proposalQuestions = ""
+        preparationUncertain = uncertainPreparationOperation(for: project) == preparationOperationID && !preparationOperationID.isEmpty
+        restorePreparationIntent(project)
+        preparationStatus = preparationOperationID.isEmpty ? "Aucune préparation liée à ce projet." :
+            (preparationJournalUnavailable ? "Journal local inaccessible ; aucune action ne sera envoyée." :
+             preparationUncertain ? "Opération incertaine ; rechargez-la avant toute nouvelle action." : "Chargez la préparation enregistrée pour ce projet.")
+    }
+
+    private func restorePreparationIntent(_ project: String) {
+        do {
+            let active = try preparationJournal.read(project: project)
+            if let terminal = try preparationJournal.terminal(project: project), active == nil || active == terminal {
+                preparationOperationID = terminal.operation
+                preparationProjectID = project
+                guard preparationJournal.clear(terminal) else { throw PreparationIntentJournal.JournalError.writeFailed }
+                setPreparationUncertain(false, project: project, operation: terminal.operation)
+                preparationUncertain = false
+                preparationJournalUnavailable = false
+                return
+            }
+            if let intent = active {
+                preparationOperationID = intent.operation
+                preparationProjectID = project
+                preparationUncertain = true
+                preparationJournalUnavailable = false
+            } else {
+                preparationJournalUnavailable = false
+            }
+        } catch {
+            preparationJournalUnavailable = true
+            preparationUncertain = true
+        }
+    }
+
+    private func uncertainPreparationOperation(for project: String) -> String? {
+        (preferences?.dictionary(forKey: "ApplePilotPreparationUncertainOperations") as? [String: String])?[project]
+    }
+
+    private func clearPreparationIntent(_ intent: PreparationIntent, effect: String, status: String) -> Bool {
+        do {
+            try preparationJournal.recordTerminal(intent, effect: effect, status: status)
+            guard preparationJournal.clear(intent) else { throw PreparationIntentJournal.JournalError.writeFailed }
+            if preparationProjectID == intent.project { preparationJournalUnavailable = false }
+            return true
+        } catch {
+            preparationJournalUnavailable = true
+            setPreparationUncertain(true, project: intent.project, operation: intent.operation)
+            return false
+        }
+    }
+
+    private func setPreparationUncertain(_ uncertain: Bool, project: String, operation: String) {
+        var values = preferences?.dictionary(forKey: "ApplePilotPreparationUncertainOperations") as? [String: String] ?? [:]
+        if uncertain { values[project] = operation }
+        else if values[project] == operation { values.removeValue(forKey: project) }
+        preferences?.set(values, forKey: "ApplePilotPreparationUncertainOperations")
+        if preparationProjectID == project && preparationOperationID == operation { preparationUncertain = uncertain }
+    }
+
+    var preparationCanEdit: Bool { preparationJob["status"] as? String == "preparation" && !preparationBusy && !preparationUncertain && !preparationJournalUnavailable }
+
+    func newPreparation() {
+        guard enabled, canonical(projectID), !preparationBusy, !preparationUncertain,
+              !preparationJournalUnavailable, !closing else { return }
+        do {
+            if let intent = try preparationJournal.read(project: projectID) {
+                preparationOperationID = intent.operation
+                preparationProjectID = projectID
+                preparationUncertain = true
+                preparationStatus = "Une opération existe déjà pour ce projet ; rechargez-la avant d’en créer une autre."
+                return
+            }
+        } catch {
+            preparationJournalUnavailable = true
+            preparationUncertain = true
+            preparationStatus = "Journal local inaccessible ; aucune nouvelle opération n’a été créée."
+            return
+        }
+        let operation = UUID().uuidString.lowercased()
+        preparationOperationID = operation
+        preparationProjectID = projectID
+        preferences?.set(operation, forKey: "ApplePilotPreparationOperation")
+        preferences?.set(projectID, forKey: "ApplePilotPreparationProject")
+        var operations = preferences?.dictionary(forKey: "ApplePilotPreparationOperations") as? [String: String] ?? [:]
+        operations[projectID] = operation
+        preferences?.set(operations, forKey: "ApplePilotPreparationOperations")
+        preparationJob = [:]
+        proposalObjective = ""
+        proposalAcceptance = ""
+        proposalConstraints = ""
+        proposalQuestions = ""
+        preparationUncertain = false
+        preparationStatus = "Nouvelle préparation locale ; aucune autorisation ni requête créée."
+    }
+
+    private func proposalPayload() -> [String: Any] {
+        ["objective": proposalObjective,
+         "acceptance": proposalAcceptance.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty },
+         "constraints": proposalConstraints.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty },
+         "questions": proposalQuestions.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }]
+    }
+
+    private func canonicalProposalData(_ proposal: [String: Any]) -> Data? {
+        try? JSONSerialization.data(withJSONObject: proposal, options: [.sortedKeys])
+    }
+
+    private func proposalFingerprint(_ proposal: [String: Any]) -> String? {
+        guard let data = canonicalProposalData(proposal) else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    func savePreparation() {
+        guard enabled, canonical(projectID), preparationProjectID == projectID,
+              canonical(preparationOperationID), !preparationBusy, !preparationUncertain,
+              !preparationJournalUnavailable,
+              !proposalObjective.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              startHost() else { return }
+        preparationBusy = true
+        preparationStatus = "Enregistrement local de la préparation…"
+        request("job_prepare", fields: ["enabled": true, "project_id": projectID,
+            "operation_id": preparationOperationID, "proposal": proposalPayload()])
+    }
+
+    func loadPreparation() {
+        guard enabled, canonical(projectID), canonical(preparationOperationID),
+              preparationProjectID == projectID, !preparationBusy else { return }
+        let wasUncertain = preparationUncertain || preparationJournalUnavailable
+        restorePreparationIntent(projectID)
+        if wasUncertain && !preparationUncertain && !preparationJournalUnavailable {
+            preparationStatus = "Preuve terminale locale durable retrouvée ; aucune requête envoyée."
+            return
+        }
+        guard enabled, canonical(projectID), canonical(preparationOperationID),
+              preparationProjectID == projectID, !preparationBusy, startHost() else { return }
+        preparationBusy = true
+        preparationStatus = "Chargement de la préparation…"
+        request("job_recover", fields: ["enabled": true, "project_id": projectID,
+            "operation_id": preparationOperationID])
+    }
+
+    func revisePreparation() {
+        guard preparationCanEdit, canonical(projectID), preparationProjectID == projectID,
+              !preparationJournalUnavailable, let revision = preparationJob["revision"] as? Int else { return }
+        let proposal = proposalPayload()
+        guard let proposedData = canonicalProposalData(proposal),
+              let existing = preparationJob["proposal"] as? [String: Any],
+              let existingData = canonicalProposalData(existing) else {
+            preparationStatus = "Proposition impossible à comparer de façon canonique ; aucune révision envoyée."
+            return
+        }
+        guard proposedData != existingData else {
+            preparationStatus = "Proposition identique ; aucune nouvelle révision ni requête créée."
+            return
+        }
+        guard startHost() else { return }
+        preparationBusy = true
+        preparationStatus = "Révision locale avec contrôle de version…"
+        request("job_revise", fields: ["enabled": true, "project_id": projectID,
+            "operation_id": preparationOperationID, "proposal": proposal, "expected_revision": revision])
+    }
+
     func listCheckpoints() {
         guard enabled && canSelect && canonical(projectID) && canonical(workID), startHost() else { return }
         busy = true
@@ -319,7 +774,7 @@ final class ApplePilotUI: ObservableObject {
     }
 
     func close() {
-        guard process != nil, !closing, !memoryBusy else { return }
+        guard process != nil, !closing, !memoryBusy, !preparationBusy else { return }
         closing = true
         sessionOpen = false
         status = "Fermeture demandée ; nettoyage en cours…"
@@ -341,6 +796,10 @@ final class ApplePilotUI: ObservableObject {
               var bytes = try? JSONSerialization.data(withJSONObject: payload), bytes.count < 65536 else {
             status = "Requête invalide ou trop volumineuse."
             busy = false
+            if operation == "job_prepare" || operation == "job_recover" || operation == "job_revise" {
+                preparationBusy = false
+                preparationStatus = "La requête locale n’a pas été envoyée ; conservez la même identité."
+            }
             if operation == "memory_call" || operation == "memory_bind" {
                 memoryBusy = false
                 memoryStatus = "Requête mémoire non envoyée."
@@ -352,6 +811,40 @@ final class ApplePilotUI: ObservableObject {
             return ident
         }
         bytes.append(10)
+        if ["job_prepare", "job_recover", "job_revise"].contains(operation),
+           let project = fields["project_id"] as? String, let preparation = fields["operation_id"] as? String {
+            var intent: PreparationIntent?
+            do {
+                if operation == "job_prepare" || operation == "job_revise" {
+                    guard let proposal = fields["proposal"] as? [String: Any],
+                          let fingerprint = proposalFingerprint(proposal) else { throw PreparationIntentJournal.JournalError.writeFailed }
+                    let revision: Int
+                    let kind: String
+                    if operation == "job_prepare" { kind = "prepare"; revision = 0 }
+                    else {
+                        guard let expected = fields["expected_revision"] as? Int, expected >= 0 else {
+                            throw PreparationIntentJournal.JournalError.writeFailed
+                        }
+                        kind = "revise"; revision = expected + 1
+                    }
+                    let record = PreparationIntent(project: project, operation: preparation,
+                        kind: kind, revision: revision, fingerprint: fingerprint, attempt: UUID().uuidString.lowercased())
+                    try preparationJournal.write(record)
+                    intent = record
+                } else if let existing = try preparationJournal.read(project: project) {
+                    guard existing.operation == preparation else { throw PreparationIntentJournal.JournalError.identityConflict }
+                    intent = existing
+                }
+                preparationJournalUnavailable = false
+            } catch {
+                preparationBusy = false
+                preparationUncertain = true
+                preparationJournalUnavailable = true
+                preparationStatus = "Journal local non durable ; aucune requête n’a été envoyée."
+                return ident
+            }
+            preparationPending[ident] = PendingPreparation(project: project, operation: preparation, intent: intent)
+        }
         pending[ident] = operation
         let current = generation
         DispatchQueue.main.asyncAfter(deadline: .now() + requestTimeout) { [weak self] in
@@ -409,6 +902,63 @@ final class ApplePilotUI: ObservableObject {
             return
         }
         switch operation {
+        case "job_prepare", "job_recover", "job_revise":
+            guard let context = preparationPending.removeValue(forKey: ident) else { ioFailed(generation: current); return }
+            preparationBusy = false
+            guard context.project == projectID, context.project == preparationProjectID,
+                  context.operation == preparationOperationID else { return }
+            if result == "finished", let job = object["job"] as? [String: Any],
+               job["project_id"] as? String == context.project,
+               job["operation_id"] as? String == context.operation {
+                preparationJob = job
+                if let intent = context.intent {
+                    let exactProof = job["status"] as? String == "preparation"
+                        && job["revision"] as? Int == intent.revision
+                        && (job["proposal"] as? [String: Any]).flatMap(proposalFingerprint) == intent.fingerprint
+                    if exactProof {
+                        applyProposalToEditor(job)
+                        let markerCleared = clearPreparationIntent(intent, effect: "finished", status: result)
+                        if markerCleared { setPreparationUncertain(false, project: context.project, operation: context.operation) }
+                        preparationStatus = markerCleared
+                            ? "Préparation \(job["status"] as? String ?? "chargée") · révision \(job["revision"] as? Int ?? 0) · preuve de mutation retrouvée."
+                            : "Mutation retrouvée ; journal non effacé durablement, récupérez avant toute mutation."
+                    } else {
+                        setPreparationUncertain(true, project: context.project, operation: context.operation)
+                        preparationStatus = "État antérieur ou différent retrouvé ; l’intention de révision reste incertaine, récupérez à nouveau."
+                    }
+                } else {
+                    applyProposalToEditor(job)
+                    preparationStatus = "Préparation \(job["status"] as? String ?? "chargée") · révision \(job["revision"] as? Int ?? 0) · sans autorité ni dispatch."
+                }
+            } else if result == "not_found" {
+                preparationJob = [:]
+                // Absence is not a fence: an older worker may still be suspended
+                // before its store write and create this operation later.
+                if context.intent != nil {
+                    setPreparationUncertain(true, project: context.project, operation: context.operation)
+                    preparationStatus = "Aucune préparation visible pour l’instant ; une mutation ancienne peut encore s’appliquer. Identité conservée, récupérez à nouveau avant toute mutation."
+                } else {
+                    preparationStatus = "Aucune préparation enregistrée pour cette identité."
+                }
+            } else if operation != "job_recover", object["effect"] as? String == "not_admitted", let intent = context.intent {
+                let cleared = clearPreparationIntent(intent, effect: "not_admitted", status: result)
+                if cleared { setPreparationUncertain(false, project: context.project, operation: context.operation) }
+                preparationStatus = cleared ? "Préparation refusée (\(result)) ; corrigez la proposition puis réessayez." : "Refus confirmé ; journal non effacé durablement, récupérez avant toute mutation."
+            } else if result == "write_uncertain" {
+                setPreparationUncertain(true, project: context.project, operation: context.operation)
+                preparationStatus = "Écriture incertaine après remplacement ; rechargez la même opération avant toute mutation."
+            } else {
+                if context.intent != nil {
+                    // Errors from recover do not fence the old writer or prove
+                    // which state version it may still commit.
+                    setPreparationUncertain(true, project: context.project, operation: context.operation)
+                } else {
+                    preparationStatus = "Préparation : \(result)."
+                }
+                if context.intent != nil {
+                    preparationStatus = "Récupération non concluante (\(result)) ; journal conservé, réessayez la récupération."
+                }
+            }
         case "open":
             busy = false
             sessionOpen = result == "opened"
@@ -454,6 +1004,14 @@ final class ApplePilotUI: ObservableObject {
         default:
             ioFailed(generation: current)
         }
+    }
+
+    private func applyProposalToEditor(_ job: [String: Any]) {
+        guard let proposal = job["proposal"] as? [String: Any] else { return }
+        proposalObjective = proposal["objective"] as? String ?? ""
+        proposalAcceptance = (proposal["acceptance"] as? [String] ?? []).joined(separator: "\n")
+        proposalConstraints = (proposal["constraints"] as? [String] ?? []).joined(separator: "\n")
+        proposalQuestions = (proposal["questions"] as? [String] ?? []).joined(separator: "\n")
     }
 
     var memoryReady: Bool {
@@ -625,6 +1183,15 @@ final class ApplePilotUI: ObservableObject {
     private func ioFailed(generation current: UUID) {
         guard current == generation else { return }
         if turnID != nil || (busy && !memoryBusy) { cleanupUnconfirmed = true }
+        if preparationBusy {
+            preparationBusy = false
+            if preparationPending.values.contains(where: { $0.intent != nil }) {
+                setPreparationUncertain(true, project: preparationProjectID, operation: preparationOperationID)
+                preparationStatus = "Accusé perdu ; mutation incertaine, récupérez la même identité avant toute correction."
+            } else {
+                preparationStatus = "Lecture interrompue ; aucun effet de mutation n’était en attente."
+            }
+        }
         hostTerminating = process != nil
         if let operation = mutationPendingID {
             memoryOperationID = operation
@@ -640,6 +1207,7 @@ final class ApplePilotUI: ObservableObject {
         closing = false
         cancelling = false
         pending.removeAll()
+        preparationPending.removeAll()
         cancelTurnIDs.removeAll()
         status = cleanupUnconfirmed ? "Communication interrompue ; nettoyage non confirmé." : "Communication avec le pilote impossible."
         finishInput()
@@ -667,6 +1235,7 @@ final class ApplePilotUI: ObservableObject {
         turnID = nil
         input = nil
         pending.removeAll()
+        preparationPending.removeAll()
         cancelTurnIDs.removeAll()
         memoryPending.removeAll()
         memoryCheckIDs.removeAll()

@@ -103,6 +103,8 @@ class Worker:
         job = self.jobs.get(project_id, job_id)
         if job is None:
             return {'status': 'not_found'}
+        if job['status'] == 'preparation':
+            return {'status': 'preparation_not_authorized', 'dispatched': False}
         if job['status'] != 'draft':
             # Older records may have attributed a foreign receipt by key alone.
             state = 'indeterminate' if job['status'] == 'recorded' else job['status']

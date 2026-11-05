@@ -111,6 +111,19 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(bridge.submissions,[])
         self.assertEqual(self.store.get(self.project,self.job['job_id'])['status'],'draft')
 
+    def test_preparation_is_refused_before_any_bridge_call(self):
+        preparation = self.store.prepare_proposal(self.project, uid(), PROPOSAL)
+        class NoBridgeCalls(Bridge):
+            def discover(self): raise AssertionError('preparation must not inspect the bridge')
+            def receipt(self, key): raise AssertionError('preparation must not inspect receipts')
+            def submit(self, payload): raise AssertionError('preparation must not dispatch')
+        bridge = NoBridgeCalls(self.repo)
+        result = self.worker(bridge, Gate()).run_once(self.project, preparation['job_id'])
+        self.assertEqual(result, {'status': 'preparation_not_authorized', 'dispatched': False})
+        self.assertEqual(bridge.submissions, [])
+        self.assertEqual(preparation['status'], 'preparation')
+        self.assertIsNone(preparation['request_key'])
+
     def test_each_claim_is_required_and_scope_pinned(self):
         for flag in ('permission_verified','billing_verified','local_request_budget_enforced',
                      'local_wait_deadline_enforced','extra_usage_disabled_verified','revocation_guard_enforced'):
