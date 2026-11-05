@@ -219,7 +219,12 @@ class Endpoint:
                 cdp_mod.terminate_chrome(proc)
                 return result | {'dispatch_ok': False, 'stage': 'composeur',
                                  'dispatch_error': 'Préparation du composeur échouée'}
-            fingerprint = hashlib.sha256(prompt.strip().encode()).hexdigest()
+            # Fingerprint over the shared canonical form (imported from
+            # claude_desktop_apply): the same representation is hashed here,
+            # in apply() and in the in-page insertion checks, so multi-line
+            # prompts (blank lines, CRLF, NBSP) no longer fail the empreinte.
+            fingerprint = hashlib.sha256(
+                claude_desktop_apply.canonical_text(prompt.strip()).encode()).hexdigest()
             # Event-driven insertion (execCommand + bubbling input), not a
             # plain innerText assignment: React must observe the input.
             inserted = claude_desktop_apply._insert(transport, prompt.strip())
@@ -452,7 +457,10 @@ class Endpoint:
             except Exception:
                 before_state = {}
             if not isinstance(armed, dict) or armed.get('ready') is not True:
-                stage = 'incertain'
+                # No Enter fallback: a still-disabled button is a distinct,
+                # certain pre-click failure (Chrome is terminated below).
+                stage = 'readiness_timeout' if (
+                    isinstance(armed, dict) and armed.get('stage') == 'readiness_timeout') else 'incertain'
             else:
                 try:
                     # Clic événementiel complet : React/claude.ai peut

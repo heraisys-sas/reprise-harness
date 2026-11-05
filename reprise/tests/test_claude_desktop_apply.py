@@ -194,7 +194,7 @@ class ApplyOrchestration(unittest.TestCase):
         self.assertEqual(transport.to_submission(result)['status'], 'needs_review')
 
     def test_send_guard_failure_proves_no_click_but_not_quota(self):
-        for stage in ('cible', 'empreinte', 'composeur', 'bloqué'):
+        for stage in ('cible', 'empreinte', 'composeur', 'bloqué', 'text_mismatch', 'readiness_timeout'):
             with self.subTest(stage=stage):
                 result = self.run_apply(send={'clicked': False, 'stage': stage})
                 self.assertEqual(result['stage'], stage)
@@ -202,6 +202,50 @@ class ApplyOrchestration(unittest.TestCase):
                 mapped = transport.to_submission(result)
                 self.assertEqual(mapped['status'], 'needs_review')
                 self.assertNotIn('Quota', mapped['reason'])
+
+    def test_canonical_text_preserves_blank_lines_and_normalizes_layout(self):
+        self.assertEqual(transport.canonical_text('a\r\n\r\nb'), 'a\n\nb')
+        self.assertEqual(transport.canonical_text('a\u00a0b \t\n c'), 'a b\n c')
+        self.assertNotEqual(transport.canonical_text('a\n\nb'), transport.canonical_text('a\nb'))
+        self.assertEqual(transport.canonical_text('a\nb'), 'a\nb')
+
+    def test_multiline_prompts_use_the_canonical_fingerprint(self):
+        # Full orchestration: a multiline prompt reaches _send with the
+        # canonical fingerprint (not the raw sha) and dispatches once.
+        prompt = 'one\n\ntwo'
+        fingerprint = hashlib.sha256(transport.canonical_text(prompt).encode()).hexdigest()
+        self.client = Mock()
+        with patch.object(transport, 'CDP', return_value=self.client), \
+                patch.object(transport, 'wait_composer', return_value=True), \
+                patch.object(transport, 'state', side_effect=[info(), info(), info(prompt)]), \
+                patch.object(transport, '_prepare', return_value=True) as ready, \
+                patch.object(transport, '_send', return_value={'clicked': True, 'stage': 'envoyé'}) as click, \
+                patch.object(transport.time, 'sleep'), \
+                patch.object(transport, 'raise_for_login'), \
+                patch.object(transport, '_confirm', return_value=True):
+            result = transport.apply(prompt, CHAT, settle=0)
+        self.assertEqual(result['stage'], 'envoyé')
+        click.assert_called_once_with(self.client, '/chat/' + CHAT, fingerprint)
+
+    def test_multiline_insertion_mismatch_leaves_zero_sends(self):
+        prompt = 'first\n\nsecond'
+        for after in ('first\nsecond', prompt + ' extra'):
+            with self.subTest(after=repr(after)):
+                result = self.run_apply([info(), info(after)])
+                self.assertEqual(result['stage'], 'empreinte')
+                self.assertFalse(result['dispatch_attempted'])
+                self.click.assert_not_called()
+
+    def test_failure_motifs_never_leak_prompt_content(self):
+        prompt = 'secret multiline\n\nbody'
+        fingerprint = hashlib.sha256(transport.canonical_text(prompt).encode()).hexdigest()
+        for outcome in ({'clicked': False, 'stage': 'text_mismatch', 'length': 4,
+                         'sha': fingerprint[:8]},
+                        {'clicked': False, 'stage': 'readiness_timeout'}):
+            with self.subTest(stage=outcome['stage']):
+                result = self.run_apply(send=dict(outcome))
+                self.assertNotIn(prompt, json.dumps(result))
+                self.assertNotIn('secret', json.dumps(result))
 
     def test_lost_click_response_is_uncertain_and_never_replayed(self):
         self.client = Mock()
@@ -336,16 +380,27 @@ class EventInsertion(unittest.TestCase):
         client.evaluate.return_value = None
         self.assertFalse(transport._insert(client, PROMPT)['inserted'])
 
-    def test_arm_requires_enabled_button_after_single_fallback(self):
+    def test_arm_requires_enabled_button_without_any_fallback(self):
         client = Mock()
         client.evaluate.return_value = {'ready': True}
         self.assertTrue(transport._arm(client)['ready'])
         client.evaluate.return_value = {'ready': False}
         expression = client.evaluate.call_args[0][0]
-        self.assertIn("KeyboardEvent('keydown'", expression)  # the one Enter fallback
+        # No Enter fallback at all: a synthetic keydown could send by itself.
+        self.assertNotIn("KeyboardEvent('keydown'", expression)
         self.assertFalse(transport._arm(client)['ready'])
         client.evaluate.return_value = None
         self.assertFalse(transport._arm(client)['ready'])
+
+    def test_send_expression_uses_canonical_form_and_no_enter_fallback(self):
+        client = Mock()
+        client.evaluate.return_value = {'stage': 'envoyé', 'clicked': True}
+        transport._send(client, '/chat/' + CHAT, SHA)
+        expression = client.evaluate.call_args[0][0]
+        self.assertIn('canon(', expression)
+        self.assertNotIn("KeyboardEvent('keydown'", expression)
+        self.assertIn('text_mismatch', expression)
+        self.assertIn('readiness_timeout', expression)
 
     def test_confirm_requires_positive_evidence_or_failure_is_not_confirmed(self):
         client = Mock()

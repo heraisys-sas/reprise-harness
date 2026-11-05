@@ -173,7 +173,8 @@ class DaemonDispatchTests(unittest.TestCase):
         return key
 
     def fingerprint(self, prompt):
-        return hashlib.sha256(prompt.strip().encode()).hexdigest()
+        return hashlib.sha256(
+            claude_desktop_apply.canonical_text(prompt.strip()).encode()).hexdigest()
 
     # -- capabilities ---------------------------------------------------------
 

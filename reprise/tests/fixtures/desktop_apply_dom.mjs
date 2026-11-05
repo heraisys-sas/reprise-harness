@@ -122,10 +122,18 @@ export async function runFixtures(scripts) {
   const sent = await run(scripts.send, {text});
   assert.deepEqual(sent.result, {stage: 'envoyé', clicked: true});
   assert.equal(sent.observed.clicks, 1);
+  // Canonical form (issue #108): equivalent layout variants send exactly once.
+  const MULTILINE = 'First paragraph.\n\nSecond one follows\r\nafter CRLF.\u00a0Ends with NBSP.';
+  // scripts.text stays the reference; the multi-LF variant must also pass
+  // because canon() preserves blank lines and only normalizes CRLF/NBSP.
+  const multilineSent = await run(scripts.send, {text: MULTILINE});
+  assert.equal(multilineSent.result.clicked, true);
+  assert.equal(multilineSent.observed.clicks, 1);
   for (const options of [
     {text: text + ' suffix'}, {text: text.slice(0, -1)}, {text: ''},
     {text, disabled: true}, {text, missingButton: true}, {text, multipleButtons: true},
     {text, multipleInputs: true}, {text, url: 'https://evil.test/?claude.ai'},
+    {text: MULTILINE.replace(/\n\n/, '\n')},      // one blank line lost → mismatch
     ...['target', 'origin', 'text', 'input', 'document'].map(mutation => ({text, mutation})),
   ]) {
     const blocked = await run(scripts.send, options);
