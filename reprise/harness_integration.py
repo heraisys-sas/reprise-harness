@@ -1094,7 +1094,9 @@ def main(root, argv=None):
             changed_project = bool(installed and str(Path(args.project).resolve(strict=True)) != installed.get('project'))
             for option, default in (('delegate', 'reprise_delegate' in installed.get('tools', [])),
                     ('output_resume', installed.get('output_resume', False)),
-                    ('codex_workspace_write', installed.get('codex_workspace_write', False)),
+                    # Workspace writes are a strict opt-in on every installation plan:
+                    # omitting the flag revokes a previously granted capability.
+                    ('codex_workspace_write', False),
                     ('asi1_effort', installed.get('asi1_effort', False)),
                     ('disable_bash_sandbox', installed.get('bash_sandbox_disabled', False)),
                     ('agent_role', installed.get('agent_role', 'standard'))):
