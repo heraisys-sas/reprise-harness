@@ -466,7 +466,9 @@ extension App {
             if let enabled = result["output_resume"] as? Bool { self.integrationOutputResume = enabled }
             self.integrationAsi1Effort = result["asi1_effort"] as? Bool ?? false
             if let enabled = result["delegate"] as? Bool { self.integrationDelegate = enabled }
-            self.integrationCodexWorkspaceWrite = result["codex_workspace_write"] as? Bool ?? false
+            self.integrationCodexWorkspaceWriteInstalled = result["codex_workspace_write"] as? Bool ?? false
+            // A new plan must not silently carry an earlier workspace-write grant.
+            self.integrationCodexWorkspaceWrite = false
             if let role = result["agent_role"] as? String { self.integrationAgentRole = role }
             if self.integrationProject.isEmpty, let project = result["project"] as? String { self.integrationProject = project }
             self.integrationResult = result
@@ -502,6 +504,9 @@ extension App {
             self.integrationResult = result
             self.integrationAcknowledged = false
             self.integrationVerification = nil
+            if result["status"] as? String == "completed" {
+                self.integrationCodexWorkspaceWriteInstalled = self.integrationCodexWorkspaceWrite
+            }
             if let pending = result["pending_plan"] as? [String: Any] { self.integrationPlan = pending }
             else if result["status"] as? String == "completed" { self.integrationPlan = nil }
             self.integrationMessage = result["message"] as? String ?? "Application non confirmée."
@@ -761,7 +766,9 @@ struct Integrations: View {
                 Toggle("Autoriser l’écriture dans le projet sélectionné", isOn: $app.integrationCodexWorkspaceWrite)
                     .disabled(!app.integrationDelegate)
                 SettingsHint(
-                    text: "Les revues restent en lecture seule ; seul le mode implémentation écrit.",
+                    text: app.integrationCodexWorkspaceWriteInstalled
+                        ? "Actuellement autorisée ; sans opt-in dans ce plan, elle sera révoquée."
+                        : "Actuellement désactivée ; l’écriture exige un opt-in dans ce plan.",
                     detail: "Le mode implémentation autorise les modifications et vérifications locales dans ce projet. Les approbations natives restent requises ; cette option n’autorise pas implicitement un push, une fusion ou un déploiement.")
                 Toggle("Reprendre après une limite de tokens de sortie", isOn: $app.integrationOutputResume)
                 if app.integrationOutputResume {

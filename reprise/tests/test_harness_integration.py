@@ -1,5 +1,7 @@
 """Profile integration uses only temporary profiles, state and packaged helpers."""
 from contextlib import closing
+from contextlib import redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -198,6 +200,22 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertFalse(integration.plan(self.root, self.home, 'desktop', self.project,
                                         delegate=True, codex_workspace_write=True)['changes'])
         integration.apply(self.root, self.plan(delegate=True))
+        self.assertNotIn('--codex-workspace-write', self.config.read_text())
+        self.assertFalse(integration.inspect(self.home, 'desktop')['codex_workspace_write'])
+
+    def test_cli_reinstallation_without_workspace_write_flag_revokes_grant(self):
+        self.install(delegate=True, codex_workspace_write=True)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            status = integration.main(self.root, [
+                'integration-plan', '--home', str(self.home), '--profile', 'desktop',
+                '--project', str(self.project), '--action', 'install', '--delegate'])
+        self.assertEqual(status, 0, output.getvalue())
+        result = json.loads(output.getvalue())
+        proposed = result['plan']
+        self.assertFalse(proposed.get('codex_workspace_write', False))
+        self.assertIn('--codex-workspace-write', self.config.read_text())
+        integration.apply(self.root, proposed)
         self.assertNotIn('--codex-workspace-write', self.config.read_text())
         self.assertFalse(integration.inspect(self.home, 'desktop')['codex_workspace_write'])
 

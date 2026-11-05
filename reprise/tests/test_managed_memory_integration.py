@@ -245,7 +245,8 @@ class ManagedMemoryTests(unittest.TestCase):
         self.assertEqual(code, 0)
         plan = json.loads(output.getvalue())['plan']
         self.assertTrue(plan['delegate']); self.assertTrue(plan['output_resume'])
-        self.assertTrue(plan['codex_workspace_write']); self.assertEqual(plan['agent_role'], 'coordinator')
+        # Workspace-write is a strict opt-in and is revoked when omitted from a new plan.
+        self.assertFalse(plan.get('codex_workspace_write', False)); self.assertEqual(plan['agent_role'], 'coordinator')
         self.assertEqual(plan['memory']['access'], 'read')
         dsh.apply(self.root, plan)
         self.assertEqual(dsh.inspect(self.dsh_home, 'desktop')['memory']['access'], 'read')
