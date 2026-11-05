@@ -17,7 +17,7 @@ Un checkpoint immuable, associé à un projet et à un `work_id`, comporte un nu
 - Chaque mutation exige un `operation_id` UUID fourni et conservé par l’appelant. Sa première exécution enregistre résultat et empreinte de la demande chiffrés. Un rejeu identique retrouve le même résultat seulement après nouvelle synchronisation du répertoire mémoire ; la consultation du reçu exige la même synchronisation. Un échec reste incertain. La réutilisation du même identifiant dans le même projet avec d’autres paramètres échoue. Après résultat incertain, rejouer **avec le même identifiant et la même demande**, jamais en créer un autre avant réconciliation. La suppression et les conflits de révision obéissent aux mêmes règles.
 - Les connexions SQLite emploient aussi `temp_store=MEMORY` pour les opérations temporaires. Les mutations synchronisent le dossier d’état parent avant d’admettre une écriture, même après un précédent échec, et chargent SQLite en mémoire sous un verrou interprocessus local borné à cinq secondes, puis sérialisent et chiffrent avant écriture dans un fichier privé temporaire, `fsync` et remplacement atomique. Aucun verrou n’est conservé pendant une inférence ou un appel réseau : l’API n’en exécute pas. Une erreur après remplacement peut signaler une opération déjà enregistrée ; la réconciliation par `operation_id` reste nécessaire. Ces mesures supposent que le dossier d’état préexistant est lui-même durable et ne garantissent pas le comportement d’une panne matérielle au-delà de `fsync` et du système de fichiers macOS.
 - L’état est sous `orchestrator-memory.noindex/memory.enc` et est chiffré avec `Vault` et le purpose authentifié `orchestrator-memory-v1`. Il faut un binaire `Vault` construit avec ce purpose. Le stockage doit rester distinct des helpers et ne doit pas entrer dans le payload de l’application. La consultation d’une mémoire absente n’appelle pas le coffre et ne crée pas de fichier chiffré. Pour une première écriture, le `Vault` existant peut créer sans interaction une clé Trousseau absente si le système le permet ; une indisponibilité du coffre ne crée pas de base en clair ni ne déclenche d’autorisation interactive. Aucun essai sur le Trousseau utilisateur n’a été effectué. L’API ne remplace pas les règles de sauvegarde ou de protection du Mac.
-- Le schéma chiffré v1 est rejeté en cas de corruption ou de version inconnue, sans réinitialisation automatique. Une migration future doit être explicite et testée. Les requêtes n’établissent pas la fraîcheur des sources ou la validité des autorisations lors d’une reprise.
+- Le stockage chiffré est rejeté en cas de corruption ou de version inconnue, sans réinitialisation automatique. La migration v1 vers v2 exige la procédure explicite décrite ci-dessous. Les requêtes n’établissent pas la fraîcheur des sources ou la validité des autorisations lors d’une reprise.
 
 La suppression est **logique** ; aucune garantie d’effacement physique des snapshots APFS, sauvegardes, copies précédentes ou des faits déjà intégrés à un checkpoint n’est avancée. Conservation sans purge automatique. Il n’y a ni recherche sémantique, ni sélection automatique de souvenirs, ni gestion d’un catalogue de skills, ni contrôle de cycle ou de budget dans ce lot.
 
@@ -106,9 +106,9 @@ pas un snapshot transactionnel entre plusieurs appels concurrents.
 La recherche et la lecture se font à la demande. Aucun contenu n’est injecté
 automatiquement dans tous les prompts. Le consommateur choisit les IDs ou un
 checkpoint, conserve la provenance et traite le résultat comme données non fiables,
-jamais comme instructions ou autorisation. Les faits sont au niveau projet ; les
-checkpoints sont au niveau projet/travail. Ni espace utilisateur partagé entre
-projets, ni faits exclusivement liés à un travail ne sont annoncés.
+jamais comme instructions ou autorisation. En mode compatible v1, les faits sont au niveau projet et les
+checkpoints au niveau projet/travail. Les scopes utilisateur et les faits propres
+à un travail nécessitent l'extension v2 explicite décrite ci-dessous.
 
 `delete` annonce `deletion_scope=current_fact_only`,
 `historical_snapshots_retained=true`, `physical_erasure_verified=false`.
@@ -179,3 +179,61 @@ provenance. Vérifier Q séparément. Aucun fait existant ni transcript n’est 
 Les vérificateurs gérés n’effectuent pas cet essai : ils rendent catalogue directement
 sondé, client inconnu et échange inconnu, sans transformer la configuration ou
 la disponibilité d’un outil en résultat métier.
+
+
+## Extension explicite des scopes — schéma v2
+
+Le noyau accepte les schémas v1 et v2. Les lectures, l'initialisation normale,
+les installateurs et le lancement MCP ne migrent jamais implicitement le stockage.
+La méthode administrative hôte `Memory.migrate_scopes_v2()` réalise seule cette
+transition, sous le verrou du stockage. Elle conserve les clés de namespace projet,
+identifiants, révisions, signatures et reçus d'opérations, ainsi que les payloads
+historiques. Les noms internes de colonnes `project_id` désignent désormais aussi
+la clé du namespace dans les tables v2 ; ils ne confèrent aucune autorité.
+
+Si un fichier v1 existe, ses octets chiffrés sont conservés dans le fichier privé
+`memory.v1-backup.enc`, synchronisé avant le remplacement atomique du stockage.
+Une sauvegarde existante différente bloque la migration plutôt que de l'écraser.
+Un état neuf peut être migré explicitement sans inventer de sauvegarde ; une base
+v1 vide est également persistée en v2. Aucune clé Trousseau ni purpose de chiffrement
+supplémentaire n'est introduit. La sauvegarde contient des données historiques
+potentiellement supprimées depuis ; sa présence ne constitue pas une purge.
+
+Les releases ne comprenant que v1 refusent le schéma v2. Revenir à une telle
+release exige un arrêt coordonné des accès et une procédure de restauration
+explicite. Restaurer la sauvegarde v1 après des écritures v2 perdrait ces écritures ;
+ce n'est donc pas un rollback transparent. Après un échec incertain, inspecter le
+stockage et les reçus avant toute nouvelle action.
+
+`Memory.register_scope` est une API administrative locale, absente des outils MCP.
+Elle enregistre explicitement un espace `user` associé à un UUID de sujet déclaré
+par l'hôte, un espace `project` associé à un projet du registre, ou un espace `work`
+associé à un projet et un UUID de travail déclarés par l'hôte. L'association travail
+est une déclaration hôte, pas une preuve d'existence dans un service externe.
+L'enregistrement est idempotent et les projets sans historique restent enregistrables.
+Aucun espace utilisateur global, identité de compte ou héritage entre scopes n'est
+créé automatiquement.
+
+`ScopedMemory` et l'option MCP `--scope-id` lient un processus à un seul scope
+préexistant, sélectionné au lancement. Les scopes projet/travail sont contrôlés
+contre le projet hôte ; les arguments des outils ne permettent pas de changer ce
+scope. Le catalogue de lecture seule et le grant `--allow-write` conservent leurs
+règles. Les installateurs gérés restent compatibles avec leur sélection projet v1 ;
+ils n'accordent pas implicitement les nouveaux scopes. La sélection multi-scopes
+et l'injection automatique de souvenirs ne sont pas disponibles dans cette extension.
+
+La recherche, la correction, la suppression et les reçus sont isolés par namespace.
+Les faits lus via le frontend lié portent les métadonnées de scope et conservent
+`source` déclarative, `status=asserted` et l'attribution hôte. La création de checkpoint
+est refusée pour un scope utilisateur ou un autre travail avant toute réservation
+d'intention ; un refus déterministe ne devient pas une mutation indéterminée.
+Les checkpoints conservent les copies historiques après correction ou suppression
+du fait courant. Aucun effacement physique des fichiers, reçus, snapshots ou
+sauvegardes n'est promis.
+
+Ces bindings sont une limite d'autorité entre clients locaux coopératifs. Ils ne
+constituent pas une authentification des produits ou des processus du même UID :
+un processus ayant les mêmes droits sur les configurations, le stockage et le
+coffre peut invoquer les API administratives. Le sujet utilisateur, le travail et
+le profil d'hôte demeurent déclarés localement. Aucun transport distant authentifié
+ni protection contre un processus hostile du même compte n'est ajouté.

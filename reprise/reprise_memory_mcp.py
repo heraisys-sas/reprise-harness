@@ -94,10 +94,11 @@ def main():
     parser.add_argument('--state', required=True)
     parser.add_argument('--project-id', required=True)
     parser.add_argument('--harness-id', required=True, help='Host-declared profile; not authenticated product identity')
+    parser.add_argument('--scope-id', help='Explicit existing v2 scope selected by the local host; never a tool argument')
     parser.add_argument('--allow-write', action='store_true', help='Explicit operator session grant for capture/correction/deletion/checkpoints')
     args = parser.parse_args()
     try:
-        adapter = Adapter(args.state, args.project_id, args.harness_id, allow_write=args.allow_write)
+        adapter = Adapter(args.state, args.project_id, args.harness_id, allow_write=args.allow_write, scope_id=args.scope_id)
     except (ValueError, OSError):
         raise SystemExit('Memory configuration refused; verify private state and selected project') from None
     serve(adapter, sys.stdin.buffer, sys.stdout.buffer)

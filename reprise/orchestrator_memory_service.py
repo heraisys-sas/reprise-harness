@@ -357,6 +357,8 @@ class MemoryService:
                 _uuid(request['operation_id'])
             mem = self._memory()
             project = self.project_id
+            if op == 'create_checkpoint':
+                mem.validate_checkpoint_scope(request['work_id'])
             if op in MUTATIONS:
                 self._reserve_intent(mem, request)
                 mutation_dispatched = True

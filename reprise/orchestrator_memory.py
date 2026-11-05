@@ -251,7 +251,7 @@ class Memory:
                     raise ValueError('Invalid memory store')
                 db.deserialize(plain)
                 version = db.execute('PRAGMA user_version').fetchone()[0]
-                if version != SCHEMA_VERSION:
+                if version not in (SCHEMA_VERSION, 2):
                     raise ValueError('Unsupported memory schema version')
             else:
                 db.executescript('''
@@ -301,6 +301,118 @@ class Memory:
             if dirfd is not None:
                 os.close(dirfd)
             os.close(rootfd)
+
+    def migrate_scopes_v2(self):
+        """Explicit migration under the store lock; never invoked by normal access.
+
+        Preserve the original encrypted file before replacing it. A failed or
+        interrupted migration can be retried only if that backup still matches
+        the unchanged v1 ciphertext. No old receipt or snapshot is rewritten.
+        """
+        with self._store(write=True) as db:
+            if db.execute('PRAGMA user_version').fetchone()[0] == 2:
+                return {'status': 'already_current', 'version': 2}
+            has_backup = False
+            fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                _private_dir(fd)
+                try:
+                    os.stat('memory.enc', dir_fd=fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass  # Fresh state has no previous ciphertext to back up.
+                else:
+                    original = os.open('memory.enc', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+                    try:
+                        _private_file(original)
+                        ciphertext = bytearray()
+                        while True:
+                            chunk = os.read(original, 65536)
+                            if not chunk:
+                                break
+                            ciphertext.extend(chunk)
+                    finally:
+                        os.close(original)
+                    try:
+                        backup = os.open('memory.v1-backup.enc', os.O_WRONLY | os.O_CREAT |
+                                         os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+                    except FileExistsError:
+                        backup = os.open('memory.v1-backup.enc', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+                        try:
+                            _private_file(backup)
+                            retained = bytearray()
+                            while True:
+                                chunk = os.read(backup, 65536)
+                                if not chunk:
+                                    break
+                                retained.extend(chunk)
+                            if len(retained) > MAX_STORE_BYTES:
+                                raise ValueError('Memory store too large')
+                            if retained != ciphertext:
+                                raise ValueError('Migration backup differs; explicit recovery required')
+                            # A previous write may be visible despite a failed fsync.
+                            # Re-establish file durability before replacing v1.
+                            os.fsync(backup)
+                        finally:
+                            os.close(backup)
+                    else:
+                        with os.fdopen(backup, 'wb') as stream:
+                            stream.write(ciphertext)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                    has_backup = True
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            db.execute('CREATE TABLE scopes(id TEXT PRIMARY KEY, kind TEXT NOT NULL, '
+                       'subject_id TEXT, project_id TEXT, work_id TEXT, '
+                       'UNIQUE(kind,subject_id,project_id,work_id))')
+            projects = db.execute('SELECT project_id FROM facts UNION SELECT project_id '
+                                  'FROM checkpoints UNION SELECT project_id FROM operations').fetchall()
+            for row in projects:
+                db.execute('INSERT INTO scopes VALUES (?, ?, NULL, ?, NULL)',
+                           (row[0], 'project', row[0]))
+            db.execute('CREATE TABLE memory_metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+            db.execute('INSERT INTO memory_metadata VALUES (?,?)', ('schema', '2'))
+            db.execute('PRAGMA user_version=2')
+        return {'status': 'migrated', 'version': 2, 'backup': 'memory.v1-backup.enc' if has_backup else None}
+
+    def register_scope(self, kind, *, subject_id=None, project_id=None, work_id=None):
+        """Administrative host API, absent from the MCP catalogue.
+
+        Associations are host declarations, not authenticated ownership. No
+        ambient user scope or inheritance is created by reading old data.
+        """
+        if kind == 'user' and project_id is None and work_id is None:
+            _uuid(subject_id)
+        elif kind == 'project' and subject_id is None and work_id is None:
+            Memory._project(self, project_id)
+        elif kind == 'work' and subject_id is None:
+            _uuid(work_id)
+            Memory._project(self, project_id)
+        else:
+            raise ValueError('Invalid host scope')
+        with self._store(write=True) as db:
+            if db.execute('PRAGMA user_version').fetchone()[0] != 2:
+                raise ValueError('Explicit scope migration required')
+            existing = db.execute('SELECT id FROM scopes WHERE kind=? AND subject_id IS ? '
+                                  'AND project_id IS ? AND work_id IS ?',
+                                  (kind, subject_id, project_id, work_id)).fetchone()
+            if existing:
+                return existing[0]
+            ident = project_id if kind == 'project' else str(uuid.uuid4())
+            db.execute('INSERT INTO scopes VALUES (?,?,?,?,?)',
+                       (ident, kind, subject_id, project_id, work_id))
+            return ident
+
+    def scope(self, scope_id):
+        _uuid(scope_id)
+        with self._store() as db:
+            if db.execute('PRAGMA user_version').fetchone()[0] != 2:
+                raise ValueError('Explicit scope migration required')
+            row = db.execute('SELECT * FROM scopes WHERE id=?', (scope_id,)).fetchone()
+            if row is None:
+                raise ValueError('Unknown host scope')
+            return dict(row)
 
     def _mutate(self, project_id, operation_id, payload, action):
         self._project(project_id)
@@ -412,6 +524,10 @@ class Memory:
             return result
         return self._mutate(project_id, operation_id, payload, action)
 
+    def validate_checkpoint_scope(self, work_id):
+        """Deterministic host precondition checked before intent admission."""
+        _uuid(work_id)
+
     def create_checkpoint(self, project_id, work_id, operation_id, expected_version, *, fact_ids,
                           decisions, constraints, next_action, uncertain_effects, source):
         _uuid(work_id); self._revision(expected_version, allow_zero=True)
@@ -461,3 +577,46 @@ class Memory:
             rows = db.execute('SELECT id,work_id,version,created_at FROM checkpoints WHERE project_id=? AND work_id=? ORDER BY version DESC LIMIT ? OFFSET ?',
                               (project_id, work_id, limit, offset)).fetchall()
             return [dict(row) for row in rows]
+
+
+class ScopedMemory(Memory):
+    """One immutable host-selected namespace. No same-UID authentication.
+
+    The namespace occupies the legacy project_id storage key; v1 project keys
+    are unchanged, preserving operation signatures and historical snapshots.
+    """
+    def __init__(self, state_directory, scope_id, *, crypt=None):
+        super().__init__(state_directory, crypt=crypt)
+        self.scope_id = _uuid(scope_id)
+        self.bound_scope = self.scope(scope_id)
+        if self.bound_scope['project_id'] is not None:
+            Memory._project(self, self.bound_scope['project_id'])
+
+    def _project(self, namespace):
+        if namespace != self.scope_id or self.scope(namespace) != self.bound_scope:
+            raise ValueError('Host scope mismatch')
+        if self.bound_scope['project_id'] is not None:
+            Memory._project(self, self.bound_scope['project_id'])
+
+    def _fact(self, row):
+        result = Memory._fact(row)
+        if result is not None:
+            result['scope'] = dict(self.bound_scope)
+        return result
+
+    def create_checkpoint(self, project_id, work_id, *args, **kwargs):
+        self._work(work_id)
+        return super().create_checkpoint(project_id, work_id, *args, **kwargs)
+
+    def list_checkpoints(self, project_id, work_id, **kwargs):
+        self._work(work_id)
+        return super().list_checkpoints(project_id, work_id, **kwargs)
+
+    def validate_checkpoint_scope(self, work_id):
+        super().validate_checkpoint_scope(work_id)
+        self._work(work_id)
+
+    def _work(self, work_id):
+        if self.bound_scope['kind'] == 'user' or (self.bound_scope['kind'] == 'work'
+                and work_id != self.bound_scope['work_id']):
+            raise ValueError('Host work scope mismatch')

@@ -5,7 +5,7 @@ other processes of the same Unix user. Source claims remain unverified data.
 """
 import copy
 
-from orchestrator_memory import Memory, _text
+from orchestrator_memory import Memory, ScopedMemory, _text
 from orchestrator_memory_service import FIELDS, MUTATIONS, MemoryService
 
 OPERATIONS = {
@@ -55,11 +55,21 @@ def _schema(op):
 
 
 class Adapter:
-    def __init__(self, state, project_id, harness_id, *, allow_write=False, memory_factory=Memory):
+    def __init__(self, state, project_id, harness_id, *, allow_write=False, memory_factory=Memory, scope_id=None):
         harness = _text(harness_id, limit=128)
         if type(allow_write) is not bool:
             raise ValueError('Explicit boolean write grant required')
         self.allow_write = allow_write
+        if scope_id is not None:
+            host_project_id = project_id
+            original_factory = memory_factory
+            def memory_factory(state):
+                original = original_factory(state)
+                bound = ScopedMemory(state, scope_id, crypt=original.crypt)
+                if bound.bound_scope['project_id'] not in (None, host_project_id):
+                    raise ValueError('Host scope mismatch')
+                return bound
+            project_id = scope_id
         self.service = MemoryService(state, project_id, memory_factory=memory_factory,
             attribution={'harness_id': harness, 'trust': 'local_host_profile'})
 
