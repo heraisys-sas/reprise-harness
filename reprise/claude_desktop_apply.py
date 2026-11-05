@@ -214,6 +214,20 @@ class CDP:
 
 
 # All page actions use the same composer lookup and full-text fingerprint.
+def canonical_text(text):
+    """Shared textual representation (issue #108).
+
+    Single documented form against which the pre-send fingerprint AND the
+    insertion validation are computed, on both dispatch paths. ProseMirror
+    renders paragraphs as newlines whose exact count may differ from the raw
+    prompt, so equivalence is decided on this normalized form: CRLF→LF,
+    NBSP→space, trailing blanks removed; paragraphs and blank lines preserved.
+    Mirrors the JS `canon()` helper in JS_HELPERS — keep both in sync.
+    """
+    return '\n'.join(line.rstrip(' \t') for line in
+                     text.replace('\r', '').replace('\u00a0', ' ').split('\n'))
+
+
 JS_HELPERS = r"""
   const composer = () => {
     const inputs = [...document.querySelectorAll('div[contenteditable="true"], textarea')]
@@ -241,6 +255,9 @@ JS_HELPERS = r"""
     const buttons = [...document.querySelectorAll('[data-testid="chat-input-send"]')];
     return buttons.length === 1 ? buttons[0] : null;
   };
+  // Mirrors Python canonical_text(): keep both in sync.
+  const canon = s => s.replace(/\r/g, '').replace(/\u00a0/g, ' ')
+    .split('\n').map(line => line.replace(/[ \t]+$/, '')).join('\n');
   const digest = async text => [...new Uint8Array(await crypto.subtle.digest(
     'SHA-256', new TextEncoder().encode(text)))].map(b => b.toString(16).padStart(2, '0')).join('');
   const atTarget = path => location.origin === 'https://claude.ai'
@@ -249,7 +266,7 @@ JS_HELPERS = r"""
 
 JS_STATE = "(async () => {" + JS_HELPERS + """
   const doc = document, el = composer(), text = readText(el), url = location.href;
-  const sha = el ? await digest(text) : null;
+  const sha = el ? await digest(canon(text)) : null;
   if (doc !== document || el !== composer() || text !== readText(el) || url !== location.href)
     return {changed: true};
   const send = sendButton();
@@ -289,22 +306,21 @@ def _send(cdp, path, expected_sha256):
     return cdp.evaluate("(async () => {" + JS_HELPERS + "\nconst path = " + json.dumps(path)
                         + ", expected = " + json.dumps(expected_sha256) + ";" + """
       if (!atTarget(path)) return {stage: 'cible', clicked: false};
-      const doc = document, el = composer(), text = readText(el);
+      const doc = document, el = composer(), raw = readText(el), text = canon(raw);
       if (!el || !text.length) return {stage: 'composeur', clicked: false};
       const sha = await digest(text);
       // Recheck synchronously after hashing, before the only click primitive.
-      if (doc !== document || !atTarget(path)) return {stage: 'cible', clicked: false};
-      if (el !== composer() || readText(el) !== text || sha !== expected)
-        return {stage: 'empreinte', clicked: false};
+      if (doc !== document || !atTarget(path)) return {stage: 'target_changed', clicked: false};
+      if (el !== composer()) return {stage: 'composer_replaced', clicked: false};
+      if (readText(el) !== raw)
+        return {stage: 'text_changed', clicked: false, length: raw.length, sha: sha};
+      if (sha !== expected)
+        return {stage: 'text_mismatch', clicked: false, length: raw.length, sha: sha};
       const button = sendButton();
       if (!button) return {stage: 'composeur', clicked: false};
-      if (button.disabled) {
-        // React never saw the text: one Enter keydown fallback, then honesty.
-        try { el.dispatchEvent(new KeyboardEvent('keydown',
-          {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true})); }
-        catch (error) {}
-        if (button.disabled) return {stage: 'incertain', clicked: false};
-      }
+      // No Enter keydown fallback: a synthetic Enter can send by itself and
+      // defeat the single guarded click. React must enable the button.
+      if (button.disabled) return {stage: 'readiness_timeout', clicked: false};
       button.click();
       return {stage: 'envoyé', clicked: true};
     })()""")
@@ -333,11 +349,9 @@ def _insert(cdp, text):
       }
       current = el.tagName === 'TEXTAREA' ? el.value : readText(el);
       // ProseMirror renders paragraph breaks as innerText newlines that can
-      // differ from the raw text; compare a normalized form so equivalent
-      // layout is not rejected.
-      const norm = s => s.replace(/\\r/g, '').replace(/\\u00a0/g, ' ')
-        .replace(/[ \\t]+\\n/g, '\\n').replace(/\\n{2,}/g, '\\n');
-      return {inserted: norm(current) === norm(text),
+      // differ from the raw text; compare the shared canonical form so
+      // equivalent layout (blank lines, CRLF, NBSP) is not rejected.
+      return {inserted: canon(current) === canon(text),
               length: current.length, expected_length: text.length};
     })()""")
     result = cdp.evaluate(expression)
@@ -347,20 +361,17 @@ def _insert(cdp, text):
 def _arm(cdp):
     """Verify the send button is enabled before the click.
 
-    If React still holds the button disabled after insertion, attempt the one
-    reasonable activation (Enter keydown on the composer); report ready only
-    when the button is genuinely enabled.
+    No fallback: React must enable the button from the inserted text. A
+    synthetic Enter could send the message by itself, so a still-disabled
+    button is reported as not ready (readiness_timeout upstream).
     """
     result = cdp.evaluate("(function(){" + JS_HELPERS + """
       const el = document.querySelector('[data-testid="compose-textarea"]') || composer();
       const buttons = [...document.querySelectorAll('[data-testid="chat-input-send"]')];
       const button = buttons.length === 1 ? buttons[0] : null;
-      if (!el || !button) return {ready: false};
-      if (!button.disabled) return {ready: true};
-      try { el.dispatchEvent(new KeyboardEvent('keydown',
-        {key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true})); }
-      catch (error) {}
-      return {ready: !button.disabled};
+      if (!el || !button) return {ready: false, stage: 'composeur'};
+      if (!button.disabled) return {ready: true, stage: 'composeur'};
+      return {ready: false, stage: 'readiness_timeout'};
     })()""")
     return result if isinstance(result, dict) else {'ready': False}
 
@@ -454,7 +465,11 @@ def _dispatch(cdp, path, fingerprint):
                            expected_sha256=fingerprint)
         return _result("incertain", staged=None, dispatch_attempted=True, click_observed=True,
                        expected_sha256=fingerprint)
-    if outcome.get("clicked") is False and outcome.get("stage") in ("cible", "composeur", "empreinte", "bloqué"):
+    # Certain pre-click failures: the exact motif carries lengths/hashes only,
+    # never prompt content.
+    if outcome.get("clicked") is False and outcome.get("stage") in (
+            "cible", "composeur", "bloqué", "empreinte", "text_mismatch",
+            "text_changed", "composer_replaced", "target_changed", "readiness_timeout"):
         stage = outcome["stage"]
         return _result(stage, staged=True if stage == "bloqué" else None,
                        expected_sha256=fingerprint)
@@ -526,7 +541,7 @@ def apply(prompt, chat_id=None, *, port=DEFAULT_PORT, settle=3.0, submit=True, o
         return _result("paramètres")
     path = "/chat/" + chat_id
     try:
-        fingerprint = hashlib.sha256(prompt.encode()).hexdigest()
+        fingerprint = hashlib.sha256(canonical_text(prompt).encode()).hexdigest()
     except UnicodeError:
         return _result("paramètres")
     cdp, staged = None, False
