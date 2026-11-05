@@ -59,7 +59,7 @@ class PackageHelpersTests(unittest.TestCase):
             root = moved / 'Contents/Resources/helpers'
             manifest = json.loads((root / 'payload-manifest.json').read_text())
             self.assertEqual(manifest['runtime'], 'external-python-required')
-            for name in ('apple_expert.py', 'apple_pilot.py', 'apple_pilot_service.py', 'apple_pilot_transport.py', 'orchestrator_memory.py', 'orchestrator_memory_service.py', 'reprise_memory_adapter.py', 'reprise_memory_mcp.py', 'memory_integration.py', 'coordinator_jobs.py'):
+            for name in ('apple_expert.py', 'apple_pilot.py', 'apple_pilot_service.py', 'apple_pilot_transport.py', 'orchestrator_memory.py', 'orchestrator_memory_service.py', 'reprise_memory_adapter.py', 'reprise_memory_mcp.py', 'memory_integration.py', 'memory_admin.py', 'coordinator_jobs.py'):
                 self.assertTrue((root / name).is_file())
                 self.assertEqual(manifest['files'][name], hashlib.sha256((root / name).read_bytes()).hexdigest())
                 self.assertEqual((root / name).read_bytes(), (SOURCE / name).read_bytes())
@@ -67,6 +67,29 @@ class PackageHelpersTests(unittest.TestCase):
             self.assertTrue((root / doc).is_file())
             self.assertEqual(manifest['files'][doc], hashlib.sha256((root / doc).read_bytes()).hexdigest())
             self.assertEqual((root / doc).read_bytes(), (SOURCE.parent / 'docs/contracts' / doc).read_bytes())
+            # Memory-admin resources belong to the independent memory lot.
+            admin_doc = 'MEMORY-ADMIN.md'
+            self.assertEqual((root/admin_doc).read_bytes(),
+                             (SOURCE.parent/'docs/runbooks'/admin_doc).read_bytes())
+            self.assertEqual(manifest['files'][admin_doc], hashlib.sha256((root/admin_doc).read_bytes()).hexdigest())
+            from project_registry import ProjectRegistry
+            memory_state = folder/'memory-admin-state'; memory_state.mkdir(mode=0o700)
+            fixture_repo = folder/'fixture-repo'; fixture_repo.mkdir()
+            subprocess.run(['git','-C',str(fixture_repo),'init','-q'],check=True)
+            with ProjectRegistry(memory_state) as registry:
+                registry.create('Portable', fixture_repo, fixture_repo)
+            before = {str(p.relative_to(memory_state)): p.read_bytes() if p.is_file() else None
+                      for p in memory_state.rglob('*')}
+            environment = dict(os.environ)
+            environment.pop('PYTHONPATH', None)
+            for command in ('memory-inspect', 'memory-migration-plan', 'memory-scope-list'):
+                admin = subprocess.run([sys.executable, '-E', '-s', str(root/'reprise'), command,
+                    '--state', str(memory_state)], cwd=folder, env=environment,
+                    capture_output=True, text=True, timeout=10)
+                self.assertEqual(admin.returncode, 0, admin.stderr + admin.stdout)
+                json.loads(admin.stdout)
+            self.assertEqual(before, {str(p.relative_to(memory_state)): p.read_bytes() if p.is_file() else None
+                                     for p in memory_state.rglob('*')})
             imported = subprocess.run([sys.executable, '-c', 'import codex_expert_mcp, claude_desktop_apply, claude_inbox, websocket_transport, claude_session_store, claude_session_observer, apple_pilot, apple_pilot_transport, apple_pilot_service, orchestrator_memory, orchestrator_memory_service'],
                                       cwd=root, capture_output=True, text=True)
             self.assertEqual(imported.returncode, 0, imported.stderr)
