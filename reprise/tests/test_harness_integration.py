@@ -345,6 +345,17 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertTrue(self.config.read_text().startswith('# personal settings\n'))
         self.assertNotIn('- insert:\n', self.config.read_text())
 
+    def test_reformatted_managed_block_allows_explicit_workspace_write_update(self):
+        self.install(delegate=True)
+        self.config.write_text(self.reformatted_config())
+        proposed = integration.plan(self.root, self.home, 'desktop', self.project,
+                                   delegate=True, codex_workspace_write=True)
+        self.assertTrue(proposed['codex_workspace_write'])
+        self.assertTrue(proposed['block_reconciled'])
+        integration.apply(self.root, proposed)
+        self.assertIn('--codex-workspace-write', self.config.read_text())
+        self.assertTrue(integration.inspect(self.home, 'desktop')['codex_workspace_write'])
+
     def test_real_block_change_is_refused_not_reconciled(self):
         self.install()
         self.config.write_text(self.reformatted_config(lambda payload: payload.replace('330000', '330001')))
