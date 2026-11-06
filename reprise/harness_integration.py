@@ -712,17 +712,19 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
                 parsed = block_entries(block)
             except ValueError:
                 raise ValueError(_BLOCK_REFUSAL)
-            # Équivalence sémantique : le bloc live référence le release installé ; on compare
-            # les entrées du nouveau plan rebasées sur ce chemin (comme verify() juge sur l'existant).
-            def _rebase(value):
-                if isinstance(value, str):
-                    return value.replace(str(release), old['release']) if old and old.get('release') else value
-                if isinstance(value, list):
-                    return [_rebase(item) for item in value]
-                if isinstance(value, dict):
-                    return {key: _rebase(item) for key, item in value.items()}
-                return value
-            expected = _rebase(entries) if old and old.get('status') == 'installed' else entries
+            # Harness can reformat the managed YAML block. Establish ownership against the
+            # installed manifest first, then permit an explicit new plan to change settings.
+            # Comparing live entries with the proposed entries incorrectly refused every
+            # real update (for example, adding --codex-workspace-write) after a harmless reformat.
+            if old and old.get('status') == 'installed':
+                previous_memory = memory_integration.selected(old)
+                expected = _bridge_entries(
+                    Path(old['release']), old['state'], old.get('tools', []), old['project'],
+                    profile, managed, old.get('output_resume', False),
+                    old.get('output_resume_project'), old.get('codex_workspace_write', False),
+                    old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), previous_memory)
+            else:
+                expected = entries
             if parsed != expected:
                 raise ValueError(_BLOCK_REFUSAL)
             # Bloc reformatté équivalent : réécriture canonique tracée dans le manifeste.
