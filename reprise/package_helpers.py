@@ -12,7 +12,7 @@ ASSETS = ('apple_expert.py', 'apple_pilot.py', 'apple_pilot_service.py', 'apple_
 
 ASSETS += ('yaml_contract.py', 'codex_config_update.py',)
 ASSETS += ('memory_admin.py',)  # Memory administration packaging; independent of local execution.
-ASSETS += ('memory_integration.py', 'reprise_memory_adapter.py', 'reprise_memory_mcp.py', 'coordinator_jobs.py', 'coordinator_local.py')
+ASSETS += ('memory_integration.py', 'reprise_memory_adapter.py', 'reprise_memory_mcp.py', 'coordinator_jobs.py', 'coordinator_local.py', 'coordinator_candidate.py')
 # Documentation durable embarquée dans le payload ; résolue depuis la racine du dépôt.
 DOCS = (
     'docs/integrations/claude/CLAUDE-DESKTOP-APPLY.md',

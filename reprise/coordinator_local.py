@@ -108,6 +108,10 @@ class LocalExecution:
             'helper_path': path, 'helper_sha256': sha, 'max_requests': 1,
             'max_seconds': max_seconds, 'stop_on_deadline': True, 'automatic_fallback': False,
             'tools': False, 'supervision_contract': SUPERVISION_CONTRACT['contract'], 'availability': 'not_verified', 'cost_policy': 'local_helper_only_no_provider_route'}
+        if 'clarifications' in row:
+            manifest['clarifications_sha256'] = digest(row['clarifications'])
+            if consent.get('clarifications_sha256') != manifest['clarifications_sha256']:
+                raise ValueError('Clarification identity changed')
         return {'manifest': manifest, 'manifest_sha256': digest(manifest)}
 
     @contextlib.contextmanager
@@ -166,6 +170,12 @@ class LocalExecution:
                            'question': row['proposal']['objective']}
         else:
             raise ValueError('Unsupported local prompt format')
+        if 'clarifications_sha256' in manifest:
+            if digest(row.get('clarifications')) != manifest['clarifications_sha256']:
+                raise ValueError('Clarification identity changed')
+            facts = json.loads(model_input['facts'])
+            facts['clarifications'] = row['clarifications']
+            model_input['facts'] = jobs_module._json(facts)
         payload = {'backend': 'foundation-models', 'mode': 'expertise', 'manifest': manifest,
                    'input': model_input}
         return execution['run_id'], manifest, binding, payload

@@ -197,3 +197,99 @@ même run admis ne lancent aucune génération ; une modification du format exig
 une nouvelle préparation et un nouveau consentement explicites, jamais une
 relance automatique d’un état incertain. Un reçu `finished` atteste une réponse
 valide du helper, pas la satisfaction des critères métier ni l’absence de refus.
+
+### Candidat de préparation issu d’un reçu local
+
+Le socle hôte expose `job_candidate_extract`, `job_candidate_import` et
+`job_clarify`, sans outil modèle, sans génération et sans dispatch. Il ne
+raccorde pas encore la conversation ou la GUI à une analyse automatique.
+Un modèle peut seulement proposer des données ; l’import exige une confirmation
+opérateur explicite, distincte de toute autorisation d’exécuter la mission.
+
+Le document candidat est un JSON strict, sans balise Markdown :
+`{"schema":"reprise-preparation-candidate-v1","proposal":{"objective":"…","acceptance":["…"],"constraints":[],"questions":["…"]}}`.
+Les champs supplémentaires (dont backend, permissions et identifiants), clés
+dupliquées, constantes non JSON, questions dupliquées et dépassements de bornes
+sont refusés. Les bornes existantes des propositions s’appliquent ; la réponse
+candidate est limitée à 13 Kio. Le texte reste non vérifié, même si sa structure
+est valide. L’objectif proposé ne remplace jamais automatiquement une mission.
+
+`job_candidate_extract` reçoit exactement `id`, `op`, `enabled`, `project_id`,
+`operation_id` (source), `work_id`, `run_id`, `expected_response_sha256`.
+La source doit être `local_recorded`, avec un reçu `finished`, processus démarré
+et récupéré, sortie zéro et consentement Apple local du même projet/travail.
+La lecture vérifie les jointures admission/grant/requête, l’unique consommation,
+le binding, les identités payload/manifeste/attempt, puis l’égalité du résultat
+chiffré avec sa projection Jobs et le hash de la réponse. Le registre d’admission
+existant est ouvert en lecture seule, sans constructeur de Store, initialisation,
+acknowledgement ou réconciliation. L’extraction retourne `candidate`, son SHA-256
+canonique et `origin` (projet/travail/racine/contexte, opération/job/requête/run,
+identité de l’admission et hashes du reçu et de son snapshot). Aucun texte ou
+manifeste fourni par le client ne remplace la réponse attribuable.
+
+`job_candidate_import` reçoit exactement `id`, `op`, `enabled`, `project_id`,
+`operation_id` (destination), `work_id`, `source_operation_id`, `source_run_id`,
+`expected_response_sha256`, `expected_candidate_sha256`, `import_id`,
+`expected_revision`, `expected_proposal_sha256`, `operator_confirmed: true`.
+Le service relit et attribue la source ; il n’accepte aucun candidat dans cette
+requête. Sous le même verrou Jobs, l’import revalide le snapshot source et
+applique le CAS destination. Une création exige les deux valeurs attendues à
+`null` et une destination absente. Une révision exige la révision et le hash
+courants d’une `preparation`. Source et destination doivent être des opérations
+distinctes du même projet/travail. L’import produit uniquement `preparation`,
+`authority: null`, `request_key: null`, sans consentement ni moteur.
+
+`candidate_import` conserve le document original, sa provenance et l’identité
+de confirmation. La répétition exacte du même import retourne l’état actuel sans
+écraser les révisions ultérieures. Une autre identité ou un autre candidat sur
+cette opération importée est refusé : créer explicitement une nouvelle préparation.
+La provenance reste récupérable par `job_recover`. Une erreur de synchronisation
+après remplacement reste `write_uncertain` ; récupération par la même identité,
+sans réémission automatique. Aucun ancien reçu ou consentement n’est modifié.
+
+Les `proposal.questions` restent des chaînes pour la compatibilité historique.
+Les préparations importées portent en plus `clarifications` : identité stable,
+question originale, réponse, résolution explicite et historique des mutations.
+`job_clarify` reçoit exactement `id`, `op`, `enabled`, `project_id`, `operation_id`,
+`question_id`, `answer`, `resolved` (booléen), `resolution_id`, `expected_revision`.
+Une réponse non vide (maximum 1 Kio) ne résout pas implicitement la question :
+`resolved: false` la maintient ouverte ; `true` la retire de la liste ouverte en
+conservant question et réponse dans les métadonnées. La réouverture est explicite.
+Le CAS et les identités de résolution empêchent écrasement et répétition ;
+l’historique complet est borné à 24 Kio, avec refus avant mutation à saturation.
+Une révision ordinaire ne peut supprimer une clarification encore ouverte.
+
+Le consentement refuse toute question ou clarification non résolue et tout
+changement du travail lié à la provenance. Il lie le hash des clarifications ;
+le manifeste local et le payload incluent le même snapshot comme données non
+fiables. Une clarification ne devient ni instruction hôte ni permission. Après
+consentement, aucune modification de clarification n’est possible. Les formats
+historiques sans ces champs restent inchangés, y compris leurs identités de reçu.
+Les tests de ce socle utilisent un coffre et des réponses simulés ; ils ne
+prouvent ni la pertinence des questions d’un modèle réel ni une interaction GUI.
+
+L’extraction copie la preuve SQLite puis ferme sa transaction avant tout appel
+au coffre. `evidence` contient le binding et le hash de cette attribution ; il
+est conservé dans `candidate_import.source_evidence`. L’import prend d’abord
+le verrou Jobs (attente maximale existante de cinq secondes), vérifie source et
+CAS, chiffre le nouvel état et synchronise son fichier temporaire sans verrou
+SQLite. Juste avant remplacement, un garde relit l’attribution dans une courte
+transaction SQLite en lecture seule et compare son hash. La connexion du garde
+attend au maximum 0,25 seconde un verrou SQLite ; une source modifiée ou occupée
+est refusée avant remplacement, avec suppression du temporaire et sans relance.
+Un verrou SQLite indisponible retourne `candidate_source_unavailable` avec
+`effect: not_admitted` ; aucune nouvelle tentative automatique n’est effectuée.
+
+L’ordre imbriqué est Jobs puis lecture SQLite. Les chemins d’exécution locale
+committent leurs transactions SQLite avant leurs projections Jobs ; ils ne
+prennent pas le verrou Jobs avec une transaction SQLite ouverte. Le garde ne
+lance ni coffre, ni subprocess, ni inférence et n’attend pas le verrou Jobs.
+Il reste actif pendant `replace` et `fsync` du répertoire : ces appels système
+n’ont pas de délai garanti. Une panne ou lenteur du système de fichiers peut
+donc prolonger le verrou de lecture et retarder un writer SQLite ; aucune
+absence totale de blocage n’est promise. Une erreur après remplacement conserve
+`write_uncertain`. Les tests interprocessus vérifient qu’un writer indépendant
+peut committer pendant le chiffrement, est bloqué au remplacement seulement,
+puis peut de nouveau committer après libération. Ils ne simulent pas un disque
+réellement bloqué. Ces preuves et hashes restent une attribution locale entre
+composants hôte, pas une authentification contre un processus hostile du même UID.

@@ -12,6 +12,7 @@ from pathlib import Path
 import apple_pilot
 import apple_pilot_transport
 import coordinator_jobs
+import coordinator_candidate
 import coordinator_local
 import orchestrator_memory
 import orchestrator_memory_service
@@ -98,6 +99,12 @@ class Service:
             'close': {'id', 'op'},
             'memory_bind': {'id', 'op', 'enabled', 'project_id'},
             'memory_call': {'id', 'op', 'request'},
+            'job_candidate_extract': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'work_id', 'run_id', 'expected_response_sha256'},
+            'job_candidate_import': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'work_id',
+                'source_operation_id', 'source_run_id', 'expected_response_sha256', 'expected_candidate_sha256',
+                'import_id', 'expected_revision', 'expected_proposal_sha256', 'operator_confirmed'},
+            'job_clarify': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'question_id',
+                'answer', 'resolved', 'resolution_id', 'expected_revision'},
             'job_consent_context': {'id', 'op', 'enabled', 'project_id', 'work_id'},
             'job_authorize_local': {'id', 'op', 'enabled', 'project_id', 'work_id', 'operation_id',
                 'authorization_id', 'expected_revision', 'expected_proposal_sha256', 'expected_context_sha256'},
@@ -119,7 +126,7 @@ class Service:
             self._reply(ident, 'error')
 
     def _dispatch(self, ident, op, request):
-        if op in ('job_prepare', 'job_recover', 'job_revise', 'job_consent_context', 'job_authorize', 'job_authorize_local', 'job_local_plan', 'job_local_start', 'job_local_stop'):
+        if op in ('job_candidate_extract', 'job_candidate_import', 'job_clarify', 'job_prepare', 'job_recover', 'job_revise', 'job_consent_context', 'job_authorize', 'job_authorize_local', 'job_local_plan', 'job_local_start', 'job_local_stop'):
             if request.get('enabled') is not True:
                 self._reply(ident, 'not_enabled')
                 return
@@ -306,7 +313,25 @@ class Service:
                     raise ValueError('Invalid expected revision')
             validation_only = False
             jobs = self.jobs_factory(self.state)
-            if op == 'job_consent_context':
+            if op in ('job_candidate_extract', 'job_candidate_import'):
+                source_operation = operation if op == 'job_candidate_extract' else _uuid(request['source_operation_id'])
+                source_run = request['run_id'] if op == 'job_candidate_extract' else request['source_run_id']
+                extracted = coordinator_candidate.extract(self.local_factory(jobs), project, source_operation,
+                    _uuid(request['work_id']), _uuid(source_run), request['expected_response_sha256'])
+                if op == 'job_candidate_extract':
+                    response = {'status': 'finished', 'candidate': extracted}
+                else:
+                    if extracted['candidate_sha256'] != request['expected_candidate_sha256']:
+                        raise ValueError('Candidate identity mismatch')
+                    result = jobs.import_candidate(project, operation, extracted, import_id=request['import_id'],
+                        work_id=request['work_id'], expected_revision=request['expected_revision'],
+                        expected_proposal_sha256=request['expected_proposal_sha256'],
+                        operator_confirmed=request['operator_confirmed'])
+            elif op == 'job_clarify':
+                result = jobs.clarify_candidate(project, operation, question_id=request['question_id'],
+                    answer=request['answer'], resolved=request['resolved'], resolution_id=request['resolution_id'],
+                    expected_revision=request['expected_revision'])
+            elif op == 'job_consent_context':
                 result = jobs.consent_context(project, _uuid(request['work_id']))
                 with self.lock:
                     self.consent_binding = result
@@ -383,7 +408,7 @@ class Service:
             else:
                 result = jobs.revise(project, operation, request['proposal'],
                                      expected_revision=request['expected_revision'])
-            if op not in ('job_consent_context', 'job_local_plan') and (op != 'job_recover' or result is not None):
+            if op not in ('job_candidate_extract', 'job_consent_context', 'job_local_plan') and (op != 'job_recover' or result is not None):
                 response = {'status': 'finished', 'job': result}
         except coordinator_jobs.WriteUncertainError:
             response = {'status': 'write_uncertain', 'effect': 'indeterminate'}
@@ -395,16 +420,18 @@ class Service:
                     'Host context changed': 'host_context_changed', 'Host context unavailable': 'host_context_unavailable',
                     'Proposal identity changed': 'proposal_identity_changed', 'Job not found': 'not_found'}
                 status = statuses.get(message, 'invalid_authorization')
+            elif op in ('job_candidate_extract', 'job_candidate_import') and message == 'Candidate source busy or unavailable':
+                status = 'candidate_source_unavailable'
             elif 'Revision conflict' in message:
                 status = 'revision_conflict'
-            elif 'admitted' in message or 'Draft only' in message:
+            elif 'admitted' in message or 'Draft only' in message or message == 'Mission locked':
                 status = 'mission_locked'
             elif 'not found' in message:
                 status = 'not_found'
             else:
                 status = 'invalid_proposal'
             response = {'status': status}
-            if validation_only or op in ('job_authorize', 'job_authorize_local', 'job_consent_context', 'job_local_plan'):
+            if validation_only or op in ('job_candidate_extract', 'job_candidate_import', 'job_clarify', 'job_authorize', 'job_authorize_local', 'job_consent_context', 'job_local_plan'):
                 response['effect'] = 'not_admitted'
         except Exception:
             response = {'status': 'job_unavailable'}
