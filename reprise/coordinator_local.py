@@ -60,14 +60,48 @@ SUPERVISION_CONTRACT = {'contract': 'foundation-explain-v1-self-deadline', 'max_
                         'on_device': True, 'tools': False, 'automatic_fallback': False}
 
 
-def _probe(path):
+ANALYSIS_FORMAT = 'preparation-analysis-v2'
+ANALYSIS_OBJECTIVE = 'Analyse locale de préparation (reprise-analysis-v2).'
+
+
+def _unique_object(pairs):
+    if len(pairs) != len(dict(pairs)):
+        raise ValueError('Duplicate analysis field')
+    return dict(pairs)
+
+
+def analysis_request(row):
+    """Recognize only the explicit host template, never instructions inside request data."""
+    proposal = row['proposal']
+    if (proposal['objective'] != ANALYSIS_OBJECTIVE or 'candidate_import' in row
+            or 'clarifications' in row):
+        return None
+    constraints = proposal['constraints']
+    if len(constraints) != 1 or proposal['questions']:
+        raise ValueError('Invalid analysis template')
+    try:
+        value = json.loads(constraints[0], object_pairs_hook=_unique_object)
+    except (ValueError, TypeError):
+        raise ValueError('Invalid analysis template') from None
+    if (not isinstance(value, dict) or set(value) != {'request', 'template'}
+            or value['template'] != 'reprise-analysis-v2'):
+        raise ValueError('Invalid analysis template')
+    return {'text': jobs_module._text(value['request'], 1024)}
+
+
+def _probe(path, *, required_format=None):
     """A static capability query, never a generation or availability probe."""
     process = _spawn([path, '--supervision-contract'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, env={'PATH':'/usr/bin:/bin'}, start_new_session=True, close_fds=True)
     try:
         output, _ = process.communicate(timeout=2)
-        if process.returncode != 0 or len(output) > 4096 or json.loads(output) != SUPERVISION_CONTRACT:
-            raise ValueError('Self-supervised local helper required')
+        value = json.loads(output)
+        if not isinstance(value, dict): raise ValueError('Invalid helper contract')
+        formats = value.pop('prompt_formats', [])
+        if (process.returncode != 0 or len(output) > 4096 or value != SUPERVISION_CONTRACT
+                or not isinstance(formats, list) or not all(isinstance(item, str) for item in formats)
+                or (required_format is not None and required_format not in formats)):
+            raise ValueError('Self-supervised local helper with required prompt format needed')
     except (subprocess.TimeoutExpired, ValueError, UnicodeError) as exc:
         _stop(process)
         raise ValueError('Self-supervised local helper required') from exc
@@ -99,7 +133,8 @@ class LocalExecution:
         if context['context_sha256'] != consent['context_sha256']:
             raise ValueError('Host context changed')
         path, _, sha = _helper(self.helper)
-        _probe(path)
+        request = analysis_request(row)
+        _probe(path, required_format=ANALYSIS_FORMAT if request is not None else None)
         manifest = {'version': 1, 'prompt_format': 'operator-question-v2', 'backend': 'foundation-models', 'adapter': 'native-foundation-explain',
             'mode': 'expertise', 'project_id': project, 'work_id': context['context']['work_id'],
             'project_root': context['context']['project_root'], 'job_id': row['job_id'],
@@ -108,6 +143,8 @@ class LocalExecution:
             'helper_path': path, 'helper_sha256': sha, 'max_requests': 1,
             'max_seconds': max_seconds, 'stop_on_deadline': True, 'automatic_fallback': False,
             'tools': False, 'supervision_contract': SUPERVISION_CONTRACT['contract'], 'availability': 'not_verified', 'cost_policy': 'local_helper_only_no_provider_route'}
+        if request is not None:
+            manifest['prompt_format'] = ANALYSIS_FORMAT
         if 'clarifications' in row:
             manifest['clarifications_sha256'] = digest(row['clarifications'])
             if consent.get('clarifications_sha256') != manifest['clarifications_sha256']:
@@ -164,6 +201,10 @@ class LocalExecution:
         if version is None:
             model_input = {'facts': jobs_module._json(row['proposal']),
                            'question': 'Réponds à l’objectif décrit dans ces données et précise les limites de ta réponse.'}
+        elif version == ANALYSIS_FORMAT:
+            request = analysis_request(row)
+            if request is None: raise ValueError('Invalid analysis template')
+            model_input = {'prompt_format': ANALYSIS_FORMAT, 'operator_request': request}
         elif version == 'operator-question-v2':
             model_input = {'prompt_format': version,
                            'facts': jobs_module._json({key: value for key, value in row['proposal'].items() if key != 'objective'}),
@@ -236,7 +277,7 @@ class LocalExecution:
                 with snapshot.open('xb') as stream:
                     stream.write(binary); stream.flush(); os.fsync(stream.fileno())
                 snapshot.chmod(0o500)
-                _probe(str(snapshot))
+                _probe(str(snapshot), required_format=ANALYSIS_FORMAT if manifest.get('prompt_format') == ANALYSIS_FORMAT else None)
                 with self._store(manifest['project_root']) as store:
                     # Rights, one-request budget and immutable payload are committed atomically.
                     with control.lock:

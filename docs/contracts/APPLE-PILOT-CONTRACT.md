@@ -297,7 +297,7 @@ composants hôte, pas une authentification contre un processus hostile du même 
 ### Parcours GUI d’analyse vers une mission
 
 L’interface propose une préparation d’analyse native distincte de la mission.
-Le template hôte `reprise-analysis-v1` demande uniquement un candidat JSON strict,
+Le template hôte `reprise-analysis-v2` demande uniquement un candidat JSON strict,
 sans exécuter la demande ni déduire permissions, cible ou capacités. La demande
 opérateur est encodée comme donnée JSON dans les contraintes, en conservant ses
 retours à la ligne ; l’enveloppe encodée est limitée à 1 Kio. Aucun transcript,
@@ -350,3 +350,48 @@ peut demander un réessai explicite avec le même `import_id`, la même destinat
 et les mêmes identités source/run/réponse/candidat. Le journal conserve la preuve
 du refus avant cette nouvelle émission. Une réponse perdue ou un effet inconnu
 n’ouvre jamais ce réessai : seule la récupération de la destination est permise.
+
+
+### Entrée d’analyse dédiée v2
+
+Les nouvelles analyses utilisent le manifeste `prompt_format:
+preparation-analysis-v2`, distinct de `operator-question-v2`. Le choix exige
+le template hôte exact `reprise-analysis-v2`, une enveloppe de demande valide
+et aucune provenance de mission importée ; le contenu du texte opérateur ne
+sélectionne jamais le format. Les critères techniques stockés pour l’analyse
+ne sont pas transmis comme données à copier dans la future mission.
+
+Le payload modèle contient exactement `prompt_format` et
+`operator_request: {"text": "demande originale"}`. La demande n’est plus un JSON
+encodé dans `constraints`, puis dans `facts`, puis dans une autre chaîne JSON
+lors du rendu modèle. Son enveloppe de stockage historique dans Jobs reste une
+donnée hôte ; le service la décode explicitement avant l’admission. Le helper
+rend une unique enveloppe JSON structurée `operator_request`, séparée des règles
+fixes du programme. Champs supplémentaires et types incorrects sont refusés.
+La demande reste non fiable, jamais une instruction hôte ni une autorisation.
+
+Les règles v2 demandent un objectif décrivant le résultat métier, des critères
+vérifiables du livrable et les seules contraintes métier déclarées. Elles
+interdisent de prendre l’analyse, le format JSON ou Reprise comme objectif, ou
+de copier un critère technique d’analyse. Elles demandent zéro question quand
+la demande suffit, sinon au maximum trois questions strictement bloquantes,
+sans redemander une précision déjà donnée. Ce cadrage est une consigne au modèle,
+pas une preuve que ses questions sont utiles ou son objectif fidèle. Le parseur
+candidat conserve son schéma v1 et sa validation structurelle ; la relecture
+humaine reste indispensable. Aucun filtrage heuristique n’est présenté comme
+une validation sémantique.
+
+Le helper annonce les formats supportés via son contrat statique, avant toute
+API modèle. Une analyse v2 est refusée au plan puis à la revalidation du snapshot
+si ce format n’est pas annoncé ; aucun repli vers l’ancien rendu n’est permis.
+L’annonce ne démontre ni disponibilité réelle ni qualité de génération. Le
+contrat de supervision et les limites d’outils/temps restent inchangés.
+
+Le format, la proposition et le hash du helper participent à l’identité admise.
+Un manifeste absent de version ou portant `operator-question-v2` conserve
+strictement son payload et son rendu historiques, y compris les analyses v1.
+Les anciens reçus ne sont ni migrés ni réémis. Les tests figent deux identités
+synthétiques calculées depuis le formateur publié antérieur, vérifient l’entrée
+v2 plate, le refus d’un helper ancien avant admission, les injections
+structurelles et la récupération sans replay. Aucun test de modèle réel n’est
+nécessaire à ces contrôles, et ils ne prouvent pas l’amélioration sémantique.
