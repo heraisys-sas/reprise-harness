@@ -129,8 +129,10 @@ n’est effectué.
 
 ## Mémoire de projet partagée, sélection explicite
 
-Le parcours géré accepte désormais `--memory-access off|read|write` et
-`--memory-project-id UUID` dans `integration-plan`. Il ajoute une entrée distincte
+Le parcours géré accepte `--memory-access off|read|write`, `--memory-project-id UUID`
+et, facultativement, `--memory-scope-id UUID` dans `integration-plan`. Sans scope ID,
+le mode projet historique reste inchangé. Avec un scope ID, le plan lie le MCP à un
+scope v2 préexistant (user, project ou work) au démarrage. Il ajoute une entrée distincte
 `reprise-memory` / `serverName: reprise_memory`, sans élargir les outils du pont
 expert. `read` expose recherche/lecture ; `write` ajoute capture explicite,
 correction, suppression du fait courant et checkpoint. Aucun transcript n’est
@@ -143,6 +145,12 @@ Le projet doit déjà exister dans le registre canonique, et son workspace
 en lecture seule dans un processus séparé : aucune création, migration ou
 association implicite. Un registre WAL, un journal actif, un lien ou une
 association incohérente est refusé, sans sidecar SQLite créé par la sonde.
+Le scope est aussi vérifié par observation administrative en lecture seule : le
+stockage doit déjà être v2 et le scope doit exister. Les scopes projet/travail
+doivent porter ce même UUID projet ; un scope user est une sélection explicite
+attachée au projet hôte, pas une identité authentifiée. Un changement de scope
+avec un grant `write` conservé exige `--memory-access write` explicite. Le plan
+ne crée ni ne migre de scope.
 
 Exemple de première activation en lecture, après création/association explicite
 du projet par le parcours de registre existant :
@@ -151,6 +159,13 @@ du projet par le parcours de registre existant :
 reprise integration-plan --home DSH_HOME --profile desktop --project WORKSPACE \
   --action install --memory-access read --memory-project-id REGISTERED_UUID
 ```
+
+Pour sélectionner un scope user ou work déjà enregistré, ajouter
+`--memory-scope-id SCOPE_UUID`. Pour un scope projet v2, le même flag sélectionne
+explicitement ses métadonnées de provenance ; sans lui, la compatibilité projet
+v1 est préservée. Choisir l’UUID depuis `reprise memory-scope-list --state STATE`
+et contrôler son champ `kind` avant de préparer le plan ; cette commande admin
+liste les métadonnées sans exposer le texte des faits.
 
 Appliquer le JSON obtenu avec `integration-apply` par le parcours existant. Pour
 accorder l’écriture au processus MCP, remplacer explicitement `read` par `write`

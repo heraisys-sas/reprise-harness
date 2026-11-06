@@ -24,6 +24,7 @@ DOCS = (
     'docs/contracts/HANDOFF-CONTRACT.md',
     'docs/contracts/HARNESS-ROLES-CONTRACT.md',
     'docs/integrations/claude/CLAUDE-CONNECTOR.md',
+    'docs/integrations/claude/CLAUDE-INTEGRATION.md',
     'docs/integrations/ironclaw/IRONCLAW-SSH.md',
     'docs/contracts/DELEGATION-PERSISTENCE.md',
     'docs/contracts/QUOTA-KNOWLEDGE.md',

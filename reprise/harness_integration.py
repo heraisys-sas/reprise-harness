@@ -640,11 +640,11 @@ def apply_asi1_preset(text, old, enable, plugin_path):
     return ''.join(lines), [digest(''.join(block).encode())], False
 
 
-def desired(root, home, profile, project, action, delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False, bash_sandbox_disabled=None, memory_access=None, memory_project_id=None):
+def desired(root, home, profile, project, action, delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False, bash_sandbox_disabled=None, memory_access=None, memory_project_id=None, memory_scope_id=None):
     home, folder, managed = context(home, profile)
     old = manifest(managed)
-    memory = memory_integration.selected(old, memory_access, memory_project_id, action=action)
-    memory_managed = memory['access'] != 'off' or 'memory' in (old or {}) or memory_project_id is not None
+    memory = memory_integration.selected(old, memory_access, memory_project_id, memory_scope_id, action=action)
+    memory_managed = memory['access'] != 'off' or 'memory' in (old or {}) or memory_project_id is not None or memory_scope_id is not None
     if bash_sandbox_disabled is None:
         previous = old if old and old.get('status') == 'installed' else {}
         if previous.get('bash_sandbox_disabled') and str(Path(project).resolve(strict=True)) != previous.get('project'):
@@ -806,7 +806,7 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
     return files, extra, next_manifest
 
 
-def plan(root, home, profile, project, action='install', delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False, bash_sandbox_disabled=None, memory_access=None, memory_project_id=None):
+def plan(root, home, profile, project, action='install', delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False, bash_sandbox_disabled=None, memory_access=None, memory_project_id=None, memory_scope_id=None):
     if bash_sandbox_disabled is None:
         old = manifest(context(home, profile)[2])
         previous = old if old and old.get('status') == 'installed' else {}
@@ -817,7 +817,7 @@ def plan(root, home, profile, project, action='install', delegate=False, agent_r
         raise ValueError('Action ou capacité invalide.')
     if inspect(home, profile).get('pending_plan'):
         raise ValueError('Reprendre l’opération partielle conservée avant de créer un autre plan.')
-    files, extra, _ = desired(root, home, profile, project, action, delegate, agent_role, output_resume, output_resume_project, codex_workspace_write, asi1_effort, bash_sandbox_disabled, memory_access, memory_project_id)
+    files, extra, _ = desired(root, home, profile, project, action, delegate, agent_role, output_resume, output_resume_project, codex_workspace_write, asi1_effort, bash_sandbox_disabled, memory_access, memory_project_id, memory_scope_id)
     changes = []
     for path, text in files.items():
         before, after = file_hash(path), digest(text.encode()) if text is not None else None
@@ -871,12 +871,12 @@ def apply(root, public):
             if journal['plan'] != public:
                 raise ValueError('Un autre plan est en attente ; reprendre ce plan sans écrasement.')
         else:
-            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False), public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'))
+            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False), public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id'))
             if current != public:
                 raise ValueError('Entrées modifiées depuis la prévisualisation. Refaire le plan.')
             if not public['changes']:
                 return {'status': 'completed', 'changed': False, 'message': 'Configuration identique ; aucune écriture.'}
-            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False), public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'))
+            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False), public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id'))
             if public['action'] == 'install':
                 helpers, runtime, identity = bundle_info(root)
                 if identity != Path(public['release']).name:
@@ -1084,6 +1084,7 @@ def main(root, argv=None):
             command.add_argument('--agent-role', choices=('standard', 'coordinator'), default=None)
             command.add_argument('--memory-access', choices=('off', 'read', 'write'), default=None)
             command.add_argument('--memory-project-id')
+            command.add_argument('--memory-scope-id', help='Scope v2 préexistant explicitement sélectionné')
     sub.add_parser('integration-apply')
     args = parser.parse_args(argv)
     os.umask(0o077)
@@ -1109,7 +1110,7 @@ def main(root, argv=None):
             if args.output_resume and args.output_resume_project is None and not changed_project:
                 args.output_resume_project = installed.get('output_resume_project')
             result = {'status': 'planned', 'message': 'Plan sans écriture. L’installation n’autorise ni inférence ni activation automatique.',
-                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role, args.output_resume, args.output_resume_project, args.codex_workspace_write, args.asi1_effort, args.disable_bash_sandbox, args.memory_access, args.memory_project_id)}
+                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role, args.output_resume, args.output_resume_project, args.codex_workspace_write, args.asi1_effort, args.disable_bash_sandbox, args.memory_access, args.memory_project_id, args.memory_scope_id)}
         elif args.command == 'integration-apply':
             public = json.loads(sys.stdin.read(1024 * 1024))['plan']
             result = apply(root, public)

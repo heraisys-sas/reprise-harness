@@ -99,15 +99,15 @@ def manifest_enable_await(manifest):
     return value
 
 
-def desired(root, home, project, replace_probe, action='install', enable_await=None, memory_access=None, memory_project_id=None):
+def desired(root, home, project, replace_probe, action='install', enable_await=None, memory_access=None, memory_project_id=None, memory_scope_id=None):
     home, config, managed = paths(home)
     project = Path(project).expanduser().resolve(strict=True)
     if not project.is_dir() or type(replace_probe) is not bool or (enable_await is not None and type(enable_await) is not bool):
         raise ValueError('Projet existant et options valides requises.')
     original = read_config(config)
     old = metadata(managed)
-    memory = memory_integration.selected(old, memory_access, memory_project_id, action=action)
-    memory_managed = memory['access'] != 'off' or 'memory' in (old or {}) or memory_project_id is not None
+    memory = memory_integration.selected(old, memory_access, memory_project_id, memory_scope_id, action=action)
+    memory_managed = memory['access'] != 'off' or 'memory' in (old or {}) or memory_project_id is not None or memory_scope_id is not None
     if enable_await is None:
         preserve_removed_setting = action == 'remove' and old and old.get('status') == 'removed'
         effective_enable_await = manifest_enable_await(old) if old and (old.get('status') == 'installed' or preserve_removed_setting) else False
@@ -188,10 +188,10 @@ def desired(root, home, project, replace_probe, action='install', enable_await=N
     return home, config, managed, configured, manifest, helpers, runtime
 
 
-def plan(root, home, project, replace_probe=False, action='install', enable_await=None, memory_access=None, memory_project_id=None):
+def plan(root, home, project, replace_probe=False, action='install', enable_await=None, memory_access=None, memory_project_id=None, memory_scope_id=None):
     if enable_await is not None and type(enable_await) is not bool:
         raise ValueError('Option enable_await booléenne ou absente requise.')
-    home, config, managed, configured, manifest, _, _ = desired(root, home, project, replace_probe, action, enable_await, memory_access, memory_project_id)
+    home, config, managed, configured, manifest, _, _ = desired(root, home, project, replace_probe, action, enable_await, memory_access, memory_project_id, memory_scope_id)
     changes = []
     for target, value in ((config, configured), (managed / 'managed.json', manifest)):
         before, after = file_hash(target), digest(encoded(value).encode())
@@ -231,11 +231,11 @@ def apply(root, public):
         enable_await = public.get('enable_await')
         if type(enable_await) is not bool:
             raise ValueError('Option enable_await booléenne requise.')
-        if plan(root, home, public['project'], public['replace_probe'], public['action'], enable_await, public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id')) != public:
+        if plan(root, home, public['project'], public['replace_probe'], public['action'], enable_await, public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id')) != public:
             raise ValueError('Configuration ou bundle modifié ; refaire le plan.')
         if not public['changes']:
             return {'status': 'completed', 'changed': False, 'client_loaded': 'unknown'}
-        _, _, _, configured, manifest, helpers, runtime = desired(root, home, public['project'], public['replace_probe'], public['action'], enable_await, public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'))
+        _, _, _, configured, manifest, helpers, runtime = desired(root, home, public['project'], public['replace_probe'], public['action'], enable_await, public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id'))
         if public['action'] == 'install':
             stage_release(helpers, runtime, Path(public['release']))
             release_check(Path(public['release']))
@@ -385,6 +385,7 @@ def main(root, argv=None):
             command.set_defaults(enable_await=None)
             command.add_argument('--memory-access', choices=('off', 'read', 'write'), default=None)
             command.add_argument('--memory-project-id')
+            command.add_argument('--memory-scope-id', help='Scope v2 préexistant explicitement sélectionné')
     sub.add_parser('claude-integration-apply')
     args = parser.parse_args(argv)
     os.umask(0o077)
@@ -394,7 +395,7 @@ def main(root, argv=None):
         elif args.command.endswith('-plan'):
             if args.action == 'remove' and args.enable_await is not None:
                 raise ValueError('Les options await ne s’appliquent pas au retrait.')
-            result = {'status': 'planned', 'plan': plan(root, args.home, args.project, args.replace_probe, args.action, args.enable_await, args.memory_access, args.memory_project_id)}
+            result = {'status': 'planned', 'plan': plan(root, args.home, args.project, args.replace_probe, args.action, args.enable_await, args.memory_access, args.memory_project_id, args.memory_scope_id)}
         elif args.command.endswith('-apply'):
             result = apply(root, json.loads(sys.stdin.read(1024 * 1024))['plan'])
         else:
