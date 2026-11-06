@@ -293,3 +293,60 @@ peut committer pendant le chiffrement, est bloqué au remplacement seulement,
 puis peut de nouveau committer après libération. Ils ne simulent pas un disque
 réellement bloqué. Ces preuves et hashes restent une attribution locale entre
 composants hôte, pas une authentification contre un processus hostile du même UID.
+
+### Parcours GUI d’analyse vers une mission
+
+L’interface propose une préparation d’analyse native distincte de la mission.
+Le template hôte `reprise-analysis-v1` demande uniquement un candidat JSON strict,
+sans exécuter la demande ni déduire permissions, cible ou capacités. La demande
+opérateur est encodée comme donnée JSON dans les contraintes, en conservant ses
+retours à la ligne ; l’enveloppe encodée est limitée à 1 Kio. Aucun transcript,
+checkpoint ou souvenir n’est ajouté automatiquement. La qualité des questions
+reste non vérifiée et une réponse non JSON ne déclenche aucune réparation.
+
+Créer cette préparation ne lance aucun modèle. L’opérateur valide son contexte,
+consent à l’analyse Apple locale, relit le manifeste puis autorise un départ
+unique par le parcours supervisé existant. Les contrôles de suivi et d’arrêt
+restent disponibles ; les changements de sélection sont bloqués pendant une
+exécution suivie. La réponse brute et le reçu restent consultables même si le
+candidat est refusé par le parseur.
+
+Après extraction attribuable, l’opérateur peut créer explicitement une autre
+préparation de mission. L’analyse et la mission ont des identités distinctes ;
+la mission commence sans consentement, permission ou exécution hérités. Elle
+reste éditable avant son propre consentement. Les questions importées sont
+présentées avec leurs réponses et leur historique ; « Enregistrer sans résoudre »
+et « Confirmer la résolution » sont des actions distinctes. La réouverture est
+explicite. Les réponses non enregistrées restent volatiles et ne sont pas une
+preuve durable. Aucune réponse n’est transformée automatiquement en fait mémoire.
+
+Le journal conserve une liaison privée d’identités par projet/travail, avec
+écriture atomique et synchronisation : analyse source et destination de mission.
+Il refuse une autre source ou destination pour cette liaison. Ce parcours prend
+donc en charge une analyse et une destination par travail ; une nouvelle analyse
+requiert la sélection explicite d’un autre travail. La liaison ne contient aucun
+texte de demande ou de réponse. La GUI permet de recharger séparément les deux
+opérations ; un ancien reçu terminal ne remplace pas cette sélection explicite.
+
+L’intention d’import est journalisée avant la liaison destination et avant
+émission. Si le crash survient entre marqueur et liaison, le marqueur permet de
+reconstituer cette dernière. Les nouveaux marqueurs d’import et de clarification
+conservent uniquement identités, révision et hashes, jamais le texte des réponses.
+La récupération compare import/source/run/réponse/candidat ou l’identité exacte
+de résolution dans l’historique. Un reçu étranger ne libère pas le journal ;
+la GUI n’émet pas de nouveau départ, import ou résolution pour remplacer une
+réponse perdue. Une opération absente après incertitude reste bloquante.
+
+Les liaisons et marqueurs historiques restent lisibles. Les tests GUI exécutent
+le contrôleur Swift réel avec le service, les Jobs, le registre et l’admission
+réels, mais un coffre et un helper de génération simulés. Ils vérifient le
+parcours complet, les réponses perdues, les faux reçus, le CAS et l’absence de
+réémission. Ils ne démontrent ni l’utilité des clarifications d’un vrai modèle,
+ni une conversation native à plusieurs tours via ce parcours.
+
+Un refus d’import explicitement confirmé `effect: not_admitted` ne laisse pas la
+liaison destination inutilisable : après relecture du même candidat, l’opérateur
+peut demander un réessai explicite avec le même `import_id`, la même destination
+et les mêmes identités source/run/réponse/candidat. Le journal conserve la preuve
+du refus avant cette nouvelle émission. Une réponse perdue ou un effet inconnu
+n’ouvre jamais ce réessai : seule la récupération de la destination est permise.

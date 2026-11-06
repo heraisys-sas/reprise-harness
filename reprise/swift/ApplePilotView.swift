@@ -70,6 +70,7 @@ struct ApplePilotView: View {
             if pilot.contextNeedsConfiguration { Text(pilot.contextConfigurationMessage).font(.callout) }
             Text(pilot.status).font(.callout).accessibilityLabel("État du pilote : " + pilot.status)
             Divider()
+            analysisPanel
             preparationPanel
             Divider()
             DisclosureGroup("Mémoire du projet — actions de l’opérateur", isExpanded: $pilot.showMemory) {
@@ -94,14 +95,74 @@ struct ApplePilotView: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private var analysisPanel: some View {
+        GroupBox("De la demande à la mission") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Une analyse locale propose un brouillon. Vous relisez et importez ce candidat ; la mission demande ensuite son propre consentement. Aucune réponse n’est capturée automatiquement en mémoire.").font(.caption)
+                TextField("Demande à clarifier (1 Kio maximum)", text: $pilot.analysisRequest, axis: .vertical)
+                    .textFieldStyle(.roundedBorder).lineLimit(2...5)
+                Button("Créer la préparation d’analyse locale") { pilot.prepareAnalysis() }
+                    .disabled(!pilot.canSwitchReview || !pilot.analysisOperationID.isEmpty || pilot.workID.isEmpty)
+                if !pilot.analysisOperationID.isEmpty {
+                    Text("Analyse : \(pilot.analysisOperationID)").font(.caption).textSelection(.enabled)
+                    Button("Recharger l’analyse et son reçu") { pilot.showReviewOperation(analysis: true) }.disabled(!pilot.canSwitchReview)
+                    Text("Une analyse par travail dans ce parcours. Pour une autre analyse, sélectionnez explicitement un autre travail.").font(.caption)
+                }
+                if !pilot.missionOperationID.isEmpty {
+                    Text("Mission : \(pilot.missionOperationID)").font(.caption).textSelection(.enabled)
+                    Button("Recharger la mission proposée") { pilot.showReviewOperation(analysis: false) }.disabled(!pilot.canSwitchReview)
+                }
+                if pilot.isAnalysis, (pilot.preparationJob["local_execution"] as? [String: Any])?["stage"] as? String == "recorded" {
+                    Button("Extraire le candidat de ce reçu") { pilot.extractCandidate() }.disabled(pilot.preparationBusy || pilot.preparationUncertain)
+                }
+                if let candidate = pilot.candidateResult["candidate"] as? [String: Any],
+                   let proposal = candidate["proposal"] as? [String: Any] {
+                    Text("Candidat non vérifié — à relire").font(.headline)
+                    Text(proposal["objective"] as? String ?? "")
+                    ForEach(["acceptance", "constraints", "questions"], id: \.self) { field in
+                        Text(field == "acceptance" ? "Critères proposés" : field == "constraints" ? "Contraintes proposées" : "Questions proposées").font(.caption.bold())
+                        ForEach(Array((proposal[field] as? [String] ?? []).enumerated()), id: \.offset) { _, value in Text(value) }
+                    }
+                    Button(pilot.candidateImportLabel) { pilot.importCandidate() }
+                        .disabled(!pilot.canSwitchReview || !pilot.isAnalysis)
+                }
+            }
+        }
+    }
+
+    private var clarificationPanel: some View {
+        GroupBox("Clarifications de la mission") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Une réponse enregistrée peut rester ouverte. Confirmez explicitement la résolution ; l’historique et la question originale sont conservés.").font(.caption)
+                ForEach(pilot.clarifications, id: \.selfID) { question in
+                    if let id = question["id"] as? String {
+                        Text(question["question"] as? String ?? "").font(.headline)
+                        Text(question["resolved"] as? Bool == true ? "Résolue" : "À résoudre").font(.caption)
+                        TextField("Votre réponse (1 Kio maximum)", text: Binding(get: { pilot.clarificationAnswer(id) }, set: { pilot.setClarificationAnswer(id, text: $0) }), axis: .vertical)
+                            .textFieldStyle(.roundedBorder).disabled(!pilot.preparationCanEdit)
+                        HStack {
+                            Button(question["resolved"] as? Bool == true ? "Réouvrir avec cette réponse" : "Enregistrer sans résoudre") { pilot.clarify(id, resolved: false) }
+                            Button("Confirmer la résolution") { pilot.clarify(id, resolved: true) }
+                        }.disabled(!pilot.preparationCanEdit)
+                        DisclosureGroup("Historique des réponses") {
+                            ForEach(Array((question["history"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, item in
+                                Text((item["answer"] as? String ?? "") + (item["resolved"] as? Bool == true ? " · résolue" : " · ouverte")).font(.caption)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private var preparationPanel: some View {
-        GroupBox("Préparation, consentement et exécution locale") {
+        GroupBox(pilot.isAnalysis ? "Analyse locale — autorisation distincte" : "Mission — préparation, consentement et exécution locale") {
             VStack(alignment: .leading, spacing: 8) {
                 Text("La préparation et le consentement seuls ne lancent aucune exécution. Résolvez les questions avant de consentir, puis validez le manifeste pour exécuter localement.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
-                    Button("Nouvelle préparation") { pilot.newPreparation() }
-                        .disabled(!pilot.enabled || pilot.projectID.isEmpty || pilot.preparationBusy)
+                    Button("Nouvelle préparation manuelle") { pilot.newPreparation() }
+                        .disabled(!pilot.canSwitchReview || pilot.projectID.isEmpty)
                     Button("Charger cette opération") { pilot.loadPreparation() }
                         .disabled(!pilot.enabled || pilot.preparationOperationID.isEmpty || pilot.preparationBusy)
                     Text(pilot.preparationOperationID.isEmpty ? "Aucune opération" : pilot.preparationOperationID)
@@ -109,16 +170,18 @@ struct ApplePilotView: View {
                 }
                 TextField("Objectif", text: $pilot.proposalObjective, axis: .vertical)
                     .textFieldStyle(.roundedBorder).lineLimit(2...4)
-                    .disabled(pilot.preparationBusy || (!pilot.preparationJob.isEmpty && !pilot.preparationCanEdit))
+                    .disabled(pilot.isAnalysis || pilot.preparationBusy || (!pilot.preparationJob.isEmpty && !pilot.preparationCanEdit))
                 TextField("Critères d’acceptation, un par ligne", text: $pilot.proposalAcceptance, axis: .vertical)
                     .textFieldStyle(.roundedBorder).lineLimit(2...4)
-                    .disabled(pilot.preparationBusy || (!pilot.preparationJob.isEmpty && !pilot.preparationCanEdit))
+                    .disabled(pilot.isAnalysis || pilot.preparationBusy || (!pilot.preparationJob.isEmpty && !pilot.preparationCanEdit))
                 TextField("Contraintes, une par ligne", text: $pilot.proposalConstraints, axis: .vertical)
                     .textFieldStyle(.roundedBorder).lineLimit(2...4)
-                    .disabled(pilot.preparationBusy || (!pilot.preparationJob.isEmpty && !pilot.preparationCanEdit))
-                TextField("Questions non résolues, une par ligne", text: $pilot.proposalQuestions, axis: .vertical)
-                    .textFieldStyle(.roundedBorder).lineLimit(2...5)
-                    .disabled(pilot.preparationBusy || (!pilot.preparationJob.isEmpty && !pilot.preparationCanEdit))
+                    .disabled(pilot.isAnalysis || pilot.preparationBusy || (!pilot.preparationJob.isEmpty && !pilot.preparationCanEdit))
+                if pilot.preparationJob["candidate_import"] == nil {
+                    TextField("Questions non résolues, une par ligne", text: $pilot.proposalQuestions, axis: .vertical)
+                        .textFieldStyle(.roundedBorder).lineLimit(2...5)
+                        .disabled(pilot.isAnalysis || pilot.preparationBusy || (!pilot.preparationJob.isEmpty && !pilot.preparationCanEdit))
+                }
                 HStack {
                     Button(pilot.preparationJob.isEmpty ? "Enregistrer le brouillon" : "Réviser le brouillon") {
                         if pilot.preparationJob.isEmpty { pilot.savePreparation() } else { pilot.revisePreparation() }
@@ -137,12 +200,16 @@ struct ApplePilotView: View {
                         .disabled(!pilot.enabled || pilot.projectID.isEmpty || pilot.workID.isEmpty || pilot.preparationBusy || pilot.preparationUncertain)
                     if let root = pilot.consentContext["project_root"] as? String {
                         Text("Projet : \(root) · travail : \(pilot.workID)").font(.caption).textSelection(.enabled)
+                        if pilot.isAnalysis {
+                            Text("Cible : Apple local. Ce consentement concerne uniquement l’analyse ; aucune mission future n’est autorisée.").font(.caption)
+                        } else {
                         Picker("Cible du consentement", selection: $pilot.consentBackend) {
                             Text("Codex — exécution indisponible").tag("codex")
                             Text("Apple local — sans repli").tag("foundation-models")
                         }
+                        }
                         Text("Expertise sans outils ni écriture. La cible est explicite ; aucune substitution automatique. Disponibilité non vérifiée.").font(.caption)
-                        Button("Enregistrer mon consentement") { pilot.authorizePreparation() }
+                        Button(pilot.isAnalysis ? "Consentir à l’analyse locale" : "Consentir à cette mission") { pilot.authorizePreparation() }
                             .disabled(!pilot.canConsent)
                     }
                 }
@@ -156,7 +223,7 @@ struct ApplePilotView: View {
                             Text("Foundation Models local · une exécution · aucun outil ni repli · arrêt à l’échéance").font(.caption)
                             Text(manifest["helper_path"] as? String ?? "").font(.caption).textSelection(.enabled)
                             Text("SHA-256 : \(manifest["helper_sha256"] as? String ?? "")").font(.caption).textSelection(.enabled)
-                            Button("Autoriser et exécuter une fois localement") { pilot.startLocalExecution() }.disabled(!pilot.canStartLocal)
+                            Button(pilot.isAnalysis ? "Exécuter l’analyse une fois" : "Exécuter cette mission une fois") { pilot.startLocalExecution() }.disabled(!pilot.canStartLocal)
                         }
                     }
                     if let execution = pilot.preparationJob["local_execution"] as? [String: Any] {
@@ -181,6 +248,7 @@ struct ApplePilotView: View {
                         Text("• " + question).font(.caption).textSelection(.enabled)
                     }
                 }
+                if !pilot.clarifications.isEmpty { clarificationPanel }
                 Text(pilot.preparationStatus).font(.callout)
             }
         }
