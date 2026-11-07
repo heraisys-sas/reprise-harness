@@ -103,6 +103,8 @@ class Service:
             'job_candidate_import': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'work_id',
                 'source_operation_id', 'source_run_id', 'expected_response_sha256', 'expected_candidate_sha256',
                 'import_id', 'expected_revision', 'expected_proposal_sha256', 'operator_confirmed'},
+            'job_clarification_review': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'question_id',
+                'action', 'reason', 'resolution_id', 'expected_revision'},
             'job_clarify': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'question_id',
                 'answer', 'resolved', 'resolution_id', 'expected_revision'},
             'job_consent_context': {'id', 'op', 'enabled', 'project_id', 'work_id'},
@@ -126,7 +128,7 @@ class Service:
             self._reply(ident, 'error')
 
     def _dispatch(self, ident, op, request):
-        if op in ('job_candidate_extract', 'job_candidate_import', 'job_clarify', 'job_prepare', 'job_recover', 'job_revise', 'job_consent_context', 'job_authorize', 'job_authorize_local', 'job_local_plan', 'job_local_start', 'job_local_stop'):
+        if op in ('job_candidate_extract', 'job_candidate_import', 'job_clarify', 'job_clarification_review', 'job_prepare', 'job_recover', 'job_revise', 'job_consent_context', 'job_authorize', 'job_authorize_local', 'job_local_plan', 'job_local_start', 'job_local_stop'):
             if request.get('enabled') is not True:
                 self._reply(ident, 'not_enabled')
                 return
@@ -327,6 +329,10 @@ class Service:
                         work_id=request['work_id'], expected_revision=request['expected_revision'],
                         expected_proposal_sha256=request['expected_proposal_sha256'],
                         operator_confirmed=request['operator_confirmed'])
+            elif op == 'job_clarification_review':
+                result = jobs.review_clarification(project, operation, question_id=request['question_id'],
+                    action=request['action'], reason=request['reason'], resolution_id=request['resolution_id'],
+                    expected_revision=request['expected_revision'])
             elif op == 'job_clarify':
                 result = jobs.clarify_candidate(project, operation, question_id=request['question_id'],
                     answer=request['answer'], resolved=request['resolved'], resolution_id=request['resolution_id'],
@@ -431,7 +437,7 @@ class Service:
             else:
                 status = 'invalid_proposal'
             response = {'status': status}
-            if validation_only or op in ('job_candidate_extract', 'job_candidate_import', 'job_clarify', 'job_authorize', 'job_authorize_local', 'job_consent_context', 'job_local_plan'):
+            if validation_only or op in ('job_candidate_extract', 'job_candidate_import', 'job_clarify', 'job_clarification_review', 'job_authorize', 'job_authorize_local', 'job_consent_context', 'job_local_plan'):
                 response['effect'] = 'not_admitted'
         except Exception:
             response = {'status': 'job_unavailable'}

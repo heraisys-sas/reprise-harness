@@ -533,10 +533,56 @@ class Jobs:
                 raise ValueError('Revision conflict')
             item['history'].append(identity)
             item.update(answer=answer, resolved=resolved)
+            if 'disposition' in item:
+                item['disposition'] = 'answered' if resolved else 'open'
             if len(_json(questions).encode()) > MAX_CLARIFICATIONS:
                 raise ValueError('Clarification history capacity reached')
             current = row['proposal']['questions']
             if resolved:
+                current[:] = [value for value in current if value != item['question']]
+            elif item['question'] not in current:
+                current.append(item['question'])
+            row['proposal'] = _proposal(row['proposal'])
+            row.update(revision=row['revision'] + 1, revised_at=time.time(),
+                       fingerprint=_fingerprint(row['proposal'], None))
+            return self._public(row)
+
+    def review_clarification(self, project_id, operation_id, *, question_id, action, reason,
+                             resolution_id, expected_revision):
+        """An operator decision is not a fabricated answer or permission."""
+        project, operation, question, mutation = map(_uuid, (project_id, operation_id, question_id, resolution_id))
+        if action not in ('dismiss', 'reopen') or type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError('Invalid clarification decision')
+        reason = _text(reason, 1024)
+        self._project(project)
+        identity = {'resolution_id': mutation, 'action': action, 'reason': reason,
+                    'expected_revision': expected_revision}
+        with self._store(write=True) as data:
+            row = next((row for row in data['jobs'] if row['project_id'] == project
+                        and row.get('operation_id') == operation), None)
+            if row is None:
+                raise ValueError('Job not found')
+            questions = row.get('clarifications') or []
+            item = next((item for item in questions if item['id'] == question), None)
+            if item is None:
+                raise ValueError('Clarification not found')
+            for other in questions:
+                for previous in other['history']:
+                    if previous['resolution_id'] == mutation:
+                        if other['id'] == question and previous == identity:
+                            return self._public(row)
+                        raise ValueError('Clarification identity conflict')
+            if row['status'] != 'preparation':
+                raise ValueError('Mission locked')
+            if row['revision'] != expected_revision:
+                raise ValueError('Revision conflict')
+            item['history'].append(identity)
+            item.update(disposition='dismissed' if action == 'dismiss' else 'open',
+                        resolved=action == 'dismiss')
+            if len(_json(questions).encode()) > MAX_CLARIFICATIONS:
+                raise ValueError('Clarification history capacity reached')
+            current = row['proposal']['questions']
+            if action == 'dismiss':
                 current[:] = [value for value in current if value != item['question']]
             elif item['question'] not in current:
                 current.append(item['question'])

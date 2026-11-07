@@ -414,3 +414,32 @@ sémantiques. Le refus conserve le reçu et sa réponse ; aucun import ni nouvel
 appel automatique n’en découle. Les reçus historiques restent lisibles et leur
 identité inchangée, y compris lorsque leur proposition est désormais refusée.
 Les formats antérieurs gardent leur construction historique sans réémission.
+
+### Décision opérateur sur une question non bloquante
+
+`job_clarification_review` reçoit exactement `id`, `op`, `enabled`, `project_id`,
+`operation_id`, `question_id`, `action` (`dismiss` ou `reopen`), `reason`
+(non vide, maximum 1 Kio), `resolution_id` et `expected_revision`. Le motif est
+obligatoire pour les deux décisions. Seule une préparation importée encore
+modifiable peut être concernée. La question doit appartenir à cette opération ;
+aucune décision ne migre vers un autre projet ou une autre question.
+
+Sous le verrou Jobs, la révision est comparée et la mutation enregistrée une
+seule fois. La même identité et le même contenu retrouvent l’état ; réutiliser
+l’identité avec un contenu différent est refusé. L’historique conserve la
+question, les réponses éventuelles et les décisions, sans fabriquer de réponse.
+`dismiss` ajoute `disposition: dismissed`, marque `resolved: true` et retire
+seulement cette question des blocages. `reopen` ajoute `disposition: open`, marque
+`resolved: false` et restaure ce blocage, sans effacer réponse ni décisions.
+Une réponse ultérieure peut donner la disposition `answered` ou `open`. Les
+historiques anciens sans disposition restent interprétés selon `resolved`.
+
+La GUI distingue réponse, résolution et décision « Écartée par l’opérateur ».
+Elle journalise l’identité, l’action, la révision et le hash du motif avant
+émission ; les textes restent dans l’état chiffré Jobs. Une réponse perdue se
+réconcilie par la même opération et l’événement exact, sans réémission automatique.
+Le consentement reste distinct : toutes les autres questions ouvertes bloquent,
+le hash des clarifications lie aussi les décisions, et aucune modification n’est
+acceptée après consentement. Écarter une question exprime le jugement humain sur
+son caractère bloquant, pas une réponse factuelle, une permission ou une preuve
+de pertinence du modèle. Aucun ancien reçu ni consentement n’est réécrit.

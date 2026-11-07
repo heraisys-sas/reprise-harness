@@ -58,11 +58,16 @@ private struct PreparationIntent: Codable, Equatable {
     let review: [String: String]?
 
     var validReview: Bool {
-        guard ["candidate_import", "clarify"].contains(kind) else { return review == nil }
+        guard ["candidate_import", "clarify", "clarification_review"].contains(kind) else { return review == nil }
         guard let review, let work, UUID(uuidString: work)?.uuidString.lowercased() == work else { return false }
         let ids = kind == "candidate_import" ? ["source", "run", "mutation"] : ["question", "mutation"]
-        let hashes = kind == "candidate_import" ? ["response"] : ["answer"]
-        let keys = Set(ids + hashes + (kind == "clarify" ? ["resolved", "expected"] : []))
+        let hashes = kind == "candidate_import" ? ["response"] : [kind == "clarification_review" ? "reason" : "answer"]
+        let keys = Set(ids + hashes + (kind == "clarify" ? ["resolved", "expected"] : kind == "clarification_review" ? ["action", "expected"] : []))
+        if kind == "clarification_review" {
+            guard let expected = Int(review["expected"] ?? ""), expected >= 0, expected < Int.max,
+                  revision == expected + 1, review["reason"] == fingerprint,
+                  ["dismiss", "reopen"].contains(review["action"] ?? "") else { return false }
+        }
         if kind == "clarify" {
             guard let expected = Int(review["expected"] ?? ""), expected >= 0, expected < Int.max,
                   revision == expected + 1, review["answer"] == fingerprint else { return false }
@@ -143,7 +148,7 @@ private final class PreparationIntentJournal {
                 guard intent.project == project,
                       intent.attempt == nil || UUID(uuidString: intent.attempt!)?.uuidString.lowercased() == intent.attempt,
                       UUID(uuidString: intent.operation)?.uuidString.lowercased() == intent.operation,
-                      ["prepare", "revise", "authorize", "authorize_local", "local_start", "candidate_import", "clarify"].contains(intent.kind), intent.revision >= 0, intent.validReview,
+                      ["prepare", "revise", "authorize", "authorize_local", "local_start", "candidate_import", "clarify", "clarification_review"].contains(intent.kind), intent.revision >= 0, intent.validReview,
                       !["authorize", "authorize_local", "local_start"].contains(intent.kind) || (intent.authorizationID != nil && intent.work != nil && UUID(uuidString: intent.authorizationID ?? "")?.uuidString.lowercased() == intent.authorizationID && UUID(uuidString: intent.work ?? "")?.uuidString.lowercased() == intent.work && intent.contextSHA256?.count == 64 && intent.contextSHA256!.allSatisfy({ $0.isHexDigit && !$0.isUppercase })),
                       intent.fingerprint.count == 64,
                       intent.fingerprint.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
@@ -170,7 +175,7 @@ private final class PreparationIntentJournal {
 
     func write(_ intent: PreparationIntent) throws {
         guard intent.validReview, intent.revision >= 0,
-              ["prepare", "revise", "authorize", "authorize_local", "local_start", "candidate_import", "clarify"].contains(intent.kind),
+              ["prepare", "revise", "authorize", "authorize_local", "local_start", "candidate_import", "clarify", "clarification_review"].contains(intent.kind),
               intent.work == nil || UUID(uuidString: intent.work!)?.uuidString.lowercased() == intent.work else { throw JournalError.unsafeFile }
         try withFolder(create: true) { folder in
             try withLock(folder: folder) {
@@ -347,7 +352,7 @@ private final class PreparationIntentJournal {
            intent.project == project,
            intent.attempt == nil || UUID(uuidString: intent.attempt!)?.uuidString.lowercased() == intent.attempt,
            UUID(uuidString: intent.operation)?.uuidString.lowercased() == intent.operation,
-           ["prepare", "revise", "authorize", "authorize_local", "local_start", "candidate_import", "clarify"].contains(intent.kind), intent.revision >= 0, intent.validReview,
+           ["prepare", "revise", "authorize", "authorize_local", "local_start", "candidate_import", "clarify", "clarification_review"].contains(intent.kind), intent.revision >= 0, intent.validReview,
                       !["authorize", "authorize_local", "local_start"].contains(intent.kind) || (intent.authorizationID != nil && intent.work != nil && UUID(uuidString: intent.authorizationID ?? "")?.uuidString.lowercased() == intent.authorizationID && UUID(uuidString: intent.work ?? "")?.uuidString.lowercased() == intent.work && intent.contextSHA256?.count == 64 && intent.contextSHA256!.allSatisfy({ $0.isHexDigit && !$0.isUppercase })),
            intent.fingerprint.count == 64,
            intent.fingerprint.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) {
@@ -996,6 +1001,20 @@ final class ApplePilotUI: ObservableObject {
             "operation_id": preparationOperationID, "question_id": id, "answer": answer, "resolved": resolved,
             "resolution_id": UUID().uuidString.lowercased(), "expected_revision": revision])
     }
+    @Published var clarificationReasonDrafts: [String: String] = [:]
+    func clarificationReason(_ id: String) -> String { clarificationReasonDrafts[draftKey(id)] ?? "" }
+    func setClarificationReason(_ id: String, text: String) { clarificationReasonDrafts[draftKey(id)] = text }
+    func reviewClarification(_ id: String, action: String) {
+        let reason = clarificationReason(id)
+        guard preparationCanEdit, canonical(workID), ["dismiss", "reopen"].contains(action),
+              !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, reason.utf8.count <= 1024,
+              let revision = preparationJob["revision"] as? Int,
+              clarifications.contains(where: { $0["id"] as? String == id }), startHost() else { return }
+        preparationBusy = true
+        request("job_clarification_review", fields: ["enabled": true, "project_id": projectID,
+            "operation_id": preparationOperationID, "question_id": id, "action": action, "reason": reason,
+            "resolution_id": UUID().uuidString.lowercased(), "expected_revision": revision])
+    }
     private func reviewProof(_ intent: PreparationIntent, job: [String: Any]) -> Bool {
         guard let review = intent.review, intent.validReview,
               (job["revision"] as? Int ?? -1) >= intent.revision else { return false }
@@ -1008,6 +1027,18 @@ final class ApplePilotUI: ObservableObject {
                 && origin["source_run_id"] as? String == review["run"]
                 && origin["response_sha256"] as? String == review["response"]
                 && record["operator_confirmed"] as? Bool == true
+        }
+        if intent.kind == "clarification_review", let questions = job["clarifications"] as? [[String: Any]],
+           let question = questions.first(where: { $0["id"] as? String == review["question"] }),
+           let history = question["history"] as? [[String: Any]] {
+            return (job["candidate_import"] as? [String: Any]).flatMap { $0["origin"] as? [String: Any] }?["work_id"] as? String == intent.work
+                && history.contains { item in
+                    guard let reason = item["reason"] as? String else { return false }
+                    return item["resolution_id"] as? String == review["mutation"]
+                        && item["expected_revision"] as? Int == Int(review["expected"] ?? "")
+                        && item["action"] as? String == review["action"]
+                        && SHA256.hash(data: Data(reason.utf8)).map { String(format: "%02x", $0) }.joined() == review["reason"]
+                }
         }
         if intent.kind == "clarify", let questions = job["clarifications"] as? [[String: Any]],
            let question = questions.first(where: { $0["id"] as? String == review["question"] }),
@@ -1170,7 +1201,7 @@ final class ApplePilotUI: ObservableObject {
               var bytes = try? JSONSerialization.data(withJSONObject: payload), bytes.count < 65536 else {
             status = "Requête invalide ou trop volumineuse."
             busy = false
-            if ["job_prepare", "job_recover", "job_revise", "job_authorize", "job_authorize_local", "job_consent_context", "job_local_plan", "job_local_start", "job_local_stop", "job_candidate_import", "job_clarify"].contains(operation) {
+            if ["job_prepare", "job_recover", "job_revise", "job_authorize", "job_authorize_local", "job_consent_context", "job_local_plan", "job_local_start", "job_local_stop", "job_candidate_import", "job_clarify", "job_clarification_review"].contains(operation) {
                 preparationBusy = false
                 preparationStatus = "La requête locale n’a pas été envoyée ; conservez la même identité."
             }
@@ -1185,7 +1216,7 @@ final class ApplePilotUI: ObservableObject {
             return ident
         }
         bytes.append(10)
-        if ["job_prepare", "job_recover", "job_revise", "job_authorize", "job_authorize_local", "job_local_start", "job_local_stop", "job_candidate_import", "job_clarify"].contains(operation),
+        if ["job_prepare", "job_recover", "job_revise", "job_authorize", "job_authorize_local", "job_local_start", "job_local_stop", "job_candidate_import", "job_clarify", "job_clarification_review"].contains(operation),
            let project = fields["project_id"] as? String, let preparation = fields["operation_id"] as? String {
             var intent: PreparationIntent?
             do {
@@ -1204,6 +1235,18 @@ final class ApplePilotUI: ObservableObject {
                     guard saveAnalysisLink(PreparationLink(project: project, work: work, analysis: source, mission: preparation)) else {
                         throw PreparationIntentJournal.JournalError.writeFailed
                     }
+                } else if operation == "job_clarification_review" {
+                    guard let revision = fields["expected_revision"] as? Int,
+                          let question = fields["question_id"] as? String,
+                          let reason = fields["reason"] as? String,
+                          let action = fields["action"] as? String,
+                          let mutation = fields["resolution_id"] as? String else { throw PreparationIntentJournal.JournalError.writeFailed }
+                    let hash = SHA256.hash(data: Data(reason.utf8)).map { String(format: "%02x", $0) }.joined()
+                    let record = PreparationIntent(project: project, operation: preparation, kind: "clarification_review",
+                        revision: revision + 1, fingerprint: hash, attempt: UUID().uuidString.lowercased(), work: workID,
+                        review: ["question": question, "reason": hash, "action": action,
+                                 "expected": String(revision), "mutation": mutation])
+                    try preparationJournal.write(record); intent = record
                 } else if operation == "job_clarify" {
                     guard let revision = fields["expected_revision"] as? Int,
                           let question = fields["question_id"] as? String,
@@ -1367,7 +1410,7 @@ final class ApplePilotUI: ObservableObject {
                 clearConsentContext()
                 preparationStatus = "Contexte local indisponible (\(result)) ; consentement bloqué."
             }
-        case "job_prepare", "job_recover", "job_revise", "job_authorize", "job_authorize_local", "job_local_start", "job_local_stop", "job_candidate_import", "job_clarify":
+        case "job_prepare", "job_recover", "job_revise", "job_authorize", "job_authorize_local", "job_local_start", "job_local_stop", "job_candidate_import", "job_clarify", "job_clarification_review":
             guard let context = preparationPending.removeValue(forKey: ident) else { ioFailed(generation: current); return }
             preparationBusy = false
             guard context.project == projectID, context.project == preparationProjectID,
@@ -1397,7 +1440,7 @@ final class ApplePilotUI: ObservableObject {
                         && manifest?["work_id"] as? String == intent.work
                         && manifest?["backend"] as? String == "foundation-models"
                         && (job["revision"] as? Int ?? -1) >= intent.revision
-                    let exactProof = authorizationProof || localProof || reviewProof(intent, job: job) || (!["authorize", "authorize_local", "local_start", "candidate_import", "clarify"].contains(intent.kind) && job["status"] as? String == "preparation"
+                    let exactProof = authorizationProof || localProof || reviewProof(intent, job: job) || (!["authorize", "authorize_local", "local_start", "candidate_import", "clarify", "clarification_review"].contains(intent.kind) && job["status"] as? String == "preparation"
                         && job["revision"] as? Int == intent.revision
                         && (job["proposal"] as? [String: Any]).flatMap(proposalFingerprint) == intent.fingerprint)
                     if exactProof {

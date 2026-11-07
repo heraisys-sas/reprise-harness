@@ -58,6 +58,7 @@ def emit(response):
  op=types.get(response['id']);row=response.get('job',{})
  if op=='job_candidate_import' and response['status']=='finished' and once('drop-import'):os._exit(0)
  if op=='job_clarify' and response['status']=='finished' and once('drop-clarify'):os._exit(0)
+ if op=='job_clarification_review' and response['status']=='finished' and once('drop-review'):os._exit(0)
  response=copy.deepcopy(response);row=response.get('job',{})
  if op=='job_recover' and row.get('candidate_import'):
   questions=row.get('clarifications',[])
@@ -66,6 +67,8 @@ def emit(response):
    row['candidate_import']['origin']['source_run_id']='foreign'
   elif len(history)==1 and once('wrong-clarify'):
    history[0]['resolution_id']='foreign'
+  elif len(history)==3 and once('wrong-review'):
+   history[-1]['resolution_id']='foreign'
  with lock:print(json.dumps(response,ensure_ascii=False),flush=True)
 host=Service(state,emit,jobs_factory=lambda state:Jobs(state,crypt=fake_crypt),
  local_factory=lambda jobs:LocalExecution(jobs,helper=HELPER),backend_factory=lambda:(_ for _ in ()).throw(AssertionError('no conversation')))
@@ -132,7 +135,7 @@ finally:host.shutdown()
   let id=q.clarifications[0]["id"] as! String
   q.setClarificationAnswer(id,text:"Lecteurs débutants")
   q.clarify(id,resolved:false);await idle(q);precondition(q.preparationUncertain)
-  let r=make();r.enabled=true;r.loadPreparation();await idle(r)
+  var r=make();r.enabled=true;r.loadPreparation();await idle(r)
   precondition(r.preparationUncertain,"foreign resolution must not clear intent")
   r.loadPreparation();await idle(r);precondition(!r.preparationUncertain,r.preparationStatus)
   precondition(r.clarificationAnswer(id)=="Lecteurs débutants")
@@ -140,6 +143,21 @@ finally:host.shutdown()
   r.clarify(id,resolved:true);await idle(r);precondition(!r.preparationUncertain,r.preparationStatus)
   precondition(r.clarifications[0]["resolved"] as? Bool==true)
   precondition((r.clarifications[0]["history"] as! [[String:Any]]).count==2)
+  r.setClarificationReason(id,text:"Ce détail ne bloque pas la mission")
+  r.reviewClarification(id,action:"dismiss");await idle(r);precondition(r.preparationUncertain)
+  r.reviewClarification(id,action:"dismiss") // no resend after lost response
+  let recovered=make();recovered.enabled=true;recovered.loadPreparation();await idle(recovered)
+  precondition(recovered.preparationUncertain,"foreign decision must not clear journal")
+  recovered.loadPreparation();await idle(recovered);precondition(!recovered.preparationUncertain,recovered.preparationStatus)
+  precondition(recovered.clarifications[0]["disposition"] as? String=="dismissed")
+  precondition(recovered.clarificationAnswer(id)=="Lecteurs débutants")
+  r.close();r=recovered
+  r.setClarificationReason(id,text:"À réexaminer explicitement")
+  r.reviewClarification(id,action:"reopen");await idle(r)
+  r.loadConsentContext();await idle(r);precondition(!r.canConsent)
+  precondition(r.clarificationAnswer(id)=="Lecteurs débutants")
+  r.clarify(id,resolved:true);await idle(r)
+  precondition((r.clarifications[0]["history"] as! [[String:Any]]).count==5)
   r.loadConsentContext();await idle(r);precondition(r.canConsent)
   precondition(r.preparationJob["status"] as? String=="preparation","no inherited mission authorization")
   r.consentBackend="foundation-models";r.authorizePreparation();await idle(r)
@@ -156,7 +174,8 @@ finally:host.shutdown()
             self.assertEqual(ops.count('job_local_start'), 1)
             self.assertEqual(ops.count('job_candidate_import'), 2 if refuse_import else 1)
             self.assertEqual(len(set((state/'import-ids').read_text().splitlines())), 1)
-            self.assertEqual(ops.count('job_clarify'), 2)
+            self.assertEqual(ops.count('job_clarify'), 3)
+            self.assertEqual(ops.count('job_clarification_review'), 2)
             self.assertEqual((state/'generations').read_text().splitlines(), ['generation'])
             model_input = json.loads((state/'model-input.json').read_text())
             self.assertEqual(set(model_input), {'prompt_format', 'operator_request'})

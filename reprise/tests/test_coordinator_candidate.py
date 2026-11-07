@@ -180,6 +180,77 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(row['revision'], 2)
         self.assertEqual(self.jobs.recover(self.project, self.operation), self.source_row)
 
+    def test_dismiss_reopen_without_answer_cas_identity_and_consent(self):
+        row = self.import_into(self.source(questions=['Quel document ?', 'Combien de pages ?']))
+        question = row['clarifications'][1]
+        original = copy.deepcopy(row['candidate_import'])
+        fields = dict(question_id=question['id'], action='dismiss', reason='Le nombre de pages ne bloque pas le résumé',
+                      resolution_id=fixtures.uid(), expected_revision=0)
+        dismissed = self.jobs.review_clarification(self.project, self.target, **fields)
+        self.assertIsNone(dismissed['clarifications'][1]['answer'])
+        self.assertEqual(dismissed['clarifications'][1]['disposition'], 'dismissed')
+        self.assertEqual(dismissed['proposal']['questions'], ['Quel document ?'])
+        self.assertEqual(dismissed['candidate_import'], original)
+        self.assertEqual(dismissed, self.jobs.review_clarification(self.project, self.target, **fields))
+        with self.assertRaisesRegex(ValueError, 'identity conflict'):
+            self.jobs.review_clarification(self.project, self.target, **dict(fields, reason='Autre motif'))
+        with self.assertRaisesRegex(ValueError, 'Revision conflict'):
+            self.jobs.review_clarification(self.project, self.target, **dict(fields, resolution_id=fixtures.uid()))
+        with self.assertRaisesRegex(ValueError, 'Clarification required'):
+            self.consent(dismissed)
+        reopened = self.jobs.review_clarification(self.project, self.target,
+            **dict(fields, action='reopen', reason='À réexaminer', resolution_id=fixtures.uid(), expected_revision=1))
+        self.assertIsNone(reopened['clarifications'][1]['answer'])
+        self.assertFalse(reopened['clarifications'][1]['resolved'])
+        self.assertEqual(len(reopened['clarifications'][1]['history']), 2)
+        for q in reopened['clarifications']:
+            reopened = self.jobs.review_clarification(self.project, self.target,
+                **dict(fields, question_id=q['id'], resolution_id=fixtures.uid(), expected_revision=reopened['revision']))
+        consent = self.consent(reopened)
+        self.assertEqual(consent['operator_authorization']['clarifications_sha256'], digest(reopened['clarifications']))
+        plan = self.local.plan(self.project, self.target, 3)
+        self.assertEqual(plan['manifest']['clarifications_sha256'], digest(reopened['clarifications']))
+        with self.assertRaisesRegex(ValueError, 'Mission locked'):
+            self.jobs.review_clarification(self.project, self.target,
+                **dict(fields, resolution_id=fixtures.uid(), expected_revision=consent['revision']))
+
+    def test_concurrent_review_cas_accepts_only_one_decision(self):
+        import concurrent.futures
+        import threading
+        row = self.import_into(self.source()); question = row['clarifications'][0]
+        barrier = threading.Barrier(2)
+        def decide(action):
+            owner = fixtures.Jobs(self.state, crypt=fixtures.fake_crypt)
+            barrier.wait(timeout=5)
+            try:
+                return owner.review_clarification(self.project, self.target, question_id=question['id'],
+                    action=action, reason='Décision concurrente', resolution_id=fixtures.uid(), expected_revision=0)
+            except ValueError as exc:
+                return str(exc)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(decide, ['dismiss', 'reopen']))
+        self.assertEqual(sum(isinstance(value, dict) for value in results), 1)
+        self.assertIn('Revision conflict', results)
+        final = self.jobs.recover(self.project, self.target)
+        self.assertEqual(final['revision'], 1)
+        self.assertEqual(len(final['clarifications'][0]['history']), 1)
+
+    def test_review_preserves_answer_and_closed_service_protocol(self):
+        row = self.import_into(self.source()); question = row['clarifications'][0]
+        answered = self.jobs.clarify_candidate(self.project, self.target, question_id=question['id'],
+            answer='Des lecteurs novices', resolved=False, resolution_id=fixtures.uid(), expected_revision=0)
+        host, call = self.host()
+        fields = dict(operation_id=self.target, question_id=question['id'], action='dismiss',
+                      reason='Décision opérateur', resolution_id=fixtures.uid(), expected_revision=1)
+        with patch('coordinator_local._spawn', side_effect=AssertionError('no generation')):
+            result = call('job_clarification_review', **fields)
+            self.assertEqual(result['status'], 'finished', result)
+            self.assertEqual(result['job']['clarifications'][0]['answer'], 'Des lecteurs novices')
+            self.assertEqual(call('job_clarification_review', **dict(fields, permission=True))['status'], 'invalid_request')
+            for changes in ({'action':'authorize'}, {'reason':''}, {'question_id':fixtures.uid()}, {'operation_id':self.operation}):
+                self.assertNotEqual(call('job_clarification_review', **dict(fields, **changes))['status'], 'finished')
+        self.assertEqual(self.jobs.recover(self.project, self.target)['candidate_import'], row['candidate_import'])
+
     def test_answer_resolution_history_cas_and_execution_snapshot(self):
         row = self.import_into(self.source())
         question = row['clarifications'][0]

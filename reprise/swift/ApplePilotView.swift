@@ -133,20 +133,26 @@ struct ApplePilotView: View {
     private var clarificationPanel: some View {
         GroupBox("Clarifications de la mission") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Une réponse enregistrée peut rester ouverte. Confirmez explicitement la résolution ; l’historique et la question originale sont conservés.").font(.caption)
+                Text("Une réponse enregistrée peut rester ouverte. Confirmez la résolution par réponse, ou écartez une question jugée non bloquante avec un motif. L’historique et la question originale sont conservés.").font(.caption)
                 ForEach(pilot.clarifications, id: \.selfID) { question in
                     if let id = question["id"] as? String {
                         Text(question["question"] as? String ?? "").font(.headline)
-                        Text(question["resolved"] as? Bool == true ? "Résolue" : "À résoudre").font(.caption)
+                        Text(question["disposition"] as? String == "dismissed" ? "Écartée par l’opérateur" : question["resolved"] as? Bool == true ? "Résolue par réponse" : "À résoudre").font(.caption)
                         TextField("Votre réponse (1 Kio maximum)", text: Binding(get: { pilot.clarificationAnswer(id) }, set: { pilot.setClarificationAnswer(id, text: $0) }), axis: .vertical)
                             .textFieldStyle(.roundedBorder).disabled(!pilot.preparationCanEdit)
                         HStack {
                             Button(question["resolved"] as? Bool == true ? "Réouvrir avec cette réponse" : "Enregistrer sans résoudre") { pilot.clarify(id, resolved: false) }
                             Button("Confirmer la résolution") { pilot.clarify(id, resolved: true) }
                         }.disabled(!pilot.preparationCanEdit)
-                        DisclosureGroup("Historique des réponses") {
+                        TextField("Motif de décision (1 Kio maximum)", text: Binding(get: { pilot.clarificationReason(id) }, set: { pilot.setClarificationReason(id, text: $0) }))
+                            .textFieldStyle(.roundedBorder).disabled(!pilot.preparationCanEdit)
+                        HStack {
+                            Button("Écarter comme non bloquante") { pilot.reviewClarification(id, action: "dismiss") }
+                            Button("Réouvrir sans répondre") { pilot.reviewClarification(id, action: "reopen") }
+                        }.disabled(!pilot.preparationCanEdit || pilot.clarificationReason(id).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || pilot.clarificationReason(id).utf8.count > 1024)
+                        DisclosureGroup("Historique des réponses et décisions") {
                             ForEach(Array((question["history"] as? [[String: Any]] ?? []).enumerated()), id: \.offset) { _, item in
-                                Text((item["answer"] as? String ?? "") + (item["resolved"] as? Bool == true ? " · résolue" : " · ouverte")).font(.caption)
+                                Text(item["action"] as? String != nil ? ((item["action"] as? String == "dismiss" ? "Écartée : " : "Réouverte : ") + (item["reason"] as? String ?? "")) : (item["answer"] as? String ?? "") + (item["resolved"] as? Bool == true ? " · résolue" : " · ouverte")).font(.caption)
                             }
                         }
                     }
