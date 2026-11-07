@@ -75,6 +75,11 @@ class PackageHelpersTests(unittest.TestCase):
             self.assertTrue((root / doc).is_file())
             self.assertEqual(manifest['files'][doc], hashlib.sha256((root / doc).read_bytes()).hexdigest())
             self.assertEqual((root / doc).read_bytes(), (SOURCE.parent / 'docs/contracts' / doc).read_bytes())
+            pilot_doc = 'APPLE-PILOT-CONTRACT.md'
+            self.assertTrue((root / pilot_doc).is_file())
+            self.assertEqual((root / pilot_doc).read_bytes(),
+                             (SOURCE.parent / 'docs/contracts' / pilot_doc).read_bytes())
+            self.assertEqual(manifest['files'][pilot_doc], hashlib.sha256((root / pilot_doc).read_bytes()).hexdigest())
             # Memory-admin resources belong to the independent memory lot.
             admin_doc = 'MEMORY-ADMIN.md'
             self.assertEqual((root/admin_doc).read_bytes(),

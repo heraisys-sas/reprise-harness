@@ -61,6 +61,7 @@ SUPERVISION_CONTRACT = {'contract': 'foundation-explain-v1-self-deadline', 'max_
 
 
 ANALYSIS_FORMAT = 'preparation-analysis-v2'
+ANALYSIS_V3 = 'preparation-analysis-v3-guided'
 ANALYSIS_OBJECTIVE = 'Analyse locale de préparation (reprise-analysis-v2).'
 
 
@@ -73,7 +74,7 @@ def _unique_object(pairs):
 def analysis_request(row):
     """Recognize only the explicit host template, never instructions inside request data."""
     proposal = row['proposal']
-    if (proposal['objective'] != ANALYSIS_OBJECTIVE or 'candidate_import' in row
+    if (proposal['objective'] not in (ANALYSIS_OBJECTIVE, ANALYSIS_OBJECTIVE.replace('-v2', '-v3')) or 'candidate_import' in row
             or 'clarifications' in row):
         return None
     constraints = proposal['constraints']
@@ -84,9 +85,13 @@ def analysis_request(row):
     except (ValueError, TypeError):
         raise ValueError('Invalid analysis template') from None
     if (not isinstance(value, dict) or set(value) != {'request', 'template'}
-            or value['template'] != 'reprise-analysis-v2'):
+            or value['template'] != ('reprise-analysis-v3' if proposal['objective'] == ANALYSIS_OBJECTIVE.replace('-v2', '-v3') else 'reprise-analysis-v2')):
         raise ValueError('Invalid analysis template')
     return {'text': jobs_module._text(value['request'], 1024)}
+
+
+def analysis_format(row):
+    return ANALYSIS_V3 if row['proposal']['objective'] == ANALYSIS_OBJECTIVE.replace('-v2', '-v3') else ANALYSIS_FORMAT
 
 
 def _probe(path, *, required_format=None):
@@ -134,7 +139,7 @@ class LocalExecution:
             raise ValueError('Host context changed')
         path, _, sha = _helper(self.helper)
         request = analysis_request(row)
-        _probe(path, required_format=ANALYSIS_FORMAT if request is not None else None)
+        _probe(path, required_format=analysis_format(row) if request is not None else None)
         manifest = {'version': 1, 'prompt_format': 'operator-question-v2', 'backend': 'foundation-models', 'adapter': 'native-foundation-explain',
             'mode': 'expertise', 'project_id': project, 'work_id': context['context']['work_id'],
             'project_root': context['context']['project_root'], 'job_id': row['job_id'],
@@ -144,7 +149,7 @@ class LocalExecution:
             'max_seconds': max_seconds, 'stop_on_deadline': True, 'automatic_fallback': False,
             'tools': False, 'supervision_contract': SUPERVISION_CONTRACT['contract'], 'availability': 'not_verified', 'cost_policy': 'local_helper_only_no_provider_route'}
         if request is not None:
-            manifest['prompt_format'] = ANALYSIS_FORMAT
+            manifest['prompt_format'] = analysis_format(row)
         if 'clarifications' in row:
             manifest['clarifications_sha256'] = digest(row['clarifications'])
             if consent.get('clarifications_sha256') != manifest['clarifications_sha256']:
@@ -201,10 +206,10 @@ class LocalExecution:
         if version is None:
             model_input = {'facts': jobs_module._json(row['proposal']),
                            'question': 'Réponds à l’objectif décrit dans ces données et précise les limites de ta réponse.'}
-        elif version == ANALYSIS_FORMAT:
+        elif version in (ANALYSIS_FORMAT, ANALYSIS_V3):
             request = analysis_request(row)
-            if request is None: raise ValueError('Invalid analysis template')
-            model_input = {'prompt_format': ANALYSIS_FORMAT, 'operator_request': request}
+            if request is None or analysis_format(row) != version: raise ValueError('Invalid analysis template')
+            model_input = {'prompt_format': version, 'operator_request': request}
         elif version == 'operator-question-v2':
             model_input = {'prompt_format': version,
                            'facts': jobs_module._json({key: value for key, value in row['proposal'].items() if key != 'objective'}),
@@ -277,7 +282,7 @@ class LocalExecution:
                 with snapshot.open('xb') as stream:
                     stream.write(binary); stream.flush(); os.fsync(stream.fileno())
                 snapshot.chmod(0o500)
-                _probe(str(snapshot), required_format=ANALYSIS_FORMAT if manifest.get('prompt_format') == ANALYSIS_FORMAT else None)
+                _probe(str(snapshot), required_format=manifest.get('prompt_format') if manifest.get('prompt_format') in (ANALYSIS_FORMAT, ANALYSIS_V3) else None)
                 with self._store(manifest['project_root']) as store:
                     # Rights, one-request budget and immutable payload are committed atomically.
                     with control.lock:

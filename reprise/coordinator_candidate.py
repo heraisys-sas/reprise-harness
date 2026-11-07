@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import stat
+import unicodedata
 
 import coordinator_jobs as jobs
 from delegation_store import digest
@@ -28,6 +29,14 @@ def _constant(value):
     raise ValueError('Invalid JSON constant')
 
 
+def _reject_placeholders(proposal):
+    # Known unusable template values only; this is not semantic validation.
+    known = {'résultat métier attendu', 'critère du livrable'}
+    values = [proposal['objective'], *proposal['acceptance'], *proposal['constraints'], *proposal['questions']]
+    if any(' '.join(unicodedata.normalize('NFKC', value).casefold().split()) in known for value in values):
+        raise ValueError('Proposition inexploitable : valeur de gabarit ; reçu conservé, aucune relance automatique')
+
+
 def parse(text):
     if not isinstance(text, str) or len(text.encode('utf-8')) > MAX_RESPONSE:
         raise ValueError('Bounded candidate response required')
@@ -39,6 +48,7 @@ def parse(text):
     if not isinstance(value, dict) or set(value) != {'schema', 'proposal'} or value['schema'] != SCHEMA:
         raise ValueError('Invalid candidate schema')
     proposal = jobs._proposal(value['proposal'])
+    _reject_placeholders(proposal)
     if len(set(proposal['questions'])) != len(proposal['questions']):
         raise ValueError('Duplicate candidate question')
     return {'schema': SCHEMA, 'proposal': proposal}

@@ -52,8 +52,8 @@ class CandidateTests(unittest.TestCase):
     reserve = fixtures.LocalExecutionTests.reserve
     host = fixtures.LocalExecutionTests.host
 
-    def source(self, questions=None):
-        proposal = {'objective': 'Préparer un compte rendu', 'acceptance': ['Texte relu'],
+    def source(self, questions=None, objective=None):
+        proposal = {'objective': objective or 'Préparer un compte rendu', 'acceptance': ['Texte relu'],
                     'constraints': ['Données non vérifiées'],
                     'questions': ['Quel public ?'] if questions is None else questions}
         self.document = {'schema': candidates.SCHEMA, 'proposal': proposal}
@@ -84,6 +84,31 @@ class CandidateTests(unittest.TestCase):
         return self.jobs.consent(self.project, self.target, authorization_id=fixtures.uid(),
             expected_revision=row['revision'], expected_proposal_sha256=row['proposal_sha256'],
             host_context=context['context'], expected_context_sha256=context['context_sha256'], backend='foundation-models')
+
+    def test_placeholder_receipt_extraction_refused_without_replay(self):
+        from unittest.mock import patch
+        with self.assertRaisesRegex(ValueError, 'gabarit'):
+            self.source(objective='résultat métier attendu')
+        row = self.jobs.recover(self.project, self.operation)
+        self.assertEqual(row['status'], 'local_recorded')
+        original = row['local_execution']['receipt']
+        with patch('coordinator_local._spawn', side_effect=AssertionError('no model')):
+            with self.assertRaisesRegex(ValueError, 'gabarit'):
+                self.extract()
+        self.assertEqual(self.jobs.recover(self.project, self.operation)['local_execution']['receipt'], original)
+
+    def test_known_placeholders_refused_at_parse_and_direct_import(self):
+        import copy
+        source = self.source()
+        for text in ('résultat métier attendu', '  RÉSULTAT\u00a0MÉTIER attendu  ', 'critère du livrable'):
+            proposal = copy.deepcopy(fixtures.PROPOSAL)
+            proposal['objective'] = text
+            with self.assertRaisesRegex(ValueError, 'gabarit'):
+                candidates.parse(json.dumps({'schema': candidates.SCHEMA, 'proposal': proposal}))
+            extracted = copy.deepcopy(source)
+            extracted['candidate']['proposal'] = proposal
+            with self.assertRaisesRegex(ValueError, 'gabarit'):
+                self.import_into(extracted)
 
     def test_strict_parser_rejects_authority_extra_fields_and_non_json(self):
         self.assertEqual(candidates.parse(json.dumps({'schema': candidates.SCHEMA,

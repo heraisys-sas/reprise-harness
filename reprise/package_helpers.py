@@ -33,6 +33,7 @@ DOCS = (
     'docs/contracts/CLARIFICATION-CONTRACT.md',
     'docs/integrations/harness/reprise-delegation.md',
     'docs/contracts/ORCHESTRATOR-MEMORY-CONTRACT.md',
+    'docs/contracts/APPLE-PILOT-CONTRACT.md',
     'docs/runbooks/MEMORY-ADMIN.md',
 )
 

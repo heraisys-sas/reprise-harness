@@ -22,11 +22,11 @@ enum StartupPreferences {
 
 /// Host-owned analysis template. The operator request remains untrusted data.
 enum PreparationAnalysisTemplate {
-    static let objective = "Analyse locale de préparation (reprise-analysis-v2)."
+    static let objective = "Analyse locale de préparation (reprise-analysis-v3)."
     static func proposal(_ request: String) -> [String: Any]? {
         guard !request.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               request.utf8.count <= 1024 else { return nil }
-        guard let data = try? JSONSerialization.data(withJSONObject: ["request": request, "template": "reprise-analysis-v2"], options: [.sortedKeys, .withoutEscapingSlashes]),
+        guard let data = try? JSONSerialization.data(withJSONObject: ["request": request, "template": "reprise-analysis-v3"], options: [.sortedKeys, .withoutEscapingSlashes]),
               data.count <= 1024, let encoded = String(data: data, encoding: .utf8) else { return nil }
         return ["objective": objective, "acceptance": ["Une proposition de mission et ses seuls blocages, à relire par l’opérateur."],
                 "constraints": [encoded], "questions": [String]()]

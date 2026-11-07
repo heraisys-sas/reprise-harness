@@ -395,3 +395,22 @@ synthétiques calculées depuis le formateur publié antérieur, vérifient l’
 v2 plate, le refus d’un helper ancien avant admission, les injections
 structurelles et la récupération sans replay. Aucun test de modèle réel n’est
 nécessaire à ces contrôles, et ils ne prouvent pas l’amélioration sémantique.
+
+### Analyse guidée v3 et propositions inexploitées
+
+Les nouvelles analyses utilisent `reprise-analysis-v3` et le format distinct
+`preparation-analysis-v3-guided`, explicitement annoncé par le helper. La demande
+opérateur reste une donnée structurée non fiable. Le helper utilise un type
+`@Generable` avec descriptions métier et bornes de collections ; l’hôte sérialise
+les champs générés vers le candidat v1, sans exemple littéral de réponse dans le
+prompt v3. La génération guidée garantit une structure, pas la fidélité métier,
+l’utilité des questions ou l’absence d’influence des données hostiles. La relecture
+humaine et le consentement de mission séparé demeurent obligatoires.
+
+À l’extraction et à l’import, le parseur commun refuse les valeurs de gabarit
+connues `résultat métier attendu` et `critère du livrable`, normalisées Unicode,
+casse et espaces. Cette barrière ciblée ne détecte pas toutes les erreurs
+sémantiques. Le refus conserve le reçu et sa réponse ; aucun import ni nouvel
+appel automatique n’en découle. Les reçus historiques restent lisibles et leur
+identité inchangée, y compris lorsque leur proposition est désormais refusée.
+Les formats antérieurs gardent leur construction historique sans réémission.
