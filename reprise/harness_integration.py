@@ -22,7 +22,7 @@ from yaml_contract import validate_yaml, yaml_hashes
 START = '# BEGIN REPRISE MANAGED INTEGRATION'
 END = '# END REPRISE MANAGED INTEGRATION'
 DOCS = ('REPRISE-AGENTS.template.md', 'CODEX-EXECUTION-CONTRACT.md', 'ASI1-ORCHESTRATOR.template.md', 'ASI1-ORCHESTRATION-CONTRACT.md', 'HANDOFF-CONTRACT.md', 'HARNESS-ROLES-CONTRACT.md', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'HARNESS-SUPERVISION-ARCHITECTURE.md', 'HARNESS-INTEGRATION.md', 'CLARIFICATION-CONTRACT.md')
-OBSERVE = ('reprise_backends', 'reprise_requests', 'reprise_quotas')
+OBSERVE = ('reprise_backends', 'reprise_requests', 'reprise_quotas', 'wait_result')
 DELEGATE = ('reprise_delegate', 'reprise_followup', 'reprise_reconcile')
 # Socket Quick Apply local par nature ; généré seulement s'il existe sur cette machine.
 DESKTOP_SOCKET = Path.home() / '.claude-desktop' / 'quick-entry.sock'
@@ -247,7 +247,7 @@ def _bridge_entries(release, state, tools, project, profile, managed, output_res
     entries = [
         {'id': 'reprise-codex-expert', 'name': '@deepseek-ai/dsh-mcp-client', 'config': {
             'transport': 'stdio', 'serverName': 'reprise_codex', 'command': str(program), 'args': args,
-            'toolCallTimeoutMs': 330000, 'failOnStartupError': False, 'reconnect': {'enabled': False}}},
+            'toolCallTimeoutMs': 630000 if 'wait_result' in tools else 330000, 'failOnStartupError': False, 'reconnect': {'enabled': False}}},
         {'id': 'reprise-skill-filesystem', 'name': '@deepseek-ai/dsh-skill-filesystem', 'config': {
             'providerName': 'reprise-' + profile, 'includeDefaultRoots': False,
             'customSkillDirs': [str(managed / 'skills')], 'watch': False}}]

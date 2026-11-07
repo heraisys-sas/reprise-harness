@@ -312,7 +312,7 @@ class HarnessIntegrationTests(unittest.TestCase):
 
     def test_personalized_block_refuses_update(self):
         self.install()
-        self.config.write_text(self.config.read_text().replace('330000', '330001'))
+        self.config.write_text(self.config.read_text().replace('630000', '630001'))
         with self.assertRaisesRegex(ValueError, 'personnalisé'):
             self.plan()
 
@@ -358,7 +358,7 @@ class HarnessIntegrationTests(unittest.TestCase):
 
     def test_real_block_change_is_refused_not_reconciled(self):
         self.install()
-        self.config.write_text(self.reformatted_config(lambda payload: payload.replace('330000', '330001')))
+        self.config.write_text(self.reformatted_config(lambda payload: payload.replace('630000', '630001')))
         before = self.snapshot()
         with self.assertRaisesRegex(ValueError, 'personnalisé'):
             self.plan()
@@ -380,7 +380,7 @@ class HarnessIntegrationTests(unittest.TestCase):
             result = integration.verify(self.home, 'desktop', self.root)
         self.assertEqual(result['status'], 'verified')
         self.assertIn('block_reconciled', result)
-        self.config.write_text(self.reformatted_config(lambda payload: payload.replace('330000', '330001')))
+        self.config.write_text(self.reformatted_config(lambda payload: payload.replace('630000', '630001')))
         with patch.object(integration.subprocess, 'run', return_value=probe):
             with self.assertRaisesRegex(ValueError, 'absente ou modifiée'):
                 integration.verify(self.home, 'desktop', self.root)

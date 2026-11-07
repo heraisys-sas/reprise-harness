@@ -10,7 +10,10 @@ from pathlib import Path
 import signal
 import sqlite3
 import sys
-from delegation_store import LOOKUP_SCHEMA, Store, file_evidence, validate_key
+import threading
+import time
+from desktop_task_store import TaskStore
+from delegation_store import LOOKUP_SCHEMA, Store, file_evidence, validate_key, validate_lookup, receipt_view
 from delegation_reconcile import reconcile as reconcile_turn
 from codex_expert import STOP_REASONS, positive, review
 from claude_expert import review as claude_review
@@ -34,6 +37,9 @@ class WorkspaceWriteNotAuthorized(ValueError):
 def error_payload(exc):
     detail = f'{type(exc).__name__}: {exc}'[:200]
     kind, code = 'refused', -32602
+    if isinstance(exc, DesktopRegistryUnavailable):
+        return {'code': -32000, 'message': 'Desktop registry unavailable; no task created.',
+                'data': {'kind': 'desktop_registry_unavailable'}}
     if isinstance(exc, WorkspaceWriteNotAuthorized):
         # Operator configuration, not a secret: say exactly why and how to fix it instead of the generic refusal.
         return {'code': code,
@@ -95,6 +101,11 @@ RECONCILE_SCHEMA = {'type': 'object', 'properties': {
 SCHEMA = {'type': 'object', 'properties': {'return_mode': RETURN_MODES, 'question': {'type': 'string', 'maxLength': 12000}, 'request_key': {'type': 'string', 'maxLength': 128}, 'parent_request_key': {'type': 'string', 'maxLength': 128}},
           'required': ['question', 'request_key'], 'additionalProperties': False}
 TOOLS = [
+    {'name': 'wait_result', 'description': 'Observe an existing Claude Desktop response without dispatch. Blocking call for a background job; timeout requires same-key Desktop reconciliation, not native Codex reconciliation.',
+     'inputSchema': {'type': 'object', 'properties': {
+         'request_key': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': r'\S'},
+         'wait_seconds': {'type': 'number', 'exclusiveMinimum': 0, 'maximum': 600, 'default': 600}},
+         'required': ['request_key'], 'additionalProperties': False}},
     {'name': 'reprise_quotas', 'description': 'Observe quota knowledge by explicit engine/route, account and pool. Cached by default; refresh reads native metadata only. Unknown is not zero. Never resumes/routes inference.',
      'inputSchema': {'type': 'object', 'properties': {'engine': {'type': 'string', 'enum': ['codex-cli', 'codex-server', 'codex-parent', 'claude-code', 'claude-desktop', 'harness-cli']}, 'refresh': {'type': 'boolean'}}, 'additionalProperties': False}},
     {'name': 'reprise_requests', 'description': 'Recover durable requests/results by caller-persisted request_key, or list requests after a lost acknowledgement. Never dispatches inference.',
@@ -151,7 +162,8 @@ def compact_call(message):
         return False
     args = params.get('arguments', {})
     return isinstance(args, dict) and (
-        params.get('name') == 'reprise_requests' and args.get('view') in ('receipt', 'page')
+        params.get('name') == 'wait_result'
+        or params.get('name') == 'reprise_requests' and args.get('view') in ('receipt', 'page')
         or params.get('name') in INFERENCE_TOOLS and args.get('return_mode') == 'receipt')
 
 
@@ -183,6 +195,71 @@ def bounded_content(result, ident):
                       next_offset=end if end < result['total_length'] else None)
         if result['has_more'] and not fragment:
             raise ValueError('Transport limit prevents positive progress')
+
+
+MAX_RESULT_WAITS = 8
+MAX_RESULT_SECONDS = 600
+
+
+class DesktopRegistryUnavailable(RuntimeError):
+    """The existing Desktop registry could not be read."""
+
+
+def wait_arguments(args):
+    if not isinstance(args, dict) or args.keys() - {'request_key', 'wait_seconds'}:
+        raise ValueError('Exact wait_result arguments required')
+    validate_key(args.get('request_key'))
+    seconds = args.get('wait_seconds', MAX_RESULT_SECONDS)
+    if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+            or not 0 < seconds <= MAX_RESULT_SECONDS):
+        raise ValueError('wait_seconds must be a finite number in (0, 600]')
+    return args['request_key'], float(seconds)
+
+
+def wait_status(key, status, **fields):
+    return {'status': status, 'request_key': key, 'backend': 'claude-desktop',
+            'completed': status == 'finished', 'idle': status != 'finished',
+            'next_action': 'get_result' if status == 'finished' else 'reconcile',
+            **fields}
+
+
+def wait_for_result(state, root, args, cancel=None):
+    key, seconds = wait_arguments(args)
+    cancel = cancel if cancel is not None else threading.Event()
+    started = time.monotonic()
+    deadline = started + seconds
+    delay = 0.25
+    reader = None
+    try:
+        if cancel.is_set():
+            return None
+        reader = TaskStore.open_reader(state, root)
+        while not cancel.is_set():
+            snapshot = reader.observe_result(key)
+            if snapshot is None:
+                return wait_status(key, 'not_found')
+            if snapshot['completed']:
+                manifest, _ = receipt_view(snapshot)
+                return wait_status(key, 'finished', state='recorded',
+                                   result_sha256=manifest['result_sha256'])
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return wait_status(key, 'timeout', state='pending',
+                                   waited_seconds=time.monotonic() - started)
+            cancel.wait(min(delay, remaining))
+            delay = min(1.0, delay * 2)
+        return None
+    except (sqlite3.Error, OSError) as exc:
+        raise DesktopRegistryUnavailable('Desktop registry unavailable') from exc
+    finally:
+        if reader is not None:
+            reader.close()
+
+
+def wait_content(result, ident):
+    content = bounded_content(result, ident)
+    content['isError'] = False
+    return content
 
 
 class Bridge:
@@ -227,10 +304,11 @@ class Bridge:
         # Canal de retour MCP (get_task/submit_result) : TaskStore durable, ou
         # None si l'état Quick Apply n'est pas initialisable — le pont doit
         # alors refuser l'orchestration plutôt que promettre un aller-retour.
+        self.desktop_state = Path(desktop_state) if desktop_state is not None else state_location(self.root, 'quick-state')
         self.desktop_tasks = None
         try:
             from desktop_task_store import TaskStore
-            self.desktop_tasks = TaskStore(desktop_state if desktop_state is not None else state_location(self.root, 'quick-state'), self.root)
+            self.desktop_tasks = TaskStore(self.desktop_state, self.root)
         except (OSError, sqlite3.Error, ValueError):
             self.desktop_tasks = None
 
@@ -286,8 +364,10 @@ class Bridge:
             engine = args.get('engine', 'codex-server')
             settings = self.values if engine in ('codex-server', 'codex-parent') else self.desktop_values if engine == 'claude-desktop' else {}
             return {'status': 'finished', 'automatic_fallback': False, 'quota_knowledge': quota_knowledge.status(self.db, engine, settings, refresh=args.get('refresh', False))}
+        if name == 'wait_result':
+            return self.wait_result(args)
         if name == 'reprise_requests':
-            return self.requests.lookup(args)
+            return self._lookup_requests(args)
         if name == 'reprise_reconcile':
             return self._reconcile(args)
         if name in ('reprise_backends', 'reprise_health', 'reprise_history', 'reprise_resume'):
@@ -338,7 +418,8 @@ class Bridge:
             existing = self.requests.begin(key, payload, parent)
             if existing:
                 pointer = existing.get('request_key', key)
-                completion = self._desktop_completion(pointer)
+                completion = (self._desktop_completion(pointer)
+                              if existing.get('backend') == 'claude-desktop' and existing.get('admission_only') else None)
                 if return_mode == 'receipt':
                     manifest = self.requests.lookup({'request_key': pointer, 'view': 'receipt'})
                     if completion:
@@ -381,6 +462,60 @@ class Bridge:
                 return self._tag(self.requests.lookup({'request_key': key, 'view': 'receipt'}), result)
             return self._bounded_full(key, result)
 
+    def wait_result(self, args, cancel=None):
+        if 'wait_result' not in self.allowed_tools:
+            raise ValueError('Tool not enabled for this integration')
+        return wait_for_result(self.desktop_state, self.root, args, cancel)
+
+    def _desktop_snapshot(self, key):
+        reader = None
+        try:
+            reader = TaskStore.open_reader(self.desktop_state, self.root)
+            return reader.observe_result(key)
+        except (sqlite3.Error, OSError) as exc:
+            raise DesktopRegistryUnavailable('Desktop registry unavailable') from exc
+        finally:
+            if reader is not None:
+                reader.close()
+
+    def _lookup_requests(self, args):
+        view = validate_lookup(args)
+        key = args.get('request_key')
+        if key is None:
+            return self.requests.lookup(args)
+        historic = self.requests.lookup({'request_key': key})
+        previous = historic.get('result') or {}
+        if previous.get('backend') != 'claude-desktop' or not previous.get('admission_only'):
+            return self.requests.lookup(args)
+        snapshot = self._desktop_snapshot(key)
+        if snapshot is None or not snapshot['completed']:
+            return self.requests.lookup(args)
+        if args.get('acknowledge', False):
+            raise ValueError('Acknowledge the Desktop result with get_result on its connector')
+        manifest, text = receipt_view(snapshot)
+        provenance, _ = receipt_view(historic)
+        extra = {'backend': 'claude-desktop', 'source': 'desktop_tasks',
+                 'delegation_receipt': provenance, 'completed': True,
+                 'next_action': 'get_result'}
+        if view == 'full':
+            return dict(snapshot, **extra, response=snapshot['result']['answer'],
+                        delegation_admission=historic)
+        manifest.update(extra)
+        if view == 'receipt':
+            return manifest
+        expected = args.get('result_sha256')
+        if expected is not None and expected.lower() != manifest['result_sha256']:
+            return dict(manifest, status='result_changed')
+        offset, maximum = int(args.get('offset', 0)), int(args.get('max_chars', 6000))
+        if offset > len(text):
+            return dict(manifest, status='invalid_offset')
+        fragment = text[offset:offset + maximum]
+        end = offset + len(fragment)
+        return dict(manifest, offset=offset, text=fragment,
+                    returned_length=len(fragment), has_more=end < len(text),
+                    next_offset=end if end < len(text) else None)
+
+
     @staticmethod
     def _tag(manifest, result):
         """A receipt manifest reports the delegation status, not the lookup status."""
@@ -388,19 +523,13 @@ class Bridge:
         return manifest
 
     def _desktop_completion(self, pointer):
-        """Surface a validated submit_result (MCP round-trip) for a claude-desktop request."""
-        if self.desktop_tasks is None:
+        """Project a committed Desktop response without reserving its delivery."""
+        snapshot = self._desktop_snapshot(pointer)
+        if snapshot is None or not snapshot['completed']:
             return None
-        try:
-            receipt = self.desktop_tasks.result(pointer)
-        except (ValueError, sqlite3.Error):
-            return None
-        if receipt.get('state') != 'recorded':
-            return None
-        answer = self.desktop_tasks.result(pointer, view='full').get('answer')
-        return {'status': 'finished', 'response': answer,
-                'result_sha256': receipt.get('result_sha256'),
-                'completed': True}
+        manifest, _ = receipt_view(snapshot)
+        return {'status': 'finished', 'response': snapshot['result']['answer'],
+                'result_sha256': manifest['result_sha256'], 'completed': True}
 
     def _bounded_full(self, key, result):
         """Deliver a full-mode result unchanged up to FULL_RESULT_LIMIT, else its durable manifest."""
@@ -735,9 +864,138 @@ class Bridge:
                 raise ValueError('Compact calls require a bounded JSON-RPC id')
             result = self.call(params.get('name'), params.get('arguments', {}))
             if compact:
-                return bounded_content(result, message.get('id'))
+                content = bounded_content(result, message.get('id'))
+                if params.get('name') == 'wait_result':
+                    content['isError'] = False
+                return content
             return tool_content(result)
         raise ValueError('Unsupported MCP method')
+
+
+def serve(bridge, source, output):
+    """Serve one connection; only wait_result runs on bounded reader workers."""
+    active = {}
+    workers = set()
+    active_lock = threading.Lock()
+    send_lock = threading.Lock()
+    closed = threading.Event()
+
+    def send(payload):
+        with send_lock:
+            if not closed.is_set():
+                try:
+                    output.write(json.dumps(payload, ensure_ascii=False) + '\n')
+                    output.flush()
+                except OSError:
+                    closed.set()
+                    with active_lock:
+                        for cancel, _ in active.values():
+                            cancel.set()
+                    raise
+
+    def worker(ident, key, arguments, cancel):
+        try:
+            result = bridge.wait_result(arguments, cancel)
+            if result is not None and not cancel.is_set():
+                send({'jsonrpc': '2.0', 'id': ident,
+                      'result': wait_content(result, ident)})
+        except Exception as exc:
+            if not cancel.is_set():
+                try:
+                    send({'jsonrpc': '2.0', 'id': ident, 'error': error_payload(exc)})
+                except OSError:
+                    pass
+        finally:
+            with active_lock:
+                if active.get(key, (None,))[0] is cancel:
+                    active.pop(key, None)
+
+    try:
+        while True:
+            raw = source.readline(1024 * 1024 + 1)
+            if not raw or len(raw) > 1024 * 1024:
+                break
+            ident = None
+            message = None
+            try:
+                message = json.loads(raw)
+                if not isinstance(message, dict):
+                    raise ValueError('Object required')
+                if 'id' not in message:
+                    params = message.get('params')
+                    if message.get('method') == 'notifications/cancelled' and isinstance(params, dict):
+                        target = params.get('requestId')
+                        if isinstance(target, bool) or not isinstance(target, (str, int, float)):
+                            continue
+                        try:
+                            key = json.dumps(target, ensure_ascii=False, allow_nan=False)
+                        except ValueError:
+                            continue
+                        with active_lock:
+                            current = active.get(key)
+                            if current is not None:
+                                current[0].set()
+                    continue
+                ident = message['id']
+                if isinstance(ident, bool) or not isinstance(ident, (str, int, float)):
+                    ident = None
+                    raise ValueError('String or numeric JSON-RPC id required')
+                try:
+                    key = json.dumps(ident, ensure_ascii=False, allow_nan=False)
+                except ValueError:
+                    ident = None
+                    raise
+                with active_lock:
+                    duplicate = key in active
+                if duplicate:
+                    send({'jsonrpc': '2.0', 'id': None,
+                          'error': {'code': -32600, 'message': 'Duplicate in-flight JSON-RPC id'}})
+                    continue
+                params = message.get('params') or {}
+                if not isinstance(params, dict):
+                    raise ValueError('Object params required')
+                if message.get('method') == 'tools/call' and params.get('name') == 'wait_result':
+                    if 'wait_result' not in bridge.allowed_tools:
+                        raise ValueError('Tool not enabled for this integration')
+                    arguments = params.get('arguments', {})
+                    request_key, _ = wait_arguments(arguments)
+                    if len(json.dumps(ident, ensure_ascii=False)) > 256:
+                        raise ValueError('Compact calls require a bounded JSON-RPC id')
+                    cancel = threading.Event()
+                    thread = threading.Thread(target=worker,
+                        args=(ident, key, arguments, cancel), daemon=True)
+                    with active_lock:
+                        workers = {item for item in workers if item.is_alive()}
+                        full = len(active) >= MAX_RESULT_WAITS
+                        if not full:
+                            active[key] = (cancel, thread)
+                            workers.add(thread)
+                    if full:
+                        send({'jsonrpc': '2.0', 'id': ident, 'result': wait_content(
+                            wait_status(request_key, 'busy'), ident)})
+                    else:
+                        try:
+                            thread.start()
+                        except RuntimeError:
+                            with active_lock:
+                                active.pop(key, None)
+                                workers.discard(thread)
+                            raise
+                    continue
+                send({'jsonrpc': '2.0', 'id': ident, 'result': bridge.dispatch(message)})
+            except (ValueError, TypeError, KeyError, OSError, sqlite3.Error, RuntimeError) as exc:
+                if isinstance(message, dict) and compact_call(message) and len(json.dumps(ident, ensure_ascii=False)) > 256:
+                    ident = None
+                send({'jsonrpc': '2.0', 'id': ident, 'error': error_payload(exc)})
+    finally:
+        closed.set()
+        with active_lock:
+            for cancel, _ in active.values():
+                cancel.set()
+        deadline = time.monotonic() + 1.0
+        for thread in workers:
+            if thread.ident is not None:
+                thread.join(max(0.0, deadline - time.monotonic()))
 
 
 def main():
@@ -769,30 +1027,11 @@ def main():
         raise SystemExit(128 + signum)
     previous_sigterm = signal.signal(signal.SIGTERM, terminate)
     try:
-        while True:
-            raw = sys.stdin.buffer.readline(1024*1024+1)
-            if not raw:
-                break
-            if len(raw) > 1024*1024:
-                break
-            ident = None
-            message = None
-            try:
-                message = json.loads(raw)
-                if not isinstance(message, dict):
-                    raise ValueError('Object required')
-                ident = message.get('id')
-                if 'id' not in message:
-                    continue
-                result = bridge.dispatch(message)
-                reply = {'jsonrpc': '2.0', 'id': ident, 'result': result}
-            except (ValueError, TypeError, KeyError, OSError, sqlite3.Error) as exc:
-                if isinstance(message, dict) and compact_call(message) and len(json.dumps(ident, ensure_ascii=False)) > 256:
-                    ident = None
-                reply = {'jsonrpc': '2.0', 'id': ident, 'error': error_payload(exc)}
-            print(json.dumps(reply, ensure_ascii=False), flush=True)
+        serve(bridge, sys.stdin.buffer, sys.stdout)
     finally:
         bridge.db.close()
+        if bridge.desktop_tasks is not None:
+            bridge.desktop_tasks.close()
         signal.signal(signal.SIGTERM, previous_sigterm)
 
 

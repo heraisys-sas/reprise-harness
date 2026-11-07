@@ -79,6 +79,37 @@ class TaskStore:
             self.db.close()
             raise
 
+    @classmethod
+    def open_reader(cls, state, project_root):
+        """Open existing Desktop state without creating or migrating anything."""
+        root = Path(project_root).resolve(strict=True)
+        if not root.is_dir():
+            raise ValueError('Project directory required')
+        reader = cls.__new__(cls)
+        reader.scope = str(root)
+        database = (Path(state) / 'quick.sqlite').resolve()
+        reader.db = sqlite3.connect(database.as_uri() + '?mode=ro',
+                                    timeout=0, isolation_level=None, uri=True)
+        return reader
+
+    def observe_result(self, request_key):
+        """One autocommit snapshot; no claim, acknowledgement or writer lock."""
+        bounded(request_key, 'request_key', 128)
+        cursor = self.db.execute(
+            'SELECT attempt_id,answer,acknowledged FROM desktop_tasks '
+            'WHERE scope=? AND request_key=?', (self.scope, request_key))
+        try:
+            row = cursor.fetchone()
+        finally:
+            cursor.close()
+        if row is None:
+            return None
+        return {'status': 'finished', 'request_key': request_key,
+                'state': 'recorded' if row[1] is not None else 'pending',
+                'attempt_id': row[0], 'completed': row[1] is not None,
+                'acknowledged': bool(row[2]),
+                'result': {'answer': row[1]} if row[1] is not None else None}
+
     def register_session(self, chat_id):
         from claude_session_store import SessionStore
         session = SessionStore(self.db, self.scope).register(chat_id, source='desktop_mcp_declared')
