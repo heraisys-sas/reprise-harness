@@ -76,8 +76,10 @@ Quick Apply encore absent.
 
 ## Connecteur mémoire séparé
 
-`claude-integration-plan` accepte `--memory-access off|read|write` et
-`--memory-project-id UUID`. La sélection absente préserve le choix installé ;
+`claude-integration-plan` accepte `--memory-access off|read|write`,
+`--memory-project-id UUID` et le choix facultatif `--memory-scope-id UUID`.
+Sans scope ID, le mode projet historique reste inchangé. Avec un scope ID, le
+processus MCP est lié au démarrage à un scope v2 préexistant. La sélection absente préserve le choix installé ;
 pour une installation ancienne, elle reste `off`. La mémoire utilise une seconde
 entrée `mcpServers.reprise-memory`, sans changer les outils ni les droits du
 connecteur `reprise-harness`, ni sa sélection `enable_await`. Les entrées tierces
@@ -96,6 +98,14 @@ identité de produit authentifiée. Le manifeste conserve la sélection mémoire
 l’empreinte propre de l’entrée, toutes deux couvertes par le plan géré et ses
 sauvegardes. La mise à jour utilise la release vérifiée ; le retrait ou `off`
 retire seulement l’entrée possédée et ne supprime pas les faits.
+
+Le plan vérifie aussi en lecture seule que le stockage est déjà v2 et que le scope
+existe. Les scopes projet/travail doivent être liés au même UUID projet que
+`CLAUDE_WORKSPACE` ; un scope user doit être sélectionné explicitement et reste
+attaché au projet hôte, sans authentifier le compte utilisateur. Un scope work
+fixe son UUID travail et refuse les checkpoints d’un autre travail. Aucun scope
+n’est créé ou migré par l’installation. Si une sélection de scope change alors
+que `write` était accordé, `--memory-access write` doit être répété explicitement.
 
 `write` transmet explicitement `--allow-write` au processus MCP ; les demandes de
 capture restent explicites et aucun transcript n’est aspiré. Ce choix persistant

@@ -55,10 +55,10 @@ finally: os.close(fd)
 '''
 
 
-def selected(old, access=None, project_id=None, *, action='install'):
+def selected(old, access=None, project_id=None, scope_id=None, *, action='install'):
     """Omission preserves installed grants; removed installs never re-enable write."""
     previous = (old or {}).get('memory', {'access': 'off', 'project_id': None})
-    if (not isinstance(previous, dict) or set(previous) != {'access', 'project_id'}
+    if (not isinstance(previous, dict) or set(previous) not in ({'access', 'project_id'}, {'access', 'project_id', 'scope_id'})
             or previous.get('access') not in ('off', 'read', 'write')):
         raise ValueError('Sélection mémoire gérée invalide.')
     if access is not None and access not in ('off', 'read', 'write'):
@@ -66,15 +66,22 @@ def selected(old, access=None, project_id=None, *, action='install'):
     installed = (old or {}).get('status') == 'installed'
     effective = access if access is not None else previous['access'] if installed else 'off'
     ident = project_id if project_id is not None else previous['project_id']
+    selected_scope = scope_id if scope_id is not None else previous.get('scope_id')
     if ident is not None:
         _uuid(ident)
+    if selected_scope is not None:
+        _uuid(selected_scope)
     if action == 'remove':
-        return {'access': 'off', 'project_id': ident}
+        return {'access': 'off', 'project_id': ident, 'scope_id': selected_scope}
+    if effective == 'off' and scope_id is not None:
+        raise ValueError('Un scope mémoire exige un accès read ou write explicite.')
     if effective != 'off' and ident is None:
         raise ValueError('UUID de projet mémoire explicitement enregistré requis.')
-    if effective == 'write' and access is None and project_id is not None and ident != previous['project_id']:
-        raise ValueError('Un nouveau projet exige une autorisation mémoire write explicite.')
-    return {'access': effective, 'project_id': ident}
+    scope_changed = selected_scope != previous.get('scope_id')
+    project_changed = ident != previous['project_id']
+    if effective == 'write' and access is None and (scope_changed or project_changed):
+        raise ValueError('Un changement de portée exige une autorisation mémoire write explicite.')
+    return {'access': effective, 'project_id': ident, 'scope_id': selected_scope}
 
 
 def validate_binding(state, memory, workspace, harness):
@@ -96,6 +103,24 @@ def validate_binding(state, memory, workspace, harness):
         top, actual_common = _git_info(str(selected_workspace), 'Memory workspace')
         if top != str(selected_workspace) or actual_common != common or registered_common != common:
             raise ValueError('Identité Git du workspace mémoire modifiée.')
+        scope_id = memory.get('scope_id')
+        if scope_id is not None:
+            # Administrative observation is descriptor-anchored and read-only; do not
+            # construct Memory here (which may initialize storage) or register scopes.
+            from memory_admin import _observe
+            observed = _observe(state)
+            if observed['schema'] != 2:
+                raise ValueError('Migration v2 explicite requise.')
+            scopes = {item['id']: item for item in observed['scopes']}
+            scope = scopes.get(scope_id)
+            if scope is None:
+                raise ValueError('Scope mémoire inconnu.')
+            if scope['kind'] in ('project', 'work') and scope['project_id'] != memory['project_id']:
+                raise ValueError('Scope hors du projet mémoire sélectionné.')
+            if scope['kind'] == 'user' and (scope['project_id'] is not None or scope['work_id'] is not None):
+                raise ValueError('Scope utilisateur mal formé.')
+            if scope['kind'] not in ('user', 'project', 'work'):
+                raise ValueError('Type de scope mémoire inconnu.')
     except (OSError, ValueError, TypeError, subprocess.SubprocessError):
         raise ValueError('Projet mémoire indisponible ou association du workspace invalide ; aucune création implicite.') from None
 
@@ -106,6 +131,8 @@ def entry(release, state, memory, harness_id):
     release = Path(release)
     arguments = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/reprise_memory_mcp.py'),
                  '--state', str(state), '--project-id', memory['project_id'], '--harness-id', harness_id]
+    if memory.get('scope_id') is not None:
+        arguments += ['--scope-id', memory['scope_id']]
     if memory['access'] == 'write':
         arguments.append('--allow-write')
     return {'command': str(release / 'Contents/Resources/runtime/bin/python3'), 'args': arguments}

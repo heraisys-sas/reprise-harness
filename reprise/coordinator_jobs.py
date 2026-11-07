@@ -20,6 +20,7 @@ VERSION = 1
 MAX_STORE = 8 * 1024 * 1024
 MAX_PROPOSAL = 12 * 1024
 MAX_JOBS = 5000
+MAX_CLARIFICATIONS = 24 * 1024
 NAMESPACE = uuid.UUID('309d6c9e-dade-4d6b-8e07-cc7d293c0e03')
 
 
@@ -157,7 +158,7 @@ class Jobs:
         return orchestrator_memory.Memory._project(self, project_id)
 
     @contextlib.contextmanager
-    def _store(self, *, write=False, durable=False):
+    def _store(self, *, write=False, durable=False, commit_guard=None):
         root = os.open(self.state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         folder = lock = None
         try:
@@ -222,11 +223,13 @@ class Jobs:
                 try:
                     with os.fdopen(tmp, 'wb') as stream:
                         stream.write(encrypted); stream.flush(); os.fsync(stream.fileno())
-                    os.replace(name, 'jobs.enc', src_dir_fd=folder, dst_dir_fd=folder)
-                    try:
-                        os.fsync(folder)
-                    except OSError as exc:
-                        raise WriteUncertainError('Jobs replacement durability uncertain') from exc
+                    # Source guard is entered only after crypto and temp-file sync.
+                    with commit_guard() if commit_guard else contextlib.nullcontext():
+                        os.replace(name, 'jobs.enc', src_dir_fd=folder, dst_dir_fd=folder)
+                        try:
+                            os.fsync(folder)
+                        except OSError as exc:
+                            raise WriteUncertainError('Jobs replacement durability uncertain') from exc
                 finally:
                     try:
                         os.unlink(name, dir_fd=folder)
@@ -265,8 +268,10 @@ class Jobs:
         return {'context': context, 'context_sha256': hashlib.sha256(_json(context).encode()).hexdigest()}
 
     def consent(self, project_id, operation_id, *, authorization_id, expected_revision,
-                expected_proposal_sha256, host_context, expected_context_sha256):
+                expected_proposal_sha256, host_context, expected_context_sha256, backend="codex"):
         """Record operator consent only, atomically and without an execution authority."""
+        if backend not in ("codex", "foundation-models"):
+            raise ValueError("Explicit supported consent backend required")
         project, operation, authorization = _uuid(project_id), _uuid(operation_id), _uuid(authorization_id)
         if type(expected_revision) is not int or expected_revision < 0:
             raise ValueError('Invalid expected revision')
@@ -281,12 +286,14 @@ class Jobs:
             raise ValueError('Host context changed')
         identity = {'authorization_id': authorization, 'preparation_revision': expected_revision,
                     'proposal_sha256': expected_proposal_sha256, 'context_sha256': expected_context_sha256,
-                    'host_context': current['context'], 'backend': 'codex', 'mode': 'expertise',
+                    'host_context': current['context'], 'backend': backend, 'mode': 'expertise',
                     'billing_verification': 'not_performed', 'execution_authorized': False}
-        digest = hashlib.sha256(_json(identity).encode()).hexdigest()
         with self._store(write=True) as data:
             for row in data['jobs']:
                 if row['project_id'] != project or row.get('operation_id') != operation: continue
+                if 'clarifications' in row:
+                    identity['clarifications_sha256'] = hashlib.sha256(_json(row['clarifications']).encode()).hexdigest()
+                digest = hashlib.sha256(_json(identity).encode()).hexdigest()
                 previous = row.get('operator_authorization')
                 if previous and previous['authorization_id'] == authorization:
                     if previous['authorization_sha256'] != digest:
@@ -294,12 +301,14 @@ class Jobs:
                     return self._public(row)
                 if row['status'] != 'preparation':
                     raise ValueError('Mission locked')
+                if row.get('candidate_import') and row['candidate_import']['origin']['work_id'] != host_context['work_id']:
+                    raise ValueError('Host context changed')
                 if row.get('revision', 0) != expected_revision:
                     raise ValueError('Revision conflict')
                 proposal_digest = hashlib.sha256(_json(row['proposal']).encode()).hexdigest()
                 if proposal_digest != expected_proposal_sha256:
                     raise ValueError('Proposal identity changed')
-                if row['proposal']['questions']:
+                if row['proposal']['questions'] or any(not item['resolved'] for item in row.get('clarifications', [])):
                     raise ValueError('Clarification required')
                 authorization_record = dict(identity, authorization_sha256=digest, authorized_at=time.time())
                 fingerprint = hashlib.sha256(_json({'proposal': row['proposal'],
@@ -307,6 +316,81 @@ class Jobs:
                 row.update(status='consented', authority=None, authorization_kind='operator_consent_v1',
                     operator_authorization=authorization_record, fingerprint=fingerprint,
                     request_key=_request_key(project, operation, fingerprint), revision=expected_revision + 1)
+                return self._public(row)
+            raise ValueError('Job not found')
+
+    def reserve_local(self, project_id, operation_id, *, run_id, expected_revision, manifest):
+        """Persist one execution intent; only Store.guarded_handoff admits it."""
+        project, operation, run = _uuid(project_id), _uuid(operation_id), _uuid(run_id)
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError('Invalid expected revision')
+        snapshot = json.loads(_json(manifest))
+        identity = hashlib.sha256(_json(snapshot).encode()).hexdigest()
+        self._project(project)
+        with self._store(write=True) as data:
+            for row in data['jobs']:
+                if row['project_id'] != project or row.get('operation_id') != operation: continue
+                prior = row.get('local_execution')
+                if prior:
+                    if prior['run_id'] != run or prior['manifest_sha256'] != identity:
+                        raise ValueError('Execution identity conflict')
+                    return self._public(row), False
+                consent = row.get('operator_authorization') or {}
+                if (row['status'] != 'consented' or consent.get('backend') != 'foundation-models'
+                        or consent.get('execution_authorized') is not False):
+                    raise ValueError('Explicit local consent required')
+                if row.get('revision') != expected_revision: raise ValueError('Revision conflict')
+                host = consent['host_context']
+                if 'clarifications' in row:
+                    clarifications_sha = hashlib.sha256(_json(row['clarifications']).encode()).hexdigest()
+                    if (snapshot.get('clarifications_sha256') != clarifications_sha
+                            or consent.get('clarifications_sha256') != clarifications_sha):
+                        raise ValueError('Execution manifest mismatch')
+                if (snapshot.get('project_id') != project or snapshot.get('work_id') != host['work_id']
+                        or snapshot.get('project_root') != host['project_root']
+                        or snapshot.get('adapter') != 'native-foundation-explain'
+                        or snapshot.get('mode') != 'expertise' or snapshot.get('tools') is not False
+                        or snapshot.get('automatic_fallback') is not False
+                        or snapshot.get('stop_on_deadline') is not True
+                        or type(snapshot.get('max_requests')) is not int or snapshot['max_requests'] != 1
+                        or type(snapshot.get('max_seconds')) is not int or not 1 <= snapshot['max_seconds'] <= 120
+                        or snapshot.get('supervision_contract') != 'foundation-explain-v1-self-deadline'
+                        or snapshot.get('cost_policy') != 'local_helper_only_no_provider_route'):
+                    raise ValueError('Execution manifest mismatch')
+                if (snapshot.get('job_id') != row['job_id'] or snapshot.get('request_key') != row['request_key']
+                        or snapshot.get('consent_id') != consent['authorization_id']
+                        or snapshot.get('context_sha256') != consent['context_sha256']
+                        or snapshot.get('proposal_sha256') != hashlib.sha256(_json(row['proposal']).encode()).hexdigest()
+                        or snapshot.get('backend') != 'foundation-models'):
+                    raise ValueError('Execution manifest mismatch')
+                row['local_execution'] = {'run_id': run, 'manifest_sha256': identity,
+                    'manifest': snapshot, 'stage': 'intent', 'stop_requested': False,
+                    'created_at': time.time(), 'receipt': None}
+                row.update(status='local_pending', revision=expected_revision + 1)
+                return self._public(row), True
+            raise ValueError('Job not found')
+
+    def local_update(self, project_id, operation_id, run_id, *, stage=None, receipt=None, stop=False):
+        """Host projection only; never establishes an admission or repeats work."""
+        project, operation, run = _uuid(project_id), _uuid(operation_id), _uuid(run_id)
+        if stage not in (None, 'admitted', 'running', 'recorded', 'indeterminate'):
+            raise ValueError('Invalid execution stage')
+        with self._store(write=True) as data:
+            for row in data['jobs']:
+                if row['project_id'] != project or row.get('operation_id') != operation: continue
+                execution = row.get('local_execution')
+                if not execution or execution['run_id'] != run: raise ValueError('Execution identity conflict')
+                if execution['stage'] == 'recorded': return self._public(row)
+                if stop: execution['stop_requested'] = True
+                if stage:
+                    execution['stage'] = stage
+                    row['status'] = 'local_' + stage
+                if receipt is not None:
+                    if stage != 'recorded': raise ValueError('Terminal receipt required')
+                    if receipt.get('run_id') != run or receipt.get('request_key') != row['request_key']:
+                        raise ValueError('Receipt identity mismatch')
+                    execution['receipt'] = json.loads(_json(receipt))
+                row['revision'] = row.get('revision', 0) + 1
                 return self._public(row)
             raise ValueError('Job not found')
 
@@ -356,6 +440,157 @@ class Jobs:
             data['jobs'].append(row)
             return self._public(row)
 
+    def import_candidate(self, project_id, operation_id, extracted, *, import_id, work_id,
+                         expected_revision, expected_proposal_sha256, operator_confirmed):
+        """Explicit host import into a different preparation, never authority or dispatch."""
+        import coordinator_candidate as candidates
+        from delegation_store import digest
+        project, operation, work, mutation = map(_uuid, (project_id, operation_id, work_id, import_id))
+        extracted = json.loads(_json(extracted))
+        if operator_confirmed is not True:
+            raise ValueError('Explicit candidate confirmation required')
+        candidate = candidates.parse(_json(extracted['candidate']))
+        if digest(candidate) != extracted['candidate_sha256']:
+            raise ValueError('Candidate identity mismatch')
+        origin = json.loads(_json(extracted['origin']))
+        if (origin['project_id'] != project or origin['work_id'] != work
+                or origin['source_operation_id'] == operation):
+            raise ValueError('Candidate source identity mismatch')
+        if expected_revision is not None and (type(expected_revision) is not int or expected_revision < 0):
+            raise ValueError('Invalid expected revision')
+        if (expected_revision is None) != (expected_proposal_sha256 is None):
+            raise ValueError('Expected preparation identity required')
+        self._project(project)
+        record = {'schema': candidates.SCHEMA, 'import_id': mutation, 'origin': origin,
+                  'candidate': candidate, 'candidate_sha256': extracted['candidate_sha256'],
+                  'expected_revision': expected_revision, 'expected_proposal_sha256': expected_proposal_sha256,
+                  'operator_confirmed': True, 'source_evidence': json.loads(_json(extracted['evidence']))}
+        with self._store(write=True, commit_guard=lambda: candidates.revalidate(self.state, extracted)) as data:
+            source = next((row for row in data['jobs'] if row['project_id'] == project
+                           and row.get('operation_id') == origin['source_operation_id']), None)
+            if (source is None or candidates.origin_for(self._public(source)) != origin
+                    or candidates.parse(source['local_execution']['receipt']['response']) != candidate):
+                raise ValueError('Candidate source changed')
+            row = next((row for row in data['jobs'] if row['project_id'] == project
+                        and row.get('operation_id') == operation), None)
+            if row and row.get('candidate_import'):
+                if row['candidate_import'] == record:
+                    return self._public(row)
+                raise ValueError('Candidate import identity conflict')
+            if row is None:
+                if expected_revision is not None:
+                    raise ValueError('Revision conflict')
+                if len(data['jobs']) >= MAX_JOBS:
+                    raise ValueError('Jobs capacity reached')
+                row = {'project_id': project, 'operation_id': operation,
+                       'job_id': str(uuid.uuid5(NAMESPACE, 'job:' + project + ':' + operation)),
+                       'request_key': None, 'created_at': time.time(), 'status': 'preparation',
+                       'authority': None, 'revision': 0}
+                data['jobs'].append(row)
+            else:
+                if row['status'] != 'preparation':
+                    raise ValueError('Mission locked')
+                if (row.get('revision', 0) != expected_revision
+                        or hashlib.sha256(_json(row['proposal']).encode()).hexdigest() != expected_proposal_sha256):
+                    raise ValueError('Revision conflict')
+                row['revision'] += 1
+            proposal = candidate['proposal']
+            clarifications = [{'id': str(uuid.uuid5(NAMESPACE, 'candidate-question:' + extracted['candidate_sha256'] + ':' + str(index))),
+                               'question': question, 'answer': None, 'resolved': False, 'history': []}
+                              for index, question in enumerate(proposal['questions'])]
+            row.update(proposal=proposal, candidate_import=record, clarifications=clarifications,
+                       fingerprint=_fingerprint(proposal, None))
+            return self._public(row)
+
+    def clarify_candidate(self, project_id, operation_id, *, question_id, answer, resolved,
+                          resolution_id, expected_revision):
+        """Answer and resolve explicitly; retain original question and every accepted answer."""
+        project, operation, question, mutation = map(_uuid, (project_id, operation_id, question_id, resolution_id))
+        if type(resolved) is not bool or type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError('Invalid clarification revision')
+        answer = _text(answer, 1024)
+        self._project(project)
+        identity = {'resolution_id': mutation, 'answer': answer, 'resolved': resolved,
+                    'expected_revision': expected_revision}
+        with self._store(write=True) as data:
+            row = next((row for row in data['jobs'] if row['project_id'] == project
+                        and row.get('operation_id') == operation), None)
+            if row is None:
+                raise ValueError('Job not found')
+            questions = row.get('clarifications') or []
+            item = next((item for item in questions if item['id'] == question), None)
+            if item is None:
+                raise ValueError('Clarification not found')
+            for other in questions:
+                for previous in other['history']:
+                    if previous['resolution_id'] == mutation:
+                        if other['id'] == question and previous == identity:
+                            return self._public(row)
+                        raise ValueError('Clarification identity conflict')
+            if row['status'] != 'preparation':
+                raise ValueError('Mission locked')
+            if row['revision'] != expected_revision:
+                raise ValueError('Revision conflict')
+            item['history'].append(identity)
+            item.update(answer=answer, resolved=resolved)
+            if 'disposition' in item:
+                item['disposition'] = 'answered' if resolved else 'open'
+            if len(_json(questions).encode()) > MAX_CLARIFICATIONS:
+                raise ValueError('Clarification history capacity reached')
+            current = row['proposal']['questions']
+            if resolved:
+                current[:] = [value for value in current if value != item['question']]
+            elif item['question'] not in current:
+                current.append(item['question'])
+            row['proposal'] = _proposal(row['proposal'])
+            row.update(revision=row['revision'] + 1, revised_at=time.time(),
+                       fingerprint=_fingerprint(row['proposal'], None))
+            return self._public(row)
+
+    def review_clarification(self, project_id, operation_id, *, question_id, action, reason,
+                             resolution_id, expected_revision):
+        """An operator decision is not a fabricated answer or permission."""
+        project, operation, question, mutation = map(_uuid, (project_id, operation_id, question_id, resolution_id))
+        if action not in ('dismiss', 'reopen') or type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError('Invalid clarification decision')
+        reason = _text(reason, 1024)
+        self._project(project)
+        identity = {'resolution_id': mutation, 'action': action, 'reason': reason,
+                    'expected_revision': expected_revision}
+        with self._store(write=True) as data:
+            row = next((row for row in data['jobs'] if row['project_id'] == project
+                        and row.get('operation_id') == operation), None)
+            if row is None:
+                raise ValueError('Job not found')
+            questions = row.get('clarifications') or []
+            item = next((item for item in questions if item['id'] == question), None)
+            if item is None:
+                raise ValueError('Clarification not found')
+            for other in questions:
+                for previous in other['history']:
+                    if previous['resolution_id'] == mutation:
+                        if other['id'] == question and previous == identity:
+                            return self._public(row)
+                        raise ValueError('Clarification identity conflict')
+            if row['status'] != 'preparation':
+                raise ValueError('Mission locked')
+            if row['revision'] != expected_revision:
+                raise ValueError('Revision conflict')
+            item['history'].append(identity)
+            item.update(disposition='dismissed' if action == 'dismiss' else 'open',
+                        resolved=action == 'dismiss')
+            if len(_json(questions).encode()) > MAX_CLARIFICATIONS:
+                raise ValueError('Clarification history capacity reached')
+            current = row['proposal']['questions']
+            if action == 'dismiss':
+                current[:] = [value for value in current if value != item['question']]
+            elif item['question'] not in current:
+                current.append(item['question'])
+            row['proposal'] = _proposal(row['proposal'])
+            row.update(revision=row['revision'] + 1, revised_at=time.time(),
+                       fingerprint=_fingerprint(row['proposal'], None))
+            return self._public(row)
+
     def revise(self, project_id, operation_id, proposal, *, expected_revision):
         """Durably revise an operator-owned draft with CAS; never dispatch or alter admitted work."""
         project, operation = _uuid(project_id), _uuid(operation_id)
@@ -372,6 +607,8 @@ class Jobs:
                     raise ValueError('Operation identity mismatch')
                 if row['status'] not in ('draft', 'preparation'):
                     raise ValueError('Draft only; admitted missions cannot be revised')
+                if any(not item['resolved'] and item['question'] not in proposal['questions'] for item in row.get('clarifications', [])):
+                    raise ValueError('Unresolved clarification cannot be removed')
                 fingerprint = _fingerprint(proposal, row.get('authority'))
                 # An exact replay is a no-op even when its original CAS token is now stale.
                 if row.get('fingerprint') == fingerprint and row['proposal'] == proposal:
@@ -400,7 +637,11 @@ class Jobs:
                 'dispatch_enabled': False,
                 'proposal_sha256': hashlib.sha256(_json(item['proposal']).encode()).hexdigest(),
                 'authorization_kind': item.get('authorization_kind'),
-                'operator_authorization': item.get('operator_authorization')}
+                'operator_authorization': item.get('operator_authorization'),
+                'local_execution': item.get('local_execution')}
+        for field in ('candidate_import', 'clarifications'):
+            if field in item:
+                result[field] = item[field]
         if item.get('operation_id') is not None:
             result['operation_id'] = item['operation_id']
         return result
@@ -468,6 +709,70 @@ class Jobs:
         project_id, operation_id = _uuid(project_id), _uuid(operation_id)
         job_id = str(uuid.uuid5(NAMESPACE, 'job:' + project_id + ':' + operation_id))
         return self.get(project_id, job_id)
+
+    @staticmethod
+    def _work_association(row):
+        bindings = []
+        for record, key in ((row.get('candidate_import'), 'origin'),
+                            (row.get('operator_authorization'), 'host_context'),
+                            (row.get('local_execution'), 'manifest')):
+            if record is None:
+                continue
+            context = record.get(key) if isinstance(record, dict) else None
+            if not isinstance(context, dict) or context.get('project_id') != row['project_id']:
+                return 'inconsistent', None
+            try:
+                bindings.append(_uuid(context.get('work_id')))
+            except ValueError:
+                return 'inconsistent', None
+        if len(set(bindings)) > 1:
+            return 'inconsistent', None
+        return ('bound', bindings[0]) if bindings else ('unbound', None)
+
+    def browse(self, project_id, *, work_id=None, limit=20, offset=0):
+        """Minimal project summaries, no reconciliation or inferred work binding."""
+        project = _uuid(project_id)
+        self._project(project)
+        if work_id is not None:
+            work_id = _uuid(work_id)
+        if type(limit) is not int or not 1 <= limit <= 50 or type(offset) is not int or not 0 <= offset <= MAX_JOBS:
+            raise ValueError('Invalid pagination')
+        with self._store() as data:
+            selected = []
+            for row in data['jobs']:
+                if row['project_id'] != project:
+                    continue
+                association, work = self._work_association(row)
+                if work_id is not None and (association != 'bound' or work != work_id):
+                    continue
+                selected.append((row, association, work))
+            selected.sort(key=lambda item: (item[0]['created_at'], item[0]['job_id']), reverse=True)
+            summaries = []
+            for row, association, work in selected[offset:offset + limit]:
+                operation = row.get('operation_id')
+                try:
+                    _uuid(operation)
+                    selectable = True
+                except ValueError:
+                    operation, selectable = None, False
+                # Recognition uses the host's exact versioned template, excluding
+                # imported candidates; prose alone never creates an association.
+                import coordinator_local
+                try:
+                    kind = ('analysis' if coordinator_local.analysis_request(row) is not None
+                            else 'mission' if row.get('candidate_import') else 'preparation')
+                except (ValueError, KeyError, TypeError):
+                    kind = 'unknown'
+                summaries.append({'project_id': project, 'operation_id': operation, 'job_id': row['job_id'],
+                    'objective': row['proposal']['objective'][:160],
+                    'status': 'indeterminate' if row['status'] == 'recorded' else row['status'],
+                    'revision': row.get('revision', 0), 'created_at': row['created_at'],
+                    'updated_at': row.get('revised_at', row['created_at']), 'kind': kind,
+                    'work_association': association, 'work_id': work,
+                    'selectable': selectable and association != 'inconsistent'})
+            return {'project_id': project, 'work_id': work_id, 'offset': offset, 'limit': limit,
+                    'next_offset': offset + limit if offset + limit < len(selected) else None,
+                    'operations': summaries}
 
     def list(self, project_id, *, limit=50, offset=0):
         self._project(_uuid(project_id))

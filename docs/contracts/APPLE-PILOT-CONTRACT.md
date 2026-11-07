@@ -90,3 +90,391 @@ nouveau contrôleur Swift après perte de réponse, rejet d'un reçu d'autorisat
 étranger, sélection modifiée et absence d'appel modèle. Elle utilise un coffre
 et des transports simulés ; elle ne démontre ni permissions système réelles,
 ni facturation fournisseur, ni délégation native.
+
+
+## Première exécution Apple locale supervisée
+
+Une nouvelle préparation peut recevoir un consentement explicitement ciblé
+`foundation-models` via `job_authorize_local`. Les consentements `codex`
+existants et leur identité sont conservés ; ils ne deviennent pas admissibles
+au moteur local et ne déclenchent aucun repli. Le consentement seul reste sans
+exécution. Les outils AFM de conversation n'exposent pas ces commandes hôte.
+
+Le parcours opérateur ajoute `job_local_plan`, puis `job_local_start` avec un
+`run_id` durable, une révision CAS et le hash du manifeste relu à l'écran.
+Le service retient le manifeste côté hôte ; aucun chemin exécutable ou payload
+fourni par le client n'est accepté comme substitut. La planification vérifie
+uniquement le fichier helper et son contrat statique `--supervision-contract` ;
+elle n'appelle ni génération ni API de disponibilité du modèle. Un ancien
+helper sans ce contrat est refusé. La présence du binaire ne prouve pas la
+disponibilité ni la réussite d'une génération.
+
+Le manifeste lie projet, travail, racine du registre, proposition, consentement,
+job/requête, adaptateur `native-foundation-explain`, exécutable et SHA-256,
+une admission maximum et une échéance entière de 1 à 120 secondes. La route
+utilise le helper natif connu, `SystemLanguageModel.default`, sans outils,
+configuration de fournisseur externe ni fallback. Cette politique décrit le
+chemin réellement autorisé ; elle n'attribue pas un prix vérifié ou une
+capacité financière à une autre route. La garde financière Codex reste intacte.
+
+Jobs persiste d'abord une intention chiffrée `local_pending`, qui ne prouve
+ni admission ni départ. L'admission effective réutilise les transactions
+`create_guarded_grant`/`guarded_handoff` du Store : droit lié au payload,
+budget unitaire et unicité de mission sont vérifiés et consommés atomiquement.
+Seul un handoff neuf et committé donne un snapshot au superviseur. Il contient
+le payload et le manifeste immuables ; un rejeu n'en produit pas un nouveau.
+Les identités de job/requête ne masquent pas une demande locale équivalente
+encore incertaine lors du contrôle de cycle/déduplication du Store.
+
+Avant départ, le superviseur revalide le contexte et le helper, copie ses octets
+dans un répertoire privé, contrôle le SHA et le contrat de cette copie, puis
+exécute uniquement cette copie avec une commande fermée et un environnement
+réduit. Il conserve son `Popen`, surveille sortie bornée, annulation et échéance,
+puis récupère le processus. Aucun verrou/transaction SQLite n'est conservé
+pendant l'inférence. Les connexions SQLite possèdent les descripteurs d'une
+base existante ; aucune fermeture de fd brut de cet inode ne doit libérer les
+verrous POSIX d'un autre thread. La création initiale privée est sérialisée
+avant ouverture des connexions.
+
+`job_local_stop` vise exactement le `run_id` connu. Le drapeau persistant conserve la demande ; dans le propriétaire courant, le
+contrôle local est synchronisé avec l'admission et le dernier départ. Un
+travail déjà admis est arrêté par son propriétaire. La requête d'arrêt n'est
+pas une preuve d'arrêt. Le superviseur signale seulement son groupe enfant
+possédé et exige `wait/reap` avant de rapporter une interruption confirmée.
+Un échec de nettoyage reste indéterminé. Aucun PID relu dans un ancien reçu
+n'est tué. Sans propriétaire vivant, la récupération conserve l'incertitude.
+
+Le helper natif arme aussi son propre timer avant l'accès au modèle :
+`--deadline-seconds` borne sa durée même si le propriétaire Python meurt.
+Le handler termine le processus avec le code 124 sans attendre stdout, un
+verrou de sortie ou une annulation coopérative du modèle. Cette preuve borne
+le processus applicatif possédé ; elle ne prouve pas l'arrêt de toute activité
+interne d'un service système Apple. Une mort du propriétaire ne fabrique pas
+un reçu terminal : l'intention reste indéterminée et n'est jamais relancée.
+L'inscription et le démarrage des threads d'exécution sont atomiques avec
+`job_closing`, afin qu'une admission déjà en préparation ne puisse échapper
+au drain de fermeture.
+
+Le reçu final est relu via `guarded_receipt` avec grant, job, binding complet
+et identité immuable du payload. Il distingue processus démarré/récupéré,
+code de sortie, cause d'arrêt, résultat et travail achevé. La réponse est
+chiffrée dans le reçu durable et dans la projection Jobs ; son SHA est vérifié
+à la récupération. Une perte de la projection après le reçu Store permet de
+retrouver le résultat sans génération supplémentaire. Un crash avant cette
+preuve conserve `local_indeterminate`, sans recréer d'admission ou de processus.
+
+La GUI journalise l'identité `local_start` avant émission. Sa récupération
+compare run, manifeste, contexte/travail et révision ; un reçu étranger ne
+résout pas l'intention. Le suivi automatique ne fait que lire les états actifs,
+sans inférence ni rejeu, et s'arrête aux états enregistrés/indéterminés.
+Un état `finished` avec réponse valide prouve une génération capturée, pas la
+satisfaction de tous les critères métier. La limite unitaire est par mission,
+pas un budget financier ou un plafond agrégé entre plusieurs missions.
+
+Les tests de développement utilisent exclusivement des helpers simulés, des
+registres temporaires et un coffre de test. Le timer natif est testé en compilant
+son préfixe sans aucun appel d'API modèle. Ils couvrent concurrence, non-rejeu,
+arrêt pendant exécution, échéance après mort du propriétaire, course de
+fermeture, verrous POSIX, perte de projection et récupération GUI. Ces tests ne
+constituent pas une preuve E2E avec le modèle Apple réel ; celle-ci reste un essai
+opérateur distinct, explicitement autorisé, sans publication automatique.
+
+### Format de la demande locale et lecture historique
+
+Les nouveaux manifestes portent `prompt_format: operator-question-v2`. Ce champ
+participe au hash du manifeste et à l’identité du payload admis. L’objectif de la
+proposition consentie est la demande `operator_question` ; les autres champs
+(contexte, critères, contraintes déclarées) restent des données non fiables.
+Le helper les encode dans une enveloppe JSON distincte et ne demande aucune
+explication supplémentaire contradictoire avec l’objectif. Cette séparation
+n’est pas une preuve de résistance du modèle à toute injection ; les permissions,
+les outils désactivés et l’absence de repli restent imposés hors du modèle.
+
+Un manifeste sans `prompt_format` conserve exactement le payload et le format
+historiques pour la lecture et la vérification de son reçu. Il n’est ni migré ni
+réémis. Une version inconnue est refusée. La récupération et un nouvel appel du
+même run admis ne lancent aucune génération ; une modification du format exige
+une nouvelle préparation et un nouveau consentement explicites, jamais une
+relance automatique d’un état incertain. Un reçu `finished` atteste une réponse
+valide du helper, pas la satisfaction des critères métier ni l’absence de refus.
+
+### Candidat de préparation issu d’un reçu local
+
+Le socle hôte expose `job_candidate_extract`, `job_candidate_import` et
+`job_clarify`, sans outil modèle, sans génération et sans dispatch. Il ne
+raccorde pas encore la conversation ou la GUI à une analyse automatique.
+Un modèle peut seulement proposer des données ; l’import exige une confirmation
+opérateur explicite, distincte de toute autorisation d’exécuter la mission.
+
+Le document candidat est un JSON strict, sans balise Markdown :
+`{"schema":"reprise-preparation-candidate-v1","proposal":{"objective":"…","acceptance":["…"],"constraints":[],"questions":["…"]}}`.
+Les champs supplémentaires (dont backend, permissions et identifiants), clés
+dupliquées, constantes non JSON, questions dupliquées et dépassements de bornes
+sont refusés. Les bornes existantes des propositions s’appliquent ; la réponse
+candidate est limitée à 13 Kio. Le texte reste non vérifié, même si sa structure
+est valide. L’objectif proposé ne remplace jamais automatiquement une mission.
+
+`job_candidate_extract` reçoit exactement `id`, `op`, `enabled`, `project_id`,
+`operation_id` (source), `work_id`, `run_id`, `expected_response_sha256`.
+La source doit être `local_recorded`, avec un reçu `finished`, processus démarré
+et récupéré, sortie zéro et consentement Apple local du même projet/travail.
+La lecture vérifie les jointures admission/grant/requête, l’unique consommation,
+le binding, les identités payload/manifeste/attempt, puis l’égalité du résultat
+chiffré avec sa projection Jobs et le hash de la réponse. Le registre d’admission
+existant est ouvert en lecture seule, sans constructeur de Store, initialisation,
+acknowledgement ou réconciliation. L’extraction retourne `candidate`, son SHA-256
+canonique et `origin` (projet/travail/racine/contexte, opération/job/requête/run,
+identité de l’admission et hashes du reçu et de son snapshot). Aucun texte ou
+manifeste fourni par le client ne remplace la réponse attribuable.
+
+`job_candidate_import` reçoit exactement `id`, `op`, `enabled`, `project_id`,
+`operation_id` (destination), `work_id`, `source_operation_id`, `source_run_id`,
+`expected_response_sha256`, `expected_candidate_sha256`, `import_id`,
+`expected_revision`, `expected_proposal_sha256`, `operator_confirmed: true`.
+Le service relit et attribue la source ; il n’accepte aucun candidat dans cette
+requête. Sous le même verrou Jobs, l’import revalide le snapshot source et
+applique le CAS destination. Une création exige les deux valeurs attendues à
+`null` et une destination absente. Une révision exige la révision et le hash
+courants d’une `preparation`. Source et destination doivent être des opérations
+distinctes du même projet/travail. L’import produit uniquement `preparation`,
+`authority: null`, `request_key: null`, sans consentement ni moteur.
+
+`candidate_import` conserve le document original, sa provenance et l’identité
+de confirmation. La répétition exacte du même import retourne l’état actuel sans
+écraser les révisions ultérieures. Une autre identité ou un autre candidat sur
+cette opération importée est refusé : créer explicitement une nouvelle préparation.
+La provenance reste récupérable par `job_recover`. Une erreur de synchronisation
+après remplacement reste `write_uncertain` ; récupération par la même identité,
+sans réémission automatique. Aucun ancien reçu ou consentement n’est modifié.
+
+Les `proposal.questions` restent des chaînes pour la compatibilité historique.
+Les préparations importées portent en plus `clarifications` : identité stable,
+question originale, réponse, résolution explicite et historique des mutations.
+`job_clarify` reçoit exactement `id`, `op`, `enabled`, `project_id`, `operation_id`,
+`question_id`, `answer`, `resolved` (booléen), `resolution_id`, `expected_revision`.
+Une réponse non vide (maximum 1 Kio) ne résout pas implicitement la question :
+`resolved: false` la maintient ouverte ; `true` la retire de la liste ouverte en
+conservant question et réponse dans les métadonnées. La réouverture est explicite.
+Le CAS et les identités de résolution empêchent écrasement et répétition ;
+l’historique complet est borné à 24 Kio, avec refus avant mutation à saturation.
+Une révision ordinaire ne peut supprimer une clarification encore ouverte.
+
+Le consentement refuse toute question ou clarification non résolue et tout
+changement du travail lié à la provenance. Il lie le hash des clarifications ;
+le manifeste local et le payload incluent le même snapshot comme données non
+fiables. Une clarification ne devient ni instruction hôte ni permission. Après
+consentement, aucune modification de clarification n’est possible. Les formats
+historiques sans ces champs restent inchangés, y compris leurs identités de reçu.
+Les tests de ce socle utilisent un coffre et des réponses simulés ; ils ne
+prouvent ni la pertinence des questions d’un modèle réel ni une interaction GUI.
+
+L’extraction copie la preuve SQLite puis ferme sa transaction avant tout appel
+au coffre. `evidence` contient le binding et le hash de cette attribution ; il
+est conservé dans `candidate_import.source_evidence`. L’import prend d’abord
+le verrou Jobs (attente maximale existante de cinq secondes), vérifie source et
+CAS, chiffre le nouvel état et synchronise son fichier temporaire sans verrou
+SQLite. Juste avant remplacement, un garde relit l’attribution dans une courte
+transaction SQLite en lecture seule et compare son hash. La connexion du garde
+attend au maximum 0,25 seconde un verrou SQLite ; une source modifiée ou occupée
+est refusée avant remplacement, avec suppression du temporaire et sans relance.
+Un verrou SQLite indisponible retourne `candidate_source_unavailable` avec
+`effect: not_admitted` ; aucune nouvelle tentative automatique n’est effectuée.
+
+L’ordre imbriqué est Jobs puis lecture SQLite. Les chemins d’exécution locale
+committent leurs transactions SQLite avant leurs projections Jobs ; ils ne
+prennent pas le verrou Jobs avec une transaction SQLite ouverte. Le garde ne
+lance ni coffre, ni subprocess, ni inférence et n’attend pas le verrou Jobs.
+Il reste actif pendant `replace` et `fsync` du répertoire : ces appels système
+n’ont pas de délai garanti. Une panne ou lenteur du système de fichiers peut
+donc prolonger le verrou de lecture et retarder un writer SQLite ; aucune
+absence totale de blocage n’est promise. Une erreur après remplacement conserve
+`write_uncertain`. Les tests interprocessus vérifient qu’un writer indépendant
+peut committer pendant le chiffrement, est bloqué au remplacement seulement,
+puis peut de nouveau committer après libération. Ils ne simulent pas un disque
+réellement bloqué. Ces preuves et hashes restent une attribution locale entre
+composants hôte, pas une authentification contre un processus hostile du même UID.
+
+### Parcours GUI d’analyse vers une mission
+
+L’interface propose une préparation d’analyse native distincte de la mission.
+Le template hôte `reprise-analysis-v2` demande uniquement un candidat JSON strict,
+sans exécuter la demande ni déduire permissions, cible ou capacités. La demande
+opérateur est encodée comme donnée JSON dans les contraintes, en conservant ses
+retours à la ligne ; l’enveloppe encodée est limitée à 1 Kio. Aucun transcript,
+checkpoint ou souvenir n’est ajouté automatiquement. La qualité des questions
+reste non vérifiée et une réponse non JSON ne déclenche aucune réparation.
+
+Créer cette préparation ne lance aucun modèle. L’opérateur valide son contexte,
+consent à l’analyse Apple locale, relit le manifeste puis autorise un départ
+unique par le parcours supervisé existant. Les contrôles de suivi et d’arrêt
+restent disponibles ; les changements de sélection sont bloqués pendant une
+exécution suivie. La réponse brute et le reçu restent consultables même si le
+candidat est refusé par le parseur.
+
+Après extraction attribuable, l’opérateur peut créer explicitement une autre
+préparation de mission. L’analyse et la mission ont des identités distinctes ;
+la mission commence sans consentement, permission ou exécution hérités. Elle
+reste éditable avant son propre consentement. Les questions importées sont
+présentées avec leurs réponses et leur historique ; « Enregistrer sans résoudre »
+et « Confirmer la résolution » sont des actions distinctes. La réouverture est
+explicite. Les réponses non enregistrées restent volatiles et ne sont pas une
+preuve durable. Aucune réponse n’est transformée automatiquement en fait mémoire.
+
+Le journal conserve une liaison privée d’identités par projet/travail, avec
+écriture atomique et synchronisation : analyse source et destination de mission.
+Il refuse une autre source ou destination pour cette liaison. Ce parcours prend
+donc en charge une analyse et une destination par travail ; une nouvelle analyse
+requiert la sélection explicite d’un autre travail. La liaison ne contient aucun
+texte de demande ou de réponse. La GUI permet de recharger séparément les deux
+opérations ; un ancien reçu terminal ne remplace pas cette sélection explicite.
+
+L’intention d’import est journalisée avant la liaison destination et avant
+émission. Si le crash survient entre marqueur et liaison, le marqueur permet de
+reconstituer cette dernière. Les nouveaux marqueurs d’import et de clarification
+conservent uniquement identités, révision et hashes, jamais le texte des réponses.
+La récupération compare import/source/run/réponse/candidat ou l’identité exacte
+de résolution dans l’historique. Un reçu étranger ne libère pas le journal ;
+la GUI n’émet pas de nouveau départ, import ou résolution pour remplacer une
+réponse perdue. Une opération absente après incertitude reste bloquante.
+
+Les liaisons et marqueurs historiques restent lisibles. Les tests GUI exécutent
+le contrôleur Swift réel avec le service, les Jobs, le registre et l’admission
+réels, mais un coffre et un helper de génération simulés. Ils vérifient le
+parcours complet, les réponses perdues, les faux reçus, le CAS et l’absence de
+réémission. Ils ne démontrent ni l’utilité des clarifications d’un vrai modèle,
+ni une conversation native à plusieurs tours via ce parcours.
+
+Un refus d’import explicitement confirmé `effect: not_admitted` ne laisse pas la
+liaison destination inutilisable : après relecture du même candidat, l’opérateur
+peut demander un réessai explicite avec le même `import_id`, la même destination
+et les mêmes identités source/run/réponse/candidat. Le journal conserve la preuve
+du refus avant cette nouvelle émission. Une réponse perdue ou un effet inconnu
+n’ouvre jamais ce réessai : seule la récupération de la destination est permise.
+
+
+### Entrée d’analyse dédiée v2
+
+Les nouvelles analyses utilisent le manifeste `prompt_format:
+preparation-analysis-v2`, distinct de `operator-question-v2`. Le choix exige
+le template hôte exact `reprise-analysis-v2`, une enveloppe de demande valide
+et aucune provenance de mission importée ; le contenu du texte opérateur ne
+sélectionne jamais le format. Les critères techniques stockés pour l’analyse
+ne sont pas transmis comme données à copier dans la future mission.
+
+Le payload modèle contient exactement `prompt_format` et
+`operator_request: {"text": "demande originale"}`. La demande n’est plus un JSON
+encodé dans `constraints`, puis dans `facts`, puis dans une autre chaîne JSON
+lors du rendu modèle. Son enveloppe de stockage historique dans Jobs reste une
+donnée hôte ; le service la décode explicitement avant l’admission. Le helper
+rend une unique enveloppe JSON structurée `operator_request`, séparée des règles
+fixes du programme. Champs supplémentaires et types incorrects sont refusés.
+La demande reste non fiable, jamais une instruction hôte ni une autorisation.
+
+Les règles v2 demandent un objectif décrivant le résultat métier, des critères
+vérifiables du livrable et les seules contraintes métier déclarées. Elles
+interdisent de prendre l’analyse, le format JSON ou Reprise comme objectif, ou
+de copier un critère technique d’analyse. Elles demandent zéro question quand
+la demande suffit, sinon au maximum trois questions strictement bloquantes,
+sans redemander une précision déjà donnée. Ce cadrage est une consigne au modèle,
+pas une preuve que ses questions sont utiles ou son objectif fidèle. Le parseur
+candidat conserve son schéma v1 et sa validation structurelle ; la relecture
+humaine reste indispensable. Aucun filtrage heuristique n’est présenté comme
+une validation sémantique.
+
+Le helper annonce les formats supportés via son contrat statique, avant toute
+API modèle. Une analyse v2 est refusée au plan puis à la revalidation du snapshot
+si ce format n’est pas annoncé ; aucun repli vers l’ancien rendu n’est permis.
+L’annonce ne démontre ni disponibilité réelle ni qualité de génération. Le
+contrat de supervision et les limites d’outils/temps restent inchangés.
+
+Le format, la proposition et le hash du helper participent à l’identité admise.
+Un manifeste absent de version ou portant `operator-question-v2` conserve
+strictement son payload et son rendu historiques, y compris les analyses v1.
+Les anciens reçus ne sont ni migrés ni réémis. Les tests figent deux identités
+synthétiques calculées depuis le formateur publié antérieur, vérifient l’entrée
+v2 plate, le refus d’un helper ancien avant admission, les injections
+structurelles et la récupération sans replay. Aucun test de modèle réel n’est
+nécessaire à ces contrôles, et ils ne prouvent pas l’amélioration sémantique.
+
+### Analyse guidée v3 et propositions inexploitées
+
+Les nouvelles analyses utilisent `reprise-analysis-v3` et le format distinct
+`preparation-analysis-v3-guided`, explicitement annoncé par le helper. La demande
+opérateur reste une donnée structurée non fiable. Le helper utilise un type
+`@Generable` avec descriptions métier et bornes de collections ; l’hôte sérialise
+les champs générés vers le candidat v1, sans exemple littéral de réponse dans le
+prompt v3. La génération guidée garantit une structure, pas la fidélité métier,
+l’utilité des questions ou l’absence d’influence des données hostiles. La relecture
+humaine et le consentement de mission séparé demeurent obligatoires.
+
+À l’extraction et à l’import, le parseur commun refuse les valeurs de gabarit
+connues `résultat métier attendu` et `critère du livrable`, normalisées Unicode,
+casse et espaces. Cette barrière ciblée ne détecte pas toutes les erreurs
+sémantiques. Le refus conserve le reçu et sa réponse ; aucun import ni nouvel
+appel automatique n’en découle. Les reçus historiques restent lisibles et leur
+identité inchangée, y compris lorsque leur proposition est désormais refusée.
+Les formats antérieurs gardent leur construction historique sans réémission.
+
+### Décision opérateur sur une question non bloquante
+
+`job_clarification_review` reçoit exactement `id`, `op`, `enabled`, `project_id`,
+`operation_id`, `question_id`, `action` (`dismiss` ou `reopen`), `reason`
+(non vide, maximum 1 Kio), `resolution_id` et `expected_revision`. Le motif est
+obligatoire pour les deux décisions. Seule une préparation importée encore
+modifiable peut être concernée. La question doit appartenir à cette opération ;
+aucune décision ne migre vers un autre projet ou une autre question.
+
+Sous le verrou Jobs, la révision est comparée et la mutation enregistrée une
+seule fois. La même identité et le même contenu retrouvent l’état ; réutiliser
+l’identité avec un contenu différent est refusé. L’historique conserve la
+question, les réponses éventuelles et les décisions, sans fabriquer de réponse.
+`dismiss` ajoute `disposition: dismissed`, marque `resolved: true` et retire
+seulement cette question des blocages. `reopen` ajoute `disposition: open`, marque
+`resolved: false` et restaure ce blocage, sans effacer réponse ni décisions.
+Une réponse ultérieure peut donner la disposition `answered` ou `open`. Les
+historiques anciens sans disposition restent interprétés selon `resolved`.
+
+La GUI distingue réponse, résolution et décision « Écartée par l’opérateur ».
+Elle journalise l’identité, l’action, la révision et le hash du motif avant
+émission ; les textes restent dans l’état chiffré Jobs. Une réponse perdue se
+réconcilie par la même opération et l’événement exact, sans réémission automatique.
+Le consentement reste distinct : toutes les autres questions ouvertes bloquent,
+le hash des clarifications lie aussi les décisions, et aucune modification n’est
+acceptée après consentement. Écarter une question exprime le jugement humain sur
+son caractère bloquant, pas une réponse factuelle, une permission ou une preuve
+de pertinence du modèle. Aucun ancien reçu ni consentement n’est réécrit.
+
+### Navigateur d’opérations existantes
+
+`job_list` reçoit exactement `id`, `op`, `enabled`, `project_id`, `work_id`
+(UUID ou null), `limit` (entier 1–50) et `offset` (entier 0–5000). Le projet est
+validé par le registre existant. La réponse `page` ne contient que des résumés :
+identités, objectif tronqué à 160 caractères, état, révision, dates, nature et
+association de travail ; aucune réponse, clarification, motif ou autorité.
+L’ordre est décroissant par création puis identité de job. Les pages reflètent
+l’état courant, sans garantie de snapshot entre deux chargements concurrents.
+
+L’association de travail provient exclusivement des contextes persistés d’import,
+de consentement et de manifeste local. Ils doivent porter le même projet et des
+UUID de travail concordants. Une absence donne `unbound`, un désaccord ou un
+contexte malformé `inconsistent`, sinon `bound`. Le filtre travail n’inclut que
+les lignes `bound` correspondantes. Les lignes incohérentes et historiques sans
+identité d’opération canonique restent visibles mais non ouvrables. Le statut
+historique `recorded` demeure présenté comme `indeterminate`. La reconnaissance
+d’une analyse utilise son template hôte exact, jamais le sens supposé du texte.
+
+La GUI sépare chargement de liste, choix et ouverture explicite. Ouvrir sélectionne
+le travail annoncé s’il est lié ; une préparation non liée n’obtient aucune
+association implicite. L’ouverture appelle seulement la récupération existante,
+qui peut réconcilier la projection durable d’un reçu sans relancer l’exécution.
+La liste ne réconcilie pas. Les lectures utilisent le verrou Jobs existant ;
+l’initialisation du stockage et du verrou peut avoir des effets filesystem,
+sans changement de contenu Jobs, d’admission ou d’autorité.
+
+Une intention incertaine ou un journal inaccessible interdit le changement
+d’opération ; le journal est relu avant l’ouverture pour détecter un marqueur
+apparu depuis le dernier état affiché. Les réponses de liste et de récupération
+sont corrélées à la génération de sélection, au projet et au travail : revenir
+au même contexte après l’avoir quitté ne rend pas une ancienne réponse actuelle.
+Aucune navigation ne prépare, importe, consent ou démarre une opération. Les
+préférences ne constituent ni une permission ni une nouvelle liaison de mission.

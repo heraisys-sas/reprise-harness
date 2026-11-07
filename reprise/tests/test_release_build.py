@@ -14,6 +14,29 @@ SPEC.loader.exec_module(b)
 
 
 class ReleaseBuildTests(unittest.TestCase):
+    def test_inputs_include_swift_sources_required_by_native_install(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            swift = root / 'swift'
+            swift.mkdir()
+            (swift / 'Native.swift').write_text('swift source')
+            (swift / 'ignored.txt').write_text('not a compiler input')
+            self.assertIn('swift/Native.swift', b.inputs(root))
+            self.assertNotIn('swift/ignored.txt', b.inputs(root))
+
+    def test_docs_inputs_resolve_from_repository_sibling(self):
+        with tempfile.TemporaryDirectory() as td:
+            repository = Path(td)
+            source = repository / 'reprise'
+            source.mkdir()
+            doc = repository / 'docs/contracts/example.md'
+            doc.parent.mkdir(parents=True)
+            doc.write_text('contract')
+            self.assertEqual(b.input_path(source, 'docs/contracts/example.md'), doc)
+            helper = source / 'release_build.py'
+            helper.write_text('source')
+            self.assertEqual(b.input_path(source, 'release_build.py'), helper)
+
     def test_inputs_only_include_root_sources_and_vendored_yaml(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

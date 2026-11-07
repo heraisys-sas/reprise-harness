@@ -215,12 +215,25 @@ Aucun espace utilisateur global, identité de compte ou héritage entre scopes n
 créé automatiquement.
 
 `ScopedMemory` et l'option MCP `--scope-id` lient un processus à un seul scope
-préexistant, sélectionné au lancement. Les scopes projet/travail sont contrôlés
-contre le projet hôte ; les arguments des outils ne permettent pas de changer ce
-scope. Le catalogue de lecture seule et le grant `--allow-write` conservent leurs
-règles. Les installateurs gérés restent compatibles avec leur sélection projet v1 ;
-ils n'accordent pas implicitement les nouveaux scopes. La sélection multi-scopes
-et l'injection automatique de souvenirs ne sont pas disponibles dans cette extension.
+préexistant, sélectionné au lancement. Les installateurs managés DSH et Claude
+peuvent transmettre cette sélection par `--memory-scope-id UUID`. Leur plan vérifie
+en lecture seule le stockage v2 et le scope existant ; il ne migre ni n'enregistre
+de scope. Un scope `project` ou `work` doit être lié au même UUID projet que le
+workspace déjà associé au harness. Un scope `user` doit être choisi explicitement ;
+il reste attaché au projet hôte du connecteur et ne vaut pas authentification de
+l'utilisateur. La sélection `work` fixe aussi le `work_id` : les outils ne peuvent
+pas choisir un autre travail. Les arguments des outils ne permettent jamais de
+changer de scope.
+
+Sans `--memory-scope-id`, les anciens manifests et la sélection projet v1 gardent
+leur comportement et leurs arguments MCP historiques. Ajouter ou changer un scope
+est une modification de portée ; si le droit effectif est `write`, le nouveau plan
+doit aussi fournir explicitement `--memory-access write`. Le catalogue de lecture
+seule et le grant `--allow-write` conservent leurs règles. La sélection multi-scopes
+et l'injection automatique de souvenirs ne sont pas disponibles. La première
+réconciliation peut normaliser un ancien manifeste en y ajoutant `scope_id: null` ;
+les empreintes et plans non appliqués produits par une version antérieure ne sont
+alors plus valides et doivent être prévisualisés de nouveau.
 
 La recherche, la correction, la suppression et les reçus sont isolés par namespace.
 Les faits lus via le frontend lié portent les métadonnées de scope et conservent
@@ -237,3 +250,39 @@ un processus ayant les mêmes droits sur les configurations, le stockage et le
 coffre peut invoquer les API administratives. Le sujet utilisateur, le travail et
 le profil d'hôte demeurent déclarés localement. Aucun transport distant authentifié
 ni protection contre un processus hostile du même compte n'est ajouté.
+
+### Frontend administratif explicite
+
+Les commandes locales `memory-inspect`, `memory-migration-plan`,
+`memory-migration-apply`, `memory-scope-plan`, `memory-scope-apply` et
+`memory-scope-list` exposent l'administration hôte sans ajouter d'outil au modèle.
+Elles exigent un chemin d'état absolu canonique, existant, privé et appartenant
+à l'utilisateur. Les fichiers symboliques, partagés par liens physiques ou non
+privés sont refusés. Le registre existant doit être en mode rollback, sans journal
+actif ; aucun projet n'est créé par ces commandes.
+
+L'inspection, la liste et les plans lisent les fichiers via des descripteurs privés,
+déchiffrent uniquement en mémoire si nécessaire et désérialisent SQLite en mémoire.
+Ils ne construisent pas `Memory`, ne créent ni répertoire, ni verrou, ni stockage,
+et ne demandent aucune autorisation interactive au coffre. Leurs sorties ordinaires
+ne comprennent aucun texte de fait ; les identités de projets/scopes restent des
+métadonnées privées à protéger lors du partage d'un plan.
+
+Un plan comporte les identités et empreintes du registre, du stockage, de la
+sauvegarde éventuelle et des répertoires, ainsi que la version du schéma et la
+sélection administrative explicite. Son empreinte détecte une modification ;
+elle n'est ni une signature ni une authentification. L'application recalcule le
+plan, puis revalide ses préconditions sous l'unique verrou natif du stockage avant
+de transmettre la base à la mutation. Une création de scope exige v2 et une
+association projet valide ; elle ne migre jamais implicitement. Un plan périmé
+est refusé avant admission. Un échec pendant une mutation peut laisser un effet
+enregistré et est annoncé `indeterminate`, sans rejeu automatique.
+
+Les applications administratives contrôlent d'abord l'accès non interactif à une
+clé existante et le recontrôlent avant chiffrement ; elles n'appellent jamais
+`authorize`. Une absence de clé ne déclenche donc pas volontairement sa création.
+Comme les autres API locales, ces contrôles ne protègent pas contre un processus
+hostile du même UID qui changerait le Trousseau ou les fichiers simultanément.
+Aucune commande d'administration ne recharge un client, n'installe une intégration,
+n'injecte de souvenir ou ne lance d'inférence. Les indicateurs de chargement client
+et d'échange restent inconnus après une simple inspection.

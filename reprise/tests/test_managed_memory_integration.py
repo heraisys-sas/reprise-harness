@@ -22,6 +22,8 @@ sys.path.insert(0, str(SOURCE))
 import claude_integration as claude
 import harness_integration as dsh
 import memory_integration
+import memory_admin
+import orchestrator_memory
 import package_helpers
 from project_registry import ProjectRegistry
 import state_install
@@ -89,6 +91,27 @@ class ManagedMemoryTests(unittest.TestCase):
 
     def git(self, repo, *args):
         subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True, timeout=10)
+
+    @staticmethod
+    def memory_crypt(data, purpose, operation):
+        import hashlib
+        if operation == 'seal':
+            return b'TEST:' + hashlib.sha256(data).digest() + data
+        if operation == 'open' and data.startswith(b'TEST:') and hashlib.sha256(data[37:]).digest() == data[5:37]:
+            return data[37:]
+        raise ValueError('test vault rejected request')
+
+    def add_scope(self, kind='work'):
+        store = orchestrator_memory.Memory(self.state, crypt=self.memory_crypt)
+        store.migrate_scopes_v2()
+        if kind == 'user':
+            return store.register_scope('user', subject_id='71e3f73b-3fba-46db-b033-3cc30b44e31b')
+        return store.register_scope('work', project_id=self.project_id,
+            work_id='d5856b0a-36b7-4be2-a244-402ca0d27627')
+
+    def with_scope_observation(self):
+        original = memory_admin._observe
+        return patch.object(memory_admin, '_observe', side_effect=lambda state: original(state, crypt=self.memory_crypt))
 
     def close_children(self):
         for process in self.children:
@@ -179,6 +202,57 @@ class ManagedMemoryTests(unittest.TestCase):
         claude.apply(self.root, self.claude_plan(action='remove'))
         self.assertEqual(stored.read_bytes(), memory_before)
 
+    def test_managed_work_scope_is_bound_for_both_harnesses(self):
+        scope = self.add_scope()
+        with self.with_scope_observation():
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result_code = dsh.main(self.root, ['integration-plan', '--home', str(self.dsh_home),
+                    '--profile', 'desktop', '--project', str(self.repo), '--action', 'install',
+                    '--memory-access', 'read', '--memory-project-id', self.project_id,
+                    '--memory-scope-id', scope])
+            self.assertEqual(result_code, 0)
+            self.assertEqual(json.loads(output.getvalue())['plan']['memory']['scope_id'], scope)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result_code = claude.main(self.root, ['claude-integration-plan', '--home', str(self.claude_home),
+                    '--project', str(self.claude_project), '--memory-access', 'read',
+                    '--memory-project-id', self.project_id, '--memory-scope-id', scope])
+            self.assertEqual(result_code, 0)
+            self.assertEqual(json.loads(output.getvalue())['plan']['memory']['scope_id'], scope)
+            a = self.dsh_plan(memory_access='write', memory_project_id=self.project_id, memory_scope_id=scope)
+            b = self.claude_plan(memory_access='read', memory_project_id=self.project_id, memory_scope_id=scope)
+            dsh.apply(self.root, a); claude.apply(self.root, b)
+            command_a, command_b = self.commands()
+            for command in (command_a, command_b):
+                position = command['args'].index('--scope-id')
+                self.assertEqual(command['args'][position:position + 2], ['--scope-id', scope])
+            self.assertIn('--allow-write', command_a['args'])
+            self.assertNotIn('--allow-write', command_b['args'])
+            writer, reader = self.start(command_a), self.start(command_b)
+            source = {'kind': 'operator', 'reference': 'isolated-scope', 'producer': 'test-user', 'observed_at': '2026-11-06'}
+            result = self.call(writer, 'capture', operation_id='a3d73e8d-42db-4ac9-9a85-605fd50ae90a',
+                text='work-scope-proof', source=source)
+            found = self.call(reader, 'search', query='work-scope-proof', offset=0)['items'][0]
+            item = self.call(reader, 'get', fact_id=result['result']['id'])['item']
+            self.assertEqual(found['id'], result['result']['id'])
+            self.assertEqual(item['scope']['kind'], 'work')
+            self.assertEqual(item['scope']['work_id'], 'd5856b0a-36b7-4be2-a244-402ca0d27627')
+            self.assertEqual(self.call(reader, 'capture', operation_id='a3d73e8d-42db-4ac9-9a85-605fd50ae90a',
+                text='work-scope-proof', source=source)['status'], 'permission_denied')
+            # A changed binding in the current plan is detected before writing.
+            with self.assertRaises(ValueError): self.dsh_plan(memory_access='write', memory_project_id=self.other_id,
+                memory_scope_id=scope)
+
+    def test_scope_change_with_existing_write_requires_explicit_write(self):
+        first = self.add_scope()
+        second = '8c1143de-b8f4-4fd5-b1a4-88edafc159e5'
+        with self.with_scope_observation():
+            self.install_both(access_a='write', access_b='read')
+            # Existing project-mode write grant cannot silently follow a scope change.
+            with self.assertRaisesRegex(ValueError, 'autorisation.*write'):
+                self.dsh_plan(memory_scope_id=first)
+
     def test_upgrade_downgrade_disable_remove_and_preserve_selection(self):
         self.install_both()
         self.assertEqual(self.dsh_plan()['changes'], [])
@@ -245,7 +319,8 @@ class ManagedMemoryTests(unittest.TestCase):
         self.assertEqual(code, 0)
         plan = json.loads(output.getvalue())['plan']
         self.assertTrue(plan['delegate']); self.assertTrue(plan['output_resume'])
-        self.assertTrue(plan['codex_workspace_write']); self.assertEqual(plan['agent_role'], 'coordinator')
+        # Workspace-write is a strict opt-in and is revoked when omitted from a new plan.
+        self.assertFalse(plan.get('codex_workspace_write', False)); self.assertEqual(plan['agent_role'], 'coordinator')
         self.assertEqual(plan['memory']['access'], 'read')
         dsh.apply(self.root, plan)
         self.assertEqual(dsh.inspect(self.dsh_home, 'desktop')['memory']['access'], 'read')

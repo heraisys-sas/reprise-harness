@@ -1,5 +1,7 @@
 """Profile integration uses only temporary profiles, state and packaged helpers."""
 from contextlib import closing
+from contextlib import redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -201,6 +203,22 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertNotIn('--codex-workspace-write', self.config.read_text())
         self.assertFalse(integration.inspect(self.home, 'desktop')['codex_workspace_write'])
 
+    def test_cli_reinstallation_without_workspace_write_flag_revokes_grant(self):
+        self.install(delegate=True, codex_workspace_write=True)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            status = integration.main(self.root, [
+                'integration-plan', '--home', str(self.home), '--profile', 'desktop',
+                '--project', str(self.project), '--action', 'install', '--delegate'])
+        self.assertEqual(status, 0, output.getvalue())
+        result = json.loads(output.getvalue())
+        proposed = result['plan']
+        self.assertFalse(proposed.get('codex_workspace_write', False))
+        self.assertIn('--codex-workspace-write', self.config.read_text())
+        integration.apply(self.root, proposed)
+        self.assertNotIn('--codex-workspace-write', self.config.read_text())
+        self.assertFalse(integration.inspect(self.home, 'desktop')['codex_workspace_write'])
+
     def test_public_plan_does_not_expose_personal_configuration(self):
         self.config.write_text('- insert: [{"id":"personal","config":{"token":"fixture-secret"}}]\n')
         proposed = self.plan()
@@ -326,6 +344,17 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertEqual(self.plan()['changes'], [])
         self.assertTrue(self.config.read_text().startswith('# personal settings\n'))
         self.assertNotIn('- insert:\n', self.config.read_text())
+
+    def test_reformatted_managed_block_allows_explicit_workspace_write_update(self):
+        self.install(delegate=True)
+        self.config.write_text(self.reformatted_config())
+        proposed = integration.plan(self.root, self.home, 'desktop', self.project,
+                                   delegate=True, codex_workspace_write=True)
+        self.assertTrue(proposed['codex_workspace_write'])
+        self.assertTrue(proposed['block_reconciled'])
+        integration.apply(self.root, proposed)
+        self.assertIn('--codex-workspace-write', self.config.read_text())
+        self.assertTrue(integration.inspect(self.home, 'desktop')['codex_workspace_write'])
 
     def test_real_block_change_is_refused_not_reconciled(self):
         self.install()
