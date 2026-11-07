@@ -34,11 +34,11 @@ Décision utilisateur du 20/10 : chaque harness connecté doit pouvoir, via le m
 
 Séparer les rôles et leurs autorisations : demandeur, exécutant, destinataire du résultat, opérateur. Une connexion n'obtient pas automatiquement accès à tous les projets ou à toutes les fonctions. Le périmètre est lié au client/projet autorisé, pas à un champ déclaré librement par le modèle.
 
-Familles d'opérations : découverte de capacités ; soumission/délégation ; réception/réservation de tâche ; remise de résultat ; liste/récupération/acquittement des résultats non réclamés ; suivi/reprise/annulation lorsque supportés. `reprise_backends`, `reprise_delegate`, `reprise_followup`, `get_task` et `submit_result` existent dans des prototypes distincts ; les noms et schémas des autres opérations restent à stabiliser. La réunion des prototypes n'est pas encore livrée.
+Familles d'opérations : découverte de capacités ; soumission/délégation ; réception/réservation de tâche ; remise de résultat ; liste/récupération/acquittement des résultats non réclamés ; suivi/reprise/annulation lorsque supportés. `reprise_backends`, `reprise_delegate`, `reprise_followup`, `get_task` et `submit_result` existent dans des prototypes distincts ; un adaptateur MCP de mémoire partagée par projet complète la façade, et l'attente bornée des résultats Claude (#111) est en cours de branche. La réunion des surfaces de délégation reste à livrer.
 
 La tâche d'expertise ou Work sollicitée par un exécutant devient un enfant explicite du travail courant : conserver racine, parent, profondeur, demandeur et clé de requête. Limiter profondeur, nombre d'enfants, concurrence et budget agrégé, en distinguant plafonds imposables et alertes. Détecter les cycles de demandes équivalentes dans une même lignée, sans interdire toute revue réciproque légitime. Une attente d'expertise ne doit pas bloquer le traitement des retours MCP ni maintenir un verrou SQLite pendant l'inférence. Un avis reçu ne crée pas de nouvelle délégation par défaut.
 
-**Priorité immédiate : interroger Claude Desktop sur son compte disponible, y compris gratuit, et récupérer la réponse sans bascule payante.** Chemin : harness demandeur → Reprise/SQLite → Quick Apply → Claude appelle `get_task` → éventuelle expertise enfant via Reprise → `submit_result` → résultat durable récupérable par le demandeur. Le plan gratuit demeure soumis à ses limites et permissions ; leur épuisement conserve le job en attente/incertain selon preuve, sans changement de facturation. L'essai supervisé a fonctionné ; l'autonomie et le service unifié restent à valider.
+**Priorité immédiate : interroger Claude Desktop sur son compte disponible, y compris gratuit, et récupérer la réponse sans bascule payante.** Chemin : harness demandeur → Reprise/SQLite → Quick Apply → Claude appelle `get_task` → éventuelle expertise enfant via Reprise → `submit_result` → résultat durable récupérable par le demandeur. Le plan gratuit demeure soumis à ses limites et permissions ; leur épuisement conserve le job en attente/incertain selon preuve, sans changement de facturation. L'aller-retour réel est livré et vérifié en conditions supervisées (`await_task`/`submit_result`, boîte de réception des résultats, releases 0.1.17-0.1.18) ; l'autonomie et le service unifié restent à valider.
 
 Pour les autres harness, privilégier la même façade de délégation et retour pour les jobs créés par Reprise. Le transport de déclenchement reste natif par adaptateur ; les observations et reçus natifs peuvent compléter le contrat. Cela ne force pas l'installation MCP dans une application qui ne le supporte pas, ni la conversion rétroactive de ses tâches ordinaires.
 
@@ -80,11 +80,11 @@ L'équivalence recherchée est celle du parcours utilisateur et des garanties : 
 
 | Harness | Sources présentes | Commandes/limites actuellement établies |
 |---|---|---|
-| Codex | sessions et événements structurés, quota, transport partagé | reprise existante sous conditions ; interruption RPC des tours lancés par Reprise ; enfant via parent vérifié. Contrôle de tous les tours externes et compactage à valider |
+| Codex | sessions et événements structurés (goal-mode reconnu depuis #109), quota, transport partagé | reprise existante sous conditions ; interruption RPC des tours lancés par Reprise ; enfant via parent vérifié. Contrôle de tous les tours externes et compactage à valider |
 | DeepSeek Harness | sessions natives, événements, lecteurs usage existants | reprise headless avec profil explicite ; disponibilité quota automatique non validée ; commande générale des enfants persistants à vérifier |
 | Claude Code | transcriptions JSONL avec usage et marqueurs de compactage | détection ; adaptateur de reprise non validé dans engines.py. Ne pas confondre avec l'adaptateur d'expertise |
 | Cowork | métadonnées, audits, livrables, quota/retries/compactage observables | lecture actuellement limitée ; reprise, arrêt et compactage commandables à vérifier |
-| Chat Desktop | logs Quick Apply/MCP, signaux de santé | soumission Quick Apply ; retour MCP pour les tâches Reprise. Historique complet et commandes arrêt/compactage non établis |
+| Chat Desktop | logs Quick Apply/MCP, signaux de santé, quotas structurés des rollouts | soumission Quick Apply ; retour MCP pour les tâches Reprise ; boîte de réception des résultats non réclamés (0.1.18). Historique complet et commandes arrêt/compactage non établis |
 | AutoClaw | détecteur de session avec état, activité, tokens/coût éventuels | pas d'adaptateur de reprise dans ENGINES ; commandes et sémantique quota à valider |
 
 Cette matrice décrit le code inspecté, pas une certification des fournisseurs. Elle devra devenir un registre vivant, validé par fixtures et essais natifs bornés.
@@ -99,7 +99,7 @@ Cette matrice décrit le code inspecté, pas une certification des fournisseurs.
 6. Envoyer au plus une fois dans une situation ambiguë, puis réconcilier. Un timeout conduit à « réception incertaine », pas à une relance automatique.
 7. Confirmer la reprise par observation native. Distinguer reprise demandée, démarrée, tour terminé et résultat vérifié.
 
-Le scheduler Codex existant reste en place pendant la migration. Généraliser après tests de conformité, sans réduire ses protections ni autoriser implicitement les autres moteurs.
+Le scheduler Codex existant reste en place pendant la migration. Généraliser après tests de conformité, sans réduire ses protections ni autoriser implicitement les autres moteurs. Les journaux goal-mode sont reconnus par la détection depuis #109 : la reprise à l'échéance s'applique aux sessions goal comme aux sessions cli/vscode/exec.
 
 ## Boucles : prévenir, détecter, intervenir
 
@@ -212,15 +212,15 @@ Aucune nouvelle fonctionnalité de contrôle implémentée par cette décision. 
 
 Décision actualisée du 24/10 : enregistrer l’échéance lors du refus puis tenter la reprise à cette échéance, sans mesure de quota préalable obligatoire ; diagnostiquer/mesurer après un nouvel échec si utile. Les contrôles de propriété, concurrence, permissions et actions incertaines restent requis. Voir [le contrat de rôles et continuité](HARNESS-ROLES-CONTRACT.md#reprise-après-quota). Les quotas par compte/pool restent des observations utiles, pas un préalable universel.
 
-Les plafonds locaux non-Codex restants doivent également disparaître : lot explicite « remplacer les plafonds arbitraires restants » dans [la roadmap](../../ROADMAP.md). Déduplication et protection contre les boucles précèdent cette suppression ; connaissance fiable des quotas puis politique de reprise viennent ensuite.
+Retirés : plus aucun plafond quotidien local (compteurs legacy inertes — [CACHE-POLICY](CACHE-POLICY.md)) ; la déduplication et les protections contre les boucles précèdent toute nouvelle politique de reprise.
 
 ## État quota du 21/10
 
-Le [registre d’observations](QUOTA-KNOWLEDGE.md) distingue désormais route, profil explicite, compte pseudonyme, pool, source, date de lecture et fraîcheur. Il est consultable sans commande d’inférence. La source Codex actuelle est vérifiée en métadonnées ; Claude/DSH et rattachement fiable des journaux restent inconnus. Les politiques du scheduler existant ne consomment pas ce nouveau registre. Les plafonds journaliers mentionnés plus haut ont été retirés pour tous les backends dans `3bae737` ; la réserve fournisseur 5 % demeure.
+Le [registre d’observations](QUOTA-KNOWLEDGE.md) distingue désormais route, profil explicite, compte pseudonyme, pool, source, date de lecture et fraîcheur. Il est consultable sans commande d’inférence. La source Codex est vérifiée en métadonnées ; les quotas Claude sont lus en structuré depuis les rollouts avec `evidence_sha256` (0.1.16) ; le rattachement fiable de tous les journaux reste partiel. Les politiques du scheduler existant ne consomment pas ce nouveau registre. Les plafonds journaliers mentionnés plus haut ont été retirés pour tous les backends dans `3bae737` ; la réserve fournisseur 5 % demeure.
 
 ## Installation et maintenance des intégrations
 
-Le [contrat d’installation autonome](INSTALLATION-CONTRACT.md) définit le paquet indépendant du dépôt, les données durables séparées et les opérations `inspect`, `plan`, `apply`, `verify`, `remove`. Premier parcours complet Harness, puis extension par capacités prouvées. Installation, activation, découverte des outils et résultat vérifié sont des états distincts ; installer une intégration ne lui accorde pas automatiquement l’autorisation d’agir. Chantier planifié, non livré.
+Le [contrat d’installation autonome](INSTALLATION-CONTRACT.md) définit le paquet indépendant du dépôt, les données durables séparées et les opérations `inspect`, `plan`, `apply`, `verify`, `remove`. Premier parcours complet Harness, puis extension par capacités prouvées. Installation, activation, découverte des outils et résultat vérifié sont des états distincts ; installer une intégration ne lui accorde pas automatiquement l’autorisation d’agir. **Livré pour les composants Reprise** (app, scheduler, profils Harness, connecteur Claude) via `managed_update` avec déploiements réels 0.1.13→0.1.18 ; l'extension par capacités prouvées se fait incrémentalement.
 
 L’intégration inclut les consignes du harness pour utiliser ce service de manière économique : découverte, tâches bornées, contexte minimal, réutilisation pertinente et escalade justifiée. Voir l’[exigence d’installation inter-harness](INSTALLATION-CONTRACT.md#usage-inter-harness-depuis-codex-et-les-autres-clients). La décision de déléguer n’est pas systématique ; le coût total et la réussite priment sur un prix de token ou un taux de cache isolé.
 
@@ -233,6 +233,10 @@ Le [contrat de clarification](CLARIFICATION-CONTRACT.md) planifie les questions 
 Décision utilisateur du 21/10 : le parcours D2/D3 n’est pas spécifique à Harness ou Codex. Chaque nouvel adaptateur doit prévoir installation, mise à jour, réparation et retrait depuis Reprise, selon `inspect/plan/apply/verify/remove`, ainsi que les skills/instructions adaptées pour découvrir et utiliser économiquement le service. Il doit couvrir réception/délégation/retour selon capacités prouvées, questions au harness d’origine avant essais répétés sans progrès (tous modèles), escalade, identité/récupération et protections doublons/boucles. Réutiliser les [garanties d’installation](INSTALLATION-CONTRACT.md) et le [dialogue de clarification](CLARIFICATION-CONTRACT.md), sans dupliquer leurs contrats.
 
 Pour déclarer une intégration validée : version et mécanisme supportés identifiés ; tests sur profil neuf synthétique ; idempotence, sauvegarde/conflits et retrait sélectif ; configuration, chargement et découverte vérifiés séparément ; aller-retour réel borné lorsque autorisé. Une capacité manquante reste `unsupported`/`unknown` avec repli manuel explicite ; une simple configuration écrite ne valide pas l’intégration complète. La matrice de capacités doit rendre visibles ces lacunes. Ce critère est planifié et sera appliqué progressivement, sans annoncer les futurs harness comme déjà intégrés.
+
+## Supervision et interface — contrat #118
+
+L'interface applique des défauts sauf avis contraire : détection d'abord, champ demandé seulement en cas d'échec de détection (avec la raison), preuves en badges consultables, mécanismes repliés sous un mode avancé par carte, ligne « réglages appliqués » toujours visible. L'extension de supervision « triage sémantique des journaux » (NLEmbedding filtre → candidats loin des clusters connus → première analyse FM = hypothèse à confirmer, fenêtre et budget bornés) est conçue dans [#118](https://github.com/heraisys-sas/reprise-harness/issues/118) et se branchera sur le pipeline de détection existant. Maquette et itération : `docs/design/interface-structure/`.
 
 ## Réserves de conception consolidées
 
