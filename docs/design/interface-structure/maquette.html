@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reprise — maquette interface · défauts appliqués + mode avancé (#118)</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#ffffff; --line:#e3e3e6; --ink:#1d1d1f; --muted:#6e6e73;
+    --ok:#1d8a4b; --ok-bg:#e8f5ee; --warn:#9a6b00; --warn-bg:#fdf3dd;
+    --bad:#b3261e; --bad-bg:#fdeceb; --neutral:#5b5b60; --neutral-bg:#f0f0f2;
+    --accent:#0a66c2; --sidebar:#eceef1;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;
+       -webkit-font-smoothing:antialiased}
+  header.top{padding:20px 28px 6px}
+  header.top h1{font-size:19px;margin:0 0 4px}
+  header.top p{margin:0;color:var(--muted);font-size:13px;max-width:110ch}
+  nav.switcher{display:flex;gap:8px;padding:12px 28px 4px;flex-wrap:wrap}
+  nav.switcher button{border:1px solid var(--line);background:#fff;border-radius:999px;
+       padding:7px 16px;font-size:13px;cursor:pointer;color:var(--ink)}
+  nav.switcher button.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .window{max-width:1180px;margin:14px 28px 40px;background:var(--card);
+       border:1px solid var(--line);border-radius:12px;overflow:hidden;
+       box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  .chrome{display:flex;align-items:center;gap:8px;background:var(--sidebar);
+       padding:9px 14px;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}
+  .chrome .dot{width:11px;height:11px;border-radius:50%}
+  .layout{display:grid;grid-template-columns:210px 1fr}
+  .sidebar{background:var(--sidebar);padding:14px 10px;border-right:1px solid var(--line);min-height:640px}
+  .sidebar .brand{font-weight:600;font-size:13px;padding:4px 10px 10px}
+  .sidebar a{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;
+       color:var(--ink);text-decoration:none;font-size:13px}
+  .sidebar a.sel{background:#dfe3e8;font-weight:600}
+  .sidebar a .cnt{margin-left:auto;color:var(--muted);font-size:11px}
+  main{padding:20px 26px 30px}
+  h2.screen{font-size:17px;margin:0 0 2px}
+  p.sub{color:var(--muted);margin:0 0 16px;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px;background:#fff}
+  .card h3{font-size:14px;margin:0 0 8px;display:flex;align-items:center;gap:8px}
+  .badge{display:inline-block;border-radius:999px;padding:2px 10px;font-size:11px;font-weight:600}
+  .ok{color:var(--ok);background:var(--ok-bg)} .warn{color:var(--warn);background:var(--warn-bg)}
+  .bad{color:var(--bad);background:var(--bad-bg)} .neu{color:var(--neutral);background:var(--neutral-bg)}
+  .row{display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid #f0f0f2;font-size:13px}
+  .row:first-of-type{border-top:none}
+  .row .who{font-weight:600;min-width:150px}
+  .row .why{color:var(--muted);margin-left:auto;font-size:12px;text-align:right}
+  .chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);
+       border-radius:8px;padding:4px 10px;font-size:12px;background:#fafafa}
+  .chip b{font-weight:600}
+  .btn{display:inline-block;border-radius:8px;padding:7px 16px;font-size:13px;font-weight:600;
+       border:1px solid var(--line);background:#fff;cursor:pointer;color:var(--ink)}
+  .btn.primary{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .btn.ghost{font-weight:400}
+  .applied{background:#f6f8fa;border:1px dashed var(--line);border-radius:8px;
+       padding:8px 12px;font-size:12px;color:var(--muted);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .applied b{color:var(--ink);font-weight:600}
+  details.adv{border:1px solid var(--line);border-radius:10px;margin-bottom:14px;background:#fcfcfd}
+  details.adv>summary{cursor:pointer;padding:10px 16px;font-size:13px;font-weight:600;color:var(--muted);
+       list-style:none;display:flex;align-items:center;gap:8px}
+  details.adv>summary::before{content:"▸";transition:transform .15s}
+  details.adv[open]>summary::before{content:"▾"}
+  details.adv .inner{padding:2px 16px 14px;font-size:12px}
+  details.adv .inner .row{color:var(--muted)}
+  details.adv input[type=text]{border:1px solid var(--line);border-radius:6px;padding:5px 8px;
+       font-size:12px;width:260px;background:#fff;color:var(--ink)}
+  details.adv select{border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;background:#fff}
+  .toggle{width:38px;height:22px;border-radius:999px;background:#d5d5da;position:relative;flex:none;transition:background .15s}
+  .toggle.on{background:#34c759}
+  .toggle::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;
+       background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:left .15s}
+  .toggle.on::after{left:18px}
+  .locked{opacity:.75}
+  .step{display:grid;grid-template-columns:26px 1fr auto;gap:10px;align-items:start;
+       padding:10px 0;border-top:1px solid #f0f0f2}
+  .step:first-of-type{border-top:none}
+  .step .n{width:22px;height:22px;border-radius:50%;background:var(--neutral-bg);color:var(--neutral);
+       font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-top:1px}
+  .step.done .n{background:var(--ok-bg);color:var(--ok)}
+  .step.warn .n{background:var(--warn-bg);color:var(--warn)}
+  .step.fail .n{background:var(--bad-bg);color:var(--bad)}
+  .step .t b{display:block}
+  .step .t .d{color:var(--muted);font-size:12px}
+  .step .dur{color:var(--muted);font-size:12px;white-space:nowrap}
+  .proof{margin-top:6px;background:#f6f8fa;border-radius:8px;padding:7px 10px;font-family:ui-monospace,Menlo,monospace;
+       font-size:11px;color:#3a3a3c;white-space:pre-wrap}
+  .pair{border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:12px}
+  .pair h4{margin:0 0 6px;font-size:13px;display:flex;align-items:center;gap:8px}
+  .pair .synth{font-size:13px;margin:4px 0 8px}
+  .pair .ev{font-size:12px;color:var(--muted);padding:3px 0;display:flex;gap:8px}
+  .pair .ev .dotm{width:6px;height:6px;border-radius:50%;background:var(--line);margin-top:6px;flex:none}
+  .pair .ev.alert .dotm{background:var(--warn)}
+  .anomaly{border-left:3px solid var(--warn);background:var(--warn-bg);border-radius:0 8px 8px 0;
+       padding:8px 12px;font-size:12px;margin-top:10px}
+  .anomaly b{color:var(--warn)}
+  .note{font-size:12px;color:var(--muted);margin:4px 0 14px;padding-left:2px}
+  .note b{color:var(--ink)}
+  .screen{display:none}
+  .screen.active{display:block}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:0 0 16px}
+  footer{max-width:1180px;margin:0 28px 50px;color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <h1>Reprise — structure « défauts appliqués sauf avis contraire »</h1>
+  <p>Maquette pour l'issue <b>#118</b> · trois écrans prioritaires. Contrat : Reprise détecte, applique et
+     <b>montre</b> ; l'opérateur arbitre ; un champ n'est demandé que si la détection échoue, et l'écran explique pourquoi.
+     Les preuves restent consultables derrière chaque badge — rien n'est déduit d'un état non prouvé.</p>
+</header>
+
+<nav class="switcher">
+  <button class="active" data-s="a">A · Intégrations</button>
+  <button data-s="b">B · Test Apple Intelligence</button>
+  <button data-s="c">C · Activité des paires + triage sémantique</button>
+</nav>
+
+<!-- ══════════════════════════ A · INTÉGRATIONS ══════════════════════════ -->
+<div class="window">
+  <div class="chrome">
+    <span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span>
+    <span class="dot" style="background:#28c840"></span><span style="margin-left:8px">Reprise</span>
+  </div>
+  <div class="layout">
+    <div class="sidebar">
+      <div class="brand">Reprise</div>
+      <a class="sel">◧ Intégrations</a>
+      <a>⟳ Activité des paires <span class="cnt">2</span></a>
+      <a>◔ Scheduler</a>
+      <a>🔍 Santé</a>
+      <a>✦ Pilot Apple</a>
+      <a>⚙ Réglages</a>
+    </div>
+    <main class="screen active" id="s-a">
+      <h2 class="screen">Nouvelle intégration Harness</h2>
+      <p class="sub">Détection terminée il y a 2 min · tout est modifiable avant d'appliquer · rien n'est activé sans « Appliquer ».</p>
+
+      <div class="legend">
+        <span><span class="badge ok">✓ détecté</span> preuve collectée</span>
+        <span><span class="badge warn">⚠ incertain</span> à vérifier, jamais déduit</span>
+        <span><span class="badge bad">✗ refusé</span> protection active</span>
+        <span><span class="badge neu">auto</span> décision appliquée par défaut</span>
+      </div>
+
+      <div class="card">
+        <h3>1 · Projet <span class="badge ok">✓ détecté</span></h3>
+        <div class="row">
+          <span class="chip"><b>productivité</b> · ~/Documents/ChatGPT/productivité</span>
+          <button class="btn ghost">Modifier</button>
+          <span class="why">Détecté par le registre de projets · 1 workspace correspondant</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>2 · Canaux <span class="badge ok">✓ détectés</span></h3>
+        <div class="row"><span class="who">Profil Harness</span><span>desktop</span><span class="why">config existante chargée</span></div>
+        <div class="row"><span class="who">Connecteur Codex</span><span class="badge ok">✓ chargé</span><span class="why">initialize + tools/list confirmés</span></div>
+        <div class="row"><span class="who">Quick Apply</span><span class="badge ok">✓ prêt</span><span class="why">Chrome dédié CDP, sans port TCP</span></div>
+        <div class="row"><span class="who">Retour MCP</span><span class="badge warn">⚠ à vérifier</span><span class="why">chargement client non observé — sera contrôlé après activation</span></div>
+      </div>
+
+      <div class="card">
+        <h3>3 · Limites <span class="badge neu">2 décisions</span></h3>
+        <div class="row"><div class="toggle"></div><span class="who">Écriture dans le projet</span>
+          <span class="why">OFF par défaut — lecture seule jusqu'à décision contraire</span></div>
+        <div class="row locked"><div class="toggle on"></div><span class="who">Aucun repli payant</span>
+          <span class="why">non négociable — politique du dépôt</span></div>
+      </div>
+
+      <div class="applied">Réglages appliqués sauf avis contraire&nbsp;:
+        <b>profil desktop</b> · <b>effort auto</b> · <b>reprise tokens ON</b> · <b>délégation ON</b> ·
+        <b>écriture OFF</b> · <b>repli payant OFF</b> — <u>voir le détail</u></div>
+
+      <div style="display:flex;gap:10px;margin:16px 0 8px">
+        <button class="btn primary">Appliquer</button>
+        <button class="btn">Annuler</button>
+      </div>
+
+      <details class="adv">
+        <summary>Avancé — mécanismes (24 réglages de l'écran actuel)</summary>
+        <div class="inner">
+          <div class="row"><span class="who">Profil Harness</span><input type="text" value="desktop"> <span class="why">champ libre ou profil détecté</span></div>
+          <div class="row"><span class="who">Associer pour</span><select><option>Ce projet</option><option>Tous les projets</option></select></div>
+          <div class="row"><span class="who">Exposer les outils de délégation</span><div class="toggle on"></div></div>
+          <div class="row"><span class="who">Écriture workspace Codex</span><div class="toggle"></div></div>
+          <div class="row"><span class="who">Reprise après limite de tokens</span><div class="toggle on"></div></div>
+          <div class="row"><span class="who">Projet de reprise</span><input type="text" placeholder="vide : projet du connecteur"></div>
+          <div class="row"><span class="who">Effort de raisonnement asi1</span><div class="toggle on"></div></div>
+          <div class="row"><span class="who">Rôle de l'agent</span><select><option>coordinateur</option><option>expert</option></select></div>
+          <div class="row"><span class="who">Socket, patch Cordis, skills, backups…</span><span class="why">16 autres réglages, inchangés</span></div>
+        </div>
+      </details>
+
+      <p class="note"><b>Pourquoi</b> : 24 contrôles → 3 temps + 1 ligne récapitulative. L'opérateur voit les décisions
+      prises pour lui ; les mécanismes restent accessibles en un clic, jamais perdus.</p>
+    </main>
+  </div>
+</div>
+
+<!-- ══════════════════════════ B · TEST APPLE INTELLIGENCE ══════════════════════════ -->
+<div class="window">
+  <div class="layout">
+    <div class="sidebar">
+      <div class="brand">Reprise</div>
+      <a>◧ Intégrations</a>
+      <a>⟳ Activité des paires</a>
+      <a>◔ Scheduler</a>
+      <a>🔍 Santé</a>
+      <a class="sel">✦ Apple Intelligence</a>
+      <a>⚙ Réglages</a>
+    </div>
+    <main class="screen" id="s-b">
+      <h2 class="screen">Test d'intégration Apple Intelligence</h2>
+      <p class="sub">Un bouton exécute la séquence canonique. Chaque étape rend son verdict et sa preuve — un échec n'invalide pas les preuves déjà collectées, et aucun succès n'est déduit d'un état non testé.</p>
+
+      <div style="display:flex;gap:10px;margin-bottom:16px">
+        <button class="btn primary">Tester l'intégration</button>
+        <button class="btn ghost">Rejouer l'étape 3</button>
+        <span class="badge neu" style="align-self:center">dernier test : aujourd'hui 21:12 · 4,7 s</span>
+      </div>
+
+      <div class="card">
+        <div class="step done">
+          <div class="n">✓</div>
+          <div class="t"><b>Disponibilité du modèle</b>
+            <div class="d">Apple Intelligence actif sur l'appareil · modèle système pris en charge</div>
+            <div class="proof">fm_status: available · device=arm64 · macOS 27.2 · source=system</div></div>
+          <div class="dur">1,2 s</div>
+        </div>
+        <div class="step done">
+          <div class="n">✓</div>
+          <div class="t"><b>Route <code>foundation-models/system</code></b>
+            <div class="d">Appel local explicite accepté, contexte borné, aucun outil exposé</div>
+            <div class="proof">admission: ok · scope=session · budget=5/jour · restants=4</div></div>
+          <div class="dur">0,8 s</div>
+        </div>
+        <div class="step warn">
+          <div class="n">⚠</div>
+          <div class="t"><b>Génération guidée</b>
+            <div class="d">Sortie conforme au schéma, mais confiance déclarée — pas une probabilité calibrée</div>
+            <div class="proof">@Generable{best_model: "standard", confidence: 0.71} · garde: forme contrainte ≠ droit</div></div>
+          <div class="dur">2,1 s</div>
+        </div>
+        <div class="step done">
+          <div class="n">✓</div>
+          <div class="t"><b>Reçu et horodatage</b>
+            <div class="d">Reçu récupérable, trace journalisée, aucune conversation conservée</div>
+            <div class="proof">receipt_id=9f2…c1 · received_at=21:12:07 · retention=locale</div></div>
+          <div class="dur">0,3 s</div>
+        </div>
+        <div class="step fail">
+          <div class="n">✗</div>
+          <div class="t"><b>Verdict d'ensemble</b>
+            <div class="d">Intégration utilisable avec réserve : étape 3 incertaine — re-tester avant activation d'un rôle.</div></div>
+          <div class="dur"></div>
+        </div>
+      </div>
+
+      <div class="applied">Réglages appliqués sauf avis contraire&nbsp;:
+        <b>modèle system</b> · <b>socket privé</b> · <b>budget 5/jour</b> · <b>pas de repli</b></div>
+
+      <details class="adv">
+        <summary>Avancé — mécanismes</summary>
+        <div class="inner">
+          <div class="row"><span class="who">Socket privé fm</span><input type="text" value="~/state/fm.serve.sock"></div>
+          <div class="row"><span class="who">Modèle</span><select><option>system</option><option>system (brouillon)</option></select></div>
+          <div class="row"><span class="who">Budget journalier</span><input type="text" value="5" style="width:60px"></div>
+          <div class="row"><span class="who">Timeout par étape</span><input type="text" value="30 s" style="width:60px"></div>
+        </div>
+      </details>
+
+      <p class="note"><b>Pourquoi</b> : la frise remplace le formulaire. « Rejouer l'étape 3 » garde les preuves des autres
+      étapes ; le verdict d'ensemble agrège, il ne masque pas. Confiance générée ≠ probabilité calibrée (contrat #109-hérité).</p>
+    </main>
+  </div>
+</div>
+
+<!-- ══════════════════════════ C · ACTIVITÉ DES PAIRES ══════════════════════════ -->
+<div class="window">
+  <div class="layout">
+    <div class="sidebar">
+      <div class="brand">Reprise</div>
+      <a>◧ Intégrations</a>
+      <a class="sel">⟳ Activité des paires <span class="cnt">2</span></a>
+      <a>◔ Scheduler</a>
+      <a>🔍 Santé</a>
+      <a>✦ Pilot Apple</a>
+      <a>⚙ Réglages</a>
+    </div>
+    <main class="screen" id="s-c">
+      <h2 class="screen">Activité des harness pairs</h2>
+      <p class="sub">Une carte par paire. Synthèse locale d'une ligne, trois événements saillants, anomalies candidates du triage sémantique. Fraîcheur et provenance toujours affichées ; un verdict FM est une hypothèse, pas une conclusion.</p>
+
+      <div class="pair">
+        <h4>Codex <span class="badge ok">3 sessions actives</span> <span class="badge neu">détail au clic</span></h4>
+        <div class="synth">2 goals en cours (Siri 27.2, portage doc), 1 bloqué par le quota 5h jusqu'à 21:41 — reprise programmée à l'échéance.</div>
+        <div class="ev"><span class="dotm"></span>16:45 · quota 5h atteint (fenêtre principale 100 %) · échéance conservée</div>
+        <div class="ev"><span class="dotm"></span>16:47 · reprise programmée sans mesure préalable · reçu durable</div>
+        <div class="ev"><span class="dotm"></span>17:03 · goal « Siri 27.2 » : sous-agent Erdos terminé, résultats récupérés</div>
+        <div class="anomaly">
+          <b>Anomalie candidate · triage sémantique</b> (11:58 · fraîcheur 12 min · provenance service.log)
+          <div>6 lignes sans correspondance connue : « UnboundLocalError subprocess » après un refus de quota.
+          <b>Première analyse FM (hypothèse)</b> : « le tick tente une relance et crash avant admission ; le reçu n'est pas écrit ». À confirmer avant action — <u>voir les lignes brutes</u> · <u>ignorer ce pattern</u></div>
+        </div>
+        <div style="margin-top:10px"><button class="btn ghost">Ouvrir la session</button></div>
+      </div>
+
+      <div class="pair">
+        <h4>Claude Desktop <span class="badge warn">1 tâche en attente</span></h4>
+        <div class="synth">1 tâche livrée via Quick Apply, retour MCP non encore reçu — état incertain conservé, aucune relance automatique.</div>
+        <div class="ev"><span class="dotm"></span>17:01 · Quick Apply : soumission confirmée (clic observé)</div>
+        <div class="ev"><span class="dotm"></span>17:02 · MCP get_task réclamé par le connecteur</div>
+        <div class="ev"><span class="dotm"></span>— · submit_result attendu · seul un reçu accepté clôt la tâche</div>
+        <div style="margin-top:10px"><button class="btn ghost">Ouvrir la session</button></div>
+      </div>
+
+      <div class="pair">
+        <h4>Harness <span class="badge neu">détection seule</span></h4>
+        <div class="synth">Aucune activité récente dans les journaux pris en charge. La détection reste passive ; aucune inférence déclenchée.</div>
+      </div>
+
+      <details class="adv">
+        <summary>Avancé — triage sémantique et synthèse</summary>
+        <div class="inner">
+          <div class="row"><span class="who">Sources triées</span><span>service.log · scheduler · reprise_logs (journaux déjà collectés)</span></div>
+          <div class="row"><span class="who">Fenêtre par passage</span><input type="text" value="200 dernières lignes/source" style="width:230px"></div>
+          <div class="row"><span class="who">Cadence maximale</span><input type="text" value="1 passage / heure" style="width:160px"></div>
+          <div class="row"><span class="who">Budget FM</span><input type="text" value="5 candidats / jour" style="width:160px"></div>
+          <div class="row"><span class="who">Clusters connus</span><span>erreurs déjà étiquetées — aucune inférence dessus</span></div>
+          <div class="row"><span class="who">Synthèse FM</span><div class="toggle on"></div><span class="why">repli déterministe si le modèle est indisponible</span></div>
+        </div>
+      </details>
+
+      <p class="note"><b>Pourquoi</b> : la synthèse actuelle liste des événements bruts sans hiérarchie. Ici : une phrase par paire
+      (générée localement, fraîcheur et provenance affichées), les trois événements qui comptent, et les anomalies
+      candidates du triage sémantique — NLEmbedding filtre d'abord (fenêtre, cadence, budget : pas de flood, pas de DOS),
+      la FM n'analyse que ce qui est loin des clusters connus, et son verdict reste une hypothèse à confirmer.</p>
+    </main>
+  </div>
+</div>
+
+<footer>Maquette #118 — structure « défauts appliqués sauf avis contraire » · mocks statiques, données fictives,
+aucune donnée réelle · le port SwiftUI n'entreprend que la structure : chaque preuve consultable reste un écran existant.</footer>
+
+<script>
+  document.querySelectorAll('nav.switcher button').forEach(b=>{
+    b.addEventListener('click',()=>{
+      document.querySelectorAll('nav.switcher button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active');
+      document.querySelectorAll('main.screen').forEach(m=>m.classList.remove('active'));
+      document.getElementById('s-'+b.dataset.s).classList.add('active');
+    });
+  });
+  // bascule visuelle des toggles (maquette)
+  document.querySelectorAll('.toggle:not(.locked)').forEach(t=>{
+    t.style.cursor='pointer';
+    t.addEventListener('click',()=>t.classList.toggle('on'));
+  });
+</script>
+</body>
+</html>
