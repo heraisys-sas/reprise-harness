@@ -116,6 +116,7 @@ class Service:
             'job_authorize': {'id', 'op', 'enabled', 'project_id', 'work_id', 'operation_id',
                 'authorization_id', 'expected_revision', 'expected_proposal_sha256', 'expected_context_sha256'},
             'job_prepare': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'proposal'},
+            'job_list': {'id', 'op', 'enabled', 'project_id', 'work_id', 'limit', 'offset'},
             'job_recover': {'id', 'op', 'enabled', 'project_id', 'operation_id'},
             'job_revise': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'proposal', 'expected_revision'},
         }
@@ -128,12 +129,12 @@ class Service:
             self._reply(ident, 'error')
 
     def _dispatch(self, ident, op, request):
-        if op in ('job_candidate_extract', 'job_candidate_import', 'job_clarify', 'job_clarification_review', 'job_prepare', 'job_recover', 'job_revise', 'job_consent_context', 'job_authorize', 'job_authorize_local', 'job_local_plan', 'job_local_start', 'job_local_stop'):
+        if op in ('job_candidate_extract', 'job_candidate_import', 'job_clarify', 'job_clarification_review', 'job_prepare', 'job_list', 'job_recover', 'job_revise', 'job_consent_context', 'job_authorize', 'job_authorize_local', 'job_local_plan', 'job_local_start', 'job_local_stop'):
             if request.get('enabled') is not True:
                 self._reply(ident, 'not_enabled')
                 return
             project = _uuid(request['project_id'])
-            operation = _uuid(request['operation_id']) if op != 'job_consent_context' else None
+            operation = _uuid(request['operation_id']) if op not in ('job_consent_context', 'job_list') else None
             if op == 'job_revise' and (type(request['expected_revision']) is not int or request['expected_revision'] < 0):
                 self._reply(ident, 'invalid_request')
                 return
@@ -400,6 +401,9 @@ class Service:
                     result = self.local_factory(jobs).recover(project, operation)
             elif op == 'job_prepare':
                 result = jobs.prepare_proposal(project, operation, request['proposal'])
+            elif op == 'job_list':
+                result = jobs.browse(project, work_id=request['work_id'], limit=request['limit'], offset=request['offset'])
+                response = {'status': 'finished', 'page': result}
             elif op == 'job_recover':
                 result = jobs.recover(project, operation)
                 if result and result.get('local_execution'):
@@ -414,7 +418,7 @@ class Service:
             else:
                 result = jobs.revise(project, operation, request['proposal'],
                                      expected_revision=request['expected_revision'])
-            if op not in ('job_candidate_extract', 'job_consent_context', 'job_local_plan') and (op != 'job_recover' or result is not None):
+            if op not in ('job_candidate_extract', 'job_consent_context', 'job_local_plan', 'job_list') and (op != 'job_recover' or result is not None):
                 response = {'status': 'finished', 'job': result}
         except coordinator_jobs.WriteUncertainError:
             response = {'status': 'write_uncertain', 'effect': 'indeterminate'}

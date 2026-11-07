@@ -443,3 +443,38 @@ le hash des clarifications lie aussi les décisions, et aucune modification n’
 acceptée après consentement. Écarter une question exprime le jugement humain sur
 son caractère bloquant, pas une réponse factuelle, une permission ou une preuve
 de pertinence du modèle. Aucun ancien reçu ni consentement n’est réécrit.
+
+### Navigateur d’opérations existantes
+
+`job_list` reçoit exactement `id`, `op`, `enabled`, `project_id`, `work_id`
+(UUID ou null), `limit` (entier 1–50) et `offset` (entier 0–5000). Le projet est
+validé par le registre existant. La réponse `page` ne contient que des résumés :
+identités, objectif tronqué à 160 caractères, état, révision, dates, nature et
+association de travail ; aucune réponse, clarification, motif ou autorité.
+L’ordre est décroissant par création puis identité de job. Les pages reflètent
+l’état courant, sans garantie de snapshot entre deux chargements concurrents.
+
+L’association de travail provient exclusivement des contextes persistés d’import,
+de consentement et de manifeste local. Ils doivent porter le même projet et des
+UUID de travail concordants. Une absence donne `unbound`, un désaccord ou un
+contexte malformé `inconsistent`, sinon `bound`. Le filtre travail n’inclut que
+les lignes `bound` correspondantes. Les lignes incohérentes et historiques sans
+identité d’opération canonique restent visibles mais non ouvrables. Le statut
+historique `recorded` demeure présenté comme `indeterminate`. La reconnaissance
+d’une analyse utilise son template hôte exact, jamais le sens supposé du texte.
+
+La GUI sépare chargement de liste, choix et ouverture explicite. Ouvrir sélectionne
+le travail annoncé s’il est lié ; une préparation non liée n’obtient aucune
+association implicite. L’ouverture appelle seulement la récupération existante,
+qui peut réconcilier la projection durable d’un reçu sans relancer l’exécution.
+La liste ne réconcilie pas. Les lectures utilisent le verrou Jobs existant ;
+l’initialisation du stockage et du verrou peut avoir des effets filesystem,
+sans changement de contenu Jobs, d’admission ou d’autorité.
+
+Une intention incertaine ou un journal inaccessible interdit le changement
+d’opération ; le journal est relu avant l’ouverture pour détecter un marqueur
+apparu depuis le dernier état affiché. Les réponses de liste et de récupération
+sont corrélées à la génération de sélection, au projet et au travail : revenir
+au même contexte après l’avoir quitté ne rend pas une ancienne réponse actuelle.
+Aucune navigation ne prépare, importe, consent ou démarre une opération. Les
+préférences ne constituent ni une permission ni une nouvelle liaison de mission.

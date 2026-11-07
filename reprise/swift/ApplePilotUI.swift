@@ -380,6 +380,7 @@ final class ApplePilotUI: ObservableObject {
         let project: String
         let operation: String
         let intent: PreparationIntent?
+        let selection: UUID
     }
 
     struct Message: Identifiable {
@@ -390,8 +391,8 @@ final class ApplePilotUI: ObservableObject {
 
     @Published var enabled = false { didSet { preferences?.set(enabled, forKey: StartupPreferences.pilotEnabledKey) } }
     @Published var showMemory = false
-    @Published var projectID = "" { didSet { saveSelection(projectID, key: "ApplePilotProject", uuid: true); selectPreparationProject(projectID); clearConsentContext(); restoreAnalysisLink() } }
-    @Published var workID = "" { didSet { saveSelection(workID, key: "ApplePilotWork", uuid: true); clearConsentContext(); restoreAnalysisLink() } }
+    @Published var projectID = "" { didSet { saveSelection(projectID, key: "ApplePilotProject", uuid: true); invalidateOperationBrowser(); selectPreparationProject(projectID); clearConsentContext(); restoreAnalysisLink() } }
+    @Published var workID = "" { didSet { saveSelection(workID, key: "ApplePilotWork", uuid: true); invalidateOperationBrowser(); clearConsentContext(); restoreAnalysisLink() } }
     @Published var checkpointID = "" { didSet { saveSelection(checkpointID, key: "ApplePilotCheckpoint", uuid: true) } }
     @Published var skill = "checkpoint-review" { didSet { saveSelection(skill, key: "ApplePilotSkill", uuid: false) } }
     @Published var prompt = ""
@@ -401,6 +402,56 @@ final class ApplePilotUI: ObservableObject {
     @Published private(set) var candidateResult: [String: Any] = [:]
     @Published private var clarificationDrafts: [String: String] = [:]
     private var candidateSelections: [String: [String]] = [:]
+    @Published private(set) var operationRows: [[String: Any]] = []
+    @Published private(set) var operationBrowserBusy = false
+    @Published private(set) var operationBrowserStatus = "Liste non chargée."
+    @Published private(set) var operationOffset = 0
+    @Published private(set) var operationNextOffset: Int?
+    @Published var operationFilterWork = false { didSet { invalidateOperationBrowser() } }
+    @Published var selectedExistingOperation = ""
+    private var operationSelection = UUID()
+    private var browserRequests: [String: (String, String, UUID, Int)] = [:]
+    private var browserOperationKind = ""
+    private var browserOperationID = ""
+    private func invalidateOperationBrowser() {
+        operationSelection = UUID(); operationRows = []; selectedExistingOperation = ""
+        operationBrowserBusy = false; operationOffset = 0; operationNextOffset = nil
+        operationBrowserStatus = "Contexte changé ; rechargez la liste."
+        browserOperationKind = ""; browserOperationID = ""
+    }
+    func browseOperations(offset: Int = 0) {
+        guard enabled, canSelect, canonical(projectID), !operationBrowserBusy,
+              !operationFilterWork || canonical(workID), startHost() else { return }
+        operationBrowserBusy = true
+        let id = request("job_list", fields: ["enabled": true, "project_id": projectID,
+            "work_id": operationFilterWork ? workID : NSNull(), "limit": 20, "offset": offset])
+        browserRequests[id] = (projectID, workID, operationSelection, offset)
+        operationBrowserStatus = "Chargement des opérations…"
+    }
+    var canOpenExistingOperation: Bool {
+        canSwitchReview && !operationBrowserBusy && canonical(selectedExistingOperation)
+            && operationRows.contains { $0["operation_id"] as? String == selectedExistingOperation
+                && $0["project_id"] as? String == projectID && $0["selectable"] as? Bool == true }
+    }
+    func openExistingOperation() {
+        guard canSwitchReview, !operationBrowserBusy,
+              let row = operationRows.first(where: { $0["operation_id"] as? String == selectedExistingOperation }),
+              row["project_id"] as? String == projectID, row["selectable"] as? Bool == true,
+              canonical(selectedExistingOperation) else { return }
+        // Re-read the durable journal before changing selection, including markers
+        // created by another GUI instance since the last visible snapshot.
+        restorePreparationIntent(projectID)
+        guard canSwitchReview else { return }
+        let association = row["work_association"] as? String
+        guard association == "bound" || association == "unbound",
+              association != "bound" || (row["work_id"] as? String).map(canonical) == true else { return }
+        let operation = selectedExistingOperation
+        let kind = row["kind"] as? String ?? "unknown"
+        if let work = row["work_id"] as? String, canonical(work) { workID = work }
+        selectOperation(operation)
+        browserOperationID = operation; browserOperationKind = kind
+        loadPreparation()
+    }
     @Published var consentBackend = "codex"
     @Published var localMaxSeconds = 60 { didSet { localPlan = [:] } }
     @Published private(set) var localPlan: [String: Any] = [:]
@@ -618,7 +669,7 @@ final class ApplePilotUI: ObservableObject {
     }
 
     var hostRunning: Bool { process != nil }
-    var canSelect: Bool { !sessionOpen && !busy && !memoryBusy && !preparationBusy && !closing && !cleanupUnconfirmed && !hostTerminating
+    var canSelect: Bool { !sessionOpen && !busy && !memoryBusy && !preparationBusy && !closing && !cleanupUnconfirmed && !hostTerminating && !operationBrowserBusy
         && !["local_pending", "local_admitted", "local_running"].contains(preparationJob["status"] as? String ?? "") }
     var canOpen: Bool {
         enabled && canSelect && !contextNeedsConfiguration
@@ -873,7 +924,7 @@ final class ApplePilotUI: ObservableObject {
 
     var analysisOperationID: String { analysisLink?.analysis ?? "" }
     var missionOperationID: String { analysisLink?.mission ?? "" }
-    var isAnalysis: Bool { !analysisOperationID.isEmpty && preparationOperationID == analysisOperationID }
+    var isAnalysis: Bool { (!analysisOperationID.isEmpty && preparationOperationID == analysisOperationID) || (browserOperationID == preparationOperationID && browserOperationKind == "analysis") }
     var canSwitchReview: Bool {
         enabled && canSelect && !preparationUncertain && !preparationJournalUnavailable
             && !["local_pending", "local_admitted", "local_running"].contains(preparationJob["status"] as? String ?? "")
@@ -909,6 +960,7 @@ final class ApplePilotUI: ObservableObject {
         }
     }
     private func selectOperation(_ operation: String) {
+        operationSelection = UUID(); browserOperationID = ""; browserOperationKind = ""
         preparationOperationID = operation; preparationProjectID = projectID
         preferences?.set(operation, forKey: "ApplePilotPreparationOperation")
         preferences?.set(projectID, forKey: "ApplePilotPreparationProject")
@@ -1309,7 +1361,7 @@ final class ApplePilotUI: ObservableObject {
                 preparationStatus = "Journal local non durable ; aucune requête n’a été envoyée."
                 return ident
             }
-            preparationPending[ident] = PendingPreparation(project: project, operation: preparation, intent: intent)
+            preparationPending[ident] = PendingPreparation(project: project, operation: preparation, intent: intent, selection: operationSelection)
         }
         pending[ident] = operation
         let current = generation
@@ -1368,6 +1420,23 @@ final class ApplePilotUI: ObservableObject {
             return
         }
         switch operation {
+        case "job_list":
+            guard let selection = browserRequests.removeValue(forKey: ident),
+                  selection.0 == projectID, selection.1 == workID, selection.2 == operationSelection else { return }
+            operationBrowserBusy = false
+            guard result == "finished", let page = object["page"] as? [String: Any],
+                  page["project_id"] as? String == projectID, page["offset"] as? Int == selection.3,
+                  page["limit"] as? Int == 20,
+                  page["work_id"] as? String == (operationFilterWork ? workID : nil),
+                  let rows = page["operations"] as? [[String: Any]], rows.count <= 20,
+                  rows.allSatisfy({ $0["project_id"] as? String == projectID }) else {
+                operationRows = []; selectedExistingOperation = ""
+                operationBrowserStatus = "Liste indisponible (\(result)). Aucune opération lancée."
+                return
+            }
+            operationRows = rows; operationOffset = selection.3
+            operationNextOffset = page["next_offset"] as? Int; selectedExistingOperation = ""
+            operationBrowserStatus = rows.isEmpty ? "Aucune opération dans ce périmètre." : "Choisissez une opération ; ouvrir ne relance rien."
         case "job_candidate_extract":
             preparationBusy = false
             guard let selection = candidateSelections.removeValue(forKey: ident),
@@ -1414,7 +1483,7 @@ final class ApplePilotUI: ObservableObject {
             guard let context = preparationPending.removeValue(forKey: ident) else { ioFailed(generation: current); return }
             preparationBusy = false
             guard context.project == projectID, context.project == preparationProjectID,
-                  context.operation == preparationOperationID else { return }
+                  context.operation == preparationOperationID, context.selection == operationSelection else { return }
             if result == "finished", let job = object["job"] as? [String: Any],
                job["project_id"] as? String == context.project,
                job["operation_id"] as? String == context.operation {
@@ -1553,7 +1622,7 @@ final class ApplePilotUI: ObservableObject {
     }
 
     var memoryReady: Bool {
-        enabled && canonical(projectID) && !memoryBusy && !closing && !hostTerminating
+        enabled && canonical(projectID) && !memoryBusy && !closing && !hostTerminating && !operationBrowserBusy
             && (!cleanupUnconfirmed || process == nil || memoryRecoveryHost)
     }
 
@@ -1736,6 +1805,8 @@ final class ApplePilotUI: ObservableObject {
             memoryOperationState = "Résultat incertain ; conserver l’identifiant et vérifier le reçu."
             memoryUncertain = true
         }
+        operationBrowserBusy = false; browserRequests.removeAll()
+        operationBrowserStatus = "Lecture interrompue ; rechargez explicitement la liste."
         memoryBusy = false
         mutationPendingID = nil
         memoryPending.removeAll()

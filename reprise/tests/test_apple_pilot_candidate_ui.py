@@ -132,6 +132,24 @@ finally:host.shutdown()
   q.showReviewOperation(analysis:true);await idle(q);precondition(q.preparationOperationID==source)
   q.loadPreparation();await idle(q);precondition(q.preparationOperationID==source,"old terminal must not change explicit selection")
   q.showReviewOperation(analysis:false);await idle(q);precondition(q.preparationOperationID==target)
+  // A genuinely fresh GUI state keeps Jobs/registry but has no GUI journal.
+  let browseState=state.appendingPathComponent("fresh-browser-state")
+  try FileManager.default.createDirectory(at:browseState,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
+  for name in ["projects.sqlite","coordinator-jobs.noindex"] {
+   try FileManager.default.copyItem(at:state.appendingPathComponent(name),to:browseState.appendingPathComponent(name))
+  }
+  let freshDefaults=UserDefaults(suiteName:"test.browser.fresh."+UUID().uuidString)!
+  freshDefaults.set(1,forKey:StartupPreferences.versionKey)
+  let browser=ApplePilotUI(python:URL(fileURLWithPath:a[1]),service:URL(fileURLWithPath:a[2]),state:browseState,requestTimeout:2,preferences:freshDefaults)
+  browser.enabled=true;browser.projectID=project
+  precondition(browser.preparationOperationID.isEmpty,"fresh profile has no operation")
+  browser.browseOperations()
+  for _ in 0..<400 {if !browser.operationBrowserBusy{break};try? await Task.sleep(nanoseconds:20_000_000)}
+  precondition(browser.operationRows.count==2,browser.operationBrowserStatus)
+  browser.selectedExistingOperation=target;browser.openExistingOperation();await idle(browser)
+  precondition(browser.preparationOperationID==target && browser.workID==q.workID)
+  precondition(browser.preparationJob["status"] as? String=="preparation",browser.preparationStatus)
+  browser.close()
   let id=q.clarifications[0]["id"] as! String
   q.setClarificationAnswer(id,text:"Lecteurs débutants")
   q.clarify(id,resolved:false);await idle(q);precondition(q.preparationUncertain)

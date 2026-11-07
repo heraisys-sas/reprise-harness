@@ -710,6 +710,70 @@ class Jobs:
         job_id = str(uuid.uuid5(NAMESPACE, 'job:' + project_id + ':' + operation_id))
         return self.get(project_id, job_id)
 
+    @staticmethod
+    def _work_association(row):
+        bindings = []
+        for record, key in ((row.get('candidate_import'), 'origin'),
+                            (row.get('operator_authorization'), 'host_context'),
+                            (row.get('local_execution'), 'manifest')):
+            if record is None:
+                continue
+            context = record.get(key) if isinstance(record, dict) else None
+            if not isinstance(context, dict) or context.get('project_id') != row['project_id']:
+                return 'inconsistent', None
+            try:
+                bindings.append(_uuid(context.get('work_id')))
+            except ValueError:
+                return 'inconsistent', None
+        if len(set(bindings)) > 1:
+            return 'inconsistent', None
+        return ('bound', bindings[0]) if bindings else ('unbound', None)
+
+    def browse(self, project_id, *, work_id=None, limit=20, offset=0):
+        """Minimal project summaries, no reconciliation or inferred work binding."""
+        project = _uuid(project_id)
+        self._project(project)
+        if work_id is not None:
+            work_id = _uuid(work_id)
+        if type(limit) is not int or not 1 <= limit <= 50 or type(offset) is not int or not 0 <= offset <= MAX_JOBS:
+            raise ValueError('Invalid pagination')
+        with self._store() as data:
+            selected = []
+            for row in data['jobs']:
+                if row['project_id'] != project:
+                    continue
+                association, work = self._work_association(row)
+                if work_id is not None and (association != 'bound' or work != work_id):
+                    continue
+                selected.append((row, association, work))
+            selected.sort(key=lambda item: (item[0]['created_at'], item[0]['job_id']), reverse=True)
+            summaries = []
+            for row, association, work in selected[offset:offset + limit]:
+                operation = row.get('operation_id')
+                try:
+                    _uuid(operation)
+                    selectable = True
+                except ValueError:
+                    operation, selectable = None, False
+                # Recognition uses the host's exact versioned template, excluding
+                # imported candidates; prose alone never creates an association.
+                import coordinator_local
+                try:
+                    kind = ('analysis' if coordinator_local.analysis_request(row) is not None
+                            else 'mission' if row.get('candidate_import') else 'preparation')
+                except (ValueError, KeyError, TypeError):
+                    kind = 'unknown'
+                summaries.append({'project_id': project, 'operation_id': operation, 'job_id': row['job_id'],
+                    'objective': row['proposal']['objective'][:160],
+                    'status': 'indeterminate' if row['status'] == 'recorded' else row['status'],
+                    'revision': row.get('revision', 0), 'created_at': row['created_at'],
+                    'updated_at': row.get('revised_at', row['created_at']), 'kind': kind,
+                    'work_association': association, 'work_id': work,
+                    'selectable': selectable and association != 'inconsistent'})
+            return {'project_id': project, 'work_id': work_id, 'offset': offset, 'limit': limit,
+                    'next_offset': offset + limit if offset + limit < len(selected) else None,
+                    'operations': summaries}
+
     def list(self, project_id, *, limit=50, offset=0):
         self._project(_uuid(project_id))
         if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or not 0 <= offset <= 10000:

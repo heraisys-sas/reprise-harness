@@ -161,7 +161,47 @@ struct ApplePilotView: View {
         }
     }
 
+    private func operationLabel(_ row: [String: Any]) -> String {
+        let association: String
+        switch row["work_association"] as? String {
+        case "bound": association = "travail lié : " + (row["work_id"] as? String ?? "")
+        case "unbound": association = "travail non lié"
+        default: association = "association incohérente — ouverture refusée"
+        }
+        return "\(row["objective"] as? String ?? "") · \(row["status"] as? String ?? "") · révision \(row["revision"] as? Int ?? 0) · \(association) · \(row["operation_id"] as? String ?? "")"
+    }
+
+    private var operationBrowser: some View {
+        GroupBox("Opérations existantes du projet") {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("Limiter au travail sélectionné (associations prouvées)", isOn: $pilot.operationFilterWork)
+                    .disabled(!pilot.canSelect)
+                HStack {
+                    Button("Charger la liste") { pilot.browseOperations() }
+                    Button("Précédentes") { pilot.browseOperations(offset: max(0, pilot.operationOffset - 20)) }
+                        .disabled(pilot.operationOffset == 0)
+                    Button("Suivantes") { if let offset = pilot.operationNextOffset { pilot.browseOperations(offset: offset) } }
+                        .disabled(pilot.operationNextOffset == nil)
+                }.disabled(!pilot.enabled || !pilot.canSelect || pilot.projectID.isEmpty)
+                Picker("Opération à ouvrir", selection: $pilot.selectedExistingOperation) {
+                    Text("Choisir…").tag("")
+                    ForEach(pilot.operationRows, id: \.selfID) { row in
+                        if let id = row["operation_id"] as? String {
+                            Text(operationLabel(row)).tag(id)
+                        } else { Text("Historique sans identité d’opération sélectionnable") }
+                    }
+                }.disabled(!pilot.canSelect)
+                Button("Ouvrir (sélectionne aussi le travail associé)") { pilot.openExistingOperation() }
+                    .disabled(!pilot.canOpenExistingOperation)
+                Text(pilot.operationBrowserStatus).font(.caption)
+                Text("Travail non lié : aucune association inventée. Association incohérente : ouverture refusée. Une intention incertaine doit d’abord être récupérée.").font(.caption)
+            }
+        }
+    }
+
     private var preparationPanel: some View {
+        VStack {
+        operationBrowser
         GroupBox(pilot.isAnalysis ? "Analyse locale — autorisation distincte" : "Mission — préparation, consentement et exécution locale") {
             VStack(alignment: .leading, spacing: 8) {
                 Text("La préparation et le consentement seuls ne lancent aucune exécution. Résolvez les questions avant de consentir, puis validez le manifeste pour exécuter localement.")
@@ -257,6 +297,7 @@ struct ApplePilotView: View {
                 if !pilot.clarifications.isEmpty { clarificationPanel }
                 Text(pilot.preparationStatus).font(.callout)
             }
+        }
         }
     }
 
