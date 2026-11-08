@@ -7,6 +7,9 @@ import tempfile
 
 
 def main():
+    if sys.version_info < (3, 11):
+        print('Python >= 3.11 requis (le runtime épinglé est 3.13) : les tests sur interpréteurs anciens crashent (sqlite3/mémoire).')
+        return 2
     with tempfile.TemporaryDirectory(prefix='reprise-test-home-') as home:
         env = dict(os.environ, HOME=home, PYTHONDONTWRITEBYTECODE='1')
         env.pop('AGENT_RESUME_STATE', None)
