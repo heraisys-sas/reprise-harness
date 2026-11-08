@@ -284,8 +284,19 @@ def review(program, values, project_root, question, paths=None, timeout=None, th
             if len(result['events']) < 40 and method in ('item/started', 'item/completed', 'turn/completed'):
                 result['events'].append({'type': method, 'item_type': (params.get('item') or {}).get('type')})
             if 'id' in message and method:
+                # Native approvals route to the client connection that owns the thread: the
+                # request dies with this connection unless the operator answers it from a
+                # durable record. Persist the full JSON-RPC identity before returning; no
+                # automatic decision is ever taken here.
+                approval = {'approval_id': str(uuid.uuid4()), 'rpc_id': message.get('id'),
+                            'method': method, 'thread_id': thread_id, 'turn_id': turn_id,
+                            'params': params, 'requested_at': time.time(), 'sandbox': sandbox}
+                if on_turn:
+                    on_turn({'phase': 'awaiting_approval', 'thread_id': thread_id,
+                             'approval': approval})
                 result.update(status='awaiting_approval', phase='awaiting_approval',
-                              pending_request={'method': method, 'thread_id': thread_id, 'turn_id': turn_id},
+                              pending_request={'method': method, 'thread_id': thread_id,
+                                               'turn_id': turn_id, 'approval': approval},
                               next_action='reconcile', resumable=True,
                               reason='Native turn is waiting for human approval or input; not interrupted automatically.')
                 return result

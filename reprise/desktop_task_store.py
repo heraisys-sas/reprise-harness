@@ -5,6 +5,7 @@ import binascii
 import json
 from pathlib import Path
 import sqlite3
+import time
 import uuid
 
 from delegation_store import receipt_view, validate_lookup
@@ -47,6 +48,14 @@ class TaskStore:
                 # Old direct dispatches left no durable trace, even when delivery is NULL.
                 self.db.execute('''INSERT INTO desktop_dispatch_guard(scope,request_key,legacy_unknown)
                                    SELECT scope,request_key,1 FROM desktop_tasks''')
+            self.db.execute('''CREATE TABLE IF NOT EXISTS desktop_approvals(
+                scope TEXT NOT NULL, approval_id TEXT NOT NULL, method TEXT NOT NULL,
+                rpc_id TEXT, thread_id TEXT, turn_id TEXT, params TEXT,
+                requested_at REAL NOT NULL, resolved INTEGER NOT NULL DEFAULT 0,
+                decision TEXT, resolved_at REAL, sandbox TEXT, PRIMARY KEY(scope,approval_id))''')
+            approval_columns = {row[1] for row in self.db.execute('PRAGMA table_info(desktop_approvals)')}
+            if 'sandbox' not in approval_columns:
+                self.db.execute('ALTER TABLE desktop_approvals ADD COLUMN sandbox TEXT')
             columns = {row[1] for row in self.db.execute('PRAGMA table_info(desktop_tasks)')}
             if 'delivery' not in columns:
                 self.db.execute('ALTER TABLE desktop_tasks ADD COLUMN delivery TEXT')  # NULL | reserved | attempted
@@ -83,6 +92,63 @@ class TaskStore:
         from claude_session_store import SessionStore
         session = SessionStore(self.db, self.scope).register(chat_id, source='desktop_mcp_declared')
         return {'status': 'registered', **session}
+
+    def record_approval(self, approval_id, method, rpc_id=None, thread_id=None,
+                        turn_id=None, params=None, requested_at=None, sandbox=None):
+        """Durable record of a native approval request; inserting twice keeps the first."""
+        bounded(approval_id, 'approval_id', 128)
+        bounded(method, 'method', 128)
+        if rpc_id is not None and not isinstance(rpc_id, (str, int)):
+            raise ValueError('Invalid rpc_id')
+        if thread_id is not None and not isinstance(thread_id, str):
+            raise ValueError('Invalid thread_id')
+        if turn_id is not None and not isinstance(turn_id, str):
+            raise ValueError('Invalid turn_id')
+        if params is not None and not isinstance(params, (dict, list)):
+            raise ValueError('Invalid params')
+        if sandbox is not None and sandbox not in ('read-only', 'workspace-write'):
+            raise ValueError('Invalid sandbox')
+        with self.db:
+            self.db.execute('''INSERT OR IGNORE INTO desktop_approvals
+                (scope,approval_id,method,rpc_id,thread_id,turn_id,params,requested_at,sandbox)
+                VALUES (?,?,?,?,?,?,?,?,?)''',
+                (self.scope, approval_id, method, str(rpc_id) if rpc_id is not None else None,
+                 thread_id, turn_id,
+                 json.dumps(params, ensure_ascii=False) if params is not None else None,
+                 float(requested_at) if requested_at is not None else time.time(), sandbox))
+
+    @staticmethod
+    def _approval_row(row):
+        return {'approval_id': row[0], 'method': row[1], 'rpc_id': row[2], 'thread_id': row[3],
+                'turn_id': row[4], 'params': json.loads(row[5]) if row[5] else None,
+                'requested_at': row[6], 'sandbox': row[7]}
+
+    def list_approvals(self, limit=50):
+        """Pending approval requests for this project, oldest first. Read-only."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError('Limit must be an integer from 1 to 100')
+        rows = self.db.execute('''SELECT approval_id,method,rpc_id,thread_id,turn_id,params,requested_at,sandbox
+            FROM desktop_approvals WHERE scope=? AND resolved=0 ORDER BY requested_at LIMIT ?''',
+            (self.scope, limit)).fetchall()
+        return [self._approval_row(row) for row in rows]
+
+    def pending_approval(self, approval_id):
+        row = self.db.execute('''SELECT approval_id,method,rpc_id,thread_id,turn_id,params,requested_at,sandbox
+            FROM desktop_approvals WHERE scope=? AND approval_id=? AND resolved=0''',
+            (self.scope, bounded(approval_id, 'approval_id', 128))).fetchone()
+        return self._approval_row(row) if row else None
+
+    def resolve_approval(self, approval_id, decision, resolved_at=None):
+        """Mark a pending approval resolved; return False when nothing was pending."""
+        if decision not in ('approved', 'denied'):
+            raise ValueError('Decision must be approved or denied')
+        with self.db:
+            changed = self.db.execute('''UPDATE desktop_approvals
+                SET resolved=1, decision=?, resolved_at=?
+                WHERE scope=? AND approval_id=? AND resolved=0''',
+                (decision, float(resolved_at) if resolved_at is not None else time.time(),
+                 self.scope, bounded(approval_id, 'approval_id', 128))).rowcount
+        return changed == 1
 
     def close(self):
         self.db.close()

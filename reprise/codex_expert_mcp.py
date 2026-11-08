@@ -12,7 +12,8 @@ import sqlite3
 import sys
 from delegation_store import LOOKUP_SCHEMA, Store, file_evidence, validate_key
 from delegation_reconcile import reconcile as reconcile_turn
-from codex_expert import STOP_REASONS, positive, review
+from codex_expert import STOP_REASONS, positive, review, review_config
+from codex_rpc import Client
 from claude_expert import review as claude_review
 import claude_desktop
 import apple_expert
@@ -130,6 +131,12 @@ TOOLS = [
      'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
     {'name': 'reprise_history', 'description': 'Explain recent harness work and its Reprise interactions from local logs (Quick Entry submissions + MCP calls). Read-only.',
      'inputSchema': {'type': 'object', 'properties': {'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100}}, 'additionalProperties': False}},
+    {'name': 'approval_list', 'description': 'List native Codex approval requests waiting for a human decision. Read-only; never decides, never resumes anything.',
+     'inputSchema': {'type': 'object', 'properties': {'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100}}, 'additionalProperties': False}},
+    {'name': 'approval_respond', 'description': 'Answer a native Codex approval request the operator has decided. Reattaches to the owning thread, sends the JSON-RPC response to the stored request id, then marks the request resolved. Explicit decision required; never approves or denies automatically. May be slow (thread reattach).',
+     'inputSchema': {'type': 'object', 'properties': {'approval_id': {'type': 'string', 'maxLength': 128},
+                     'decision': {'type': 'string', 'enum': ['approved', 'denied']}},
+                     'required': ['approval_id', 'decision'], 'additionalProperties': False}},
 ]
 
 MODES = {
@@ -292,6 +299,10 @@ class Bridge:
             return self._reconcile(args)
         if name in ('reprise_backends', 'reprise_health', 'reprise_history', 'reprise_resume'):
             return self._call(name, args)
+        if name == 'approval_list':
+            return self._approval_list(args)
+        if name == 'approval_respond':
+            return self._approval_respond(args)
         if not isinstance(args, dict):
             raise ValueError('Object arguments required')
         return_mode = args.get('return_mode', 'full')
@@ -653,6 +664,19 @@ class Bridge:
                     if routing:
                         self.db.execute('INSERT OR REPLACE INTO expert_routes VALUES (?,?,?,?)',
                                         (self.scope, event['thread_id'], routing['model'], routing['effort']))
+            approval = event.get('approval')
+            if approval:
+                # Durable record of a native approval request. Storage failure must not
+                # corrupt the wait loop's outcome; the receipt still carries pending_request.
+                try:
+                    if self.desktop_tasks is not None:
+                        self.desktop_tasks.record_approval(
+                            approval['approval_id'], approval['method'], rpc_id=approval.get('rpc_id'),
+                            thread_id=approval.get('thread_id'), turn_id=approval.get('turn_id'),
+                            params=approval.get('params'), requested_at=approval.get('requested_at'),
+                            sandbox=approval.get('sandbox'))
+                except (OSError, ValueError, sqlite3.Error):
+                    pass
         result = review(self.program, self.values, self.root, question, paths=args.get('paths'), thread_id=ident,
                         on_turn=persist_turn, **policy,
                         **({'implementation': True} if mode == 'implementation' else {}), **routing)
@@ -671,6 +695,80 @@ class Bridge:
                                     (self.scope, result['thread_id'], routing['model'], routing['effort']))
         routing_events.finalize(self.db, event_id, str(result.get('status') or 'unknown'))
         return result
+
+    class ApprovalReattachFailed(Unavailable):
+        """Reattach to the owning Codex thread failed; the approval stays pending."""
+
+    def _approval_list(self, args):
+        if not isinstance(args, dict) or args.keys() - {'limit'}:
+            raise ValueError('Invalid arguments')
+        limit = args.get('limit', 50)
+        if self.desktop_tasks is None:
+            raise Unavailable('storage_error', 'Approval store unavailable; no approvals can be surfaced.')
+        approvals = self.desktop_tasks.list_approvals(limit=limit)
+        return {'status': 'finished', 'automatic_fallback': False, 'approvals': approvals}
+
+    def _approval_respond(self, args, client_factory=None):
+        if not isinstance(args, dict) or set(args) != {'approval_id', 'decision'}:
+            raise ValueError('approval_id and an explicit decision are required')
+        approval_id, decision = args['approval_id'], args['decision']
+        if decision not in ('approved', 'denied'):
+            raise ValueError('Decision must be approved or denied')
+        if self.desktop_tasks is None:
+            raise Unavailable('storage_error', 'Approval store unavailable; approvals cannot be answered.')
+        approval = self.desktop_tasks.pending_approval(approval_id)
+        if approval is None:
+            raise ValueError('Unknown or already resolved approval_id')
+        rpc_id = approval.get('rpc_id')
+        if rpc_id is None or not approval.get('thread_id'):
+            raise ValueError('Stored approval lacks its JSON-RPC identity; cannot respond')
+        if str(rpc_id).lstrip('-').isdigit():
+            rpc_id = int(rpc_id)
+        client = None
+        try:
+            try:
+                client = (client_factory or Client)(self.program, self.values)
+                client.call('initialize', {'clientInfo': {'name': 'reprise-approval-respond', 'version': '0.1.0'},
+                                           'capabilities': {'experimentalApi': True}})
+                client.send({'method': 'initialized'})
+                resumed = client.call('thread/resume', {'threadId': approval['thread_id'],
+                    'excludeTurns': True, 'config': review_config(client, self.root),
+                    'sandbox': approval.get('sandbox') or 'read-only',
+                    'approvalPolicy': 'on-request'})
+                confirmed = resumed.get('thread') or {}
+                if (confirmed.get('id') != approval['thread_id']
+                        or (confirmed.get('status') or {}).get('type') != 'idle'):
+                    raise Unavailable('blocked_owner', 'Expert identity or idle state changed; approval not sent.')
+            except (OSError, ValueError, TimeoutError, Unavailable) as error:
+                raise self.ApprovalReattachFailed('owner_unavailable',
+                    f'Codex thread reattach failed; approval stays pending. {error}') from error
+            try:
+                # The native request expects a ReviewDecision as its result. The
+                # schema (v0.166.0-alpha.6) wraps it: result = {'decision': …}.
+                # Vocabulary depends on the request generation: v2 methods
+                # (item/*/requestApproval) use accept/decline; legacy v1
+                # (execCommandApproval/applyPatchApproval) use approved/denied,
+                # with denied as an object carrying a rejection reason.
+                method = approval.get('method') or ''
+                if method.startswith('item/'):
+                    native_decision = 'accept' if decision == 'approved' else 'decline'
+                elif decision == 'approved':
+                    native_decision = 'approved'
+                else:
+                    native_decision = {'denied': {'rejection': 'Denied by operator'}}
+                client.send({'id': rpc_id, 'result': {'decision': native_decision}})
+            except (OSError, ValueError, TimeoutError, Unavailable) as error:
+                raise self.ApprovalReattachFailed('owner_unavailable',
+                    f'Sending the approval response failed; approval stays pending. {error}') from error
+        finally:
+            if client:
+                try:
+                    client.close()
+                except (OSError, ValueError):
+                    pass
+        resolved = self.desktop_tasks.resolve_approval(approval_id, decision)
+        return {'status': 'finished', 'automatic_fallback': False, 'approval_id': approval_id,
+                'decision': decision, 'resolved': resolved}
 
     def _reconcile(self, args):
         if not isinstance(args, dict) or args.keys() - {'request_key', 'action', 'reason'}:

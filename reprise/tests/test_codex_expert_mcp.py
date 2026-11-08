@@ -116,7 +116,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
 
     def test_protocol_lists_only_bounded_tools(self):
         self.assertIn('tools', self.bridge.dispatch({'method': 'initialize'})['capabilities'])
-        self.assertEqual({item['name'] for item in self.bridge.dispatch({'method': 'tools/list'})['tools']}, {'codex_review','codex_followup','reprise_delegate','reprise_backends','reprise_followup','reprise_resume','reprise_history','reprise_health','reprise_requests','reprise_quotas','reprise_reconcile'})
+        self.assertEqual({item['name'] for item in self.bridge.dispatch({'method': 'tools/list'})['tools']}, {'codex_review','codex_followup','reprise_delegate','reprise_backends','reprise_followup','reprise_resume','reprise_history','reprise_health','reprise_requests','reprise_quotas','reprise_reconcile','approval_list','approval_respond'})
     def test_selected_tools_are_filtered_and_cannot_be_called_by_name(self):
         restricted = Bridge(self.temp.name, {}, Path(self.temp.name)/'restricted', allowed_tools=['reprise_backends', 'reprise_requests'])
         self.addCleanup(restricted.db.close)

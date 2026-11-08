@@ -22,8 +22,11 @@ from yaml_contract import validate_yaml, yaml_hashes
 START = '# BEGIN REPRISE MANAGED INTEGRATION'
 END = '# END REPRISE MANAGED INTEGRATION'
 DOCS = ('REPRISE-AGENTS.template.md', 'CODEX-EXECUTION-CONTRACT.md', 'ASI1-ORCHESTRATOR.template.md', 'ASI1-ORCHESTRATION-CONTRACT.md', 'HANDOFF-CONTRACT.md', 'HARNESS-ROLES-CONTRACT.md', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'HARNESS-SUPERVISION-ARCHITECTURE.md', 'HARNESS-INTEGRATION.md', 'CLARIFICATION-CONTRACT.md')
-OBSERVE = ('reprise_backends', 'reprise_requests', 'reprise_quotas')
+OBSERVE = ('reprise_backends', 'reprise_requests', 'reprise_quotas', 'approval_list')
 DELEGATE = ('reprise_delegate', 'reprise_followup', 'reprise_reconcile')
+# approval_respond reattaches to the owning Codex thread before answering a native
+# approval request; it may legitimately take longer than a read-only observation.
+APPROVAL_RESPOND = 'approval_respond'
 # Socket Quick Apply local par nature ; généré seulement s'il existe sur cette machine.
 DESKTOP_SOCKET = Path.home() / '.claude-desktop' / 'quick-entry.sock'
 BASH_SANDBOX_PLUGIN = {'id': 'bash-sandbox', 'name': '@deepseek-ai/dsh-bash-sandbox',
@@ -699,6 +702,10 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
             raise ValueError('Reconstruire le bundle avec le connecteur mémoire.')
         release = Path(state).parent / 'integration-releases' / identity
         tools = OBSERVE + (DELEGATE if delegate else ())
+        # The approval answer tool always rides with the delegation tools: it only answers
+        # requests recorded by this bridge's own delegations, and needs the delegate scope.
+        if delegate:
+            tools += (APPROVAL_RESPOND,)
         # Socket Quick Apply : valeur locale générée par défaut quand le socket existe ;
         # l'état choisi est persisté dans le manifeste pour une vérification déterministe.
         desktop_socket = None

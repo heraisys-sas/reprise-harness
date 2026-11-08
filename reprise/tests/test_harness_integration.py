@@ -520,7 +520,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         with patch.object(integration.subprocess, 'run', side_effect=AssertionError('no inference')):
             self.install(delegate=True)
         manifest = json.loads((self.managed / 'managed.json').read_text())
-        self.assertEqual(manifest['tools'], list(integration.OBSERVE + integration.DELEGATE))
+        self.assertEqual(manifest['tools'], list(integration.OBSERVE + integration.DELEGATE + (integration.APPROVAL_RESPOND,)))
         self.assertIn('reprise_followup', (self.managed / 'skills/reprise-delegation/SKILL.md').read_text())
         deployed = self.managed / 'skills/reprise-delegation/REPRISE-AGENTS.template.md'
         self.assertEqual(deployed.read_bytes(), (SOURCE.parent / 'docs/templates/REPRISE-AGENTS.template.md').read_bytes())
@@ -585,7 +585,7 @@ class HarnessIntegrationTests(unittest.TestCase):
     def bridge_probe(self, delegate=False, legacy=False):
         self.install(delegate=delegate)
         tools = []
-        for name in sorted(integration.OBSERVE + (integration.DELEGATE if delegate else ())):
+        for name in sorted(integration.OBSERVE + ((integration.DELEGATE + (integration.APPROVAL_RESPOND,)) if delegate else ())):
             properties = {}
             if not legacy:
                 if name == 'reprise_requests':
