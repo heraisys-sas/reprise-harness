@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -284,7 +285,7 @@ for line in sys.stdin:
             binary = root / 'identical-revise'
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True, timeout=8)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True, timeout=8)
             self.assertEqual((root / 'ops').read_text().splitlines(), ['job_prepare', 'job_prepare', 'close'])
 
     def test_intent_journal_survives_process_exit_before_response(self):
@@ -383,7 +384,7 @@ import Darwin
             binary = root / 'fsync-retry'
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True, timeout=8)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True, timeout=8)
             self.assertEqual((root / 'ops').read_text().splitlines(), ['job_recover', 'close'])
 
     def test_consent_journal_recovers_exact_authorization_after_lost_reply(self):
@@ -710,7 +711,7 @@ for line in sys.stdin:
             binary = root / 'legacy-intent'
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True, timeout=8)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True, timeout=8)
 
     def test_startup_migration_and_saved_context_without_inference(self):
         with tempfile.TemporaryDirectory() as temp:

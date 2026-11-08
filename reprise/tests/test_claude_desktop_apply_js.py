@@ -25,8 +25,21 @@ def scripts():
     return dict(prepare=prepare, send=capture.expression, state=transport.JS_STATE, text=text)
 
 
+def working_node():
+    """Un node qui existe sur le PATH mais ne s'exécute pas (vendu par une app hôte) ne sert à rien."""
+    candidate = shutil.which('node')
+    if candidate:
+        try:
+            probe = subprocess.run([candidate, '-e', 'process.exit(0)'], capture_output=True, timeout=15)
+            if probe.returncode == 0:
+                return candidate
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return None
+
+
 class PageExpressions(unittest.TestCase):
-    @unittest.skipUnless(shutil.which('node'), 'Node unavailable; DOM fixture can run through the local JS tool')
+    @unittest.skipUnless(working_node(), "Node exécutable introuvable sur le PATH (les nodes vendus par les apps hôtes sont sondés et écartés)")
     def test_actual_expressions_on_synthetic_dom(self):
         fixture = Path(__file__).with_name('fixtures') / 'desktop_apply_dom.mjs'
         result = subprocess.run([shutil.which('node'), str(fixture)], input=json.dumps(scripts()),

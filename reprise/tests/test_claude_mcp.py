@@ -47,6 +47,40 @@ class ClaudeMCPTests(unittest.TestCase):
             with self.assertRaises(ValueError): call('get_task', {'request_key':'key','claim_key':'stable','extra':True})
             tasks.close()
 
+    def test_claim_next_is_opt_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = TaskStore(tmp, tmp); facade = ClaudeMCP(tasks, Mock())
+            listed = facade.dispatch({'method':'tools/list'})['tools']
+            self.assertNotIn('claim_next', {t['name'] for t in listed})
+            with self.assertRaises(ValueError):
+                facade.dispatch({'method':'tools/call','params':{'name':'claim_next','arguments':{'claim_key':'ck'}}})
+            queued = ClaudeMCP(tasks, Mock(), enable_queue=True)
+            listed = queued.dispatch({'method':'tools/list'})['tools']
+            self.assertIn('claim_next', {t['name'] for t in listed})
+            tasks.close()
+
+    def test_claim_next_serves_the_oldest_fresh_task_then_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = TaskStore(tmp, tmp); facade = ClaudeMCP(tasks, Mock(), enable_queue=True)
+            tasks.admit('t-first', 'première'); tasks.admit('t-second', 'seconde')
+            def call():
+                r = facade.dispatch({'method':'tools/call','params':{'name':'claim_next','arguments':{'claim_key':'ck'}}})
+                return json.loads(r['content'][0]['text'])
+            self.assertEqual(call()['request_key'], 't-first')
+            self.assertEqual(call()['request_key'], 't-second')
+            self.assertEqual(call()['state'], 'empty')
+            tasks.close()
+
+    def test_claim_next_skips_uncertain_deliveries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = TaskStore(tmp, tmp); facade = ClaudeMCP(tasks, Mock(), enable_queue=True)
+            tasks.admit('t-uncertain', 'remise dont le reçu est perdu'); tasks.admit('t-fresh', 'fraîche')
+            handed = tasks.claim('t-uncertain', 'premier-claim')
+            self.assertEqual(handed['delivery'], 'handed_over')
+            r = facade.dispatch({'method':'tools/call','params':{'name':'claim_next','arguments':{'claim_key':'suivant'}}})
+            self.assertEqual(json.loads(r['content'][0]['text'])['request_key'], 't-fresh')
+            tasks.close()
+
     def test_long_unicode_result_pages_are_bounded(self):
         with tempfile.TemporaryDirectory() as tmp:
             tasks = TaskStore(tmp, tmp); facade = ClaudeMCP(tasks, Mock())
