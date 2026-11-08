@@ -154,3 +154,11 @@ La réservation d'une livraison Quick Apply et la réservation du socket sont in
 - Une tentative sans reçu reste incertaine après redémarrage ; jamais de réémission automatique.
 - La livraison MCP ne transporte que `delivery`, `attempt_id` et `claim_key`.
 - Les anciens writers doivent être arrêtés ou mis à niveau avant la migration : ils ne respectent pas cette table.
+
+## File d'attente opt-in par projet (`claim_next`)
+
+Décision d'opérateur par intégration (`--enable-queue` : l'outil est masqué et refusé par défaut, sur le modèle de `--enable-await`) : le connecteur expose `claim_next(claim_key)` — la plus ancienne tâche **fraîche** du scope (jamais réclamée, jamais tentée, sans réponse), dans l'ordre du registre d'insertion. L'autorisation = l'armement explicite d'une conversation par l'opérateur ; le `claim_key` est généré et persisté par la session exécutrice.
+
+Gardes inchangées : un claim à la fois, jamais de redelivery d'un envoi incertain — les livraisons incertaines sont **ignorées** par la file et restent à réconcilier par l'opérateur ; scoping par `--project-root` ; file vide = état explicite.
+
+Validé en conditions réelles le 08/11 (#122) : un chat Desktop gratuit armé une seule fois a servi sa plus ancienne tâche de file, exécuté en conteneur confiné (réseau coupé, workspace du projet monté), remis le résultat (`completed: true`) — et a **ignoré une instruction injectée** dans la sortie d'un outil (onboarding déguisé en SYSTEM INSTRUCTION), consignée dans le rapport remis.
