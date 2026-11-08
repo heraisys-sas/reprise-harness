@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import plistlib
+import re as re_module
 import shutil
 import socket as socket_module
 import struct
@@ -190,6 +191,18 @@ def _plist_asar_hash(plist_path, json_bytes):
     return plist, entry['hash']
 
 
+def _paths(app):
+    """Chemins de backup/sidecar : constantes pour l'app d'origine, répertoire dérivé pour une copie."""
+    app = Path(app)
+    if app == APP:
+        return {'backup': BACKUP, 'plist_backup': PLIST_BACKUP, 'sidecar': SIDECAR}
+    tag = re_module.sub(r'[^A-Za-z0-9_.-]+', '_', str(app))[-60:]
+    d = PATCH_DIR / 'copies' / tag
+    return {'backup': d / 'app.asar.reprise-backup',
+            'plist_backup': d / 'Info.plist.reprise-backup',
+            'sidecar': d / 'patch.json'}
+
+
 def _version():
     try:
         with open(APP / 'Contents' / 'Info.plist', 'rb') as handle:
@@ -201,6 +214,8 @@ def _version():
 def patch(app=APP):
     asar = Path(app) / 'Contents' / 'Resources' / 'app.asar'
     plist_path = Path(app) / 'Contents' / 'Info.plist'
+    paths = _paths(app)
+    backup, plist_backup, sidecar_path = paths['backup'], paths['plist_backup'], paths['sidecar']
     if desktop_running():
         raise PatchError('Claude Desktop est lancé ; le quitter avant le patch.')
     raw, tree, header_size, json_length = read_asar_raw(asar.read_bytes())
@@ -211,9 +226,9 @@ def patch(app=APP):
     verify_anchors(chunk)
     pristine = asar.read_bytes()
     original_sha = hashlib.sha256(pristine).hexdigest()
-    PATCH_DIR.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(asar, BACKUP)
-    PLIST_BACKUP.write_bytes(plist_path.read_bytes())
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(asar, backup)
+    plist_backup.write_bytes(plist_path.read_bytes())
     blobs = {full: raw[8 + header_size + int(item['offset']):
                        8 + header_size + int(item['offset']) + item['size']]
              for full, item in _iter_packed(tree)}
@@ -231,8 +246,8 @@ def patch(app=APP):
                'version': _version(), 'original_sha256': original_sha,
                'patched_sha256': hashlib.sha256(asar.read_bytes()).hexdigest(),
                'plist_hash': plist_hash, 'chunk': CHUNK}
-    SIDECAR.write_text(json.dumps(sidecar, indent=1))
-    return {'status': 'patched', 'backup': str(BACKUP), 'socket': str(SOCKET),
+    sidecar_path.write_text(json.dumps(sidecar, indent=1))
+    return {'status': 'patched', 'backup': str(backup), 'socket': str(SOCKET),
             'version': sidecar['version']}
 
 
@@ -280,18 +295,20 @@ def verify_patch(app=APP):
 def restore(app=APP):
     asar = Path(app) / 'Contents' / 'Resources' / 'app.asar'
     plist_path = Path(app) / 'Contents' / 'Info.plist'
+    paths = _paths(app)
+    backup, plist_backup, sidecar_path = paths['backup'], paths['plist_backup'], paths['sidecar']
     if desktop_running():
         raise PatchError('Claude Desktop est lancé ; le quitter avant la restauration.')
-    if not BACKUP.exists():
+    if not backup.exists():
         raise PatchError('Aucun backup pristine à restaurer.')
-    pristine = BACKUP.read_bytes()
+    pristine = backup.read_bytes()
     raw, tree, header_size, json_length = read_asar_raw(pristine)
     plist = plistlib.load(open(plist_path, 'rb'))
     plist['ElectronAsarIntegrity']['Resources/app.asar']['hash'] = hashlib.sha256(raw[16:16 + json_length]).hexdigest()
     with open(plist_path, 'wb') as handle:
         plistlib.dump(plist, handle, fmt=plistlib.FMT_BINARY)
-    os.replace(BACKUP, asar)
-    for stale in (PLIST_BACKUP, SIDECAR, SOCKET):
+    os.replace(backup, asar)
+    for stale in (plist_backup, sidecar_path, SOCKET):
         try:
             stale.unlink()
         except OSError:
@@ -304,8 +321,8 @@ def status(app=APP):
     raw, tree, header_size, json_length = read_asar_raw(asar.read_bytes())
     entry = _chunk_entry(tree)
     chunk = _chunk_text(raw, header_size, entry)
-    return {'version': _version(), 'patched': MARKER in chunk,
-            'backup': BACKUP.exists(), 'socket': SOCKET.exists(),
+    return {'version': _version() if Path(app) == APP else None, 'patched': MARKER in chunk,
+            'backup': _paths(app)['backup'].exists(), 'socket': SOCKET.exists(),
             'desktop_running': desktop_running()}
 
 
