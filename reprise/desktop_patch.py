@@ -165,8 +165,9 @@ def _chunk_text(raw, header_size, entry):
     return raw[start:start + entry['size']].decode('utf-8', 'replace')
 
 
-def desktop_running():
-    probe = subprocess.run(['pgrep', '-x', 'Claude'], capture_output=True)
+def desktop_running(app=APP):
+    """L'app CIBLE tourne-t-elle ? (matching par chemin de binaire, pas par nom)."""
+    probe = subprocess.run(['pgrep', '-f', str(Path(app) / 'Contents' / 'MacOS')], capture_output=True)
     return probe.returncode == 0
 
 
