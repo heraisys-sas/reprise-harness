@@ -7,6 +7,7 @@ import re
 import subprocess
 import uuid
 from zoneinfo import ZoneInfo
+import time
 
 MONTHS = {'janv': 1, 'févr': 2, 'mars': 3, 'avr': 4, 'mai': 5, 'juin': 6,
           'juil': 7, 'août': 8, 'sept': 9, 'oct': 10, 'nov': 11, 'déc': 12}
@@ -151,6 +152,79 @@ def tick(db, observer, clicker, now, zone):
             db.execute('UPDATE claude_quota_resumes SET status=? WHERE event_key=?', (state, key))
         submitted += state == 'submitted'
     return {'status': 'observed', 'submitted': submitted}
+
+
+def _resets_from_snapshot(snapshot, db_due=None):
+    """Extract the quota deadline defensively from an observation snapshot."""
+    found = [db_due] if isinstance(db_due, (int, float)) else []
+    def walk(value, depth=0):
+        if depth > 6:
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == 'resets_at' and isinstance(item, (int, float)) and not isinstance(item, bool):
+                    found.append(item)
+                else:
+                    walk(item, depth + 1)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, depth + 1)
+    if isinstance(snapshot, dict):
+        walk(snapshot)
+    return max(found) if found else None
+
+
+def admit_queue_continuation(db, root, quick_state, project_root, now=None, snapshot=None, observe=None):
+    """Opt-in (#122): at the quota deadline, admit the continuation task into the project queue.
+
+    Deadline sources: the native observation snapshot (run_native) and/or the waiting rows of
+    claude_quota_resumes; without either, the session observer (no Accessibility needed) refreshes it.
+    Gated by scheduler.enabled + claude_desktop_auto_enabled + claude_queue_channel (opt-in).
+    Dedup: one admission per deadline (claude_queue_admitted_for).
+    """
+    import scheduler
+    now = time.time() if now is None else now
+    if not scheduler.enabled(db) or scheduler.get(db, 'claude_desktop_auto_enabled', True) is not True:
+        return {'status': 'paused'}
+    if scheduler.get(db, 'claude_queue_channel') is not True:
+        return {'status': 'queue_disabled'}
+    if snapshot is None and observe is None:
+        try:
+            from claude_session_observer import status as observer_status
+            def observe():
+                return observer_status(root, project_root=project_root, quick_state=quick_state, refresh_now=True)
+        except Exception as error:
+            return {'status': 'observe_failed', 'error': type(error).__name__}
+    if observe is not None:
+        try:
+            snapshot = observe()
+        except Exception as error:
+            return {'status': 'observe_failed', 'error': type(error).__name__}
+    due_row = db.execute("SELECT MAX(due) FROM claude_quota_resumes WHERE status='waiting'").fetchone()
+    resets = _resets_from_snapshot(snapshot if isinstance(snapshot, dict) else None,
+                                   due_row[0] if due_row else None)
+    if resets is None:
+        return {'status': 'no_deadline'}
+    if now < resets:
+        return {'status': 'waiting', 'resets_at': resets}
+    if scheduler.get(db, 'claude_queue_admitted_for') == str(resets):
+        return {'status': 'already_admitted'}
+    from desktop_task_store import TaskStore
+    store = TaskStore(quick_state, project_root)
+    try:
+        key = f'claude-continuation-{int(resets)}'
+        stamp = time.strftime('%Y-%m-%d %H:%M', time.localtime(resets))
+        brief = ('Continuation après quota (file opt-in #122) : la pause 5h du chat Desktop est levée '
+                 f'(échéance {stamp}). Le travail interrompu vit dans le workspace monté sur /workspace : '
+                 'inspecte l’état des fichiers, identifie la dernière étape accomplie, et poursuis la tâche '
+                 'restante de manière bornée. Puis submit_result avec le résumé. Si rien n’indique un '
+                 'travail en cours, signale-le au lieu d’inventer.')
+        r = store.admit(key, brief)
+    finally:
+        store.close()
+    with db:
+        scheduler.put(db, 'claude_queue_admitted_for', str(resets))
+    return {'status': 'admitted', 'request_key': key, 'resets_at': resets}
 
 
 def status(db):

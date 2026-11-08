@@ -542,6 +542,24 @@ def main():
         except Exception as error:
             with db:
                 scheduler.put(db, 'claude_desktop_last_observation', {'status': 'unavailable', 'checked_at': dt.datetime.now().timestamp(), 'error': type(error).__name__})
+        # File opt-in (#122) : à l'échéance du quota, admettre la continuation dans la file du
+        # projet pour l'exécuteur armé (claim_next). Ne lève jamais ; tracé sous scheduler_meta.
+        try:
+            import claude_integration
+            claude_home = Path.home() / 'Library/Application Support/Claude'
+            managed_dir = claude_integration.paths(claude_home)[2]
+            meta = claude_integration.metadata(managed_dir)
+            project = meta.get('project') if isinstance(meta, dict) else None
+            if project:
+                queued = claude_quota.admit_queue_continuation(
+                    db, ROOT, str(Path(STATE).parent / 'quick-state'), project,
+                    now=dt.datetime.now().timestamp(),
+                    snapshot=claude_result if isinstance(claude_result, dict) and claude_result.get('status') == 'observed' else None)
+                with db:
+                    scheduler.put(db, 'claude_queue_last', dict(queued, checked_at=dt.datetime.now().timestamp()))
+        except Exception as error:
+            with db:
+                scheduler.put(db, 'claude_queue_last', {'status': 'unavailable', 'checked_at': dt.datetime.now().timestamp(), 'error': type(error).__name__})
         run_due(db, executable)
         try:
             cleanup(STATE)
