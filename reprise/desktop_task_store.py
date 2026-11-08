@@ -307,6 +307,31 @@ class TaskStore:
                 'completed': row[4] is not None, 'delivery': 'handed_over',
                 'instruction': 'Already completed; retrieve the result with get_result.' if row[4] is not None else 'Perform the scoped task, then call submit_result with this attempt_id.'}
 
+    def claim_next(self, claim_key):
+        """Opt-in queue: claim the oldest fresh task in scope. One claim at a time.
+
+        Fresh = never claimed, never attempted, no answer. Uncertain deliveries are
+        skipped and stay awaiting operator reconciliation; they are never redelivered.
+        Execute and submit the claimed task before claiming another.
+        """
+        bounded(claim_key, 'claim_key', 128)
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            row = self.db.execute('''SELECT t.request_key,t.prompt,t.chat_id
+                FROM desktop_task_order o JOIN desktop_tasks t
+                  ON t.scope=o.scope AND t.request_key=o.request_key
+                WHERE o.scope=? AND t.claim_key IS NULL AND t.delivery IS NULL AND t.answer IS NULL
+                ORDER BY o.seq LIMIT 1''', (self.scope,)).fetchone()
+            if row is None:
+                return {'status': 'finished', 'state': 'empty',
+                        'instruction': 'Aucune tâche en file pour ce projet. Rien à réclamer.'}
+            attempt = str(uuid.uuid4())
+            self.db.execute('UPDATE desktop_tasks SET claim_key=?,attempt_id=?,delivery=? WHERE scope=? AND request_key=?',
+                            (claim_key, attempt, 'attempted', self.scope, row[0]))
+        return {'status': 'finished', 'request_key': row[0], 'attempt_id': attempt, 'prompt': row[1],
+                'chat_id': row[2], 'completed': False, 'delivery': 'handed_over',
+                'instruction': 'Perform the scoped task, then call submit_result with this attempt_id. Execute and submit before claiming another.'}
+
     def reserve(self, request_key, claim_key):
         """Reserve one exact task for claim_key without delivering it.
 

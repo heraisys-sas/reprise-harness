@@ -77,12 +77,24 @@ class ClaudeIntegrationTests(unittest.TestCase):
         self.assertIn('/integration-releases/', entry['command'])
         self.assertIn('--expert-state', entry['args'])
         self.assertNotIn('--enable-await', entry['args'])
+        self.assertNotIn('--enable-queue', entry['args'])
         self.assertIn(str(self.state / 'quick-state'), entry['args'])
         self.assertEqual(entry['args'][:3], ['-E', '-s', '-B'])
         self.assertTrue(integration.inspect(self.root, self.home)['managed'])
         self.assertFalse(self.install()['changed'])
         for item in (self.managed / 'backups').rglob('*.json'):
             self.assertEqual(item.stat().st_mode & 0o777, 0o600)
+
+    def test_enable_queue_is_explicit_and_idempotent(self):
+        preview = self.plan(enable_queue=True)
+        self.assertTrue(preview['enable_queue'])
+        self.assertNotEqual(preview['fingerprint'], self.plan()['fingerprint'])
+        self.assertTrue(integration.apply(self.root, preview)['changed'])
+        value = json.loads(self.config.read_text())
+        self.assertIn('--enable-queue', value['mcpServers']['reprise-harness']['args'])
+        manifest = json.loads((self.managed / 'managed.json').read_text())
+        self.assertIs(manifest['enable_queue'], True)
+        self.assertFalse(integration.apply(self.root, self.plan(enable_queue=True))['changed'])
 
     def test_enable_await_is_explicit_idempotent_and_can_be_removed_managed(self):
         preview = self.plan(enable_await=True)
