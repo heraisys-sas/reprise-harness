@@ -30,6 +30,7 @@ def schema(properties, required=None):
 INBOX_TOOLS = [
     {'name': 'register_session', 'description': 'Associate an existing chat initiated in Claude Desktop. Origin and UUID are declarations, not native attestation; never authorizes a resume.', 'inputSchema': schema({'chat_id': TEXT})},
     {'name': 'get_task', 'description': 'Claim an explicitly identified project task. Persist claim_key before calling; reuse after restart.', 'inputSchema': schema({'request_key': TEXT, 'claim_key': TEXT})},
+    {'name': 'claim_next', 'description': 'Opt-in queue: claim the oldest fresh project task without an explicit request_key. One claim at a time; uncertain deliveries are skipped, never redelivered. Persist your claim_key before calling; execute and submit the claimed task before claiming another.', 'inputSchema': schema({'claim_key': TEXT})},
     {'name': 'await_task', 'description': 'Wait (bounded, no inference) for one explicit project task admitted through Quick Apply. A successful response includes the prompt once. If delivery is attempted but receipt is unconfirmed, do not retry or create a replacement admission; ask the operator to reconcile first. Call only in a chat armed for that exact request_key. When idle, stop unless the operator asked you to keep waiting.', 'inputSchema': schema({'request_key': TEXT, 'claim_key': TEXT, 'wait_seconds': {'type': 'integer', 'minimum': 1, 'maximum': MAX_WAIT_CEILING}}, ['request_key', 'claim_key'])},
     {'name': 'submit_result', 'description': 'Complete a claimed task. Only this operation marks completion; identical retries are idempotent.', 'inputSchema': schema({'request_key': TEXT, 'attempt_id': TEXT, 'answer': {'type': 'string', 'minLength': 1, 'maxLength': 2_000_000}})},
     {'name': 'get_result', 'description': 'Retrieve a durable result. Acknowledge explicitly only after safely retaining it.', 'inputSchema': schema({'request_key': TEXT, 'acknowledge': {'type': 'boolean', 'default': False}, 'view': {'type': 'string', 'enum': ['receipt','page','full'], 'default': 'receipt'}, **PAGE_PROPERTIES}, ['request_key'])},
@@ -47,7 +48,7 @@ def outbound_tools():
 
 
 class ClaudeMCP:
-    def __init__(self, tasks, bridge, max_wait=DEFAULT_MAX_WAIT, poll=0.25, progress_interval=0, clock=time.monotonic, wait=None, enable_await=False):
+    def __init__(self, tasks, bridge, max_wait=DEFAULT_MAX_WAIT, poll=0.25, progress_interval=0, clock=time.monotonic, wait=None, enable_await=False, enable_queue=False):
         if type(max_wait) is not int or not 1 <= max_wait <= MAX_WAIT_CEILING:
             raise ValueError('max_wait must be an integer from 1 to %d' % MAX_WAIT_CEILING)
         self.tasks, self.bridge = tasks, bridge
@@ -56,6 +57,9 @@ class ClaudeMCP:
         self.clock = clock
         # await_task is an operator decision per connector configuration: hidden and refused by default.
         self.enable_await = bool(enable_await)
+        # claim_next (opt-in queue) follows the same operator-decision pattern.
+        self.enable_queue = bool(enable_queue)
+        self.hidden_tools = {name for name, enabled in (('await_task', self.enable_await), ('claim_next', self.enable_queue)) if not enabled}
         # wait(cancel, seconds): injectable so tests control time without sleeping.
         self.wait = wait or (lambda cancel, seconds: cancel.wait(seconds) if cancel is not None else time.sleep(seconds))
 
@@ -138,7 +142,7 @@ class ClaudeMCP:
         if method == 'ping':
             return {}
         if method == 'tools/list':
-            tools = [item for item in INBOX_TOOLS if item['name'] != 'await_task' or self.enable_await]
+            tools = [item for item in INBOX_TOOLS if item['name'] not in self.hidden_tools]
             if self.enable_await and self.max_wait != MAX_WAIT_CEILING:
                 # Advertise the effective per-instance cap: the connector may run with a lower
                 # max_wait than MAX_WAIT_CEILING, and a schema advertising 600 makes any larger
@@ -153,7 +157,7 @@ class ClaudeMCP:
         name, args = params.get('name'), params.get('arguments', {})
         if not isinstance(args, dict):
             raise ValueError('Object arguments required')
-        definitions = {item['name']: item for item in INBOX_TOOLS if item['name'] != 'await_task' or self.enable_await}
+        definitions = {item['name']: item for item in INBOX_TOOLS if item['name'] not in self.hidden_tools}
         if name in definitions:
             expected = set(definitions[name]['inputSchema']['properties'])
             required = set(definitions[name]['inputSchema']['required'])
@@ -172,6 +176,8 @@ class ClaudeMCP:
                 return answer
             if name == 'get_task':
                 result = self.tasks.claim(**args)
+            elif name == 'claim_next':
+                result = self.tasks.claim_next(**args)
             elif name == 'register_session':
                 result = self.tasks.register_session(**args)
             elif name == 'submit_result':
@@ -308,13 +314,15 @@ def main():
                         help='longest await_task wait in seconds; raise only after proving the client tolerates it')
     parser.add_argument('--enable-await', action='store_true',
                         help='expose await_task (hidden and refused by default; an operator decision per connector configuration)')
+    parser.add_argument('--enable-queue', action='store_true',
+                        help='expose claim_next (hidden and refused by default; an operator decision per connector configuration)')
     parser.add_argument('--progress-interval', type=float, default=0,
                         help='seconds between notifications/progress during await_task; 0 (default) sends none')
     args = parser.parse_args()
     tasks = TaskStore(args.state, args.project_root)
     bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.expert_state,
                     desktop_state=args.state, allowed_tools=OUTBOUND)
-    facade = ClaudeMCP(tasks, bridge, max_wait=args.max_wait, progress_interval=args.progress_interval, enable_await=args.enable_await)
+    facade = ClaudeMCP(tasks, bridge, max_wait=args.max_wait, progress_interval=args.progress_interval, enable_await=args.enable_await, enable_queue=args.enable_queue)
     send_lock = threading.Lock()
     await_requests = AwaitRequests()
 
