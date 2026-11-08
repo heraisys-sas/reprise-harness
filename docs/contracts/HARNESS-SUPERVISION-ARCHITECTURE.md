@@ -84,7 +84,7 @@ L'équivalence recherchée est celle du parcours utilisateur et des garanties : 
 | DeepSeek Harness | sessions natives, événements, lecteurs usage existants | reprise headless avec profil explicite ; disponibilité quota automatique non validée ; commande générale des enfants persistants à vérifier |
 | Claude Code | transcriptions JSONL avec usage et marqueurs de compactage | détection ; adaptateur de reprise non validé dans engines.py. Ne pas confondre avec l'adaptateur d'expertise |
 | Cowork | métadonnées, audits, livrables, quota/retries/compactage observables | lecture actuellement limitée ; reprise, arrêt et compactage commandables à vérifier |
-| Chat Desktop | logs Quick Apply/MCP, signaux de santé, quotas structurés des rollouts | soumission Quick Apply ; retour MCP pour les tâches Reprise ; boîte de réception des résultats non réclamés (0.1.18). Historique complet et commandes arrêt/compactage non établis |
+| Chat Desktop | logs Quick Apply/MCP, signaux de santé, quotas structurés des rollouts | soumission Quick Apply ; retour MCP pour les tâches Reprise ; boîte de réception des résultats non réclamés (0.1.18) ; **environnement Work local validé (#121)** : chat Desktop gratuit + connecteur MCP + exécution confinée en conteneur (réseau coupé, workspace du projet monté). Historique complet et commandes arrêt/compactage non établis |
 | AutoClaw | détecteur de session avec état, activité, tokens/coût éventuels | pas d'adaptateur de reprise dans ENGINES ; commandes et sémantique quota à valider |
 
 Cette matrice décrit le code inspecté, pas une certification des fournisseurs. Elle devra devenir un registre vivant, validé par fixtures et essais natifs bornés.
@@ -128,6 +128,8 @@ Séparer trois dimensions : capacité demandée (`expertise`, `review`, `batch`,
 ### Contrat cible, pas API déjà disponible
 
 Le pont actuel n'accepte que expertise/review/batch et ses lots renvoient du texte sans appliquer les changements. Ne pas y ajouter `work` comme simple alias : l'exécution avec outils exige un contrat séparé.
+
+**Validation locale du 08/11 (#121)** : un environnement Work réel existe côté Desktop — un chat Desktop gratuit portant le connecteur Reprise MCP et un exécutant confiné (conteneur Docker : réseau coupé, workspace du projet monté en lecture-écriture) a réclamé une tâche (`get_task`), exécuté avec outils dans le workspace, et remis le résultat (`submit_result` accepté, livrable vérifié sur disque). L'automatisation de la création de session et du déclenchement reste à construire (patch #120) ; le retour de réponse ne passe pas par ce canal (outils scopés au client qui exécute le tour).
 
 - Découverte : capacités, destination et mode réels, outils disponibles, périmètre de fichiers, politique de facturation vérifiée et contrôles natifs supportés. Ne jamais annoncer un lancement Work à partir d'un simple chat ciblé.
 - Soumission : demande bornée, critères d'acceptation, manifestes d'entrée et `request_hash`, `work_id` et parent appelant, clé de déduplication, destination, budget et échéance, droits explicites, sorties attendues et politique de publication.
