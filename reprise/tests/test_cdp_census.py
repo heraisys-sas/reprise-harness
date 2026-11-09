@@ -89,9 +89,9 @@ class DryRunTests(unittest.TestCase):
 
 
 class CensusTests(unittest.TestCase):
-    def census_with_fake(self):
+    def census_with_fake(self, transport=None):
         launched = {}
-        fake = FakeTransport()
+        fake = transport if transport is not None else FakeTransport()
 
         def fake_launch(profile=None, origin=None):
             fake.origin = origin
@@ -139,6 +139,88 @@ class CensusTests(unittest.TestCase):
             launch.assert_not_called()
 
 
+class ScriptedTransport(FakeTransport):
+    """Transport renvoyant une séquence de réponses d'évaluation.
+
+    La dernière réponse de la séquence est répétée à l'infini ; chaque
+    evaluate() consomme l'élément suivant. Refuse Input.* comme la base.
+    """
+
+    def __init__(self, responses, **kwargs):
+        super().__init__(**kwargs)
+        self.responses = list(responses)
+        self.evaluations = 0
+
+    def evaluate(self, expression):
+        self.evaluations += 1
+        if len(self.responses) > 1:
+            return self.responses.pop(0)
+        return self.responses[0]
+
+
+CHALLENGE_PAGE = {
+    'registry_selectors': {'composer': False, 'send': False,
+                           'user_message': False, 'assistant_message': False},
+    'alternatives': {'composer': [], 'send': []},
+    'title': 'Just a moment...',
+    'url': 'https://mammouth.ai/chat',
+    'challenge_suspected': True,
+    'challenge_elements': 2,
+    'iframes': [{'id': 'cf-chl-widget-1', 'class': 'challenge-platform'}],
+}
+
+CLEAN_PAGE = {
+    'registry_selectors': {'composer': True, 'send': True,
+                           'user_message': True, 'assistant_message': True},
+    'alternatives': {'composer': [{'tag': 'div'}], 'send': []},
+    'title': 'Claude', 'url': 'https://mammouth.ai/chat',
+    'challenge_suspected': False, 'challenge_elements': 0, 'iframes': [],
+}
+
+EMPTY_PAGE = {
+    'registry_selectors': {'composer': False, 'send': False,
+                           'user_message': False, 'assistant_message': False},
+    'alternatives': {'composer': [], 'send': []},
+    'title': 'Claude', 'url': 'https://mammouth.ai/chat',
+    'challenge_suspected': False, 'challenge_elements': 0, 'iframes': [],
+}
+
+
+class VerdictTests(unittest.TestCase):
+    def run_census(self, responses, **kwargs):
+        transport = ScriptedTransport(responses)
+        with mock.patch.object(cdp_census.claude_cdp_pipe, 'launch_chrome',
+                               lambda profile=None, origin=None: (transport, FakeProc())), \
+             mock.patch.object(cdp_census.claude_cdp_pipe, 'terminate_chrome'), \
+             mock.patch.object(cdp_census.time, 'sleep'):
+            result = cdp_census.census('mammouth', timeout_s=5, **kwargs)
+        return result, transport
+
+    def test_challenge_page_reports_blocked_antibot(self):
+        result, transport = self.run_census([CHALLENGE_PAGE])
+        self.assertEqual(result['verdict'], 'blocked_antibot')
+        self.assertTrue(result['collected']['challenge_suspected'])
+        self.assertTrue(result['collected']['iframes'])
+        # Poll épuisé : 1 évaluation initiale + 5 réévaluations.
+        self.assertEqual(transport.evaluations, 6)
+
+    def test_healthy_page_reports_ready(self):
+        result, transport = self.run_census([CLEAN_PAGE])
+        self.assertEqual(result['verdict'], 'ready')
+        self.assertEqual(transport.evaluations, 1)
+
+    def test_page_without_selectors_or_challenge_is_stale(self):
+        result, _ = self.run_census([EMPTY_PAGE])
+        self.assertEqual(result['verdict'], 'selectors_stale')
+
+    def test_poll_stops_once_challenge_clears(self):
+        result, transport = self.run_census(
+            [CHALLENGE_PAGE, CLEAN_PAGE], wait_for_ready_s=5)
+        self.assertEqual(result['verdict'], 'ready')
+        self.assertEqual(transport.evaluations, 2)
+        self.assertFalse(result['collected']['challenge_suspected'])
+
+
 class ReportTests(unittest.TestCase):
     def test_report_writes_dated_json_and_returns_summary(self):
         directory = tempfile.mkdtemp(prefix='cdp-census-')
@@ -164,6 +246,26 @@ class ReportTests(unittest.TestCase):
              mock.patch.object(cdp_census.claude_cdp_pipe, 'terminate_chrome'):
             cdp_census.census_report('mammouth', timeout_s=5)
         self.assertTrue(directory.is_dir())
+
+    def test_report_summary_distinguishes_blocked_from_stale(self):
+        directory = tempfile.mkdtemp(prefix='cdp-census-')
+        blocked = ScriptedTransport([CHALLENGE_PAGE])
+        with mock.patch.object(cdp_census, 'CENSUS_ROOT', Path(directory)), \
+             mock.patch.object(cdp_census.claude_cdp_pipe, 'launch_chrome',
+                               lambda profile=None, origin=None: (blocked, FakeProc())), \
+             mock.patch.object(cdp_census.claude_cdp_pipe, 'terminate_chrome'), \
+             mock.patch.object(cdp_census.time, 'sleep'):
+            summary = cdp_census.census_report('mammouth', timeout_s=5,
+                                               wait_for_ready_s=1)
+        self.assertIn('challenge antibot probable', summary)
+        self.assertIn('blocked_antibot', summary)
+        stale = ScriptedTransport([EMPTY_PAGE])
+        with mock.patch.object(cdp_census, 'CENSUS_ROOT', Path(directory)), \
+             mock.patch.object(cdp_census.claude_cdp_pipe, 'launch_chrome',
+                               lambda profile=None, origin=None: (stale, FakeProc())), \
+             mock.patch.object(cdp_census.claude_cdp_pipe, 'terminate_chrome'):
+            summary = cdp_census.census_report('mammouth', timeout_s=5)
+        self.assertIn('possiblement obsolètes', summary)
 
 
 if __name__ == '__main__':
