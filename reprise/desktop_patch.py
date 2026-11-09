@@ -41,8 +41,8 @@ MARKER = '/* REPRISE-TRIGGER v1 (#124) */'
 CHUNK = '.vite/build/index.chunk-BBUaTQ8d.js'
 ANCHORS = ('requestQuickWindowDismissWithPayload', 'dispatchOnQuickEntrySubmit',
            'stampSubmission', 'activateQuickEntryWindow')
-SOCKET = Path.home() / '.claude-reprise-trigger.sock'
-TRIGGER_LIMIT = 2000
+SOCKET = Path.home() / '.claude-desktop' / 'quick-entry-reprise.sock'
+TRIGGER_MIN_CHARS = 3  # garde QTi : text.trim().length > 2 (strict)
 BLOCK_SIZE = 4194304
 FRAMEWORK = APP / 'Contents' / 'Frameworks' / 'Electron Framework.framework' / 'Versions' / 'A' / 'Electron Framework'
 DICT_DIGEST_SENTINEL = b'AGbevlPCksUGKNL8TSn7wGmJEuJsXb2A'  # 32 octets
@@ -52,34 +52,66 @@ SLOT_DIGEST_OFFSET = 34
 SLOT_DIGEST_SIZE = 32
 
 INJECTION = """
+;
 ;(function(){
   try {
     var __net = require('net'), __fs = require('fs'), __os = require('os');
-    var __p = __os.homedir() + '/.claude-reprise-trigger.sock';
+    var __p = __os.homedir() + '/.claude-desktop/quick-entry-reprise.sock';
     try { __fs.unlinkSync(__p); } catch (e) {}
+    var __seen = {};
+    function __handle(obj, c) {
+      var isRpc = obj && typeof obj === 'object' && typeof obj.method === 'string';
+      if (isRpc) {
+        var id = obj.id === undefined ? null : obj.id;
+        function reply(result) { try { c.write(JSON.stringify({jsonrpc:'2.0', id:id, result:result}) + '\\n'); } catch (e2) {} }
+        function fail(code, message) { try { c.write(JSON.stringify({jsonrpc:'2.0', id:id, error:{code:code, message:message}}) + '\\n'); } catch (e2) {} }
+        if (obj.method === 'initialize') { reply({serverInfo:{name:'reprise-dispatch', version:'1'}}); return; }
+        if (obj.method === 'quick_entry/capabilities') { reply({dispatch_supported:true, resume_validation_supported:true, protocol:'reprise-dispatch-1'}); return; }
+        if (obj.method === 'quick_entry/submit') {
+          var pr = obj.params || {};
+          var rk = typeof pr.request_key === 'string' ? pr.request_key : null;
+          var text = typeof pr.prompt === 'string' ? pr.prompt : '';
+          if (!rk) { fail(-32602, 'request_key requis'); return; }
+          if (__seen[rk]) { reply({dispatch_attempted:true, admission_only:false, request_key:rk, duplicate:true}); return; }
+          if (text.trim().length < 3) { fail(-32602, 'prompt trop court (garde QTi : > 2 caractères après trim)'); return; }
+          __seen[rk] = true;
+          try { c.write(JSON.stringify({jsonrpc:'2.0', id:id, result:{dispatch_attempted:true, admission_only:false, request_key:rk}}) + '\\n'); } catch (we) {}
+          setImmediate(function() {
+            try { QTi({text:text, images:[], chatId: pr.chatId ? String(pr.chatId) : undefined}); }
+            catch (qe) { console.error('[reprise-dispatch] QTi error:', qe && qe.message); }
+          });
+          return;
+        }
+        fail(-32601, 'méthode inconnue: ' + obj.method);
+        return;
+      }
+      var text = obj && typeof obj.prompt === 'string' ? obj.prompt : '';
+      if (text.trim().length < 3) { try { c.write(JSON.stringify({ok:false, error:'prompt trop court (garde QTi)'}) + '\\n'); c.end(); } catch (e2) {} return; }
+      try { c.write(JSON.stringify({ok:true, dispatched:'queued'}) + '\\n'); c.end(); } catch (we) {}
+      setImmediate(function() {
+        try { QTi({text:text, images:[], chatId: obj && obj.chatId ? String(obj.chatId) : undefined}); }
+        catch (qe) { console.error('[reprise-dispatch] QTi error:', qe && qe.message); }
+      });
+    }
     var __srv = __net.createServer(function(c) {
+      try { c.write(JSON.stringify({hello:true}) + '\\n'); } catch (e0) {}
       var b = '';
       c.on('data', function(d) {
         b += d.toString('utf8');
-        if (b.length > 8192) { try { c.write(JSON.stringify({ok:false, error:'oversized'})); c.end(); } catch (e2) {} }
-      });
-      c.on('end', function() {
-        try {
-          var o = JSON.parse(b);
-          var text = typeof o.text === 'string' ? o.text : '';
-          if (!text || text.length > %(limit)d) { c.write(JSON.stringify({ok:false, error:'text required (<= %(limit)d)'})); c.end(); return; }
-          try { c.write(JSON.stringify({ok:true, dispatched:'queued'})); c.end(); } catch (we) {}
-          setImmediate(function() {
-            try { QTi({text: text, images: []}); } catch (qe) { console.error('[reprise-trigger] QTi error:', qe && qe.message); }
-          });
-        } catch (e) { try { c.write(JSON.stringify({ok:false, error:String(e && e.message || e)})); c.end(); } catch (e2) {} }
+        if (b.length > 8388608) { try { c.end(); } catch (e2) {} return; }
+        var i;
+        while ((i = b.indexOf('\\n')) >= 0) {
+          var line = b.slice(0, i); b = b.slice(i + 1);
+          if (!line.trim()) continue;
+          try { __handle(JSON.parse(line), c); } catch (e) { try { c.write(JSON.stringify({ok:false, error:String(e && e.message || e)}) + '\\n'); } catch (e2) {} }
+        }
       });
       c.on('error', function() {});
     });
     __srv.listen(__p, function() { try { __fs.chmodSync(__p, 384); } catch (e) {} });
   } catch (e) {}
 })();
-""" % {'limit': TRIGGER_LIMIT}
+"""
 
 
 class PatchError(ValueError):
@@ -429,23 +461,52 @@ def status(app=APP):
             'desktop_running': desktop_running(app)}
 
 
+def _readline(sock, timeout=30):
+    buffer = b''
+    sock.settimeout(timeout)
+    while b'\n' not in buffer:
+        chunk = sock.recv(65536)
+        if not chunk:
+            raise PatchError('Connexion dispatch fermée avant réponse.')
+        buffer += chunk
+    return buffer.split(b'\n', 1)[0].decode()
+
+
 def send_trigger(text, chat_id=None):
-    """Client du socket de déclenchement : une ligne JSON, la réponse, déconnexion."""
-    payload = {'text': str(text)[:TRIGGER_LIMIT]}
-    if chat_id:
-        payload['chatId'] = str(chat_id)
+    """Client du socket de dispatch : greeting, une ligne {'prompt', 'chatId'}, la réponse.
+
+    Compatible avec le mode one-ligne de claude_desktop_rpc.dispatch_turn.
+    """
+    if len(text.strip()) < TRIGGER_MIN_CHARS:
+        raise PatchError(f'Le déclencheur doit faire au moins {TRIGGER_MIN_CHARS} caractères après trim (garde QTi).')
     client = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
     client.settimeout(30)
     client.connect(str(SOCKET))
-    client.sendall(json.dumps(payload).encode())
-    client.shutdown(socket_module.SHUT_WR)  # signale 'end' au serveur, qui répond
-    response = b''
-    while True:
-        chunk = client.recv(65536)
-        if not chunk:
-            break
-        response += chunk
-        if response.endswith(b'}'):
-            break
+    greeting = json.loads(_readline(client))
+    if not (isinstance(greeting, dict) and greeting.get('hello') is True):
+        client.close()
+        raise PatchError('Greeting dispatch inattendu.')
+    payload = {'prompt': text}
+    if chat_id:
+        payload['chatId'] = str(chat_id)
+    client.sendall(json.dumps(payload).encode() + b'\n')
+    reply = json.loads(_readline(client))
     client.close()
-    return json.loads(response)
+    return reply
+
+
+def send_rpc(method, params=None):
+    """Client JSON-RPC one-shot (initialize / quick_entry/capabilities / quick_entry/submit)."""
+    client = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+    client.settimeout(30)
+    client.connect(str(SOCKET))
+    greeting = json.loads(_readline(client))
+    if not (isinstance(greeting, dict) and greeting.get('hello') is True):
+        client.close()
+        raise PatchError('Greeting dispatch inattendu.')
+    client.sendall(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params or {}}).encode() + b'\n')
+    reply = json.loads(_readline(client))
+    client.close()
+    if 'error' in reply:
+        raise PatchError('Erreur RPC: ' + str(reply['error']))
+    return reply.get('result') or {}
