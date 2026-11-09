@@ -83,3 +83,12 @@ let r = !!e.text && e.text.trim().length > 2 || e.images.length > 0
 4. La copie patchée partage l'userData avec l'originale (même login, mêmes
    chats, mêmes connecteurs) ; single-instance : les deux apps ne tournent pas
    en même temps.
+5. **Nommage validé par l'opérateur (09/11/2026)** : l'originale reste
+   `/Applications/Claude.app` (intacte, mise à jour par Squirrel) ; la copie
+   patchée s'appelle **`~/Applications/ReClaude.app`** — app par défaut de
+   `desktop_patch` (`COPY_APP`). Le nom du bundle n'a pas d'effet sur la
+   signature (vérifié : `codesign --verify --deep --strict` OK après
+   renommage) ; seule l'identité de signature ad-hoc compte. C'est la copie
+   qui crée le socket `~/.claude-desktop/quick-entry-reprise.sock` : un socket
+   présent + greeting `{"hello":true}` prouve que ReClaude (et non
+   l'originale) tourne.

@@ -31,6 +31,7 @@ import time
 from pathlib import Path
 
 APP = Path('/Applications/Claude.app')
+COPY_APP = Path.home() / 'Applications' / 'ReClaude.app'  # copie patchée, app par défaut de patch()
 ASAR = APP / 'Contents' / 'Resources' / 'app.asar'
 PLIST = APP / 'Contents' / 'Info.plist'
 PATCH_DIR = Path.home() / 'Library' / 'Application Support' / 'Reprise' / 'patches' / 'claude'
@@ -202,7 +203,7 @@ def _chunk_text(raw, header_size, entry):
     return raw[start:start + entry['size']].decode('utf-8', 'replace')
 
 
-def desktop_running(app=APP):
+def desktop_running(app=COPY_APP):
     """L'app CIBLE tourne-t-elle ? (matching par chemin de binaire, pas par nom)."""
     probe = subprocess.run(['pgrep', '-f', str(Path(app) / 'Contents' / 'MacOS')], capture_output=True)
     return probe.returncode == 0
@@ -313,7 +314,7 @@ def _version():
         return None
 
 
-def patch(app=APP):
+def patch(app=COPY_APP):
     asar = Path(app) / 'Contents' / 'Resources' / 'app.asar'
     plist_path = Path(app) / 'Contents' / 'Info.plist'
     paths = _paths(app)
@@ -382,7 +383,7 @@ def _bump_entry(tree, path, size, integrity):
         target['integrity'] = integrity
 
 
-def verify_patch(app=APP):
+def verify_patch(app=COPY_APP):
     asar = Path(app) / 'Contents' / 'Resources' / 'app.asar'
     raw, tree, header_size, json_length = read_asar_raw(asar.read_bytes())
     entry = _chunk_entry(tree)
@@ -418,7 +419,7 @@ def verify_patch(app=APP):
     return True
 
 
-def restore(app=APP):
+def restore(app=COPY_APP):
     asar = Path(app) / 'Contents' / 'Resources' / 'app.asar'
     plist_path = Path(app) / 'Contents' / 'Info.plist'
     paths = _paths(app)
@@ -451,7 +452,7 @@ def restore(app=APP):
     return {'status': 'restored', 'asar_sha256': hashlib.sha256(asar.read_bytes()).hexdigest()}
 
 
-def status(app=APP):
+def status(app=COPY_APP):
     asar = Path(app) / 'Contents' / 'Resources' / 'app.asar'
     raw, tree, header_size, json_length = read_asar_raw(asar.read_bytes())
     entry = _chunk_entry(tree)
