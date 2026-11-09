@@ -32,11 +32,12 @@ Tous les agents partagent le compte GitHub `heraisys-sas` : l'assigné ne distin
 ## Architecture — canaux de délégation et leurs limites
 | Canal | Sens | Limite |
 |---|---|---|
-| **Codex** (`reprise_delegate`) | aller-retour, vérifiable | **seul opérationnel** ; aucun plafond local quotidien Codex ; contrôles fournisseur existants (`quota_blocked`) conservés |
-| **Quick Entry / Quick Apply** | Reprise → Claude Desktop | **unidirectionnel** : soumet un tour, ne relit PAS la réponse (`response: None`) |
+| **Codex** (`reprise_delegate`) | aller-retour, vérifiable | opérationnel ; aucun plafond local quotidien Codex ; contrôles fournisseur existants (`quota_blocked`) conservés |
+| **Claude — dispatch natif QTi** | Reprise → Claude Desktop | push unique : socket `~/.claude-desktop/quick-entry-reprise.sock` tenu par ReClaude (`initialize` → `quick_entry/capabilities` → `quick_entry/submit`) ; `dispatch_attempted` est fire-and-forget, preuve d'arrivée ET de traitement requises avant de conclure |
+| **Claude — bridge MCP orchestration** | aller-retour durable | backend `claude-desktop` de `reprise_delegate` : admission + collecte `submit_result` ; peut renvoyer `engine_unavailable` à tort (état stale du bridge alors que le socket répond) → diagnostic par `connect()` direct avant toute autre conclusion |
 | **MCP `get_task`/`submit_result`** | aller-retour via SQLite | 1 fichier joint, 1 réponse/tâche ; Claude doit invoquer l'outil (pas push) |
 
-`sampling/createMessage` est refusé par le client MCP Desktop (`-32601`). Pas d'API d'inférence publique. Voir `docs/integrations/claude/CLAUDE-MCP-PROBE.md` et `docs/integrations/harness/reprise-delegation.md`.
+Un **seul connecteur actif côté Claude** depuis #124 : le dispatch natif QTi porté par ReClaude. `~/.claude-desktop/quick-entry.sock` mort (`connect()` refusé, daemon historique arrêté) est l'état normal — ne jamais « réparer » une délégation en démarrant ce daemon, c'est un faux diagnostic. `sampling/createMessage` est refusé par le client MCP Desktop (`-32601`). Pas d'API d'inférence publique. Voir `docs/integrations/claude/CLAUDE-MCP-PROBE.md` et `docs/integrations/harness/reprise-delegation.md`.
 
 ## Contraintes d'environnement (à connaître avant de coder)
 - **Sandbox** : écriture limitée au workspace. Bloqué : `~/.claude-desktop` (socket orphinel impossible à `rm`), `~/.dsh`, `Documents/ChatGPT/productivité`. Un agent qui l'ignore boucle — c'est arrivé.
@@ -44,7 +45,7 @@ Tous les agents partagent le compte GitHub `heraisys-sas` : l'assigné ne distin
 - **Clone du pont MCP** (`Documents/ChatGPT/productivité` = même dossier que `~/Library/Mobile Documents/…/productivité`, inode `.git` identique) = `project_root` du pont `reprise_delegate`. Son état de synchronisation se lit dans l'historique Git et les issues, pas dans ce fichier : avant tout `merge` dans ce clone, revérifier le chevauchement entre les changements entrants et les fichiers modifiés non committés (préservés), puis vérifier que `reprise_delegate` avec `paths` résout (`resolve(strict=True)`).
 
 ## Nomenclature (Unix) — respecter
-- **Services/daemons** : `codexd` (daemon Codex / `app-server daemon`), `claude-desktopd` (daemon Quick Apply).
+- **Services/daemons** : `codexd` (daemon Codex / `app-server daemon`), `claude-desktopd` (daemon Quick Apply, **historique/arrêté depuis #124** — le connecteur Claude actif est l'app ReClaude, pas un daemon).
 - **Onglet** : « Connexions » (onglet unique, Picker interne codex-desktop / claude-desktop).
 - **Chemins** : « socket » (jamais « serveur » — le mot « serveur » avait 3 sens, risque d'arrêter le mauvais service).
 - **Marque** : « Quick Apply » (pas « Quick Entry ») dans l'UI et les messages.
@@ -56,11 +57,9 @@ Tous les agents partagent le compte GitHub `heraisys-sas` : l'assigné ne distin
 - Les timestamps de l'UI sont en **heure locale 24h** (helpers `localTime`/`localDateTime` dans `Dashboard.swift`).
 - `runtime.terminate()` doit être résilient (un `killpg` refusé ne doit pas écraser le retour de l'appelant) — corrigé, source du bug des quotas manquants.
 
-## Quick Apply — architecture réelle
-- Le CDP ne vise **jamais l'app Claude Desktop** (port CDP protégé par Anthropic). Le dispatcher pilote un **Google Chrome dédié**, profil isolé `~/.local/share/claude-cdp/chrome`, lancé par `claude_cdp_pipe.launch_chrome()` avec `--remote-debugging-pipe` (pipe fd 3/4, **pas de port TCP**) et `--app=https://claude.ai`. Voir `claude_cdp_pipe.py::build_chrome_args`.
-- `claude_desktop_applyd.py` = **supprimé** : le dispatch CDP pipe est fait en direct par `claude_desktop_quick.py` ; tout socket applyd résiduel est orphelin et sans rôle.
-- **`claude-desktopd` = `claude_desktop_quick.py`**, lancé par Reprise avec `--socket ~/.claude-desktop/quick-entry.sock --state …/Reprise/quick-state --project-root …` ; c'est lui l'unique point d'entrée Quick Apply (`quick-entry.sock`) et le pilote CDP pipe.
-- Diagnostic dispatch : un `Connection refused` dans le reçu (`dispatch_error`) après une admission OK vient de la **connexion CDP vers le Chrome dédié**. Vérifier que le **Chrome dédié est lancé** (aucun process `Google Chrome` avec `--user-data-dir=...claude-cdp` = cause des échecs du 02/11) via `cdp/resume`/`launch_chrome`, jamais à la main sans le profil dédié.
+## Quick Apply — architecture réelle (mise à jour 10/11, lot #124)
+- **Canal actif unique : dispatch natif QTi.** L'app ReClaude (Claude Desktop re-signé, JS injecté dans l'asar) tient elle-même le socket `~/.claude-desktop/quick-entry-reprise.sock` et pousse les prompts vers claude.ai. Méthodes exposées : `initialize`, `quick_entry/capabilities`, `quick_entry/submit` (`request_key` requis, `chatId` optionnel). Toute autre méthode → `-32601` (normal).
+- **Le daemon CDP historique `claude-desktopd` (`claude_desktop_quick.py`, socket `quick-entry.sock`) est ARRÊTÉ et non requis.** Un `quick-apply-daemon-status` → `stopped` est l'état normal depuis #124 : ne jamais le démarrer pour « réparer » une délégation — faux diagnostic. Le bridge MCP `claude-desktop` peut renvoyer `engine_unavailable` (« Endpoint Quick Apply injoignable ») alors que le socket répond : diagnostic par `connect()` direct + greeting avant toute conclusion ; contournement validé = JSON-RPC `AF_UNIX` direct (pas de reçu durable → persister `request_key`/`chatId` localement, `dispatch_attempted` = fire-and-forget).
 - `claude_desktop_apply.launch()` / `shutdown()` **refusent** (`return False`) : adoption d'un navigateur non possédé interdite tant que le lifecycle n'est pas implémenté.
 
 ## Modèles & escalade
