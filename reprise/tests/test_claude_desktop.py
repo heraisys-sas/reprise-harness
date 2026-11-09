@@ -131,6 +131,69 @@ class ConnectionTests(unittest.TestCase):
             claude_desktop.review('.', 'Explain the delegation contract', values={'socket': '/chosen.sock'})
         self.assertEqual(Recorder.init_args[1], {'socket': '/chosen.sock'})
 
+class CdpStatusClient(FakeClient):
+    payload = {'status': 'idle'}
+    def call(self, method, params):
+        return CdpStatusClient.payload if method == 'cdp/status' else super().call(method, params)
+
+
+class RoutesTests(unittest.TestCase):
+    def setUp(self):
+        self.db = sqlite3.connect(':memory:')
+        self.addCleanup(self.db.close)
+        engines.setup(self.db)
+
+    def routes(self, client):
+        with patch('claude_desktop_rpc.Client', client):
+            return claude_desktop.status(self.db, '/private/tmp')['routes']
+
+    def test_no_targets_reports_cdp_route_disabled(self):
+        routes = self.routes(CdpStatusClient)
+        self.assertEqual(routes['cdp_web'], {'enabled': False, 'state': 'désactivée',
+                                             'reason': 'Aucune cible CDP activée ; activation par configuration uniquement.'})
+
+    def test_enabled_ready_target_reports_ready(self):
+        CdpStatusClient.payload = {'status': 'idle', 'targets': {'x': {'enabled': True, 'ready': True}}}
+        self.addCleanup(setattr, CdpStatusClient, 'payload', {'status': 'idle'})
+        routes = self.routes(CdpStatusClient)
+        self.assertEqual(routes['cdp_web']['state'], 'prête')
+        self.assertTrue(routes['cdp_web']['enabled'])
+
+    def test_enabled_busy_target_reports_unavailable(self):
+        CdpStatusClient.payload = {'status': 'busy', 'targets': {'x': {'enabled': True, 'ready': False}}}
+        self.addCleanup(setattr, CdpStatusClient, 'payload', {'status': 'idle'})
+        self.assertEqual(self.routes(CdpStatusClient)['cdp_web']['state'], 'indisponible')
+
+    def test_unreachable_daemon_reports_unavailable_with_reason(self):
+        with patch('claude_desktop_rpc.Client', side_effect=engines.Unavailable('engine_unavailable', 'Daemon Quick Apply injoignable.')):
+            result = claude_desktop.status(self.db, '/private/tmp')['routes']
+        self.assertEqual(result['cdp_web']['state'], 'indisponible')
+        self.assertEqual(result['cdp_web']['reason'], 'Daemon Quick Apply injoignable.')
+
+    def test_native_patch_follows_socket_probe(self):
+        import socket as socket_module
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / 'probe.sock')
+            listener = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+            self.addCleanup(listener.close)
+            listener.bind(path)
+            self.db.execute('INSERT INTO engine_settings VALUES (?,?)', ('claude-desktop', json.dumps({'socket': path})))
+            self.db.commit()
+            routes = self.routes(CdpStatusClient)
+            self.assertEqual(routes['native_patch']['state'], 'disponible')
+            listener.close()
+            Path(path).unlink()
+            routes = self.routes(CdpStatusClient)
+        self.assertEqual(routes['native_patch']['state'], 'indisponible')
+
+    def test_status_payload_stays_backward_compatible(self):
+        with patch('claude_desktop_rpc.Client', CdpStatusClient):
+            result = claude_desktop.status(self.db, '/private/tmp')
+        self.assertEqual(result['mode'], 'auto')
+        self.assertIn('configured_socket', result)
+        self.assertIn('candidates', result)
+        self.assertTrue(result['candidates'])
+
 
 if __name__ == '__main__':
     unittest.main()

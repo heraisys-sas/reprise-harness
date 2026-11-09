@@ -18,17 +18,26 @@ def scripts():
             return True
     capture = Capture()
     path = '/chat/00000000-0000-0000-0000-000000000001'
-    text = 'Only this bounded prompt'
+    # Empreinte canonique (#108) : la forme CRLF/NBSP doit canoniser vers ce texte.
+    text = 'First paragraph.\n\nSecond one follows\nafter CRLF. Ends with NBSP.'
     transport._prepare(capture, path)
     prepare = capture.expression
-    transport._send(capture, path, hashlib.sha256(text.encode()).hexdigest())
-    return dict(prepare=prepare, send=capture.expression, state=transport.JS_STATE, text=text)
+    transport._send(capture, path, hashlib.sha256(transport.canonical_text(text).encode()).hexdigest())
+    return dict(prepare=prepare, send=capture.expression,
+                state=transport._js_state(transport.JS_HELPERS), text=text)
+
+
+NODE_FALLBACKS = (
+    Path.home() / '.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/node/bin/node',
+)
 
 
 def working_node():
     """Un node qui existe sur le PATH mais ne s'exécute pas (vendu par une app hôte) ne sert à rien."""
-    candidate = shutil.which('node')
-    if candidate:
+    candidates = [shutil.which('node'), *[str(p) for p in NODE_FALLBACKS if p.exists()]]
+    for candidate in candidates:
+        if not candidate:
+            continue
         try:
             probe = subprocess.run([candidate, '-e', 'process.exit(0)'], capture_output=True, timeout=15)
             if probe.returncode == 0:
@@ -42,7 +51,7 @@ class PageExpressions(unittest.TestCase):
     @unittest.skipUnless(working_node(), "Node exécutable introuvable sur le PATH (les nodes vendus par les apps hôtes sont sondés et écartés)")
     def test_actual_expressions_on_synthetic_dom(self):
         fixture = Path(__file__).with_name('fixtures') / 'desktop_apply_dom.mjs'
-        result = subprocess.run([shutil.which('node'), str(fixture)], input=json.dumps(scripts()),
+        result = subprocess.run([working_node(), str(fixture)], input=json.dumps(scripts()),
                                 capture_output=True, text=True, timeout=20, check=True)
         report = json.loads(result.stdout)
         self.assertEqual(report['status'], 'passed')

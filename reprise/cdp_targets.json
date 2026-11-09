@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "targets": {
+    "claude-web": {
+      "enabled": false,
+      "origin": "https://claude.ai",
+      "chat_url_pattern": "/chat/{chat_id}",
+      "profile": "chrome",
+      "max_prompt_chars": 12000,
+      "selectors": {
+        "composer": "[data-testid=\"compose-textarea\"]",
+        "send": "[data-testid=\"chat-input-send\"]",
+        "user_message": "[data-testid^=\"user-message\"]",
+        "assistant_message": "[data-testid=\"assistant-message\"]"
+      }
+    },
+    "mammouth": {
+      "enabled": false,
+      "origin": "https://mammouth.ai",
+      "chat_url_pattern": "/chat/{chat_id}",
+      "profile": "mammouth",
+      "max_prompt_chars": 12000,
+      "selectors": {
+        "composer": "[data-testid=\"composer-input\"]",
+        "send": "[data-testid=\"send-button\"]",
+        "user_message": "[data-testid=\"user-turn\"]",
+        "assistant_message": "[data-testid=\"assistant-turn\"]"
+      }
+    }
+  }
+}

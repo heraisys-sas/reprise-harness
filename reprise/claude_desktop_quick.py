@@ -26,6 +26,7 @@ import uuid
 
 import claude_desktop
 import claude_desktop_apply
+import cdp_targets
 from claude_desktop import build_payload, validate_chat_id
 from delegation_store import Store, file_evidence
 
@@ -277,6 +278,7 @@ class Endpoint:
                     'dispatch_channel': 'cdp-pipe',
                     'resume_validation_supported': False,
                     'task_return_supported': self.tasks is not None,
+                    'cdp_targets': cdp_targets.enabled_names(),
                     'project_root': self.tasks.scope if self.tasks else None,
                     'state_sha256': hashlib.sha256(str(self.state.resolve()).encode()).hexdigest(),
                     'reason': reason,
@@ -317,12 +319,21 @@ class Endpoint:
         profile = cdp._profile_dir()
         lock_path, _ = cdp._hostname_pid_lock(profile)
         busy = cdp.check_profile_busy(lock_path)
+        targets = {}
+        for name in sorted(cdp_targets._registry()):
+            config = cdp_targets.load(name)
+            if config is None:
+                continue
+            ready = busy is None and Path(cdp._chrome_bin()).exists()
+            targets[name] = {'enabled': config['enabled'], 'ready': ready}
         if busy is not None:
             return {'ok': False, 'status': 'profile_busy', 'pid': busy['pid'],
-                    'lock_mtime': busy['lock_mtime']}
+                    'lock_mtime': busy['lock_mtime'], 'targets': targets}
         if not Path(cdp._chrome_bin()).exists():
-            return {'ok': False, 'status': 'chrome_missing'}
-        return {'ok': True, 'status': 'idle', 'cdp_resume_supported': Path(_cdp_pipe()._chrome_bin()).exists()}
+            return {'ok': False, 'status': 'chrome_missing', 'targets': targets}
+        return {'ok': True, 'status': 'idle',
+                'cdp_resume_supported': Path(_cdp_pipe()._chrome_bin()).exists(),
+                'targets': targets}
 
     def _cdp_resume(self, args):
         """Resume via CDP pipe: spawn lazy, target unique page, deposit+click."""
@@ -330,6 +341,8 @@ class Endpoint:
             raise ValueError('Objet de soumission CDP requis')
         chat_id = args.get('chat_id') or args.get('chatId')
         prompt = args.get('prompt')
+        target = args.get('target')
+        target_name = target if isinstance(target, str) and target else 'claude-web'
         try:
             chat_uuid = validate_chat_id(chat_id)
         except ValueError:
@@ -338,11 +351,20 @@ class Endpoint:
             return {'ok': False, 'status': 'target_missing', 'reason': 'chat_id invalide ou absent'}
         if not prompt or len(prompt.strip()) < 2:
             return {'ok': False, 'status': 'paramètres', 'reason': 'prompt requis (≥2 caractères)'}
-        if len(prompt) > 12000:
-            return {'ok': False, 'status': 'paramètres', 'reason': 'prompt trop long'}
+        config = cdp_targets.load(target_name)
+        if config is None or not config['enabled']:
+            # Route gate BEFORE any transport touch: all targets ship disabled.
+            return {'ok': False, 'status': 'route_disabled',
+                    'reason': f"cible '{target_name}' absente ou désactivée"}
+        max_prompt_chars = config['max_prompt_chars']
+        if len(prompt) > max_prompt_chars:
+            return {'ok': False, 'status': 'paramètres',
+                    'reason': f'prompt trop long (> {max_prompt_chars})'}
 
         cdp_mod = _cdp_pipe()
-        profile = cdp_mod._profile_dir()
+        profile_name = config['profile']
+        # Default profile: arg-less call keeps the historical path and lock name.
+        profile = cdp_mod._profile_dir(None if profile_name in (None, '', 'chrome') else profile_name)
         lock_path, _ = cdp_mod._hostname_pid_lock(profile)
 
         busy = cdp_mod.check_profile_busy(lock_path)
@@ -354,20 +376,21 @@ class Endpoint:
             return {'ok': False, 'status': 'chrome_missing'}
 
         try:
-            transport, proc = cdp_mod.launch_chrome(profile)
+            transport, proc = cdp_mod.launch_chrome(profile, origin=config['origin'])
         except RuntimeError as exc:
             return {'ok': False, 'status': 'session', 'reason': str(exc)}
 
+        origin = config['origin']
+        chat_path = config['chat_url_pattern'].replace('{chat_id}', chat_uuid)
         try:
             try:
                 # Single pick-and-attach: getTargets → select /chat/<uuid> → attachToTarget flatten
                 transport.pick_and_attach(chat_uuid)
             except RuntimeError:
-                # Cold start: launch_chrome opens only https://claude.ai; create
+                # Cold start: launch_chrome opens only the target origin; create
                 # the chat target explicitly, then poll briefly before picking
                 # (the new target takes a moment to register and load).
-                transport.call('Target.createTarget',
-                               {'url': 'https://claude.ai/chat/' + chat_uuid})
+                transport.call('Target.createTarget', {'url': origin + chat_path})
                 attached = None
                 for _ in range(20):
                     try:
@@ -382,7 +405,7 @@ class Endpoint:
                     except Exception as diag_error:
                         seen = [f'<getTargets échoué: {diag_error}>']
                     raise RuntimeError(
-                        f'Page claude.ai/chat/{chat_uuid} introuvable après createTarget ; cibles: {seen}')
+                        f'Page {chat_path} introuvable après createTarget ; cibles: {seen}')
         except Exception as exc:
             cdp_mod.terminate_chrome(proc)
             return {'ok': False, 'status': 'session', 'reason': str(exc)}
@@ -393,13 +416,14 @@ class Endpoint:
                     'detail': 'Composeur indisponible'}
 
         # Garde anti-redirection : la page attachée doit être exactement le
-        # chat visé (claude.ai redirige /chat/<uuid> inconnu vers /new — une
-        # insertion là-bas ne laisse aucune trace dans le bon chat).
+        # chat visé (une redirection /chat/<uuid> inconnu vers une page sans
+        # identité ne laisse aucune trace dans le bon chat).
+        json_path = json.dumps(chat_path)
         try:
             on_target = transport.evaluate(
-                "(function(){return location.origin==='https://claude.ai'"
-                " && location.pathname==='/chat/" + chat_uuid + "'"
-                " && !location.search && !location.hash})()")
+                "(function(){return location.origin===" + json.dumps(origin)
+                + " && location.pathname===" + json_path
+                + " && !location.search && !location.hash})()")
         except Exception as exc:
             cdp_mod.terminate_chrome(proc)
             return {'ok': False, 'status': 'cible', 'stage': 'cible',
@@ -414,9 +438,11 @@ class Endpoint:
                     'detail': 'Page attachée ≠ /chat/' + chat_uuid,
                     'actual_url': url_now}
 
+        composer_selector = json.dumps(config['selectors']['composer'])
         try:
             compose_check = transport.evaluate(
-                "(function(){const el=document.querySelector('[data-testid=compose-textarea]');return el?{hasText:!!el.innerText,textLength:el.innerText.length}:null})()")
+                "(function(){const el=document.querySelector(" + composer_selector
+                + ");return el?{hasText:!!el.innerText,textLength:el.innerText.length}:null})()")
         except Exception as exc:
             cdp_mod.terminate_chrome(proc)
             return {'ok': False, 'status': 'send_failed',
@@ -431,7 +457,8 @@ class Endpoint:
             # Event-driven insertion: focus + execCommand('insertText') fires
             # beforeinput/input through the browser input pipeline so the
             # claude.ai React state actually observes the text.
-            inserted = claude_desktop_apply._insert(transport, prompt)
+            selectors = config['selectors']
+            inserted = claude_desktop_apply._insert(transport, prompt, selectors=selectors)
         except Exception as exc:
             cdp_mod.terminate_chrome(proc)
             return {'ok': False, 'status': 'send_failed',
@@ -446,13 +473,13 @@ class Endpoint:
         try:
             # Pre-click gate: the send button must be enabled; one Enter
             # keydown fallback, else honest incertain without a click.
-            armed = claude_desktop_apply._arm(transport)
+            armed = claude_desktop_apply._arm(transport, selectors=selectors)
             # Baseline du compteur user-message mesurée AVANT le clic (une
             # baseline mesurée après serait déjà incrémentée par l'envoi).
             try:
                 before_state = transport.evaluate(
                     "(function(){return {n: document.querySelectorAll("
-                    "'[data-testid^=\"user-message\"]').length,"
+                    + json.dumps(selectors['user_message']) + ").length,"
                     " url: location.pathname}})()")
             except Exception:
                 before_state = {}
@@ -467,7 +494,7 @@ class Endpoint:
                     # brancher l'envoi sur pointerdown plutôt que click.
                     click_result = transport.evaluate(
                         "(function(){"
-                        "const btn=document.querySelector('[data-testid=chat-input-send]');"
+                        "const btn=document.querySelector(" + json.dumps(selectors['send']) + ");"
                         "if(!btn)return {clicked:false, reason:'bouton absent'};"
                         "if(btn.disabled)return {clicked:false, reason:'disabled'};"
                         "const o={bubbles:true,cancelable:true,composed:true,view:window,button:0};"
@@ -486,7 +513,7 @@ class Endpoint:
                     # user-message de plus que la baseline ET URL toujours
                     # /chat/<uuid>. « Composeur vidé » seul confirme aussi
                     # une redirection vers un nouveau chat — jamais suffisant.
-                    if not claude_desktop_apply._confirm(transport, before_state):
+                    if not claude_desktop_apply._confirm(transport, before_state, selectors=selectors):
                         stage = 'incertain'
                 except Exception:
                     stage = 'incertain'
