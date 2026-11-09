@@ -1,6 +1,6 @@
 # Premier lot — protection des délégations persistantes
 
-Implémentation du 21 octobre 2026, sans appel fournisseur réel ni redémarrage de service. Ce lot consolide les prototypes existants ; leur réunion en service logique commun et le branchement autonome Quick Apply → tâche MCP restent à livrer.
+Implémentation du 21 octobre 2026, sans appel fournisseur réel ni redémarrage de service. Ce lot consolide les prototypes existants ; leur réunion en service logique commun et le branchement autonome dispatch QTi → tâche MCP restent à livrer.
 
 ## Contrat utilisable
 
@@ -20,13 +20,15 @@ L’identité couvre les arguments et les SHA-256 des fichiers explicites, born�
 
 Le verrou existant conserve **une expertise active par répertoire d’état**, pour éviter les lancements simultanés vers une destination native dont l’exclusivité n’est pas assurée. Les transactions SQLite se terminent avant l’inférence. La profondeur de délégation est bornée à huit liens pour contenir la récursion et le parcours d’ascendance ; ce n’est ni un quota quotidien ni un nombre maximal d’itérations internes. Les racines indépendantes terminées peuvent être répétées. Aucun arrêt automatique, relance ou nouvelle délégation n’est déclenché par une suspicion de boucle interne ; leur observation détaillée reste le lot de supervision prévu au plan.
 
-## Quick Apply et retour Claude
+## Dispatch QTi et retour Claude
 
-`quick_entry/submit` exige également `request_key`, stockée dans `quick.sqlite`. Même clé retrouve la même soumission. `quick_entry/requests` expose recherche/liste/acquittement du reçu local. Les fichiers joints sont identifiés par contenu au moment de l’admission ; le pilote ne bénéficie pas pour autant d’un fichier matériel immuable. Une panne entre l’admission et le reçu laisse une tentative incertaine, sans nouvel envoi. Le daemon utilise un verrou de socket, refuse de remplacer un socket vivant et borne à cinq secondes l’attente inactive d’un client ; il conserve un traitement séquentiel.
+> Mise à jour 10/11/2026 (lot #124) : le dispatch actif est le **dispatch natif QTi** — l'app ReClaude tient `~/.claude-desktop/quick-entry-reprise.sock`. Le daemon `claude-desktopd` (`quick-entry.sock`) est historique/arrêté ; son démarrage n'est jamais une étape de diagnostic de délégation.
 
-Le pont transmet la clé à Quick Apply et propage `admission_only:true`, `response:null`. Son `finished` signifie seulement reçu de soumission ; **seul `submit_result` accepté et commité vaut résultat Claude**. Le lot n’active aucun pilote Desktop ni repli payant.
+`quick_entry/submit` exige également `request_key`. Même clé retrouve la même soumission (déduplication mémoire côté serveur QTi ; perdue au redémarrage de l'app — elle ne justifie jamais un renvoi sans opérateur). Les fichiers joints sont identifiés par contenu au moment de l’admission ; le pilote ne bénéficie pas pour autant d’un fichier matériel immuable. Une panne entre l’admission et le reçu laisse une tentative incertaine, sans nouvel envoi.
 
-Mode orchestré (issue #102) : `reprise_delegate(backend="claude-desktop")` avec `tasks` et `request_key` enchaîne dans un seul appel l’admission durable (`tasks.admit` dans `state/quick.sqlite`, prompt augmenté stocké avec la clé, plafond 12 000 caractères sans troncature), le dispatch Quick Apply (`purpose:'delegation'`, `orchestrated:true`), puis la collecte bornée (`max_wait`, plafond 600 s) du `submit_result` validé, avec empreinte SHA-256 canonique. La ligne est marquée `delivery='attempted'` seulement après le succès de `initialize`, sous garde SQL (`delivery IS NULL AND answer IS NULL`) : un rappel avec la même clé ne réémet jamais — il retourne un reçu explicite `admission_only` (ou la réponse collectée si déjà enregistrée). Sans canal de retour disponible, l’appel échoue avant envoi (`return_channel_unavailable`, `automatic_fallback:false`). Voir les tests `test_delegation_desktop_cycle.py`, `test_delegation_desktop_result.py`, `test_delegation_desktop_redispatch.py`.
+Le pont transmet la clé au dispatch et propage `admission_only:true`, `response:null`. Son `finished` signifie seulement reçu de soumission ; **seul `submit_result` accepté et commité vaut résultat Claude**. Le dispatch QTi est fire-and-forget : `dispatch_attempted` ne prouve ni la livraison au chat ni le traitement — preuve d'envoi explicite (compteur de messages, composeur vidé) et preuve de traitement (`claim_key`/`attempt_id` attribués) exigées avant toute conclusion. Aucun pilote Desktop ni repli payant activé.
+
+Mode orchestré (issue #102) : `reprise_delegate(backend="claude-desktop")` avec `tasks` et `request_key` enchaîne dans un seul appel l’admission durable (`tasks.admit` dans `state/quick.sqlite`, prompt augmenté stocké avec la clé, plafond 12 000 caractères sans troncature), le dispatch (`purpose:'delegation'`, `orchestrated:true`, transport QTi depuis #124), puis la collecte bornée (`max_wait`, plafond 600 s) du `submit_result` validé, avec empreinte SHA-256 canonique. La ligne est marquée `delivery='attempted'` seulement après le succès de `initialize`, sous garde SQL (`delivery IS NULL AND answer IS NULL`) : un rappel avec la même clé ne réémet jamais — il retourne un reçu explicite `admission_only` (ou la réponse collectée si déjà enregistrée). Sans canal de retour disponible, l’appel échoue avant envoi (`return_channel_unavailable`, `automatic_fallback:false`). Voir les tests `test_delegation_desktop_cycle.py`, `test_delegation_desktop_result.py`, `test_delegation_desktop_redispatch.py`.
 
 Dans `ux_review_probe.py`, démarrer avec `--request-key` persistée avant le déclenchement. `get_task({"claim_key":"…"})` exige une clé de réservation persistée côté exécutant avant l’appel. Même clé récupère la même tentative et les mêmes entrées, avec `recovered_reservation:true`, sans augmenter le nombre de réservations. Une autre clé ne reçoit pas la tâche. Cette relecture n’autorise pas une deuxième inférence si la première peut continuer.
 
@@ -148,7 +150,7 @@ un second tour pour récupérer ce texte.
 
 ## Barrières de dispatch séparées
 
-La réservation d'une livraison Quick Apply et la réservation du socket sont indépendantes (table `desktop_dispatch_guard`) et portent chacune un reçu mémorisé :
+La réservation d'une livraison dispatch QTi et la réservation du socket sont indépendantes (table `desktop_dispatch_guard`) et portent chacune un reçu mémorisé :
 
 - Les tâches préexistantes à la migration sont marquées `legacy_unknown` : les anciens dispatchs directs ne laissaient pas de trace.
 - Une tentative sans reçu reste incertaine après redémarrage ; jamais de réémission automatique.

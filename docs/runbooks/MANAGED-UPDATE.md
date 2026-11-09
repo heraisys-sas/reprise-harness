@@ -68,7 +68,7 @@ Une réponse perdue laisse l’opération indéterminée ; la conformité actuel
 prouve pas que cette opération a écrit. Les commandes `reprise
 codex-integration-inspect` et `reprise codex-integration-verify-operation --id UUID`
 permettent de retrouver et vérifier l’état courant sans réémettre d’écriture. Le remplacement authentifié de
-claude-desktopd demeure séparé (#25/#27). Le reformatage YAML d’un bloc DSH
+l’app Claude (ReClaude, canal dispatch natif QTi depuis #124) demeure séparé (#25/#27). Le reformatage YAML d’un bloc DSH
 peut encore exiger une réconciliation (#76) : cet updater ne contourne pas
 les contrôles de propriété des adaptateurs. Aucun téléchargement, credential
 transféré, nouvelle permission de modèle ou appel payant n’est ajouté.

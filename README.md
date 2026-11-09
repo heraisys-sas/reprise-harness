@@ -23,7 +23,7 @@ Le schéma résume les chemins possibles. La portée de lecture, le contrôle d'
 | --- | --- | --- |
 | Supervision locale | Observe des sessions et journaux pris en charge, reconstruit certains travaux interrompus, affiche les diagnostics et la santé après mise à jour. Recherche et cache d'analyse locaux chiffrés ; explications génératives Foundation Models facultatives, avec les règles déterministes comme référence. | La veille signale les actions à examiner ; elle ne pilote pas les interfaces. Le chiffrement ne couvre pas les journaux, instructions de tâches ni bases des applications sources. |
 | Reprises et quotas | Planifie des continuations Codex après certains refus de quota, conserve l'événement et contrôle le résultat natif ; propose une reprise CLI Harness explicite avec profil existant. | La reprise automatique sur quota est limitée à Codex et reste soumise à l'authentification, aux permissions et à la disponibilité du compte. Une fin de tour n'établit pas la réussite métier. Les autres adaptateurs peuvent être en détection seule. |
-| Délégation | `reprise_delegate` et les outils associés fournissent des appels et suivis Codex avec reçus durables. Le connecteur Claude Desktop combine Quick Apply pour demander la transmission d'un tour et MCP pour réclamer une tâche et rendre le résultat. | Quick Apply seul confirme au plus une admission/soumission. Pour une tâche MCP, seul `submit_result` accepté établit le retour ; un état incertain ne déclenche pas de renvoi automatique. L'existence d'un connecteur ne prouve ni son chargement dans le client ni un échange réel. |
+| Délégation | `reprise_delegate` et les outils associés fournissent des appels et suivis Codex avec reçus durables. Côté Claude, le dispatch natif QTi (socket `quick-entry-reprise.sock` tenu par ReClaude) transmet un tour et MCP réclame une tâche et rend le résultat. | Le dispatch QTi est fire-and-forget : au plus une admission, jamais la réponse. Pour une tâche MCP, seul `submit_result` accepté établit le retour ; un état incertain ne déclenche pas de renvoi automatique. L'existence d'un connecteur ne prouve ni son chargement dans le client ni un échange réel. |
 | Projets, mémoire et checkpoints | Un registre prototype associe des UUID de projets à des workspaces existants. Une API locale expérimentale conserve des faits et des checkpoints chiffrés, explicitement liés au projet et au travail. | L'association de projet n'installe pas de connecteur. L'API mémoire n'est pas exposée comme outil au modèle et ne déclenche pas d'inférence. La lecture mémoire exige le pilote activé et une action explicite avec projet et travail sélectionnés. L'orchestration et la délégation Apple automatiques ne sont pas raccordées. |
 | Route `foundation-models/system` | `reprise_delegate` propose un appel local explicite à `/usr/bin/fm`, avec contexte borné et reçu récupérable. | Disponible sur macOS 27+ lorsque le modèle est pris en charge par l'appareil. La présence de l'exécutable ne garantit pas la disponibilité du modèle ni une génération. Cette route n'a ni outils, ni suivi conversationnel, ni repli automatique. |
 | Pilote conversationnel Apple | Pilote local expérimental pour consulter un projet ou un checkpoint dans une session conversationnelle volatile. | La migration initiale des préférences l'active par défaut, sans démarrer le pilote ni lancer d'inférence. La réouverture automatique d'une session sauvegardée exige que les sélections de projet, travail, checkpoint éventuel et compétence soient inchangées, et que le contexte soit ouvrable. La lecture d'un checkpoint reste une action explicite. La disponibilité du modèle dépend de l'appareil. |
@@ -32,12 +32,12 @@ Le schéma résume les chemins possibles. La portée de lecture, le contrôle d'
 
 ### Claude Desktop : admission, dispatch et retour
 
-Ce schéma décrit un chemin supervisé et conditionnel. Le dispatch CDP dépend des capacités présentes (notamment d'un stockage de tâches lié au projet et de Chrome) ; son reçu ne contient pas la réponse du modèle. La configuration écrite, le connecteur effectivement chargé, la livraison de la tâche et le résultat sont des preuves distinctes.
+Ce schéma décrit un chemin supervisé et conditionnel. Le dispatch natif QTi (socket `~/.claude-desktop/quick-entry-reprise.sock` tenu par ReClaude) transmet le prompt ; son reçu ne contient pas la réponse du modèle. La configuration écrite, le connecteur effectivement chargé, la livraison de la tâche et le résultat sont des preuves distinctes.
 
 ```mermaid
 flowchart LR
-    A["Reprise admet une tâche"] --> B["Transmission Quick Apply demandée"]
-    B -. "si la capacité CDP est présente et l'envoi aboutit" .-> C["Prompt soumis au chat web"]
+    A["Reprise admet une tâche"] --> B["Dispatch natif QTi (socket ReClaude)"]
+    B -. "si l'envoi QTi aboutit" .-> C["Prompt soumis au chat web"]
     C -. "si le connecteur est chargé et la tâche reçue" .-> D["Tâche réclamée via MCP"]
     D --> E["Claude exécute le travail"]
     E --> F["submit_result accepté et enregistré"]
@@ -45,7 +45,7 @@ flowchart LR
     B -. "sinon : échec ou état incertain" .-> H["Réconciliation requise"]
 ```
 
-Le chemin Quick Apply → MCP ne garantit pas une exécution de bout en bout, et une soumission au chat n'est pas une réponse. Seul `submit_result` accepté et enregistré établit le résultat d'une tâche MCP. Work/Cowork est une capacité distincte, dont le lancement réel reste à démontrer. Les détails des garanties et des états incertains figurent dans le [contrat de persistance des délégations](docs/contracts/DELEGATION-PERSISTENCE.md) et le [connecteur Claude Desktop](docs/integrations/claude/CLAUDE-CONNECTOR.md).
+Le chemin dispatch QTi → MCP ne garantit pas une exécution de bout en bout, et une soumission au chat n'est pas une réponse. Seul `submit_result` accepté et enregistré établit le résultat d'une tâche MCP. Work/Cowork est une capacité distincte, dont le lancement réel reste à démontrer. Les détails des garanties et des états incertains figurent dans le [contrat de persistance des délégations](docs/contracts/DELEGATION-PERSISTENCE.md) et le [connecteur Claude Desktop](docs/integrations/claude/CLAUDE-CONNECTOR.md).
 
 ## Construire et lancer
 
