@@ -97,6 +97,8 @@ class EndpointTests(unittest.TestCase):
                 client.sendall((''.join(json.dumps(message) + '\n' for message in messages)).encode())
                 client.shutdown(socket.SHUT_WR)
                 reader = client.makefile('rb')
+                greeting = json.loads(reader.readline())
+                self.assertEqual(greeting, {'hello': True})
                 replies = [json.loads(reader.readline()) for _ in messages]
                 reader.close()
                 self.assertEqual([reply['id'] for reply in replies], list(range(1, len(messages) + 1)))
@@ -280,7 +282,7 @@ class ServeCatchAllTests(unittest.TestCase):
 
         _serve(conn, endpoint)
 
-        replies = [json.loads(line) for line in b''.join(stream.written).splitlines()]
+        replies = [json.loads(line) for line in b''.join(stream.written).splitlines()[1:]]
         self.assertEqual([reply['id'] for reply in replies], [7, 8])
         self.assertEqual(replies[0]['error']['code'], -32603)
         self.assertIn('CDP boom', replies[0]['error']['message'])
