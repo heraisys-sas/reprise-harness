@@ -80,6 +80,11 @@ class PatchRestoreTests(unittest.TestCase):
         (self.app / 'Contents' / 'Resources').mkdir(parents=True)
         tree, blobs = make_tree()
         desktop_patch.write_asar(tree, blobs, self.app / 'Contents' / 'Resources' / 'app.asar')
+        # framework factice avec un slot __asar_integrity actif (digest muet)
+        framework = self.app / 'Contents' / 'Frameworks' / 'Electron Framework.framework' / 'Versions' / 'A' / 'Electron Framework'
+        framework.parent.mkdir(parents=True, exist_ok=True)
+        framework.write_bytes(desktop_patch.DICT_DIGEST_SENTINEL
+                              + bytes([1, 1]) + bytes(32))
         # rediriger les chemins réels du module vers le répertoire temporaire
         patch_dir = Path(self.tmp.name) / 'patches'
         self.mocks = [

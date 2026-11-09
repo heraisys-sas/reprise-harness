@@ -44,6 +44,12 @@ ANCHORS = ('requestQuickWindowDismissWithPayload', 'dispatchOnQuickEntrySubmit',
 SOCKET = Path.home() / '.claude-reprise-trigger.sock'
 TRIGGER_LIMIT = 2000
 BLOCK_SIZE = 4194304
+FRAMEWORK = APP / 'Contents' / 'Frameworks' / 'Electron Framework.framework' / 'Versions' / 'A' / 'Electron Framework'
+DICT_DIGEST_SENTINEL = b'AGbevlPCksUGKNL8TSn7wGmJEuJsXb2A'  # 32 octets
+SLOT_USED_OFFSET = 32
+SLOT_VERSION_OFFSET = 33
+SLOT_DIGEST_OFFSET = 34
+SLOT_DIGEST_SIZE = 32
 
 INJECTION = """
 ;(function(){
@@ -62,12 +68,11 @@ INJECTION = """
           var o = JSON.parse(b);
           var text = typeof o.text === 'string' ? o.text : '';
           if (!text || text.length > %(limit)d) { c.write(JSON.stringify({ok:false, error:'text required (<= %(limit)d)'})); c.end(); return; }
-          var payload = {text: text, images: []};
-          if (o.chatId) payload.chatId = String(o.chatId);
-          QTi(payload);
-          c.write(JSON.stringify({ok:true, dispatched:true, chatId:o.chatId||null}));
-        } catch (e) { try { c.write(JSON.stringify({ok:false, error:String(e && e.message || e)})); } catch (e2) {} }
-        c.end();
+          try { c.write(JSON.stringify({ok:true, dispatched:'queued'})); c.end(); } catch (we) {}
+          setImmediate(function() {
+            try { QTi({text: text, images: []}); } catch (qe) { console.error('[reprise-trigger] QTi error:', qe && qe.message); }
+          });
+        } catch (e) { try { c.write(JSON.stringify({ok:false, error:String(e && e.message || e)})); c.end(); } catch (e2) {} }
       });
       c.on('error', function() {});
     });
@@ -204,6 +209,70 @@ def _paths(app):
             'sidecar': d / 'patch.json'}
 
 
+def integrity_dict_digest(integrity_dict):
+    """sha256 du dictionnaire ElectronAsarIntegrity : clés triées, key+algorithm+hash concaténés.
+
+    Réplique exacte de IsIntegrityDictionaryValid (Electron 44, integrity_digest.mm).
+    """
+    hasher = hashlib.sha256()
+    for key in sorted(integrity_dict.keys()):
+        hasher.update(key.encode())
+        hasher.update(integrity_dict[key]['algorithm'].encode())
+        hasher.update(integrity_dict[key]['hash'].encode())
+    return hasher.hexdigest()
+
+
+def _framework_path(app):
+    app = Path(app)
+    if app == APP:
+        return FRAMEWORK
+    return app / 'Contents' / 'Frameworks' / 'Electron Framework.framework' / 'Versions' / 'A' / 'Electron Framework'
+
+
+def patch_integrity_slot(app, digest_hex):
+    """Met à jour le digest du dictionnaire dans le slot __asar_integrity du Framework.
+
+    Retourne (nombre de slots actifs patchés, offsets). Lève si aucun slot trouvé.
+    """
+    framework = _framework_path(app)
+    try:
+        data = bytearray(framework.read_bytes())
+    except OSError as error:
+        raise PatchError(f'Framework illisible: {error}') from error
+    new_digest = bytes.fromhex(digest_hex)
+    patched = 0
+    offsets = []
+    start = 0
+    while True:
+        idx = data.find(DICT_DIGEST_SENTINEL, start)
+        if idx < 0:
+            break
+        used, version = data[idx + SLOT_USED_OFFSET], data[idx + SLOT_VERSION_OFFSET]
+        if used in (0, 1) and version == 1:
+            offsets.append(idx)
+            if used == 1:
+                data[idx + SLOT_DIGEST_OFFSET:idx + SLOT_DIGEST_OFFSET + SLOT_DIGEST_SIZE] = new_digest
+                patched += 1
+        start = idx + 1
+    if not offsets:
+        raise PatchError('Slot __asar_integrity introuvable dans le Framework.')
+    framework.write_bytes(bytes(data))
+    return patched, offsets
+
+
+def resign(app):
+    """Re-signature ad-hoc PROFONDE : helpers + framework + bundle externe.
+
+    Les helpers d'origine (signature Anthropic, hardened runtime) refusent sinon
+    de charger le Framework re-signé (library validation) — crash dyld au spawn.
+    """
+    import subprocess as sp
+    result = sp.run(['codesign', '--force', '--deep', '--sign', '-', str(Path(app))],
+                    capture_output=True, text=True)
+    if result.returncode != 0:
+        raise PatchError('codesign --deep a échoué: ' + result.stderr.strip()[:200])
+
+
 def _version():
     try:
         with open(APP / 'Contents' / 'Info.plist', 'rb') as handle:
@@ -217,7 +286,7 @@ def patch(app=APP):
     plist_path = Path(app) / 'Contents' / 'Info.plist'
     paths = _paths(app)
     backup, plist_backup, sidecar_path = paths['backup'], paths['plist_backup'], paths['sidecar']
-    if desktop_running():
+    if desktop_running(app):
         raise PatchError('Claude Desktop est lancé ; le quitter avant le patch.')
     raw, tree, header_size, json_length = read_asar_raw(asar.read_bytes())
     entry = _chunk_entry(tree)
@@ -242,11 +311,16 @@ def patch(app=APP):
     os.replace(tmp, asar)
     with open(plist_path, 'wb') as handle:
         plistlib.dump(plist, handle, fmt=plistlib.FMT_BINARY)
+    plist2 = plistlib.load(open(plist_path, 'rb'))
+    digest_hex = integrity_dict_digest(plist2['ElectronAsarIntegrity'])
+    slot_patched, slot_offsets = patch_integrity_slot(app, digest_hex)
     verify_patch(app)
     sidecar = {'patched_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                'version': _version(), 'original_sha256': original_sha,
                'patched_sha256': hashlib.sha256(asar.read_bytes()).hexdigest(),
-               'plist_hash': plist_hash, 'chunk': CHUNK}
+               'plist_hash': plist_hash, 'chunk': CHUNK,
+               'integrity_dict_digest': digest_hex,
+               'slot_offsets': slot_offsets, 'slot_patched': slot_patched}
     sidecar_path.write_text(json.dumps(sidecar, indent=1))
     return {'status': 'patched', 'backup': str(backup), 'socket': str(SOCKET),
             'version': sidecar['version']}
@@ -290,6 +364,25 @@ def verify_patch(app=APP):
     recorded = (plist.get('ElectronAsarIntegrity') or {}).get('Resources/app.asar', {}).get('hash')
     if recorded != hashlib.sha256(json_bytes).hexdigest():
         raise PatchError('Hash ElectronAsarIntegrity incohérent après patch.')
+    integrity_dict = plist.get('ElectronAsarIntegrity') or {}
+    expected = integrity_dict_digest(integrity_dict)
+    try:
+        data = _framework_path(app).read_bytes()
+    except OSError as error:
+        raise PatchError(f'Framework illisible: {error}') from error
+    slots = 0
+    start = 0
+    while True:
+        idx = data.find(DICT_DIGEST_SENTINEL, start)
+        if idx < 0:
+            break
+        if data[idx + SLOT_USED_OFFSET] == 1 and data[idx + SLOT_VERSION_OFFSET] == 1:
+            if data[idx + SLOT_DIGEST_OFFSET:idx + SLOT_DIGEST_OFFSET + SLOT_DIGEST_SIZE].hex() != expected:
+                raise PatchError('Digest du dictionnaire incohérent dans le slot __asar_integrity.')
+            slots += 1
+        start = idx + 1
+    if slots == 0:
+        raise PatchError('Aucun slot __asar_integrity actif après patch.')
     return True
 
 
@@ -298,7 +391,7 @@ def restore(app=APP):
     plist_path = Path(app) / 'Contents' / 'Info.plist'
     paths = _paths(app)
     backup, plist_backup, sidecar_path = paths['backup'], paths['plist_backup'], paths['sidecar']
-    if desktop_running():
+    if desktop_running(app):
         raise PatchError('Claude Desktop est lancé ; le quitter avant la restauration.')
     if not backup.exists():
         raise PatchError('Aucun backup pristine à restaurer.')
@@ -309,6 +402,15 @@ def restore(app=APP):
     with open(plist_path, 'wb') as handle:
         plistlib.dump(plist, handle, fmt=plistlib.FMT_BINARY)
     os.replace(backup, asar)
+    # le hash du plist doit repasser à la valeur du backup (le plist courant a été swappé)
+    plist_new = plistlib.load(open(plist_path, 'rb'))
+    plist_new['ElectronAsarIntegrity']['Resources/app.asar']['hash'] = hashlib.sha256(raw[16:16 + json_length]).hexdigest()
+    with open(plist_path, 'wb') as handle:
+        plistlib.dump(plist_new, handle, fmt=plistlib.FMT_BINARY)
+    try:
+        patch_integrity_slot(app, integrity_dict_digest(plist_new['ElectronAsarIntegrity']))
+    except PatchError:
+        pass
     for stale in (plist_backup, sidecar_path, SOCKET):
         try:
             stale.unlink()
@@ -324,7 +426,7 @@ def status(app=APP):
     chunk = _chunk_text(raw, header_size, entry)
     return {'version': _version() if Path(app) == APP else None, 'patched': MARKER in chunk,
             'backup': _paths(app)['backup'].exists(), 'socket': SOCKET.exists(),
-            'desktop_running': desktop_running()}
+            'desktop_running': desktop_running(app)}
 
 
 def send_trigger(text, chat_id=None):
@@ -336,6 +438,7 @@ def send_trigger(text, chat_id=None):
     client.settimeout(30)
     client.connect(str(SOCKET))
     client.sendall(json.dumps(payload).encode())
+    client.shutdown(socket_module.SHUT_WR)  # signale 'end' au serveur, qui répond
     response = b''
     while True:
         chunk = client.recv(65536)
