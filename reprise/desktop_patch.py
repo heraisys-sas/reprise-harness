@@ -32,6 +32,7 @@ from pathlib import Path
 
 APP = Path('/Applications/Claude.app')
 COPY_APP = Path.home() / 'Applications' / 'ReClaude.app'  # copie patchée, app par défaut de patch()
+COPY_BUNDLE_ID = 'com.anthropic.claudefordesktop.reprise'  # distinct de l'originale : routage claude:// stable
 ASAR = APP / 'Contents' / 'Resources' / 'app.asar'
 PLIST = APP / 'Contents' / 'Info.plist'
 PATCH_DIR = Path.home() / 'Library' / 'Application Support' / 'Reprise' / 'patches' / 'claude'
@@ -306,6 +307,25 @@ def resign(app):
         raise PatchError('codesign --deep a échoué: ' + result.stderr.strip()[:200])
 
 
+def _apply_distinct_bundle_id(app):
+    """Attribue un bundle ID propre à la copie (jamais à l'originale).
+
+    Deux apps partageant `com.anthropic.claudefordesktop` se disputent le
+    handler `claude://` de Launch Services au gré des lancements ; un ID
+    distinct fixe un routage deeplink stable (validé 09/11/2026). Nécessite
+    une re-signature APRÈS (le plist est scellé). Idempotent.
+    """
+    plist_path = Path(app) / 'Contents' / 'Info.plist'
+    with open(plist_path, 'rb') as handle:
+        plist = plistlib.load(handle)
+    if plist.get('CFBundleIdentifier') == COPY_BUNDLE_ID:
+        return False
+    plist['CFBundleIdentifier'] = COPY_BUNDLE_ID
+    with open(plist_path, 'wb') as handle:
+        plistlib.dump(plist, handle, fmt=plistlib.FMT_BINARY)
+    return True
+
+
 def _version():
     try:
         with open(APP / 'Contents' / 'Info.plist', 'rb') as handle:
@@ -347,11 +367,14 @@ def patch(app=COPY_APP):
     plist2 = plistlib.load(open(plist_path, 'rb'))
     digest_hex = integrity_dict_digest(plist2['ElectronAsarIntegrity'])
     slot_patched, slot_offsets = patch_integrity_slot(app, digest_hex)
+    if _apply_distinct_bundle_id(app):
+        plist2 = plistlib.load(open(plist_path, 'rb'))
     verify_patch(app)
     sidecar = {'patched_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                'version': _version(), 'original_sha256': original_sha,
                'patched_sha256': hashlib.sha256(asar.read_bytes()).hexdigest(),
                'plist_hash': plist_hash, 'chunk': CHUNK,
+               'bundle_id': plist2.get('CFBundleIdentifier'),
                'integrity_dict_digest': digest_hex,
                'slot_offsets': slot_offsets, 'slot_patched': slot_patched}
     sidecar_path.write_text(json.dumps(sidecar, indent=1))
