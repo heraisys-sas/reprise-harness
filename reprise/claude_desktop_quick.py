@@ -532,6 +532,8 @@ class Endpoint:
 
 def _serve(conn, endpoint):
     stream = conn.makefile('rwb')
+    stream.write((json.dumps({'hello': True}) + '\n').encode())
+    stream.flush()
     for raw in stream:
         if len(raw) > 1024*1024:
             break
