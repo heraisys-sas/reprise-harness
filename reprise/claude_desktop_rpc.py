@@ -102,6 +102,12 @@ class Client:
             self.sock.close()
             raise Unavailable('engine_unavailable',
                               'Endpoint Quick Apply injoignable ; aucun serveur de remplacement lancé.') from error
+        # Le socket de dispatch salue d'abord ({"hello":true}) — miroir de dispatch_turn.
+        greeting = self.receive()
+        if not (isinstance(greeting, dict) and greeting.get('hello') is True):
+            self.sock.close()
+            raise Unavailable('engine_unavailable',
+                              'Greeting dispatch inattendu sur le endpoint Quick Entry.')
 
     def close(self):
         try:

@@ -24,6 +24,7 @@ réelles ou simulées avec preuve), **partiel** (une partie livrée, le reste tr
 | [ASI1-ORCHESTRATION-CONTRACT](ASI1-ORCHESTRATION-CONTRACT.md) | Effort raisonnement asi1 orchestré | Livré |
 | [LOCAL-EXECUTION-CONTRACT](LOCAL-EXECUTION-CONTRACT.md) | Courtier Git/GitHub | Cible (évaluateur prototype) |
 | [PROCESS-SUPERVISION-DESIGN](PROCESS-SUPERVISION-DESIGN.md) | Supervision des processus (registre PID, relance) | Cible non implémentée (issues #25-#28) |
+| [QUICK-ENTRY-CONTRACT](QUICK-ENTRY-CONTRACT.md) | Contrat Quick Entry natif (QTi) — déclenchement Desktop patché | Livré (patch #124) |
 
 Autres familles de documentation : [intégrations par canal](../integrations/),
 [runbooks d'opération](../runbooks/), [gabarits](../templates/),

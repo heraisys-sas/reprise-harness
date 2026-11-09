@@ -236,12 +236,12 @@ def status(db):
 
 def run_quick(db, now, client_factory=None):
     """Use the same daemon API as delegating harnesses, never treat admission as a turn."""
-    from claude_desktop_rpc import Client
+    from claude_desktop_rpc import Client, REPRISE_DISPATCH_SOCKET
     import scheduler
     initialize(db)
     client = None
     try:
-        client = (client_factory or Client)(None, {'socket': str(Path.home()/'.claude-desktop/quick-entry.sock')}, timeout=5)
+        client = (client_factory or Client)(None, {'socket': str(REPRISE_DISPATCH_SOCKET)}, timeout=5)
         client.call('initialize', {'clientInfo': {'name': 'reprise-scheduler', 'version': '1'}})
         capabilities = client.call('quick_entry/capabilities', {})
         if capabilities.get('dispatch_supported') is not True or capabilities.get('resume_validation_supported') is not True:
