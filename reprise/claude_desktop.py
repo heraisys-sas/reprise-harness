@@ -106,7 +106,62 @@ def status(db, state):
             detected, reason = False, error.reason
         candidates.append({'path': path, 'label': label, 'detected': detected, 'reason': reason})
     return {'configured_socket': configured, 'mode': 'server' if configured else 'auto',
-            'candidates': candidates}
+            'candidates': candidates, 'routes': _routes(db, state)}
+
+
+def _configured_socket(db):
+    row = db.execute("SELECT options FROM engine_settings WHERE engine='claude-desktop'").fetchone()
+    return json.loads(row[0]).get('socket') if row else None
+
+
+def _routes(db, state):
+    """Submission routes report; derived from the existing socket probe only."""
+    return {'native_patch': _native_patch_route(db),
+            'cdp_web': _cdp_web_route(db, state)}
+
+
+def _native_patch_route(db):
+    path = _configured_socket(db) or str(DEFAULT_SOCKET)
+    try:
+        engines.socket_path({'socket': path})
+        return {'enabled': True, 'state': 'disponible',
+                'reason': 'Socket Quick Apply détecté · connexion à tester.'}
+    except engines.Unavailable as error:
+        return {'enabled': True, 'state': 'indisponible', 'reason': error.reason}
+
+
+def _cdp_web_route(db, state):
+    """Defensive read: an older daemon payload without `targets` never promises a route."""
+    from claude_desktop_rpc import Client
+    values = {'socket': _configured_socket(db) or str(DEFAULT_SOCKET)}
+    client = None
+    try:
+        client = Client(str(DEFAULT_SOCKET), values, timeout=5)
+        payload = client.call('cdp/status', {})
+        targets = payload.get('targets') if isinstance(payload, dict) else None
+        if not isinstance(targets, dict):
+            return {'enabled': False, 'state': 'désactivée',
+                    'reason': 'Aucune cible CDP activée ; activation par configuration uniquement.'}
+        enabled = [name for name, target in targets.items()
+                   if isinstance(target, dict) and target.get('enabled')]
+        if not enabled:
+            return {'enabled': False, 'state': 'désactivée', 'reason': 'Aucune cible CDP activée.'}
+        daemon_idle = payload.get('status', 'idle') == 'idle'
+        if daemon_idle and all(targets[name].get('ready') for name in enabled):
+            return {'enabled': True, 'state': 'prête', 'reason': 'Cible CDP activée et daemon Quick Apply au repos.'}
+        return {'enabled': True, 'state': 'indisponible',
+                'reason': 'Cible CDP activée mais daemon Quick Apply non prêt.'}
+    except engines.Unavailable as error:
+        return {'enabled': False, 'state': 'indisponible', 'reason': error.reason}
+    except (OSError, ValueError, TimeoutError):
+        return {'enabled': False, 'state': 'indisponible',
+                'reason': 'Le daemon Quick Apply ne répond pas au protocole attendu.'}
+    finally:
+        if client:
+            try:
+                client.close()
+            except OSError:
+                pass
 
 
 def probe(program, path, session=None):

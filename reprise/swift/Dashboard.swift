@@ -69,6 +69,40 @@ struct SettingsHint: View {
     }
 }
 
+// One submission route per line: state badge on the right, single secondary
+// reason line below. Read-only by design — activation lives in configuration.
+struct RouteLine: View {
+    var title: String
+    var route: [String: Any]
+    var readyLabel: String
+    var fallbackDetail: String
+
+    private var badge: (label: String, color: Color) {
+        let state = route["state"] as? String ?? ""
+        if route["enabled"] as? Bool == true {
+            return state == "prête" || state == "disponible" ? (readyLabel, Color.green) : ("Indisponible", Color.orange)
+        }
+        return ("Désactivée", Color.secondary)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(title).font(.callout.weight(.semibold))
+                Spacer(minLength: 8)
+                Text(badge.label)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(badge.color)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(badge.color.opacity(0.12), in: Capsule())
+                    .accessibilityLabel(title + " : " + badge.label)
+            }
+            Text((route["reason"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? fallbackDetail)
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
 // Screen-level verdict, placed before any control: the only question asked when
 // opening a settings screen is "is anything wrong right now?".
 struct SettingsBanner: View {
@@ -817,6 +851,22 @@ struct Dashboard: View {
                     detail: "Le test initialise uniquement le protocole Quick Apply : aucun envoi de prompt, aucun appel au modèle.")
                 Button("Rétablir la détection automatique") { app.restoreDesktopConnectionDetection() }
                     .disabled(app.desktopConnectionBusy || !customSocket)
+            }
+            SettingsCard(title: "Routes de soumission",
+                         status: "Lecture seule",
+                         ok: true) {
+                let routes = app.desktopConnection["routes"] as? [String: Any] ?? [:]
+                RouteLine(title: "Patch natif — principale",
+                          route: routes["native_patch"] as? [String: Any] ?? [:],
+                          readyLabel: "Disponible",
+                          fallbackDetail: "Soumission via le socket du daemon claude-desktopd.")
+                RouteLine(title: "CDP web — prête, désactivée par défaut",
+                          route: routes["cdp_web"] as? [String: Any] ?? [:],
+                          readyLabel: "Prête",
+                          fallbackDetail: "Aucune cible CDP activée ; activation par configuration uniquement.")
+                SettingsHint(
+                    text: "L’activation de la route CDP web se fait par configuration ; cette fenêtre reflète seulement l’état réel.",
+                    detail: "Le patch natif passe par le socket du daemon claude-desktopd. La route CDP web n’est proposée que si une cible CDP est activée en configuration ; aucun bouton d’activation ici, l’état affiché est celui lu du daemon.")
             }
             SettingsCard(title: "Soumission Quick Apply",
                          status: "Aucune autorisation requise",

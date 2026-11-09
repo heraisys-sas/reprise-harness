@@ -176,10 +176,14 @@ class PipeTransport:
 # Profile / lock helpers
 # ---------------------------------------------------------------------------
 
-def _profile_dir():
-    return Path(os.environ.get(
-        "CLAUDE_CDP_PROFILE",
-        os.path.expanduser("~/.local/share/claude-cdp/chrome")))
+def _profile_dir(profile_name=None):
+    """Default profile when profile_name is None or the default 'chrome';
+    otherwise an isolated cookie profile per target."""
+    if profile_name in (None, '', 'chrome'):
+        return Path(os.environ.get(
+            "CLAUDE_CDP_PROFILE",
+            os.path.expanduser("~/.local/share/claude-cdp/chrome")))
+    return Path(os.path.expanduser(f"~/.local/share/claude-cdp/profiles/{profile_name}"))
 
 
 def _chrome_bin():
@@ -189,11 +193,17 @@ def _chrome_bin():
 
 
 def _hostname_pid_lock(profile):
-    """Return (lock_path, hostname-pid symlink path)."""
+    """Return (lock_path, hostname-pid symlink path).
+
+    Non-default per-target profiles share profiles/cdp-state/, so their lock
+    names are qualified with the profile name; the default profile keeps the
+    historical unqualified name.
+    """
     hostname = socket.gethostname()
     state = profile.parent / "cdp-state"
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
-    lock_path = state / f"{hostname}-pid"
+    suffix = "" if profile.name == "chrome" else f"-{profile.name}"
+    lock_path = state / f"{hostname}-pid{suffix}"
     return lock_path, lock_path
 
 
@@ -234,19 +244,19 @@ def write_lock(lock_path, pid):
 # Chrome launcher
 # ---------------------------------------------------------------------------
 
-def build_chrome_args(profile):
+def build_chrome_args(profile, origin="https://claude.ai"):
     """Return the argument list for Chrome (without the binary itself)."""
     return [
         "--remote-debugging-pipe",
         f"--user-data-dir={profile}",
-        "--app=https://claude.ai",
+        f"--app={origin}",
         "--disable-blink-features=AutomationControlled",
         "--no-first-run",
         "--no-default-browser-check",
     ]
 
 
-def launch_chrome(profile=None):
+def launch_chrome(profile=None, origin=None):
     """Spawn Chrome in --remote-debugging-pipe mode; return (PipeTransport, proc).
 
     Chrome reads commands from its fd 3 and writes responses to its fd 4
@@ -309,7 +319,7 @@ def launch_chrome(profile=None):
         os.close(wB)
         try:
             proc = subprocess.Popen(
-                [chrome_bin] + build_chrome_args(profile),
+                [chrome_bin] + build_chrome_args(profile, origin or "https://claude.ai"),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,

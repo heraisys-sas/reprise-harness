@@ -180,6 +180,47 @@ class EndpointTests(unittest.TestCase):
         caps = self.endpoint.call('quick_entry/capabilities', {})
         self.assertTrue(caps['cdp_resume_supported'])
 
+    def test_capabilities_expose_only_enabled_targets(self):
+        """capabilities liste uniquement les cibles activées (aucune par défaut)."""
+        caps = self.endpoint.call('quick_entry/capabilities', {})
+        self.assertEqual(caps['cdp_targets'], [])
+        with mock.patch('claude_desktop_quick.cdp_targets.enabled_names',
+                        return_value=['mammouth']):
+            caps = self.endpoint.call('quick_entry/capabilities', {})
+        self.assertEqual(caps['cdp_targets'], ['mammouth'])
+
+    @mock.patch('claude_desktop_quick._cdp_pipe')
+    def test_cdp_status_reports_targets_map(self, mock_cdp):
+        """cdp/status expose targets: {name: {enabled, ready}} dans chaque retour."""
+        mock_inst = mock.MagicMock()
+        mock_cdp.return_value = mock_inst
+        profile = Path(tempfile.mkdtemp(prefix='cdp-status-'))
+        mock_inst._profile_dir.return_value = profile
+        mock_inst._hostname_pid_lock.return_value = (profile / 'lock-pid', profile / 'lock-pid')
+        mock_inst.check_profile_busy.return_value = None
+        mock_inst._chrome_bin.return_value = '/usr/bin/chrome'
+        with mock.patch('pathlib.Path.exists', return_value=True):
+            result = self.endpoint.call('cdp/status', {})
+        self.assertTrue(result['ok'])
+        targets = result['targets']
+        self.assertEqual(set(targets), {'claude-web', 'mammouth'})
+        self.assertTrue(all(entry['enabled'] is False for entry in targets.values()))
+
+    @mock.patch('claude_desktop_quick._cdp_pipe')
+    def test_cdp_status_targets_not_ready_when_busy(self, mock_cdp):
+        """profile_busy → ready à False pour chaque cible."""
+        mock_inst = mock.MagicMock()
+        mock_cdp.return_value = mock_inst
+        profile = Path(tempfile.mkdtemp(prefix='cdp-busy-'))
+        mock_inst._profile_dir.return_value = profile
+        mock_inst._hostname_pid_lock.return_value = (profile / 'lock-pid', profile / 'lock-pid')
+        mock_inst.check_profile_busy.return_value = {'pid': 12345, 'lock_mtime': 1234567890.0}
+        result = self.endpoint.call('cdp/status', {})
+        self.assertEqual(result['status'], 'profile_busy')
+        self.assertEqual(result['targets'], {
+            'claude-web': {'enabled': False, 'ready': False},
+            'mammouth': {'enabled': False, 'ready': False}})
+
     @mock.patch('claude_desktop_quick._cdp_pipe')
     def test_cdp_status_idle(self, mock_cdp):
         """cdp/status retourne idle quand pas de verrou."""
@@ -241,6 +282,55 @@ class EndpointTests(unittest.TestCase):
         result = self.endpoint.call('shutdown', {'token': 'invalid'})
         self.assertFalse(result.get('ok'))
         self.assertEqual(result['status'], 'unauthenticated')
+
+    def test_cdp_resume_unknown_target_route_disabled(self):
+        """cdp/resume avec cible inconnue → route_disabled, transport intact."""
+        result = self.endpoint.call('cdp/resume', {
+            'target': 'inconnu', 'chat_id': str(uuid.uuid4()), 'prompt': 'hello'})
+        self.assertFalse(result.get('ok'))
+        self.assertEqual(result['status'], 'route_disabled')
+        self.assertIn('inconnu', result['reason'])
+
+    @mock.patch('claude_desktop_quick._cdp_pipe')
+    def test_cdp_resume_disabled_default_target_route_disabled(self, mock_cdp):
+        """cdp/resume cible par défaut (claude-web, disabled) → route_disabled sans lancer Chrome."""
+        result = self.endpoint.call('cdp/resume', {
+            'chat_id': str(uuid.uuid4()), 'prompt': 'hello'})
+        self.assertFalse(result.get('ok'))
+        self.assertEqual(result['status'], 'route_disabled')
+        mock_cdp.assert_not_called()
+
+    def test_cdp_resume_enabled_target_uses_profile_from_config(self):
+        """cdp/resume cible activée → chemin normal, profil issu de la config."""
+        chat_id = str(uuid.uuid4())
+        for target_name, profile_name, expected in (
+                ('claude-web', 'chrome', Path.home() / '.local/share/claude-cdp/chrome'),
+                ('mammouth', 'mammouth', Path.home() / '.local/share/claude-cdp/profiles/mammouth')):
+            with self.subTest(target_name):
+                config = {'enabled': True, 'origin': 'https://example.test',
+                          'chat_url_pattern': '/chat/{chat_id}',
+                          'max_prompt_chars': 12000, 'profile': profile_name,
+                          'selectors': {'composer': '[data-testid="c"]', 'send': '[data-testid="s"]',
+                                        'user_message': '[data-testid="u"]',
+                                        'assistant_message': '[data-testid="a"]'}}
+                with mock.patch('claude_desktop_quick.cdp_targets.load', return_value=config), \
+                        mock.patch('claude_desktop_quick._cdp_pipe') as mock_cdp:
+                    inst = mock.MagicMock()
+                    mock_cdp.return_value = inst
+                    inst._profile_dir.side_effect = \
+                        lambda p=None: (Path.home() / '.local/share/claude-cdp/chrome'
+                                        if p in (None, '', 'chrome')
+                                        else Path.home() / '.local/share/claude-cdp/profiles' / p)
+                    inst._hostname_pid_lock.return_value = (expected / 'lock-pid', expected / 'lock-pid')
+                    inst.check_profile_busy.return_value = None
+                    inst._chrome_bin.return_value = '/nonexistent/chrome'
+                    result = self.endpoint.call('cdp/resume', {
+                        'target': target_name, 'chat_id': chat_id, 'prompt': 'hello'})
+                # chrome_missing : le gate profil/busy a été franchi avec le
+                # profil de la config, avant tout lancement.
+                self.assertEqual(result['status'], 'chrome_missing')
+                inst._profile_dir.assert_called_with(
+                    None if profile_name in (None, '', 'chrome') else profile_name)
 
 
 class _FakeStream:
