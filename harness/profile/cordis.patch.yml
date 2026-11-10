@@ -287,7 +287,7 @@
           - id: present
             name: '@deepseek-ai/dsh-tool-present'
           - id: asi1-orchestrator-effort
-            name: /Users/olivierhz/Documents/deepseek-harness/default-workspace/reprise-harness/agent-resume/asi1-orchestrator-effort.cjs
+            name: /Users/olivierhz/.dsh/profiles/desktop/.reprise/plugins/asi1-orchestrator-effort.cjs
             config:
               effort: low
               providers:

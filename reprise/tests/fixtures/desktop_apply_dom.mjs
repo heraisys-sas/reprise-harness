@@ -132,8 +132,11 @@ export async function runFixtures(scripts) {
   assert.equal(multilineSent.result.clicked, true);
   assert.equal(multilineSent.observed.clicks, 1);
   // ProseMirror's real transform: one LF becomes an innerText blank line.
-  const proseMirror = await run(scripts.send,
-    {text: 'Para one.\n\nPara two.'});  // source had 'Para one.\nPara two.'
+  // The expected fingerprint is the one scripts computed for the SOURCE text
+  // 'Para one.\nPara two.' (scripts.prose_mirror_send); canon() ignoring blank
+  // lines makes the rendered form match it.
+  const proseMirror = await run(scripts.prose_mirror_send,
+    {text: 'Para one.\n\nPara two.'});
   assert.equal(proseMirror.result.clicked, true);
   assert.equal(proseMirror.observed.clicks, 1);
   for (const options of [
