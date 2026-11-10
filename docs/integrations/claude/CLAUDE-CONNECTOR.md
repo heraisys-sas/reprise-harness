@@ -74,12 +74,13 @@ Un plan appliqué indique si la configuration locale a été écrite (`changed=t
 La carte Claude peut lire explicitement une observation bornée du journal renderer via `reprise claude-quota-status --observe-renderer-log`. Sans ce flag, `claude-quota-status` conserve sa sortie et son comportement historiques. L’interface lance cette lecture lorsque la carte est actualisée ou ouverte ; aucune ligne brute n’est renvoyée ni persistée. L’échéance indiquée est celle annoncée par un événement du journal, pas une preuve de quota actuellement bloqué ou disponible. Le fuseau d’écriture du journal n’étant pas attesté, la date de l’événement et sa fraîcheur restent inconnues ; compte, chat, quantité et état courant du quota ne sont pas attribués.
 
 Depuis le lot #124, le canal de dispatch actif est le **dispatch natif QTi** :
-l'app ReClaude (Claude Desktop re-signé, JS injecté dans l'asar) tient
-elle-même le socket `~/.claude-desktop/quick-entry-reprise.sock` et expose
-`initialize`, `quick_entry/capabilities` et `quick_entry/submit`. Le daemon
-historique `claude-desktopd` (`quick-entry.sock`) est **arrêté et non requis** ;
-un état `stopped` est normal — ne pas le démarrer pour « réparer » une
-délégation (faux diagnostic).
+l'app ReClaude (Claude Desktop re-signé, JS injecté dans l'asar) se connecte
+comme client relais (#130) au **socket Quick Apply**
+`~/.claude-desktop/quick-entry.sock`, bindé par le daemon `claude-desktopd`,
+détenteur unique du socket (fusion du 10/11/2026 : un seul socket, l'ancien nom
+`quick-entry-reprise.sock` n'est plus créé) et expose `initialize`,
+`quick_entry/capabilities` et `quick_entry/submit`. Socket absent ou refusé =
+daemon `claude-desktopd` arrêté : le démarrer est la réparation normale.
 
 Le démon historique pouvait être lié au projet avec `--project-root`. Son
 registre `quick.sqlite` est partagé avec le connecteur, isolé par projet. Une

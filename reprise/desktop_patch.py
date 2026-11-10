@@ -30,6 +30,11 @@ import subprocess
 import time
 from pathlib import Path
 
+try:
+    from .claude_desktop_rpc import probe_dispatch_socket
+except ImportError:  # import top-level (tests)
+    from claude_desktop_rpc import probe_dispatch_socket
+
 APP = Path('/Applications/Claude.app')
 COPY_APP = Path.home() / 'Applications' / 'ReClaude.app'  # copie patchée, app par défaut de patch()
 COPY_BUNDLE_ID = 'com.anthropic.claudefordesktop.reprise'  # distinct de l'originale : routage claude:// stable
@@ -43,7 +48,7 @@ MARKER = '/* REPRISE-TRIGGER v1 (#124) */'
 CHUNK = '.vite/build/index.chunk-BBUaTQ8d.js'
 ANCHORS = ('requestQuickWindowDismissWithPayload', 'dispatchOnQuickEntrySubmit',
            'stampSubmission', 'activateQuickEntryWindow')
-SOCKET = Path.home() / '.claude-desktop' / 'quick-entry-reprise.sock'
+SOCKET = Path.home() / '.claude-desktop' / 'quick-entry.sock'
 TRIGGER_MIN_CHARS = 3  # garde QTi : text.trim().length > 2 (strict)
 BLOCK_SIZE = 4194304
 FRAMEWORK = APP / 'Contents' / 'Frameworks' / 'Electron Framework.framework' / 'Versions' / 'A' / 'Electron Framework'
@@ -57,60 +62,70 @@ INJECTION = """
 ;
 ;(function(){
   try {
-    var __net = require('net'), __fs = require('fs'), __os = require('os');
-    var __p = __os.homedir() + '/.claude-desktop/quick-entry-reprise.sock';
-    try { __fs.unlinkSync(__p); } catch (e) {}
-    var __seen = {};
-    function __handle(obj, c) {
-      var isRpc = obj && typeof obj === 'object' && typeof obj.method === 'string';
-      if (isRpc) {
-        var id = obj.id === undefined ? null : obj.id;
-        function reply(result) { try { c.write(JSON.stringify({jsonrpc:'2.0', id:id, result:result}) + '\\n'); } catch (e2) {} }
-        function fail(code, message) { try { c.write(JSON.stringify({jsonrpc:'2.0', id:id, error:{code:code, message:message}}) + '\\n'); } catch (e2) {} }
-        if (obj.method === 'initialize') { reply({serverInfo:{name:'reprise-dispatch', version:'1'}}); return; }
-        if (obj.method === 'quick_entry/capabilities') { reply({dispatch_supported:true, resume_validation_supported:true, protocol:'reprise-dispatch-1'}); return; }
-        if (obj.method === 'quick_entry/submit') {
-          var pr = obj.params || {};
-          var rk = typeof pr.request_key === 'string' ? pr.request_key : null;
-          var text = typeof pr.prompt === 'string' ? pr.prompt : '';
-          if (!rk) { fail(-32602, 'request_key requis'); return; }
-          if (__seen[rk]) { reply({dispatch_attempted:true, admission_only:false, request_key:rk, duplicate:true}); return; }
-          if (text.trim().length < 3) { fail(-32602, 'prompt trop court (garde QTi : > 2 caractères après trim)'); return; }
-          __seen[rk] = true;
-          try { c.write(JSON.stringify({jsonrpc:'2.0', id:id, result:{dispatch_attempted:true, admission_only:false, request_key:rk}}) + '\\n'); } catch (we) {}
-          setImmediate(function() {
-            try { QTi({text:text, images:[], chatId: pr.chatId ? String(pr.chatId) : undefined}); }
-            catch (qe) { console.error('[reprise-dispatch] QTi error:', qe && qe.message); }
-          });
-          return;
-        }
-        fail(-32601, 'méthode inconnue: ' + obj.method);
+    process.umask(0o077);
+    var __net = require('net'), __os = require('os');
+    var __p = __os.homedir() + '/.claude-desktop/quick-entry.sock';
+    var __MIN = 3; // garde QTi : text.trim().length > 2 (strict)
+    var __backoff = 1000, __buf = '', __conn = null;
+    function __send(obj) {
+      if (!__conn) return;
+      try { __conn.write(JSON.stringify(obj) + '\\n'); } catch (e) {}
+    }
+    function __dispatch(id, pr) {
+      var rk = pr && typeof pr.request_key === 'string' ? pr.request_key : null;
+      var text = pr && typeof pr.prompt === 'string' ? pr.prompt : '';
+      if (text.trim().length < __MIN) {
+        __send({jsonrpc:'2.0', id:id, error:{code:-32602,
+          message:'prompt trop court (garde QTi : > 2 caractères après trim)'}});
         return;
       }
-      var text = obj && typeof obj.prompt === 'string' ? obj.prompt : '';
-      if (text.trim().length < 3) { try { c.write(JSON.stringify({ok:false, error:'prompt trop court (garde QTi)'}) + '\\n'); c.end(); } catch (e2) {} return; }
-      try { c.write(JSON.stringify({ok:true, dispatched:'queued'}) + '\\n'); c.end(); } catch (we) {}
-      setImmediate(function() {
-        try { QTi({text:text, images:[], chatId: obj && obj.chatId ? String(obj.chatId) : undefined}); }
-        catch (qe) { console.error('[reprise-dispatch] QTi error:', qe && qe.message); }
-      });
+      try {
+        __QTI__({text:text, images:[], chatId: pr.chatId ? String(pr.chatId) : undefined});
+        __send({jsonrpc:'2.0', id:id, result:{dispatch_attempted:true, request_key:rk}});
+      } catch (qe) {
+        __send({jsonrpc:'2.0', id:id, error:{code:-32603,
+          message:String(qe && qe.message || qe)}});
+      }
     }
-    var __srv = __net.createServer(function(c) {
-      try { c.write(JSON.stringify({hello:true}) + '\\n'); } catch (e0) {}
-      var b = '';
+    function __line(raw) {
+      var obj;
+      try { obj = JSON.parse(raw); } catch (e) { return; }
+      if (obj && obj.method === 'relay/dispatch') __dispatch(obj.id, obj.params || {});
+    }
+    function __connect() {
+      var c = __net.connect(__p);
+      c.setEncoding('utf8');
+      c.on('connect', function() {
+        __backoff = 1000;
+        __conn = c;
+        __send({hello:true, role:'relay', protocol:'reprise-relay-1', version:1});
+      });
       c.on('data', function(d) {
-        b += d.toString('utf8');
-        if (b.length > 8388608) { try { c.end(); } catch (e2) {} return; }
+        __buf += d;
+        if (__buf.length > 1048576) { try { c.destroy(); } catch (e2) {} return; }
         var i;
-        while ((i = b.indexOf('\\n')) >= 0) {
-          var line = b.slice(0, i); b = b.slice(i + 1);
-          if (!line.trim()) continue;
-          try { __handle(JSON.parse(line), c); } catch (e) { try { c.write(JSON.stringify({ok:false, error:String(e && e.message || e)}) + '\\n'); } catch (e2) {} }
+        while ((i = __buf.indexOf('\\n')) >= 0) {
+          var line = __buf.slice(0, i); __buf = __buf.slice(i + 1);
+          if (line.trim()) __line(line);
         }
       });
+      var __pings = 0;
+      c.on('connect', function() { __pings = 0; });
+      var __timer = setInterval(function() {
+        if (__conn !== c) { clearInterval(__timer); return; }
+        __pings += 1;
+        if (__pings > 2) { try { c.destroy(); } catch (e2) {} return; }
+        __send({jsonrpc:'2.0', id:Date.now(), method:'ping'});
+      }, 30000);
       c.on('error', function() {});
-    });
-    __srv.listen(__p, function() { try { __fs.chmodSync(__p, 384); } catch (e) {} });
+      c.on('close', function() {
+        clearInterval(__timer);
+        if (__conn === c) __conn = null;
+        setTimeout(__connect, __backoff);
+        __backoff = Math.min(__backoff * 2, 15000);
+      });
+    }
+    require('electron').app.whenReady().then(__connect);
   } catch (e) {}
 })();
 """
@@ -219,6 +234,34 @@ def verify_anchors(chunk_text):
         raise PatchError('Le patch REPRISE-TRIGGER est déjà appliqué.')
 
 
+def resolve_qti_identifier(body):
+    """Identifiant de la fonction native Quick Entry dans le chunk (placeholder __QTI__).
+
+    Un candidat est une `function nom(` dont les 1000 caractères suivants mentionnent
+    requestQuickWindowDismissWithPayload. Si plusieurs candidats, on retient celui qui
+    est appelé avec un objet littéral `nom({` (signature du dispatch QTi). Zéro
+    candidat ou ambiguïté résiduelle → PatchError. La variable d'environnement
+    REPRISE_QTI_ID court-circuite l'extraction (échappement si le chunk change de forme).
+    """
+    override = os.environ.get('REPRISE_QTI_ID')
+    if override:
+        return override
+    qualified = []
+    for match in re_module.finditer(r'function\s+([A-Za-z_$][\w$]*)\s*\(', body):
+        if 'requestQuickWindowDismissWithPayload' in body[match.start():match.start() + 1000]:
+            name = match.group(1)
+            if name not in qualified:
+                qualified.append(name)
+    if len(qualified) == 1:
+        return qualified[0]
+    if len(qualified) > 1:
+        callers = [name for name in qualified
+                   if re_module.search(re_module.escape(name) + r'\s*\(\s*\{', body)]
+        if len(callers) == 1:
+            return callers[0]
+    raise PatchError('Identifiant QTi ambigu ou introuvable')
+
+
 def _plist_asar_hash(plist_path, json_bytes):
     with open(plist_path, 'rb') as handle:
         plist = plistlib.load(handle)
@@ -316,6 +359,8 @@ def _apply_distinct_bundle_id(app):
     une re-signature APRÈS (le plist est scellé). Idempotent.
     """
     plist_path = Path(app) / 'Contents' / 'Info.plist'
+    if Path(app) == APP:
+        raise PatchError('Le bundle ID distinct ne s applique jamais à l app d' + 'origine.')
     with open(plist_path, 'rb') as handle:
         plist = plistlib.load(handle)
     if plist.get('CFBundleIdentifier') == COPY_BUNDLE_ID:
@@ -345,7 +390,12 @@ def patch(app=COPY_APP):
     entry = _chunk_entry(tree)
     chunk = _chunk_text(raw, header_size, entry)
     if MARKER in chunk:
-        return {'status': 'already_patched'}
+        try:
+            verify_patch(app)
+        except PatchError as error:
+            raise PatchError('Patch marqué présent mais état incohérent (' + str(error) +
+                             ') ; restore() requis.') from error
+        return {'status': 'already_patched', 'verified': True}
     verify_anchors(chunk)
     pristine = asar.read_bytes()
     original_sha = hashlib.sha256(pristine).hexdigest()
@@ -359,21 +409,46 @@ def patch(app=COPY_APP):
     patched_tree = json.loads(json.dumps(tree))
     _bump_entry(patched_tree, CHUNK, len(blobs[CHUNK]), file_integrity(blobs[CHUNK]))
     tmp = asar.parent / ('app.asar.reprise-new-' + str(os.getpid()))
+    plist_tmp = plist_path.parent / ('Info.plist.reprise-new-' + str(os.getpid()))
     json_bytes = write_asar(patched_tree, blobs, tmp)
     plist, plist_hash = _plist_asar_hash(plist_path, json_bytes)
-    os.replace(tmp, asar)
-    with open(plist_path, 'wb') as handle:
+    framework = _framework_path(app)
+    framework_original = framework.read_bytes() if framework.exists() else None
+    qti = resolve_qti_identifier(chunk)
+    with open(plist_tmp, 'wb') as handle:
         plistlib.dump(plist, handle, fmt=plistlib.FMT_BINARY)
-    plist2 = plistlib.load(open(plist_path, 'rb'))
-    digest_hex = integrity_dict_digest(plist2['ElectronAsarIntegrity'])
-    slot_patched, slot_offsets = patch_integrity_slot(app, digest_hex)
-    if _apply_distinct_bundle_id(app):
+    os.replace(tmp, asar)
+    try:
+        os.replace(plist_tmp, plist_path)
         plist2 = plistlib.load(open(plist_path, 'rb'))
-    verify_patch(app)
+        digest_hex = integrity_dict_digest(plist2['ElectronAsarIntegrity'])
+        slot_patched, slot_offsets = patch_integrity_slot(app, digest_hex)
+        if _apply_distinct_bundle_id(app):
+            plist2 = plistlib.load(open(plist_path, 'rb'))
+        verify_patch(app)
+    except BaseException:
+        # rollback best effort : asar et plist depuis les backups, framework d'origine
+        try:
+            if framework_original is not None:
+                framework.write_bytes(framework_original)
+        except OSError:
+            pass
+        try:
+            os.replace(backup, asar)
+            os.replace(plist_backup, plist_path)
+        except OSError:
+            pass
+        raise
+    finally:
+        for orphan in (tmp, plist_tmp):
+            try:
+                orphan.unlink()
+            except OSError:
+                pass
     sidecar = {'patched_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                'version': _version(), 'original_sha256': original_sha,
                'patched_sha256': hashlib.sha256(asar.read_bytes()).hexdigest(),
-               'plist_hash': plist_hash, 'chunk': CHUNK,
+               'plist_hash': plist_hash, 'chunk': CHUNK, 'qti_identifier': qti,
                'bundle_id': plist2.get('CFBundleIdentifier'),
                'integrity_dict_digest': digest_hex,
                'slot_offsets': slot_offsets, 'slot_patched': slot_patched}
@@ -465,8 +540,9 @@ def restore(app=COPY_APP):
         plistlib.dump(plist_new, handle, fmt=plistlib.FMT_BINARY)
     try:
         patch_integrity_slot(app, integrity_dict_digest(plist_new['ElectronAsarIntegrity']))
-    except PatchError:
-        pass
+    except OSError as error:
+        raise PatchError(f'Restauration du slot __asar_integrity impossible: {error}') from error
+    resign(app)
     for stale in (plist_backup, sidecar_path, SOCKET):
         try:
             stale.unlink()
@@ -475,17 +551,41 @@ def restore(app=COPY_APP):
     return {'status': 'restored', 'asar_sha256': hashlib.sha256(asar.read_bytes()).hexdigest()}
 
 
+def verify_restore(app=COPY_APP):
+    """Preuve de restauration : sha256(asar) == original_sha256 du sidecar (si présent)."""
+    asar = Path(app) / 'Contents' / 'Resources' / 'app.asar'
+    sidecar_path = _paths(app)['sidecar']
+    if not sidecar_path.exists():
+        return {'verified': False, 'reason': 'sidecar absent — aucune empreinte pristine connue'}
+    sidecar = json.loads(sidecar_path.read_text())
+    original = sidecar.get('original_sha256')
+    if not original:
+        return {'verified': False, 'reason': 'original_sha256 absent du sidecar'}
+    current = hashlib.sha256(asar.read_bytes()).hexdigest()
+    if current != original:
+        raise PatchError('Restauration incohérente : sha256(asar) diffère de original_sha256 du sidecar.')
+    return {'verified': True}
+
+
 def status(app=COPY_APP):
     asar = Path(app) / 'Contents' / 'Resources' / 'app.asar'
     raw, tree, header_size, json_length = read_asar_raw(asar.read_bytes())
     entry = _chunk_entry(tree)
     chunk = _chunk_text(raw, header_size, entry)
+    # socket orphelin = fichier présent mais connexion refusée → l'app ne l'écoute pas
+    if probe_dispatch_socket(SOCKET, timeout=1.0):
+        socket_state = 'running'
+    else:
+        socket_state = 'stopped' if SOCKET.exists() else 'absent'
     return {'version': _version() if Path(app) == APP else None, 'patched': MARKER in chunk,
-            'backup': _paths(app)['backup'].exists(), 'socket': SOCKET.exists(),
-            'desktop_running': desktop_running(app)}
+            'backup': _paths(app)['backup'].exists(), 'socket': socket_state,
+            'socket_path': str(SOCKET), 'desktop_running': desktop_running(app)}
 
 
-def _readline(sock, timeout=30):
+READLINE_LIMIT = 8 * 1024 * 1024
+
+
+def _readline(sock, timeout=30, limit=READLINE_LIMIT):
     buffer = b''
     sock.settimeout(timeout)
     while b'\n' not in buffer:
@@ -493,7 +593,12 @@ def _readline(sock, timeout=30):
         if not chunk:
             raise PatchError('Connexion dispatch fermée avant réponse.')
         buffer += chunk
-    return buffer.split(b'\n', 1)[0].decode()
+        if len(buffer) > limit:
+            raise ValueError('Réponse dispatch trop volumineuse (> %d octets).' % limit)
+    line = buffer.split(b'\n', 1)[0]
+    if len(line) > limit:
+        raise ValueError('Réponse dispatch trop volumineuse (> %d octets).' % limit)
+    return line.decode()
 
 
 def send_trigger(text, chat_id=None):
@@ -504,33 +609,34 @@ def send_trigger(text, chat_id=None):
     if len(text.strip()) < TRIGGER_MIN_CHARS:
         raise PatchError(f'Le déclencheur doit faire au moins {TRIGGER_MIN_CHARS} caractères après trim (garde QTi).')
     client = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
-    client.settimeout(30)
-    client.connect(str(SOCKET))
-    greeting = json.loads(_readline(client))
-    if not (isinstance(greeting, dict) and greeting.get('hello') is True):
+    try:
+        client.settimeout(30)
+        client.connect(str(SOCKET))
+        greeting = json.loads(_readline(client))
+        if not (isinstance(greeting, dict) and greeting.get('hello') is True):
+            raise PatchError('Greeting dispatch inattendu.')
+        payload = {'prompt': text}
+        if chat_id:
+            payload['chatId'] = str(chat_id)
+        client.sendall(json.dumps(payload).encode() + b'\n')
+        return json.loads(_readline(client))
+    finally:
         client.close()
-        raise PatchError('Greeting dispatch inattendu.')
-    payload = {'prompt': text}
-    if chat_id:
-        payload['chatId'] = str(chat_id)
-    client.sendall(json.dumps(payload).encode() + b'\n')
-    reply = json.loads(_readline(client))
-    client.close()
-    return reply
 
 
 def send_rpc(method, params=None):
     """Client JSON-RPC one-shot (initialize / quick_entry/capabilities / quick_entry/submit)."""
     client = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
-    client.settimeout(30)
-    client.connect(str(SOCKET))
-    greeting = json.loads(_readline(client))
-    if not (isinstance(greeting, dict) and greeting.get('hello') is True):
+    try:
+        client.settimeout(30)
+        client.connect(str(SOCKET))
+        greeting = json.loads(_readline(client))
+        if not (isinstance(greeting, dict) and greeting.get('hello') is True):
+            raise PatchError('Greeting dispatch inattendu.')
+        client.sendall(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params or {}}).encode() + b'\n')
+        reply = json.loads(_readline(client))
+    finally:
         client.close()
-        raise PatchError('Greeting dispatch inattendu.')
-    client.sendall(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params or {}}).encode() + b'\n')
-    reply = json.loads(_readline(client))
-    client.close()
     if 'error' in reply:
         raise PatchError('Erreur RPC: ' + str(reply['error']))
     return reply.get('result') or {}

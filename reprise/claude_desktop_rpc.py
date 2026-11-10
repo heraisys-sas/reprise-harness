@@ -10,9 +10,11 @@ from pathlib import Path
 
 from engines import Unavailable, socket_path
 
-# Injected native dispatch socket (archive/issue-102/QUICK-ENTRY-TAKEOVER-PLAN.md §2.1):
-# greeting {"hello":true}, then one JSON request per line, one reply per line.
-REPRISE_DISPATCH_SOCKET = Path.home() / '.claude-desktop/quick-entry-reprise.sock'
+# Socket Quick Apply tenu par le daemon claude-desktopd (client relais ReClaude
+# depuis #130 ; fusion 10/11/2026 — un seul
+# socket, ancien nom quick-entry-reprise.sock supprimé) : greeting {"hello":true},
+# puis une requête JSON par ligne, une réponse par ligne.
+REPRISE_DISPATCH_SOCKET = Path.home() / '.claude-desktop/quick-entry.sock'
 DISPATCH_LIMIT = 8 * 1024 * 1024
 
 

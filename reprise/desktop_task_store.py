@@ -82,6 +82,14 @@ class TaskStore:
                     INSERT OR IGNORE INTO desktop_task_order(scope,request_key)
                     VALUES(NEW.scope,NEW.request_key);
                 END''')
+            if 'admitted_at' not in columns:
+                self.db.execute('ALTER TABLE desktop_tasks ADD COLUMN admitted_at REAL')
+                # Legacy rows: no trustworthy admission time — never purge them by age.
+                self.db.execute('UPDATE desktop_tasks SET admitted_at=NULL WHERE admitted_at IS NULL')
+            self.db.execute('''CREATE TABLE IF NOT EXISTS desktop_claims(
+                scope TEXT NOT NULL, claim_key TEXT NOT NULL, request_key TEXT NOT NULL,
+                attempt_id TEXT, claimed_at REAL NOT NULL, PRIMARY KEY(scope, claim_key))''')
+            self.db.execute('CREATE INDEX IF NOT EXISTS desktop_claims_scope ON desktop_claims(scope,request_key)')
             self.db.commit()
         except Exception:
             self.db.rollback()
@@ -236,7 +244,8 @@ class TaskStore:
             row = self._row(request_key)
             if row and row[:2] != (prompt, chat_id):
                 raise ValueError('Request identity conflict')
-            self.db.execute('INSERT OR IGNORE INTO desktop_tasks(scope,request_key,prompt,chat_id) VALUES(?,?,?,?)', (self.scope,request_key,prompt,chat_id))
+            self.db.execute('INSERT OR IGNORE INTO desktop_tasks(scope,request_key,prompt,chat_id,admitted_at) VALUES(?,?,?,?,?)', (self.scope,request_key,prompt,chat_id,time.time()))
+            self.db.execute('UPDATE desktop_tasks SET admitted_at=COALESCE(admitted_at,?) WHERE scope=? AND request_key=?', (time.time(),self.scope,request_key))
             if not row:
                 self.db.execute('INSERT INTO desktop_dispatch_guard(scope,request_key) VALUES(?,?)',
                                 (self.scope, request_key))
@@ -306,6 +315,16 @@ class TaskStore:
         bounded(claim_key, 'claim_key', 128)
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
+            held = self.db.execute('SELECT request_key,attempt_id FROM desktop_claims WHERE scope=? AND claim_key=?', (self.scope, claim_key)).fetchone()
+            if held is not None:
+                row = self._row(request_key)
+                if row and held[0] == request_key:
+                    # Idempotent replay: this claim_key already holds exactly this task.
+                    return {'status': 'finished', 'request_key': request_key, 'attempt_id': held[1],
+                            'completed': row[4] is not None, 'delivery': 'attempted',
+                            'instruction': 'A delivery attempt was recorded, but receipt is unconfirmed. Do not execute unless you actually hold the prompt from that attempt. If you do not hold it, ask the operator to reconcile the state before any new admission; do not create a replacement key to bypass uncertainty.'}
+                return {'status': 'finished', 'state': 'busy', 'request_key': held[0], 'attempt_id': held[1],
+                        'instruction': 'This claim_key already holds a task. Execute and submit it (or reconcile) before claiming another; this reply is idempotent.'}
             row = self._row(request_key)
             if not row:
                 raise ValueError('Unknown project task')
@@ -318,6 +337,8 @@ class TaskStore:
             attempt = row[3] or str(uuid.uuid4())
             self.db.execute('UPDATE desktop_tasks SET claim_key=?,attempt_id=?,delivery=? WHERE scope=? AND request_key=?',
                             (claim_key, attempt, 'attempted' if row[4] is None else row[6], self.scope, request_key))
+            self.db.execute('INSERT INTO desktop_claims(claim_key,scope,request_key,attempt_id,claimed_at) VALUES(?,?,?,?,?)',
+                            (claim_key, self.scope, request_key, attempt, time.time()))
         return {'status': 'finished', 'request_key': request_key, 'attempt_id': attempt, 'prompt': row[0], 'chat_id': row[1],
                 'completed': row[4] is not None, 'delivery': 'handed_over',
                 'instruction': 'Already completed; retrieve the result with get_result.' if row[4] is not None else 'Perform the scoped task, then call submit_result with this attempt_id.'}
@@ -343,6 +364,8 @@ class TaskStore:
             attempt = str(uuid.uuid4())
             self.db.execute('UPDATE desktop_tasks SET claim_key=?,attempt_id=?,delivery=? WHERE scope=? AND request_key=?',
                             (claim_key, attempt, 'attempted', self.scope, row[0]))
+            self.db.execute('INSERT OR REPLACE INTO desktop_claims(claim_key,scope,request_key,attempt_id,claimed_at) VALUES(?,?,?,?,?)',
+                            (claim_key, self.scope, row[0], attempt, time.time()))
         return {'status': 'finished', 'request_key': row[0], 'attempt_id': attempt, 'prompt': row[1],
                 'chat_id': row[2], 'completed': False, 'delivery': 'handed_over',
                 'instruction': 'Perform the scoped task, then call submit_result with this attempt_id. Execute and submit before claiming another.'}
@@ -401,7 +424,51 @@ class TaskStore:
             if row[4] is not None and row[4] != answer:
                 raise ValueError('Result conflict')
             self.db.execute('UPDATE desktop_tasks SET answer=? WHERE scope=? AND request_key=?', (answer,self.scope,request_key))
+            self.db.execute('DELETE FROM desktop_claims WHERE scope=? AND request_key=?', (self.scope,request_key))
         return {'status': 'finished', 'request_key': request_key, 'completed': True, 'sha256': hashlib.sha256(answer.encode()).hexdigest()}
+
+    def purge(self, older_than, keep_uncertain=True):
+        """Delete acknowledged+answered tasks older than the cutoff, and resolved approvals.
+
+        Attempted-without-receipt tasks are NEVER deleted, whatever keep_uncertain:
+        their receipt is unconfirmed and purging them would erase an unresolved
+        uncertainty. Tasks with admitted_at NULL (legacy) are never age-purged.
+        """
+        cutoff = float(older_than)
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            tasks = self.db.execute('''DELETE FROM desktop_tasks
+                WHERE scope=? AND admitted_at IS NOT NULL AND admitted_at<? AND answer IS NOT NULL AND acknowledged=1
+                AND (delivery IS NULL OR delivery='attempted' AND answer IS NOT NULL)''',
+                (self.scope, cutoff)).rowcount
+            self.db.execute('''DELETE FROM desktop_approvals WHERE scope=? AND resolved=1 AND resolved_at IS NOT NULL AND resolved_at<?''',
+                            (self.scope, cutoff))
+        return {'status': 'finished', 'purged_tasks': tasks, 'keep_uncertain': bool(keep_uncertain)}
+
+    def reconcile(self, request_key, decision):
+        """Documented operator reconciliation of an uncertain delivery.
+
+        'received_elsewhere': the outcome landed outside this store; documented
+        no-change (the uncertainty is resolved by the operator's own record, not
+        by rewriting state). 'abandoned': reset claim/attempt/delivery, only when
+        delivery=='attempted' with no receipt, so the task can be re-claimed.
+        """
+        bounded(request_key, 'request_key', 128)
+        if decision not in ('received_elsewhere', 'abandoned'):
+            raise ValueError("decision must be 'received_elsewhere' or 'abandoned'")
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            row = self._row(request_key)
+            if not row:
+                raise ValueError('Unknown project task')
+            if decision == 'received_elsewhere':
+                return {'status': 'finished', 'request_key': request_key, 'reconciled': 'received_elsewhere', 'changed': False}
+            if row[6] != 'attempted' or row[4] is not None:
+                raise ValueError('Reconcile abandoned requires delivery=attempted without result')
+            self.db.execute('''UPDATE desktop_tasks SET claim_key=NULL,attempt_id=NULL,delivery=NULL
+                WHERE scope=? AND request_key=?''', (self.scope, request_key))
+            self.db.execute('DELETE FROM desktop_claims WHERE scope=? AND request_key=?', (self.scope, request_key))
+        return {'status': 'finished', 'request_key': request_key, 'reconciled': 'abandoned', 'changed': True}
 
     def result(self, request_key, acknowledge=False, view='receipt', offset=0, max_chars=6000, result_sha256=None):
         lookup = {'request_key': request_key, 'acknowledge': acknowledge, 'view': view}

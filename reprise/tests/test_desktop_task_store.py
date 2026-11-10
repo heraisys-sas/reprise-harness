@@ -304,3 +304,55 @@ class TaskStoreTests(unittest.TestCase):
                 self.assertIn('from-old-daemon', [item['request_key'] for item in listed['tasks']])
             finally:
                 store.close()
+
+
+class ClaimPurgeReconcileTests(unittest.TestCase):
+    def test_one_at_a_time_busy_and_purge_reconcile(self):
+        import time as time_module
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); project = root/'project'; project.mkdir()
+            store = TaskStore(root/'state', project)
+            try:
+                store.admit('t1', 'prompt one')
+                store.admit('t2', 'prompt two')
+                first = store.claim('t1', 'caller-a')
+                # busy idempotent : même claim_key sur une autre tâche
+                busy = store.claim('t2', 'caller-a')
+                self.assertEqual(busy['state'], 'busy')
+                self.assertEqual(busy['request_key'], 't1')
+                # autre claim_key sur la tâche encore libre : remise normale
+                other = store.claim('t2', 'caller-b')
+                self.assertEqual(other['request_key'], 't2')
+                # rejeu idempotent : même claim_key + même tâche
+                replay = store.claim('t1', 'caller-a')
+                self.assertEqual(replay['attempt_id'], first['attempt_id'])
+                # submit libère le verrou ; one-at-a-time reste propre à claim_next
+                store.submit('t1', first['attempt_id'], 'answer')
+                # purge : spares attempted-without-receipt, purges acknowledged old tasks
+                store.result('t1', True)
+                old = time_module.time() - 10_000
+                import sqlite3 as sq3
+                conn = sq3.connect(root/'state'/'quick.sqlite')
+                conn.execute('UPDATE desktop_tasks SET admitted_at=? WHERE request_key=?', (old, 't1'))
+                conn.commit(); conn.close()
+                out = store.purge(old + 100)
+                self.assertEqual(out['purged_tasks'], 1)
+                # reconcile abandoned : attempted sans reçu reset le claim
+                attempt = other['attempt_id']
+                listed = store.list_tasks()
+                item = [i for i in listed['tasks'] if i['request_key'] == 't2'][0]
+                self.assertEqual(item['state'], 'attempted')
+                rec = store.reconcile('t2', 'abandoned')
+                self.assertTrue(rec['changed'])
+                fresh = store.claim('t2', 'caller-d')
+                self.assertEqual(fresh['request_key'], 't2')
+                with self.assertRaises(ValueError):
+                    store.reconcile('t2', 'nonsense')
+                elsewhere = store.reconcile('t2', 'received_elsewhere')
+                self.assertFalse(elsewhere['changed'])
+            finally:
+                store.close()
+
+
+if __name__ == '__main__':
+    unittest.main()

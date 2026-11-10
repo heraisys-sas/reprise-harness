@@ -31,7 +31,7 @@ from pathlib import Path
 state=Path(sys.argv[sys.argv.index('--state')+1]); saved=state/'job.json'
 for line in sys.stdin:
  x=json.loads(line); op=x['op']
- with (state/'ops').open('a') as f:f.write(op+'\\n')
+ with (state/'ops').open('a', buffering=1) as f:f.write(op+'\\n')
  if op=='job_prepare':
   row={'status':'preparation','project_id':x['project_id'],'operation_id':x['operation_id'],'revision':0,
        'proposal':x['proposal'],'proposal_sha256':hashlib.sha256(json.dumps(x['proposal'],sort_keys=True,separators=(',',':')).encode()).hexdigest()}
@@ -84,7 +84,7 @@ for line in sys.stdin:
 ''')
             binary=root/'local-ui'
             subprocess.run(['swiftc','-parse-as-library','-module-cache-path',str(root/'cache'),str(ROOT/'swift'/'ApplePilotUI.swift'),str(swift),'-o',str(binary)],check=True)
-            subprocess.run([str(binary),'/usr/bin/python3',str(fake),str(root)],check=True,timeout=12)
+            subprocess.run([str(binary),sys.executable,str(fake),str(root)],check=True,timeout=12)
             self.assertEqual((root/'ops').read_text().splitlines().count('job_local_start'),1)
 
     def test_native_local_helper_contract_and_self_deadline_without_inference(self):
@@ -241,7 +241,7 @@ for line in sys.stdin:
 state = pathlib.Path(sys.argv[sys.argv.index('--state')+1])
 for line in sys.stdin:
  x = json.loads(line)
- with (state / 'ops').open('a') as f: f.write(x['op']+'\\n')
+ with (state / 'ops').open('a', buffering=1) as f: f.write(x['op']+'\\n')
  if x['op'] == 'job_prepare':
   if x['proposal']['objective'] == 'rejet':
    print(json.dumps({'id':x['id'], 'status':'invalid_proposal', 'effect':'not_admitted'}), flush=True); continue
@@ -336,9 +336,9 @@ import Darwin
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
             suite = root.name
-            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root), suite, 'write'], check=True, timeout=8)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root), suite, 'write'], check=True, timeout=8)
             self.assertTrue(seen.exists())
-            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root), suite, 'read'], check=True, timeout=8)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root), suite, 'read'], check=True, timeout=8)
 
     def test_fsync_failure_refuses_emit_and_not_found_stays_blocked(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -348,7 +348,7 @@ import Darwin
 state = pathlib.Path(sys.argv[sys.argv.index('--state')+1])
 for line in sys.stdin:
  x = json.loads(line)
- with (state / 'ops').open('a') as f: f.write(x['op']+'\\n')
+ with (state / 'ops').open('a', buffering=1) as f: f.write(x['op']+'\\n')
  if x['op'] == 'job_recover': print(json.dumps({'id':x['id'], 'status':'not_found'}), flush=True)
  elif x['op'] == 'job_prepare':
   job = {'status':'preparation', 'project_id':x['project_id'], 'operation_id':x['operation_id'],
@@ -396,7 +396,7 @@ from pathlib import Path
 state=Path(sys.argv[sys.argv.index('--state')+1]); stored=state/'consent.json'
 for line in sys.stdin:
  x=json.loads(line); op=x['op']
- with (state/'ops').open('a') as log: log.write(op+'\\n')
+ with (state/'ops').open('a', buffering=1) as log: log.write(op+'\\n')
  if op=='job_prepare':
   sha=hashlib.sha256(json.dumps(x['proposal'],sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
   row={'status':'preparation','project_id':x['project_id'],'operation_id':x['operation_id'],
@@ -456,7 +456,7 @@ for line in sys.stdin:
             binary = root / 'consent-recovery'
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root/'cache'),
                             str(ROOT/'swift'/'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True, timeout=10)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True, timeout=10)
             ops=(root/'ops').read_text().splitlines()
             self.assertEqual(ops.count('job_authorize'), 1)
             self.assertEqual(ops.count('job_recover'), 2)
@@ -508,7 +508,7 @@ for line in sys.stdin:
             binary = root / 'inflight-recovery'
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True)
 
     def test_late_preparation_response_stays_bound_to_its_project(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -547,7 +547,7 @@ for line in sys.stdin:
             binary = root / 'project-binding'
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True)
 
     def test_uncertain_preparation_requires_recovery_across_ui_restart(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -599,7 +599,7 @@ for line in sys.stdin:
             binary = root / 'preparation-recovery'
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True)
 
     def test_delayed_revise_recovery_requires_exact_revision_and_fingerprint(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -669,7 +669,7 @@ for line in sys.stdin:
             binary = root / 'revise-recovery'
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True, timeout=10)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True, timeout=10)
 
     def test_legacy_intent_is_recoverable_but_never_cleared_by_unproven_result(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -799,7 +799,7 @@ for line in sys.stdin:
 p = pathlib.Path(sys.argv[sys.argv.index('--state')+1])
 for line in sys.stdin:
  x = json.loads(line)
- with (p / 'ops').open('a') as f: f.write(x['op']+'\\n')
+ with (p / 'ops').open('a', buffering=1) as f: f.write(x['op']+'\\n')
  print(json.dumps({'id':x['id'], 'status':'opened' if x['op']=='open' else 'closed'}), flush=True)
 """)
             swift = root / 'StartupOpen.swift'
@@ -829,7 +829,7 @@ for line in sys.stdin:
             binary = root / 'startup-open'
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)], check=True)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True)
             self.assertEqual((root / 'ops').read_text().splitlines(), ['open', 'close'])
 
     def test_process_lifecycle_with_fake_service_and_no_implicit_start(self):
@@ -846,7 +846,7 @@ if (p / 'eof').exists():
 last_turn = None
 for line in sys.stdin:
     x = json.loads(line)
-    with (p / 'requests').open('a') as f: f.write(x['op'] + (':' + x['request']['op'] if x['op'] == 'memory_call' else '') + '\\n')
+    with (p / 'requests').open('a', buffering=1) as f: f.write(x['op'] + (':' + x['request']['op'] if x['op'] == 'memory_call' else '') + '\\n')
     if (p / 'silent').exists() and x['op'] != 'open': continue
     if (p / 'model-uncertain').exists() and x['op'] == 'turn':
         print(json.dumps({'id':x['id'], 'status':'cleanup_unconfirmed'}), flush=True)
@@ -1081,50 +1081,50 @@ for line in sys.stdin:
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)],
                            check=True, capture_output=True, text=True, timeout=60)
-            run = subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(root)],
+            run = subprocess.run([str(binary), sys.executable, str(fake), str(root)],
                            capture_output=True, text=True, timeout=10)
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertTrue((root / 'started').exists())
             eof_root = root / 'unexpected-eof'
             eof_root.mkdir()
             (eof_root / 'eof').write_text('yes')
-            eof_run = subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(eof_root), 'eof'],
+            eof_run = subprocess.run([str(binary), sys.executable, str(fake), str(eof_root), 'eof'],
                                      capture_output=True, text=True, timeout=10)
             self.assertEqual(eof_run.returncode, 0, eof_run.stderr)
             silent_root = root / 'silent'
             silent_root.mkdir()
             (silent_root / 'silent').write_text('yes')
-            silent_run = subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(silent_root), 'silent'],
+            silent_run = subprocess.run([str(binary), sys.executable, str(fake), str(silent_root), 'silent'],
                                         capture_output=True, text=True, timeout=10)
             self.assertEqual(silent_run.returncode, 0, silent_run.stderr)
             self.assertEqual((silent_root / 'requests').read_text().splitlines().count('cancel'), 1)
             reversed_root = root / 'reversed'
             reversed_root.mkdir()
             (reversed_root / 'reversed').write_text('yes')
-            reversed_run = subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(reversed_root), 'reversed'],
+            reversed_run = subprocess.run([str(binary), sys.executable, str(fake), str(reversed_root), 'reversed'],
                                           capture_output=True, text=True, timeout=10)
             self.assertEqual(reversed_run.returncode, 0, reversed_run.stderr)
             uncertain_root = root / 'indeterminate'
             uncertain_root.mkdir()
             (uncertain_root / 'indeterminate').write_text('yes')
-            uncertain_run = subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(uncertain_root), 'indeterminate'],
+            uncertain_run = subprocess.run([str(binary), sys.executable, str(fake), str(uncertain_root), 'indeterminate'],
                                            capture_output=True, text=True, timeout=10)
             self.assertEqual(uncertain_run.returncode, 0, uncertain_run.stderr)
             timed_root = root / 'memory-timeout'
             timed_root.mkdir()
             (timed_root / 'memory-timeout').write_text('yes')
-            timed_run = subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(timed_root), 'memory-timeout'],
+            timed_run = subprocess.run([str(binary), sys.executable, str(fake), str(timed_root), 'memory-timeout'],
                                        capture_output=True, text=True, timeout=10)
             self.assertEqual(timed_run.returncode, 0, timed_run.stderr)
             model_root = root / 'model-uncertain'
             model_root.mkdir()
             (model_root / 'model-uncertain').write_text('yes')
-            model_run = subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(model_root), 'model-uncertain'],
+            model_run = subprocess.run([str(binary), sys.executable, str(fake), str(model_root), 'model-uncertain'],
                                        capture_output=True, text=True, timeout=10)
             self.assertEqual(model_run.returncode, 0, model_run.stderr)
             switch_root = root / 'project-switch'
             switch_root.mkdir()
-            switch_run = subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(switch_root), 'project-switch'],
+            switch_run = subprocess.run([str(binary), sys.executable, str(fake), str(switch_root), 'project-switch'],
                                         capture_output=True, text=True, timeout=10)
             self.assertEqual(switch_run.returncode, 0, switch_run.stderr)
             requests = (switch_root / 'requests').read_text().splitlines()
@@ -1132,7 +1132,7 @@ for line in sys.stdin:
             self.assertNotIn('memory_call:create_checkpoint', requests)
             work_root = root / 'work-switch'
             work_root.mkdir()
-            work_run = subprocess.run([str(binary), '/usr/bin/python3', str(fake), str(work_root), 'work-switch'],
+            work_run = subprocess.run([str(binary), sys.executable, str(fake), str(work_root), 'work-switch'],
                                       capture_output=True, text=True, timeout=10)
             self.assertEqual(work_run.returncode, 0, work_run.stderr)
             work_requests = (work_root / 'requests').read_text().splitlines()

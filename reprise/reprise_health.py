@@ -45,7 +45,7 @@ LOG_SIGNATURES = {
 # Supervised processes Reprise may need to relaunch after an update.
 SUPERVISED = {
     'codex-server': {'label': 'Serveur Codex local', 'marker': 'app-server'},
-    'quick-entry-server': {'label': 'Service Quick Apply (claude-desktopd)', 'marker': 'claude_desktop_quick'},
+    'quick-entry-server': {'label': 'Socket Quick Apply (claude-desktopd)', 'marker': 'claude_desktop_quick'},
 }
 
 
@@ -174,7 +174,7 @@ def check(bundle_root, log_dir=DEFAULT_LOG_DIR, db=None, state=None, versions=No
         'stale_log_signatures': stale,
         'unverified_log_signatures': [name for name, s in signatures.items() if s.get('status') == 'unverified'],
         'needs_relaunch': relaunch,
-        'actions_for_human': ([f'Relancer {SUPERVISED[n]["label"]}' for n in relaunch]
+        'actions_for_human': ([f'Relancer {SUPERVISED[n]["label"]}' for n in relaunch if n in SUPERVISED]
                               + [f'Adapter le parsing de la signature « {signatures[s]["marker"]} »' for s in stale]
                               + [f'Signature « {s["marker"]} » : non vérifié depuis la mise à jour ; effectuer une activité pertinente'
                                  for s in signatures.values() if s.get('status') == 'unverified']),

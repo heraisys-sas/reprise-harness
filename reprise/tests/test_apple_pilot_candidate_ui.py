@@ -33,7 +33,7 @@ class CandidateUIIntegrationTests(unittest.TestCase):
             candidate = {'schema': 'reprise-preparation-candidate-v1', 'proposal': {
                 'objective': 'Créer un compte rendu', 'acceptance': ['Texte relu'],
                 'constraints': ['Sans outils'], 'questions': ['Quel public ?']}}
-            helper.write_text('#!/usr/bin/python3\nimport sys,json,signal\nfrom pathlib import Path\n'
+            helper.write_text('#!' + sys.executable + '\nimport sys,json,signal\nfrom pathlib import Path\n'
                 'if sys.argv[1:]==["--supervision-contract"]:\n print('+repr(json.dumps(dict(SUPERVISION_CONTRACT, prompt_formats=["operator-question-v2", "preparation-analysis-v2", "preparation-analysis-v3-guided"])))+');sys.exit(0)\n'
                 'signal.signal(signal.SIGALRM,lambda *_:sys.exit(124));signal.alarm(int(sys.argv[2]))\n'
                 'x=json.load(sys.stdin)\n'
@@ -187,7 +187,7 @@ finally:host.shutdown()
             binary = folder/'flow'
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(folder/'cache'),
                             str(ROOT/'swift/ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), '/usr/bin/python3', str(service), str(state), project], check=True, timeout=35)
+            subprocess.run([str(binary), sys.executable, str(service), str(state), project], check=True, timeout=35)
             ops = (state/'ops').read_text().splitlines()
             self.assertEqual(ops.count('job_local_start'), 1)
             self.assertEqual(ops.count('job_candidate_import'), 2 if refuse_import else 1)

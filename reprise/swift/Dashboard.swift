@@ -280,7 +280,7 @@ struct Dashboard: View {
         case "analysis": return "Un second regard sur les comptes rendus, sur votre Mac."
         case "apple-pilot": return "Un assistant local expérimental pour examiner un contexte choisi."
         case "search": return "Retrouvez un élément sans vous souvenir de l’application."
-        case "connections": return "Connectez Reprise aux services codexd (codex-desktop) et claude-desktopd (Quick Apply)."
+        case "connections": return "Connectez Reprise aux sockets codexd (codex-desktop) et Quick Apply (claude-desktopd)."
         case "integrations": return "Préparez explicitement les outils MCP et les consignes de votre profil Harness."
         case "health": return "Après une mise à jour : ce qu’il faut relancer, ce qui reste à parser, et les actions humaines."
         case "privacy": return "Vos données de recherche restent sous votre contrôle."
@@ -873,7 +873,7 @@ struct Dashboard: View {
                          ok: true) {
                 SettingsHint(
                     text: "Aucune autorisation macOS n’est requise pour Reprise.",
-                    detail: "Quick Apply s’applique via le socket du daemon claude-desktopd (~/.claude-desktop/quick-entry.sock). Le daemon, lui, agit dans Claude Desktop avec les autorisations que vous lui accordez.")
+                    detail: "Un seul socket Quick Apply : ~/.claude-desktop/quick-entry.sock, tenu par l’app ReClaude patchée (fusion 10/11/2026). Un socket présent + greeting vérifié = ReClaude lancée ; socket orphelin ou absent = ReClaude arrêtée.")
             }
         }
     }
