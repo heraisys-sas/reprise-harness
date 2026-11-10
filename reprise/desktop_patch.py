@@ -67,9 +67,25 @@ INJECTION = """
     var __p = __os.homedir() + '/.claude-desktop/quick-entry.sock';
     var __MIN = 3; // garde QTi : text.trim().length > 2 (strict)
     var __backoff = 1000, __buf = '', __conn = null;
+    var __diag = __os.homedir() + '/.claude-desktop/relay-diag.log';
+    function __log(tag, detail) {
+      try {
+        require('fs').appendFileSync(__diag, new Date().toISOString() + ' ' + tag + ' ' + (detail === undefined ? '' : String(detail)) + '\\n');
+      } catch (e) {}
+    }
     function __send(obj) {
       if (!__conn) return;
       try { __conn.write(JSON.stringify(obj) + '\\n'); } catch (e) {}
+    }
+    function __window_ready() {
+      // QTi ne routage vers chatId que si la fenêtre principale existe ;
+      // pendant le boot (~17 s) V est absente et le payload est jeté.
+      try {
+        var ws = require('electron').BrowserWindow.getAllWindows();
+        return ws.some(function (w) {
+          return !w.isDestroyed() && w.webContents && !w.webContents.isDestroyed();
+        });
+      } catch (e) { return true; }
     }
     function __dispatch(id, pr) {
       var rk = pr && typeof pr.request_key === 'string' ? pr.request_key : null;
@@ -79,18 +95,36 @@ INJECTION = """
           message:'prompt trop court (garde QTi : > 2 caractères après trim)'}});
         return;
       }
-      try {
-        __QTI__({text:text, images:[], chatId: pr.chatId ? String(pr.chatId) : undefined});
-        __send({jsonrpc:'2.0', id:id, result:{dispatch_attempted:true, request_key:rk}});
-      } catch (qe) {
-        __send({jsonrpc:'2.0', id:id, error:{code:-32603,
-          message:String(qe && qe.message || qe)}});
+      var __tries = 0;
+      var __wait = setInterval(function () {
+        if (__window_ready() || __tries++ > 90) {
+          clearInterval(__wait);
+          try {
+        // QTi natif (dsi) déstructure {prompt, images, filePaths, chatId} :
+        // la clé 'prompt' est obligatoire, 'text' est ignoré. dsi est async :
+        // le rejet est capturé via .catch, pas par le try/catch synchrone.
+        __log('dispatch', 'rk=' + rk + ' len=' + text.length);
+        Promise.resolve(__QTI__({prompt:text, images:[], filePaths:[],
+          chatId: pr.chatId ? String(pr.chatId) : undefined})).then(function() {
+          __log('qti_ok', rk);
+          __send({jsonrpc:'2.0', id:id, result:{dispatch_attempted:true, request_key:rk}});
+        }, function(qe) {
+          __log('qti_err', rk + ' ' + String(qe && qe.message || qe));
+          __send({jsonrpc:'2.0', id:id, error:{code:-32603,
+            message:String(qe && qe.message || qe)}});
+        });
+        } catch (qe) {
+          __log('dispatch_sync_err', String(qe && qe.message || qe));
+          __send({jsonrpc:'2.0', id:id, error:{code:-32603,
+            message:String(qe && qe.message || qe)}});
+        }
       }
+    }, 500);
     }
     function __line(raw) {
       var obj;
       try { obj = JSON.parse(raw); } catch (e) { return; }
-      if (obj && obj.method === 'relay/dispatch') __dispatch(obj.id, obj.params || {});
+      if (obj && obj.method === 'relay/dispatch') { __log('relay_recv', 'id=' + obj.id); __dispatch(obj.id, obj.params || {}); }
     }
     function __connect() {
       var c = __net.connect(__p);
@@ -98,6 +132,7 @@ INJECTION = """
       c.on('connect', function() {
         __backoff = 1000;
         __conn = c;
+        __log('relay_connect', 'ok');
         __send({hello:true, role:'relay', protocol:'reprise-relay-1', version:1});
       });
       c.on('data', function(d) {
@@ -405,7 +440,10 @@ def patch(app=COPY_APP):
     blobs = {full: raw[8 + header_size + int(item['offset']):
                        8 + header_size + int(item['offset']) + item['size']]
              for full, item in _iter_packed(tree)}
-    blobs[CHUNK] = (chunk + '\n' + MARKER + '\n' + INJECTION).encode()
+    qti = resolve_qti_identifier(chunk)
+    if '__QTI__' not in INJECTION:
+        raise PatchError('Placeholder __QTI__ absent de INJECTION ; substitution impossible.')
+    blobs[CHUNK] = (chunk + '\n' + MARKER + '\n' + INJECTION.replace('__QTI__', qti)).encode()
     patched_tree = json.loads(json.dumps(tree))
     _bump_entry(patched_tree, CHUNK, len(blobs[CHUNK]), file_integrity(blobs[CHUNK]))
     tmp = asar.parent / ('app.asar.reprise-new-' + str(os.getpid()))
@@ -517,6 +555,11 @@ def verify_patch(app=COPY_APP):
     return True
 
 
+def _should_unlink_socket(socket_path=SOCKET):
+    """Ne délier le socket Quick Apply que si aucun daemon vivant ne répond dessus."""
+    return not probe_dispatch_socket(socket_path, timeout=1.0)
+
+
 def restore(app=COPY_APP):
     asar = Path(app) / 'Contents' / 'Resources' / 'app.asar'
     plist_path = Path(app) / 'Contents' / 'Info.plist'
@@ -543,12 +586,17 @@ def restore(app=COPY_APP):
     except OSError as error:
         raise PatchError(f'Restauration du slot __asar_integrity impossible: {error}') from error
     resign(app)
-    for stale in (plist_backup, sidecar_path, SOCKET):
+    stale = [plist_backup, sidecar_path]
+    socket_preserved = not _should_unlink_socket(SOCKET)
+    if not socket_preserved:
+        stale.append(SOCKET)
+    for path in stale:
         try:
-            stale.unlink()
+            path.unlink()
         except OSError:
             pass
-    return {'status': 'restored', 'asar_sha256': hashlib.sha256(asar.read_bytes()).hexdigest()}
+    return {'status': 'restored', 'socket_preserved': socket_preserved,
+            'asar_sha256': hashlib.sha256(asar.read_bytes()).hexdigest()}
 
 
 def verify_restore(app=COPY_APP):

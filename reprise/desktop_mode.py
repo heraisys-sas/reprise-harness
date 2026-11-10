@@ -19,7 +19,11 @@ import sys
 import engines
 from claude_desktop import DEFAULT_SOCKET
 
-APP = Path('/Applications/Claude.app')
+# Application liée : copie ReClaude produite par desktop_patch (asar re-signé,
+# injection relais #130) ; repli sur l'app Claude officielle si la copie manque.
+APP = Path.home() / 'Applications' / 'ReClaude.app'
+if not APP.exists():
+    APP = Path('/Applications/Claude.app')
 SERVER = Path(__file__).parent / 'claude_desktop_quick.py'
 
 
@@ -31,8 +35,11 @@ def app_version():
 
 
 def app_running():
+    """La copie ReClaude est un binaire re-signé dont le nom de process varie
+    selon le bundle ; on cherche sur le chemin du bundle plutôt qu'un nom fixe."""
     try:
-        return subprocess.run(['/usr/bin/pgrep', '-x', 'Claude'], stdout=subprocess.DEVNULL,
+        probe = str(APP)
+        return subprocess.run(['/usr/bin/pgrep', '-f', probe], stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL, timeout=2).returncode != 1
     except (OSError, subprocess.TimeoutExpired):
         return False
