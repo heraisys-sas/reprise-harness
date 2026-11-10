@@ -678,7 +678,9 @@ for line in sys.stdin:
             operation = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
             journal = root / 'apple-pilot-intents.noindex'
             journal.mkdir(mode=0o700)
-            (journal / f'intent-{project}.json').write_text(f'{project}\n{operation}\n')
+            marker = journal / f'intent-{project}.json'
+            marker.write_text(f'{project}\n{operation}\n')
+            marker.chmod(0o600)
             fake = root / 'service.py'
             fake.write_text("""import json, sys
 for line in sys.stdin:
