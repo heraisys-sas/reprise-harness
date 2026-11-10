@@ -92,6 +92,8 @@ class PatchRestoreTests(unittest.TestCase):
             unittest.mock.patch.object(desktop_patch, 'BACKUP', patch_dir / 'app.asar.reprise-backup'),
             unittest.mock.patch.object(desktop_patch, 'PLIST_BACKUP', patch_dir / 'Info.plist.reprise-backup'),
             unittest.mock.patch.object(desktop_patch, 'SIDECAR', patch_dir / 'patch.json'),
+            # codesign réel impossible sur un bundle factice : resign est vérifié hors sandbox
+            unittest.mock.patch.object(desktop_patch, 'resign', lambda app: None),
         ]
         for m in self.mocks:
             m.start()
@@ -146,6 +148,70 @@ class PatchRestoreTests(unittest.TestCase):
             with self.assertRaises(PatchError) as caught:
                 desktop_patch.patch(app=self.app)
         self.assertIn('quitter', str(caught.exception))
+
+    def test_status_orphan_socket_is_stopped(self):
+        self._write_plist()
+        orphan = Path(self.tmp.name) / 'orphan.sock'
+        orphan.write_bytes(b'')
+        with unittest.mock.patch.object(desktop_patch, 'SOCKET', orphan):
+            with unittest.mock.patch.object(desktop_patch, 'desktop_running', return_value=False):
+                report = desktop_patch.status(app=self.app)
+        self.assertEqual(report['socket'], 'stopped')
+        self.assertEqual(report['socket_path'], str(orphan))
+
+
+class QtiAndInjectionTests(unittest.TestCase):
+    def test_two_candidates_resolved_by_caller_signature(self):
+        # QTi2 qualifie (ancre dans sa fenêtre) mais n'est jamais appelé avec ({ ;
+        # QTi3 l'est → le filtre d'appel tranche en faveur de QTi3.
+        body = ('function QTi2(p){requestQuickWindowDismissWithPayload(p);}; '
+                'function QTi3(p){requestQuickWindowDismissWithPayload(p);}; '
+                'QTi3({text:t,images:[]}); QTi2(legacy);')
+        self.assertEqual(desktop_patch.resolve_qti_identifier(body), 'QTi3')
+
+    def test_two_callers_remain_ambiguous(self):
+        body = ('function A(p){requestQuickWindowDismissWithPayload(p);}; '
+                'function B(p){requestQuickWindowDismissWithPayload(p);}; A({x:1}); B({y:2});')
+        with self.assertRaises(PatchError):
+            desktop_patch.resolve_qti_identifier(body)
+
+    def test_zero_candidate_raises(self):
+        with self.assertRaises(PatchError):
+            desktop_patch.resolve_qti_identifier('function unrelated(){}')
+
+    def test_env_override_short_circuits(self):
+        with unittest.mock.patch.dict('os.environ', {'REPRISE_QTI_ID': 'CustomFn'}):
+            self.assertEqual(desktop_patch.resolve_qti_identifier('function unrelated(){}'), 'CustomFn')
+
+    def test_injection_contains_safety_markers(self):
+        for marker in ("setEncoding('utf8')", 'Object.create(null)', 'process.umask(0o077)'):
+            self.assertIn(marker, desktop_patch.INJECTION)
+        # request_key regex accepts JS prototype-like names (e.g. 'constructor')
+        import re as re_module
+        self.assertRegex('constructor', re_module.search(r'/\^\[A-Za-z0-9_.:-\].*/', desktop_patch.INJECTION).group()[1:-1])
+
+
+class StateAndClientTests(unittest.TestCase):
+    def test_send_trigger_closes_socket_on_server_error(self):
+        opened = []
+        real_socket = __import__('socket').socket
+        class FakeSocket(real_socket):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k); opened.append(self)
+            def connect(self, address):
+                raise OSError('connection refused')
+        with unittest.mock.patch.object(desktop_patch.socket_module, 'socket', FakeSocket), \
+             unittest.mock.patch.object(desktop_patch, 'SOCKET', Path('/tmp/none.sock')):
+            with self.assertRaises(OSError):
+                desktop_patch.send_trigger('x' * 64)
+        self.assertTrue(all(s.fileno() == -1 for s in opened), 'socket non fermé')
+
+
+class DistinctBundleIdTests(unittest.TestCase):
+    def test_refuses_original_app(self):
+        with self.assertRaises(PatchError) as caught:
+            desktop_patch._apply_distinct_bundle_id(desktop_patch.APP)
+        self.assertIn('origine', str(caught.exception))
 
 
 if __name__ == '__main__':

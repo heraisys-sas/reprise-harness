@@ -2,7 +2,7 @@
 try{
 var rq=require("node:net"),rp=require("node:path"),rf=require("node:fs"),rho=require("node:os");
 var MAXP=8*1024*1024;
-var RS=rp.join(rf.realpathSync(rho.homedir()),".claude-desktop","quick-entry-reprise.sock");
+var RS=rp.join(rf.realpathSync(rho.homedir()),".claude-desktop","quick-entry.sock");
 var started=false;
 function send(s,o){try{s.write(JSON.stringify(o)+String.fromCharCode(10))}catch(e){}}
 function startQE(){

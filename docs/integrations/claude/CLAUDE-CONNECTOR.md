@@ -75,11 +75,12 @@ La carte Claude peut lire explicitement une observation bornée du journal rende
 
 Depuis le lot #124, le canal de dispatch actif est le **dispatch natif QTi** :
 l'app ReClaude (Claude Desktop re-signé, JS injecté dans l'asar) tient
-elle-même le socket `~/.claude-desktop/quick-entry-reprise.sock` et expose
-`initialize`, `quick_entry/capabilities` et `quick_entry/submit`. Le daemon
-historique `claude-desktopd` (`quick-entry.sock`) est **arrêté et non requis** ;
-un état `stopped` est normal — ne pas le démarrer pour « réparer » une
-délégation (faux diagnostic).
+elle-même le **socket Quick Apply** `~/.claude-desktop/quick-entry.sock`
+(fusion du 10/11/2026 : un seul socket, l'ancien nom
+`quick-entry-reprise.sock` n'est plus créé) et expose `initialize`,
+`quick_entry/capabilities` et `quick_entry/submit`. Ne jamais démarrer un
+daemon pour « réparer » une délégation : socket absent = ReClaude arrêtée
+(faux diagnostic).
 
 Le démon historique pouvait être lié au projet avec `--project-root`. Son
 registre `quick.sqlite` est partagé avec le connecteur, isolé par projet. Une

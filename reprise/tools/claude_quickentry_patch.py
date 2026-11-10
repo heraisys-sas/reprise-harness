@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Patch app.asar d'une COPIE de Claude.app : injecte le serveur socket
-quick-entry-reprise.sock apres l'ancre KW?.on("quickEntrySubmitted",TYr).
+quick-entry.sock apres l'ancre KW?.on("quickEntrySubmitted",TYr).
 
 Dry-run par defaut (--apply requis pour ecrire). Python stdlib uniquement.
 Usage :
@@ -21,7 +21,7 @@ from pathlib import Path
 CHUNK_PATH = ".vite/build/index.chunk-m4oMImJ-.js"
 ANCHOR = 'KW?.on("quickEntrySubmitted",TYr)'
 PAYLOAD_MARKER = "/*repriseQE-v1*/"
-SOCKET_SENTINEL = "quick-entry-reprise.sock"
+SOCKET_SENTINEL = "quick-entry.sock"  # fusion 10/11/2026 : un seul socket
 
 
 class PatchError(Exception):

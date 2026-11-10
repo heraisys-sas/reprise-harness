@@ -61,12 +61,38 @@ let r = !!e.text && e.text.trim().length > 2 || e.images.length > 0
 
 ## Intégration Reprise (patch #124)
 
-- L'injection (`reprise/desktop_patch.py`, constante `INJECTION`) ouvre un socket
-  Unix `~/.claude-reprise-trigger.sock` (0600) dans le main process et appelle
-  `QTi({text, images: []})` **en différé** (`setImmediate`), après avoir répondu
-  `{ok: true, dispatched: "queued"}` au client (fire-and-forget).
-- Client : `desktop_patch.send_trigger(text)` — une ligne JSON, puis
-  `shutdown(SHUT_WR)` (le serveur répond sur `end`).
+- L'injection (`reprise/desktop_patch.py`, constante `INJECTION`) ouvre le
+  **socket Quick Apply** `~/.claude-desktop/quick-entry.sock` (0600) dans le main
+  process, protocole `reprise-dispatch-1`. Ce socket n'existe que quand ReClaude
+  tourne ; c'est lui que le scheduler (`claude_quota.run_quick`) et le backend
+  `claude-desktop` de `reprise_delegate` utilisent via `REPRISE_DISPATCH_SOCKET`.
+  **Fusion du 10/11/2026 (confirmée par l'opérateur et par sonde live)** : les
+  deux sockets créés par le patch #124 initial (`quick-entry.sock` /
+  `quick-entry-reprise.sock`) ont été fusionnés en un seul, au nom historique
+  `quick-entry.sock` ; l'ancien nom n'est plus créé. Un seul socket = un seul
+  canal de dispatch (natif QTi + CDP par configuration).
+- Protocole (`reprise-dispatch-1`) : à la connexion, le serveur envoie d'abord le
+  greeting `{"hello":true}` ; puis JSON-RPC, **une ligne par requête/réponse** :
+  - `initialize` → `serverInfo {name: "reprise-dispatch", version: "1"}` ;
+  - `quick_entry/capabilities` → `{dispatch_supported, resume_validation_supported,
+    protocol: "reprise-dispatch-1"}` ;
+  - `quick_entry/submit` : `params.request_key` **requis** (erreur `-32602`
+    sinon), `prompt` ≥ 3 caractères après trim, `chatId` optionnel (sans chatId,
+    un nouveau chat est créé), `purpose` ; un `request_key` déjà vu renvoie
+    `{duplicate: true}` (déduplication mémoire, perdue au redémarrage de l'app —
+    elle ne justifie jamais un renvoi sans opérateur).
+- Fragilité QTi : `QTi` est un identifiant minifié du bundle Claude Desktop ;
+  l'extraction côté patch dépend de la forme du bundle et peut casser à une mise
+  à jour. L'abort reste propre : en cas d'échec, le patch se retire sans laisser
+  l'app dans un état intermédiaire.
+- Modèle de sécurité same-user : tout processus du même uid peut se connecter au
+  socket et soumettre un prompt au nom de ReClaude. Atténuation actuelle : droits
+  `0600` sur le socket. Ce modèle est documenté et assumé, pas supprimé.
+- Procédure après mise à jour Desktop/Squirrel : re-patcher l'asar
+  (`reprise/desktop_patch.py`), exécuter `verify_patch`, re-signer ad-hoc
+  (`codesign --force --deep --sign -` — les helpers Anthropic refusent sinon le
+  Framework ad-hoc), puis lancer ReClaude avant toute soumission (le socket
+  n'existe pas tant que ReClaude ne tourne pas).
 - Le patch de l'asar implique la mise à jour du hash `ElectronAsarIntegrity`
   (Info.plist) **et** du digest du dictionnaire dans le slot
   `__DATA_CONST,__asar_integrity` du Framework (voir REX #124) ; la re-signature
@@ -89,6 +115,6 @@ let r = !!e.text && e.text.trim().length > 2 || e.images.length > 0
    `desktop_patch` (`COPY_APP`). Le nom du bundle n'a pas d'effet sur la
    signature (vérifié : `codesign --verify --deep --strict` OK après
    renommage) ; seule l'identité de signature ad-hoc compte. C'est la copie
-   qui crée le socket `~/.claude-desktop/quick-entry-reprise.sock` : un socket
-   présent + greeting `{"hello":true}` prouve que ReClaude (et non
-   l'originale) tourne.
+   qui crée le socket `~/.claude-desktop/quick-entry.sock` (fusion 10/11/2026,
+   un seul socket) : un socket présent + greeting `{"hello":true}` prouve que
+   ReClaude (et non l'originale) tourne.

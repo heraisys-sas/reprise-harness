@@ -1,7 +1,7 @@
 name: Reprise bundle
 on:
   push:
-    branches: [dev, main]
+    branches: ['**']
     paths: ['reprise/**', '.github/workflows/reprise.yml']
   pull_request:
     paths: ['reprise/**', '.github/workflows/reprise.yml']
