@@ -69,28 +69,35 @@ Texte d'armement du POC (à coller par l'opérateur) :
 
 Un plan appliqué indique si la configuration locale a été écrite (`changed=true`) ou était déjà conforme (`changed=false`). **Vérifier** sonde ensuite la release locale avec `initialize`/`tools/list`, sans inférence ; cela ne prouve pas que Claude Desktop a rechargé la configuration. Recharger Claude et observer l’outil dans le client est une troisième preuve distincte, non recueillie automatiquement par Reprise.
 
-## Démon et reprise quota
+## Dispatch et reprise quota
 
 La carte Claude peut lire explicitement une observation bornée du journal renderer via `reprise claude-quota-status --observe-renderer-log`. Sans ce flag, `claude-quota-status` conserve sa sortie et son comportement historiques. L’interface lance cette lecture lorsque la carte est actualisée ou ouverte ; aucune ligne brute n’est renvoyée ni persistée. L’échéance indiquée est celle annoncée par un événement du journal, pas une preuve de quota actuellement bloqué ou disponible. Le fuseau d’écriture du journal n’étant pas attesté, la date de l’événement et sa fraîcheur restent inconnues ; compte, chat, quantité et état courant du quota ne sont pas attribués.
 
-Le démon `claude-desktopd` peut être lié au projet avec `--project-root`. Son
+Depuis le lot #124, le canal de dispatch actif est le **dispatch natif QTi** :
+l'app ReClaude (Claude Desktop re-signé, JS injecté dans l'asar) tient
+elle-même le socket `~/.claude-desktop/quick-entry-reprise.sock` et expose
+`initialize`, `quick_entry/capabilities` et `quick_entry/submit`. Le daemon
+historique `claude-desktopd` (`quick-entry.sock`) est **arrêté et non requis** ;
+un état `stopped` est normal — ne pas le démarrer pour « réparer » une
+délégation (faux diagnostic).
+
+Le démon historique pouvait être lié au projet avec `--project-root`. Son
 registre `quick.sqlite` est partagé avec le connecteur, isolé par projet. Une
 soumission de délégation textuelle prépare une tâche ; les pièces jointes typées
 non prises en charge sont refusées, jamais perdues silencieusement. Les anciens
 probes et tâches non liés à un projet ne sont pas adoptés implicitement.
 
-Le planificateur utilise le même `quick_entry/submit`, avec `prompt=retry`,
-`chatId`, `purpose=continuation` et une clé stable. La continuation n’est pas une
-nouvelle tâche d’expertise à réclamer via `get_task`. La route Quick Apply est
-prioritaire ; Accessibilité demeure une option explicite séparée.
+Le planificateur utilise `quick_entry/submit` sur le socket QTi, avec
+`prompt=retry`, `chatId`, `purpose=continuation` et une clé stable. La
+continuation n’est pas une nouvelle tâche d’expertise à réclamer via `get_task`.
 
-**Limite non résolue :** le pilote d’émission natif n’est pas raccordé au démon.
-`quick_entry/capabilities` le signale : `dispatch_supported=false` et
-`resume_validation_supported=false`. Le planificateur n’envoie pas aveuglément un
-message dans ce cas et ne transforme pas une admission en preuve de reprise.
-Le champ historique `dispatch` nomme la cible envisagée, pas un appel exécuté.
-Le connecteur MCP répare le retour et la délégation, mais ne crée pas à lui seul
-l’IPC manquante vers Quick Apply. Seul un résultat `submit_result` accepté clôt
-une tâche entrante ; ni un socket vivant ni un reçu d’admission ne la clôturent.
+`quick_entry/capabilities` signale `dispatch_supported=true` depuis #124, mais
+l’admission reste **fire-and-forget** : `dispatch_attempted` nomme une tentative,
+pas une livraison. Un socket vivant ni un reçu d’admission ne prouvent que le
+message est arrivé dans le chat (« arrivé ≠ traité ») ; la preuve d’envoi
+s’appuie sur une vérification explicite (compteur de messages utilisateur,
+composeur vidé) et la preuve de traitement sur un `claim_key`/`attempt_id`
+attribués. Seul un résultat `submit_result` accepté clôt
+une tâche entrante.
 
 Après le rechargement de Claude, autoriser les outils du connecteur **reprise-harness**. Reprise ne peut pas accorder cette autorisation à votre place. Une ancienne entrée `reprise` gérée est migrée ; une entrée appartenant à un autre connecteur est conservée.

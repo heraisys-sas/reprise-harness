@@ -54,8 +54,10 @@ release.
 ## Canaux de reprise — fin de la voie Accessibilité (issue #96)
 
 Le helper Accessibilité `ClaudeQuota` (`ClaudeQuota.swift`, binaire du même nom
-dans le bundle) est retiré du projet. Les canaux restants sont Quick Apply
-(défaut, via claude-desktopd) et CDP. Un transport `accessibility` persisté dans
+dans le bundle) est retiré du projet. Depuis le lot #124, le canal actif est le
+**dispatch natif QTi** (socket `~/.claude-desktop/quick-entry-reprise.sock`
+tenu par ReClaude) ; le daemon historique `claude-desktopd` (`quick-entry.sock`)
+est arrêté et non requis. Un transport `accessibility` persisté dans
 le scheduler n’est pas migré automatiquement : `run_native` échoue en fermeture
 (`unknown_transport`, aucune soumission) tant que l’opérateur n’a pas choisi un
 canal supporté. L’observation locale non AX par le journal du renderer
@@ -69,10 +71,9 @@ transport `accessibility` persisté (aucune migration, aucun repli silencieux).
 
 Voir [CLAUDE-CONNECTOR.md](CLAUDE-CONNECTOR.md) : installation native autonome,
 réception/remise des tâches et délégation par un seul serveur MCP. Pour les
-continuations, le planificateur privilégie maintenant claude-desktopd via le même
-RPC que les harness. Sans capacité d’émission et de validation prouvée, il reste
-bloqué sur `dispatch_driver_unavailable` ; le retour MCP ne remplace pas le pilote
-Quick Apply encore absent.
+continuations, le planificateur passe par le dispatch natif QTi
+(`quick_entry/submit` sur le socket ReClaude) — le daemon historique
+`claude-desktopd` est arrêté depuis #124 et n'est pas une étape de diagnostic.
 
 ## Connecteur mémoire séparé
 
