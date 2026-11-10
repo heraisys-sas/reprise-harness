@@ -23,7 +23,14 @@ def scripts():
     transport._prepare(capture, path)
     prepare = capture.expression
     transport._send(capture, path, hashlib.sha256(transport.canonical_text(text).encode()).hexdigest())
-    return dict(prepare=prepare, send=capture.expression,
+    send = capture.expression
+    # Second empreinte pour le cas ProseMirror du fixture (un LF rendu comme
+    # une ligne vide) : canon() ignorant les lignes vides, elle égale celle du
+    # texte source sans le double LF.
+    prose_mirror_text = 'Para one.\nPara two.'
+    transport._send(capture, path,
+                    hashlib.sha256(transport.canonical_text(prose_mirror_text).encode()).hexdigest())
+    return dict(prepare=prepare, send=send, prose_mirror_send=capture.expression,
                 state=transport._js_state(transport.JS_HELPERS), text=text)
 
 
