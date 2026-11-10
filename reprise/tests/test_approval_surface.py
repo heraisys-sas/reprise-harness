@@ -142,6 +142,9 @@ class ApprovalSurfaceTests(unittest.TestCase):
         self.assertEqual(result['pending_request']['approval']['approval_id'], approval['approval_id'])
         # Durable record: a second store opened on the same state sees the row.
         bridge = self.make_bridge()
+        # CI runners have no Codex executable; the bridge would short-circuit with
+        # engine_unavailable before reaching the (patched) wait loop.
+        bridge.program = 'codex-fixture'
         with patch.object(codex_expert_mcp, 'review',
                           side_effect=lambda *a, **k: (k['on_turn'] or events.append)(APPROVAL_EVENT) or {'status': 'awaiting_approval'}):
             bridge.call('codex_review', {'question': 'Review input checks', 'request_key': 'appr-1'})
