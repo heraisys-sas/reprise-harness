@@ -10,7 +10,8 @@ import desktop_mode as dm
 class StatusTests(unittest.TestCase):
     def test_status_reports_app_and_server(self):
         s = dm.status()
-        self.assertEqual(s['app'], 'Claude.app')
+        # Application liée : ReClaude.app (copie patchée #130) sinon Claude.app.
+        self.assertIn(s['app'], ('ReClaude.app', 'Claude.app'))
         self.assertIn('app_running', s)
         self.assertIn('server_running', s)
         self.assertIn('socket', s)
