@@ -378,6 +378,9 @@ import Darwin
   p.savePreparation()
   precondition(p.preparationBusy == false && p.preparationOperationID == operation)
   p.close()
+  // request() écrit sur stdin via ioQueue.async ; exit() ne draine pas GCD —
+  // sur un runner lent le "close" était perdu avant la terminaison du process.
+  try? await Task.sleep(nanoseconds: 200_000_000)
  }
 }
 ''')
