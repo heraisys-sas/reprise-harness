@@ -63,64 +63,69 @@ INJECTION = """
 ;(function(){
   try {
     process.umask(0o077);
-    var __net = require('net'), __fs = require('fs'), __os = require('os');
+    var __net = require('net'), __os = require('os');
     var __p = __os.homedir() + '/.claude-desktop/quick-entry.sock';
-    try { __fs.unlinkSync(__p); } catch (e) {}
-    var __seen = Object.create(null);
-    var __RK_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
-    function __handle(obj, c) {
-      var isRpc = obj && typeof obj === 'object' && typeof obj.method === 'string';
-      if (isRpc) {
-        var id = obj.id === undefined ? null : obj.id;
-        function reply(result) { try { c.write(JSON.stringify({jsonrpc:'2.0', id:id, result:result}) + '\\n'); } catch (e2) {} }
-        function fail(code, message) { try { c.write(JSON.stringify({jsonrpc:'2.0', id:id, error:{code:code, message:message}}) + '\\n'); } catch (e2) {} }
-        if (obj.method === 'initialize') { reply({serverInfo:{name:'reprise-dispatch', version:'1'}}); return; }
-        if (obj.method === 'quick_entry/capabilities') { var __ok = typeof __QTI__ === 'function'; reply({dispatch_supported:__ok, resume_validation_supported:__ok, protocol:'reprise-dispatch-1'}); return; }
-        if (obj.method === 'quick_entry/submit') {
-          var pr = obj.params || {};
-          var rk = typeof pr.request_key === 'string' ? pr.request_key : null;
-          var text = typeof pr.prompt === 'string' ? pr.prompt : '';
-          if (!rk) { fail(-32602, 'request_key requis'); return; }
-          if (!__RK_RE.test(rk)) { fail(-32602, 'request_key invalide'); return; }
-          if (__seen[rk]) { reply({dispatch_attempted:true, admission_only:false, request_key:rk, duplicate:true}); return; }
-          if (text.trim().length < 3) { fail(-32602, 'prompt trop court (garde QTi : > 2 caractères après trim)'); return; }
-          __seen[rk] = true;
-          try { c.write(JSON.stringify({jsonrpc:'2.0', id:id, result:{dispatch_attempted:true, admission_only:false, request_key:rk}}) + '\\n'); } catch (we) {}
-          setImmediate(function() {
-            try { __QTI__({text:text, images:[], chatId: pr.chatId ? String(pr.chatId) : undefined}); }
-            catch (qe) { console.error('[reprise-dispatch] dispatch error:', qe && qe.message); }
-          });
-          return;
-        }
-        fail(-32601, 'méthode inconnue: ' + obj.method);
+    var __MIN = 3; // garde QTi : text.trim().length > 2 (strict)
+    var __backoff = 1000, __buf = '', __conn = null;
+    function __send(obj) {
+      if (!__conn) return;
+      try { __conn.write(JSON.stringify(obj) + '\\n'); } catch (e) {}
+    }
+    function __dispatch(id, pr) {
+      var rk = pr && typeof pr.request_key === 'string' ? pr.request_key : null;
+      var text = pr && typeof pr.prompt === 'string' ? pr.prompt : '';
+      if (text.trim().length < __MIN) {
+        __send({jsonrpc:'2.0', id:id, error:{code:-32602,
+          message:'prompt trop court (garde QTi : > 2 caractères après trim)'}});
         return;
       }
-      // legacy fire-and-forget, deprecated
-      var text = obj && typeof obj.prompt === 'string' ? obj.prompt : '';
-      if (text.trim().length < 3) { try { c.write(JSON.stringify({ok:false, error:'prompt trop court (garde QTi)'}) + '\\n'); c.end(); } catch (e2) {} return; }
-      try { c.write(JSON.stringify({ok:true, dispatched:'queued'}) + '\\n'); c.end(); } catch (we) {}
-      setImmediate(function() {
-        try { __QTI__({text:text, images:[], chatId: obj && obj.chatId ? String(obj.chatId) : undefined}); }
-        catch (qe) { console.error('[reprise-dispatch] dispatch error:', qe && qe.message); }
-      });
+      try {
+        __QTI__({text:text, images:[], chatId: pr.chatId ? String(pr.chatId) : undefined});
+        __send({jsonrpc:'2.0', id:id, result:{dispatch_attempted:true, request_key:rk}});
+      } catch (qe) {
+        __send({jsonrpc:'2.0', id:id, error:{code:-32603,
+          message:String(qe && qe.message || qe)}});
+      }
     }
-    var __srv = __net.createServer(function(c) {
-      try { c.write(JSON.stringify({hello:true}) + '\\n'); } catch (e0) {}
+    function __line(raw) {
+      var obj;
+      try { obj = JSON.parse(raw); } catch (e) { return; }
+      if (obj && obj.method === 'relay/dispatch') __dispatch(obj.id, obj.params || {});
+    }
+    function __connect() {
+      var c = __net.connect(__p);
       c.setEncoding('utf8');
-      var b = '';
+      c.on('connect', function() {
+        __backoff = 1000;
+        __conn = c;
+        __send({hello:true, role:'relay', protocol:'reprise-relay-1', version:1});
+      });
       c.on('data', function(d) {
-        b += d;
-        if (b.length > 8388608) { try { c.end(); } catch (e2) {} return; }
+        __buf += d;
+        if (__buf.length > 1048576) { try { c.destroy(); } catch (e2) {} return; }
         var i;
-        while ((i = b.indexOf('\\n')) >= 0) {
-          var line = b.slice(0, i); b = b.slice(i + 1);
-          if (!line.trim()) continue;
-          try { __handle(JSON.parse(line), c); } catch (e) { try { c.write(JSON.stringify({ok:false, error:String(e && e.message || e)}) + '\\n'); } catch (e2) {} }
+        while ((i = __buf.indexOf('\\n')) >= 0) {
+          var line = __buf.slice(0, i); __buf = __buf.slice(i + 1);
+          if (line.trim()) __line(line);
         }
       });
+      var __pings = 0;
+      c.on('connect', function() { __pings = 0; });
+      var __timer = setInterval(function() {
+        if (__conn !== c) { clearInterval(__timer); return; }
+        __pings += 1;
+        if (__pings > 2) { try { c.destroy(); } catch (e2) {} return; }
+        __send({jsonrpc:'2.0', id:Date.now(), method:'ping'});
+      }, 30000);
       c.on('error', function() {});
-    });
-    __srv.listen(__p, function() { try { __fs.chmodSync(__p, 384); } catch (e) {} });
+      c.on('close', function() {
+        clearInterval(__timer);
+        if (__conn === c) __conn = null;
+        setTimeout(__connect, __backoff);
+        __backoff = Math.min(__backoff * 2, 15000);
+      });
+    }
+    require('electron').app.whenReady().then(__connect);
   } catch (e) {}
 })();
 """

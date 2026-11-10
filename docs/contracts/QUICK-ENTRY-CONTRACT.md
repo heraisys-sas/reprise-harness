@@ -61,10 +61,11 @@ let r = !!e.text && e.text.trim().length > 2 || e.images.length > 0
 
 ## Intégration Reprise (patch #124)
 
-- L'injection (`reprise/desktop_patch.py`, constante `INJECTION`) ouvre le
-  **socket Quick Apply** `~/.claude-desktop/quick-entry.sock` (0600) dans le main
-  process, protocole `reprise-dispatch-1`. Ce socket n'existe que quand ReClaude
-  tourne ; c'est lui que le scheduler (`claude_quota.run_quick`) et le backend
+- L'injection (`reprise/desktop_patch.py`, constante `INJECTION`) se connecte au
+  **socket Quick Apply** `~/.claude-desktop/quick-entry.sock` (0600) comme client
+  relais (#130, protocole `reprise-relay-1`) : le socket est bindé par le daemon
+  `claude-desktopd`, qui en est l'unique détenteur ; c'est lui que le scheduler
+  (`claude_quota.run_quick`) et le backend
   `claude-desktop` de `reprise_delegate` utilisent via `REPRISE_DISPATCH_SOCKET`.
   **Fusion du 10/11/2026 (confirmée par l'opérateur et par sonde live)** : les
   deux sockets créés par le patch #124 initial (`quick-entry.sock` /

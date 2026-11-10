@@ -184,11 +184,20 @@ class QtiAndInjectionTests(unittest.TestCase):
             self.assertEqual(desktop_patch.resolve_qti_identifier('function unrelated(){}'), 'CustomFn')
 
     def test_injection_contains_safety_markers(self):
-        for marker in ("setEncoding('utf8')", 'Object.create(null)', 'process.umask(0o077)'):
+        for marker in ("setEncoding('utf8')", 'process.umask(0o077)'):
             self.assertIn(marker, desktop_patch.INJECTION)
-        # request_key regex accepts JS prototype-like names (e.g. 'constructor')
-        import re as re_module
-        self.assertRegex('constructor', re_module.search(r'/\^\[A-Za-z0-9_.:-\].*/', desktop_patch.INJECTION).group()[1:-1])
+        # Lot #130 : le relais n'est plus un « service » ; tout passe par le daemon.
+        for absent in ('createServer', 'unlinkSync', '__seen', 'reprise-dispatch-1',
+                       'net.createServer'):
+            self.assertNotIn(absent, desktop_patch.INJECTION)
+        for present in ("role:'relay'", 'reprise-relay-1', 'relay/dispatch',
+                        'setTimeout(__connect'):
+            self.assertIn(present, desktop_patch.INJECTION)
+
+    def test_injection_keeps_length_guard(self):
+        # Garde QTi conservée : text.trim().length < 3 (strict, > 2 après trim).
+        self.assertIn('trim().length < __MIN', desktop_patch.INJECTION)
+        self.assertIn('var __MIN = 3', desktop_patch.INJECTION)
 
 
 class StateAndClientTests(unittest.TestCase):

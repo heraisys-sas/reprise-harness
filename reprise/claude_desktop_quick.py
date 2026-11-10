@@ -21,6 +21,7 @@ import signal
 import socket
 import sqlite3
 import stat
+import threading
 import time
 import uuid
 
@@ -32,6 +33,63 @@ from delegation_store import Store, file_evidence
 
 SERVER_NAME = 'reprise-claude-desktop-quick'
 VERSION = Path(__file__).with_name('VERSION').read_text().strip()
+RELAY_PROTOCOL = 'reprise-relay-1'
+
+
+class RelayHub:
+    """Connexion relais Quick Apply (injection ReClaude) tenue ouverte.
+
+    Le daemon est l'unique détenteur du socket ; le relais se connecte, s'annonce
+    (greeting role=relay) et reçoit les payloads admis sur cette connexion.
+    Dernier connecté gagne ; aucune reconnexion côté daemon (le relais revient).
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._conn = None
+        self._stream = None
+        self._push_id = 0
+        self.last_result = None
+
+    def register(self, conn, stream):
+        with self._lock:
+            previous = self._conn
+            self._conn, self._stream = conn, stream
+        if previous is not None and previous is not conn:
+            try:
+                previous.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def unregister(self, conn):
+        with self._lock:
+            if self._conn is conn:
+                self._conn = self._stream = None
+
+    def connected(self):
+        with self._lock:
+            return self._conn is not None
+
+    def push(self, params):
+        """Pousse un payload admis sur la connexion relais ; None si absente."""
+        with self._lock:
+            if self._stream is None:
+                return None
+            self._push_id += 1
+            ident = self._push_id
+            try:
+                self._stream.write((json.dumps({'jsonrpc': '2.0', 'id': ident,
+                                                'method': 'relay/dispatch',
+                                                'params': params}, ensure_ascii=False) + '\n').encode())
+                self._stream.flush()
+            except (OSError, ValueError):
+                self._conn = self._stream = None
+                return None
+            return ident
+
+    def record_result(self, message):
+        with self._lock:
+            self.last_result = message
 
 
 def _cdp_pipe():
@@ -68,6 +126,7 @@ class Endpoint:
             project = str(Path(project_root).resolve(strict=True))
             request_scope = 'quick-project-v1:' + hashlib.sha256((self.scope + '\0' + project).encode()).hexdigest()
         self.requests = Store(self.db, request_scope)
+        self.relay = RelayHub()
         self.tasks = None
         if project_root is not None:
             from desktop_task_store import TaskStore
@@ -117,13 +176,20 @@ class Endpoint:
                             (self.scope, ident, json.dumps(delivery, ensure_ascii=False), day))
         if self.tasks and purpose == 'delegation':
             self.tasks.admit(args['request_key'], payload['text'], payload['chatId'])
-        return self.requests.finish(args['request_key'], {'status': 'finished', 'submission_id': ident, 'chatId': payload['chatId'],
+        receipt = self.requests.finish(args['request_key'], {'status': 'finished', 'submission_id': ident, 'chatId': payload['chatId'],
                 'images': len(payload['images']), 'files': len(payload['filePaths']),
                 'dispatch': 'dispatchOnQuickEntrySubmit',
                 'reason': 'Payload validé et routé ; la soumission réelle dépend du pilote Desktop autorisé.',
                 'automatic_fallback': False, 'admission_only': True, 'dispatch_attempted': False,
                 'task_pre_registered': bool(orchestrated and self.tasks),
                 'task_available': self.tasks is not None and purpose == 'delegation', 'purpose': purpose})
+        if self.relay.connected():
+            # Canal relais additionnel : la réception reste durable (admission),
+            # la preuve d'envoi reste la chaîne native Quick Apply.
+            pushed = self.relay.push({'request_key': args.get('request_key'),
+                                      'prompt': payload['text'], 'chatId': payload['chatId']})
+            receipt['relay_pushed'] = pushed is not None
+        return receipt
 
     def _dispatch(self, request_key):
         """Dispatch once over CDP pipes after durable admission and reservation.
@@ -266,17 +332,20 @@ class Endpoint:
             # Dispatch is daemon-owned CDP over pipes; capability is not proof
             # of a connected browser or a successful click.
             chrome_present = Path(_cdp_pipe()._chrome_bin()).is_file()
+            relay_connected = self.relay.connected()
             supported = self.tasks is not None and chrome_present
             if self.tasks is None:
                 reason = 'Project-scoped task store required for dispatch.'
-            elif chrome_present:
-                reason = 'Chrome launches at dispatch; session and target are not verified.'
-            else:
+            elif not chrome_present:
                 reason = 'Chrome binary absent.'
+            elif not relay_connected:
+                reason = 'Relais Quick Apply indisponible ; admission seule.'
+            else:
+                reason = 'Chrome launches at dispatch; session and target are not verified.'
             return {'version': VERSION, 'admission_supported': True,
                     'dispatch_supported': supported,
                     'dispatch_channel': 'cdp-pipe',
-                    'resume_validation_supported': False,
+                    'resume_validation_supported': relay_connected,
                     'task_return_supported': self.tasks is not None,
                     'cdp_targets': cdp_targets.enabled_names(),
                     'project_root': self.tasks.scope if self.tasks else None,
@@ -557,13 +626,30 @@ class Endpoint:
         return {'ok': True}
 
 
+def _relay_greeting(raw):
+    """Retourne True si la première ligne annonce un relais compatible."""
+    try:
+        greeting = json.loads(raw)
+    except ValueError:
+        return False
+    if not isinstance(greeting, dict) or greeting.get('role') != 'relay':
+        return False
+    return greeting.get('protocol') == RELAY_PROTOCOL
+
+
 def _serve(conn, endpoint):
     stream = conn.makefile('rwb')
     stream.write((json.dumps({'hello': True}) + '\n').encode())
     stream.flush()
+    relay = False
     for raw in stream:
         if len(raw) > 1024*1024:
             break
+        if not relay and _relay_greeting(raw):
+            # Enregistrement relais : connexion tenue ouverte, dernier gagne.
+            relay = True
+            endpoint.relay.register(conn, stream)
+            continue
         ident = None
         try:
             message = json.loads(raw)
@@ -574,6 +660,11 @@ def _serve(conn, endpoint):
                 continue
             method = message.get('method')
             params = message.get('params', {})
+            if method == 'ping':
+                # Battement du relais : réponse sur le même flux que les pushs.
+                stream.write((json.dumps({'jsonrpc': '2.0', 'id': ident, 'result': {}}) + '\n').encode())
+                stream.flush()
+                continue
             if method == 'quick_entry/list_tasks' and not isinstance(params, dict):
                 raise ValueError('Project-scoped task listing requires object params')
             result = endpoint.call(method, params or {})
@@ -597,6 +688,8 @@ def _serve(conn, endpoint):
                      'error': {'code': -32603, 'message': str(error) or 'Erreur interne ; aucune relance automatique.'}}
             stream.write((json.dumps(reply, ensure_ascii=False)+'\n').encode())
             stream.flush()
+    if relay:
+        endpoint.relay.unregister(conn)
     stream.close()
 
 

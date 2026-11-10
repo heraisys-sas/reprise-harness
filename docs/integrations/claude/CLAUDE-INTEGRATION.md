@@ -56,7 +56,8 @@ release.
 Le helper Accessibilité `ClaudeQuota` (`ClaudeQuota.swift`, binaire du même nom
 dans le bundle) est retiré du projet. Depuis le lot #124, le canal actif est le
 **dispatch natif QTi** (socket `~/.claude-desktop/quick-entry.sock` tenu par
-ReClaude — fusion du 10/11/2026, un seul socket ; l'ancien nom
+le daemon `claude-desktopd` ; l'injection ReClaude est client relais, #130 —
+fusion du 10/11/2026, un seul socket ; l'ancien nom
 `quick-entry-reprise.sock` n'est plus créé). Un transport `accessibility` persisté dans
 le scheduler n’est pas migré automatiquement : `run_native` échoue en fermeture
 (`unknown_transport`, aucune soumission) tant que l’opérateur n’a pas choisi un

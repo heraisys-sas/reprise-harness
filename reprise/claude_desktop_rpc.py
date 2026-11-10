@@ -10,7 +10,8 @@ from pathlib import Path
 
 from engines import Unavailable, socket_path
 
-# Socket Quick Apply tenu par l'app ReClaude patchée (fusion 10/11/2026 — un seul
+# Socket Quick Apply tenu par le daemon claude-desktopd (client relais ReClaude
+# depuis #130 ; fusion 10/11/2026 — un seul
 # socket, ancien nom quick-entry-reprise.sock supprimé) : greeting {"hello":true},
 # puis une requête JSON par ligne, une réponse par ligne.
 REPRISE_DISPATCH_SOCKET = Path.home() / '.claude-desktop/quick-entry.sock'

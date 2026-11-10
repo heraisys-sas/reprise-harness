@@ -22,7 +22,7 @@ Le verrou existant conserve **une expertise active par répertoire d’état**, 
 
 ## Dispatch QTi et retour Claude
 
-> Mise à jour 10/11/2026 (lot #124, sockets fusionnés) : le dispatch actif est le **dispatch natif QTi** — l'app ReClaude tient le **socket Quick Apply** `~/.claude-desktop/quick-entry.sock`. Fusion du 10/11/2026 : les deux sockets du patch #124 initial ont été fusionnés en un seul (`quick-entry-reprise.sock` n'existe plus). Conserver l'avertissement : le démarrage d'un daemon n'est jamais une étape de diagnostic quand le problème est l'absence de ReClaude (socket non tenu).
+> Mise à jour 10/11/2026 (lot #124, sockets fusionnés) ; détenteur du socket = daemon `claude-desktopd` depuis #130 : le dispatch actif est le **dispatch natif QTi** — l'app ReClaude se connecte au **socket Quick Apply** `~/.claude-desktop/quick-entry.sock` comme client relais (#130). Fusion du 10/11/2026 : les deux sockets du patch #124 initial ont été fusionnés en un seul (`quick-entry-reprise.sock` n'existe plus). Conserver l'avertissement actualisé : un socket absent ou refusé = daemon `claude-desktopd` arrêté — démarrer le daemon est la réparation normale ; vérifier le détenteur par `connect()` avant toute autre conclusion.
 
 `quick_entry/submit` exige également `request_key`. Même clé retrouve la même soumission (déduplication mémoire côté serveur QTi ; perdue au redémarrage de l'app — elle ne justifie jamais un renvoi sans opérateur). Les fichiers joints sont identifiés par contenu au moment de l’admission ; le pilote ne bénéficie pas pour autant d’un fichier matériel immuable. Une panne entre l’admission et le reçu laisse une tentative incertaine, sans nouvel envoi.
 
