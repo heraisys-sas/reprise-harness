@@ -77,6 +77,16 @@ INJECTION = """
       if (!__conn) return;
       try { __conn.write(JSON.stringify(obj) + '\\n'); } catch (e) {}
     }
+    function __window_ready() {
+      // QTi ne routage vers chatId que si la fenêtre principale existe ;
+      // pendant le boot (~17 s) V est absente et le payload est jeté.
+      try {
+        var ws = require('electron').BrowserWindow.getAllWindows();
+        return ws.some(function (w) {
+          return !w.isDestroyed() && w.webContents && !w.webContents.isDestroyed();
+        });
+      } catch (e) { return true; }
+    }
     function __dispatch(id, pr) {
       var rk = pr && typeof pr.request_key === 'string' ? pr.request_key : null;
       var text = pr && typeof pr.prompt === 'string' ? pr.prompt : '';
@@ -85,7 +95,11 @@ INJECTION = """
           message:'prompt trop court (garde QTi : > 2 caractères après trim)'}});
         return;
       }
-      try {
+      var __tries = 0;
+      var __wait = setInterval(function () {
+        if (__window_ready() || __tries++ > 90) {
+          clearInterval(__wait);
+          try {
         // QTi natif (dsi) déstructure {prompt, images, filePaths, chatId} :
         // la clé 'prompt' est obligatoire, 'text' est ignoré. dsi est async :
         // le rejet est capturé via .catch, pas par le try/catch synchrone.
@@ -99,11 +113,13 @@ INJECTION = """
           __send({jsonrpc:'2.0', id:id, error:{code:-32603,
             message:String(qe && qe.message || qe)}});
         });
-      } catch (qe) {
-        __log('dispatch_sync_err', String(qe && qe.message || qe));
-        __send({jsonrpc:'2.0', id:id, error:{code:-32603,
-          message:String(qe && qe.message || qe)}});
+        } catch (qe) {
+          __log('dispatch_sync_err', String(qe && qe.message || qe));
+          __send({jsonrpc:'2.0', id:id, error:{code:-32603,
+            message:String(qe && qe.message || qe)}});
+        }
       }
+    }, 500);
     }
     function __line(raw) {
       var obj;

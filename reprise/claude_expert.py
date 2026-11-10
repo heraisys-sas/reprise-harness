@@ -71,7 +71,10 @@ def run(command, root, env, prompt='', timeout=20):
                 if not completed:
                     try:
                         os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
+                    # EPERM sur le runner CI macOS : le processus est déjà
+                    # récolté par le noyau et le kill du groupe n'a plus de
+                    # cible vivante — l'erreur initiale du try prime.
+                    except (ProcessLookupError, PermissionError):
                         pass
                 process.wait()
 
