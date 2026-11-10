@@ -251,13 +251,16 @@ def canonical_text(text):
 
     Single documented form against which the pre-send fingerprint AND the
     insertion validation are computed, on both dispatch paths. ProseMirror
-    renders paragraphs as newlines whose exact count may differ from the raw
-    prompt, so equivalence is decided on this normalized form: CRLF→LF,
-    NBSP→space, trailing blanks removed; paragraphs and blank lines preserved.
-    Mirrors the JS `canon()` helper in JS_HELPERS — keep both in sync.
+    renders paragraphs with a newline count that differs from the raw prompt
+    (one LF becomes an innerText blank line between <p> blocks), so equivalence
+    is decided on the sequence of NON-EMPTY lines: CRLF→LF, NBSP→space,
+    trailing blanks removed, blank lines dropped. Truncation still mismatches
+    (a missing line changes the sequence). Mirrors the JS `canon()` helper in
+    JS_HELPERS — keep both in sync.
     """
-    return '\n'.join(line.rstrip(' \t') for line in
-                     text.replace('\r', '').replace('\u00a0', ' ').split('\n'))
+    lines = [line.rstrip(' \t') for line in
+             text.replace('\r', '').replace('\u00a0', ' ').split('\n')]
+    return '\n'.join(line for line in lines if line)
 
 
 _JS_HELPERS_TEMPLATE = r"""
@@ -288,8 +291,11 @@ _JS_HELPERS_TEMPLATE = r"""
     return buttons.length === 1 ? buttons[0] : null;
   };
   // Mirrors Python canonical_text(): keep both in sync.
-  const canon = s => s.replace(/\r/g, '').replace(/\u00a0/g, ' ')
-    .split('\n').map(line => line.replace(/[ \t]+$/, '')).join('\n');
+  const canon = s => {
+    const lines = s.replace(/\r/g, '').replace(/\u00a0/g, ' ')
+      .split('\n').map(line => line.replace(/[ \t]+$/, ''));
+    return lines.filter(line => line.length > 0).join('\n');
+  };
   const digest = async text => [...new Uint8Array(await crypto.subtle.digest(
     'SHA-256', new TextEncoder().encode(text)))].map(b => b.toString(16).padStart(2, '0')).join('');
   const atTarget = path => location.origin === __ORIGIN__

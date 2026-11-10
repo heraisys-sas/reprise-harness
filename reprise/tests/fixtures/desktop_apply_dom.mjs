@@ -125,15 +125,22 @@ export async function runFixtures(scripts) {
   // Canonical form (issue #108): equivalent layout variants send exactly once.
   const MULTILINE = 'First paragraph.\n\nSecond one follows\r\nafter CRLF.\u00a0Ends with NBSP.';
   // scripts.text stays the reference; the multi-LF variant must also pass
-  // because canon() preserves blank lines and only normalizes CRLF/NBSP.
+  // because canon() compares non-empty line sequences only: blank lines and
+  // the LF count between paragraphs are ignored (ProseMirror renders one LF
+  // as an innerText blank line between <p> blocks), CRLF and NBSP normalize.
   const multilineSent = await run(scripts.send, {text: MULTILINE});
   assert.equal(multilineSent.result.clicked, true);
   assert.equal(multilineSent.observed.clicks, 1);
+  // ProseMirror's real transform: one LF becomes an innerText blank line.
+  const proseMirror = await run(scripts.send,
+    {text: 'Para one.\n\nPara two.'});  // source had 'Para one.\nPara two.'
+  assert.equal(proseMirror.result.clicked, true);
+  assert.equal(proseMirror.observed.clicks, 1);
   for (const options of [
     {text: text + ' suffix'}, {text: text.slice(0, -1)}, {text: ''},
     {text, disabled: true}, {text, missingButton: true}, {text, multipleButtons: true},
     {text, multipleInputs: true}, {text, url: 'https://evil.test/?claude.ai'},
-    {text: MULTILINE.replace(/\n\n/, '\n')},      // one blank line lost → mismatch
+    {text: MULTILINE.replace('Second', 'Different')},  // content changed → mismatch
     ...['target', 'origin', 'text', 'input', 'document'].map(mutation => ({text, mutation})),
   ]) {
     const blocked = await run(scripts.send, options);

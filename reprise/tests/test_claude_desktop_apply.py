@@ -17,9 +17,11 @@ SHA = hashlib.sha256(PROMPT.encode()).hexdigest()
 URL = 'https://claude.ai/chat/' + CHAT
 
 
-def info(text='', url=URL, **extra):
+def info(text='', url=URL, text_sha256=None, **extra):
+    if text_sha256 is None:
+        text_sha256 = hashlib.sha256(text.encode()).hexdigest()
     return dict(url=url, composerPresent=True, text_length=len(text), hasText=bool(text),
-                text_sha256=hashlib.sha256(text.encode()).hexdigest(), sendDisabled=False, **extra)
+                text_sha256=text_sha256, sendDisabled=False, **extra)
 
 
 def page(url=URL, ident='target-1', ws=None):
@@ -203,11 +205,14 @@ class ApplyOrchestration(unittest.TestCase):
                 self.assertEqual(mapped['status'], 'needs_review')
                 self.assertNotIn('Quota', mapped['reason'])
 
-    def test_canonical_text_preserves_blank_lines_and_normalizes_layout(self):
-        self.assertEqual(transport.canonical_text('a\r\n\r\nb'), 'a\n\nb')
+    def test_canonical_text_compares_non_empty_line_sequence(self):
+        # Blank lines are layout, not content: ProseMirror renders one LF as
+        # an innerText blank line between <p> blocks (issue #108).
+        self.assertEqual(transport.canonical_text('a\r\n\r\nb'), 'a\nb')
         self.assertEqual(transport.canonical_text('a\u00a0b \t\n c'), 'a b\n c')
-        self.assertNotEqual(transport.canonical_text('a\n\nb'), transport.canonical_text('a\nb'))
-        self.assertEqual(transport.canonical_text('a\nb'), 'a\nb')
+        self.assertEqual(transport.canonical_text('a\n\nb'), transport.canonical_text('a\nb'))
+        self.assertEqual(transport.canonical_text('\n a \n \n b \n'), ' a\n b')
+        self.assertNotEqual(transport.canonical_text('a\nb'), transport.canonical_text('a\nx'))
 
     def test_multiline_prompts_use_the_canonical_fingerprint(self):
         # Full orchestration: a multiline prompt reaches _send with the
@@ -217,7 +222,8 @@ class ApplyOrchestration(unittest.TestCase):
         self.client = Mock()
         with patch.object(transport, 'CDP', return_value=self.client), \
                 patch.object(transport, 'wait_composer', return_value=True), \
-                patch.object(transport, 'state', side_effect=[info(), info(), info(prompt)]), \
+                patch.object(transport, 'state', side_effect=[info(), info(),
+                    info(prompt, text_sha256=fingerprint)]), \
                 patch.object(transport, '_prepare', return_value=True) as ready, \
                 patch.object(transport, '_send', return_value={'clicked': True, 'stage': 'envoyé'}) as click, \
                 patch.object(transport.time, 'sleep'), \

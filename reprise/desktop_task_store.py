@@ -255,7 +255,13 @@ class TaskStore:
         return changed == 1
 
     def reserve_socket_dispatch(self, request_key):
-        """Reserve the only socket send; return a stored receipt or uncertainty on replay."""
+        """Reserve the only socket send; return a stored receipt or uncertainty on replay.
+
+        A stored profile_busy receipt is a busy-route state, not a terminal
+        error: the guard is reset so the same request_key can dispatch again
+        (decision 2026-11-05). The busy receipt is not preserved — the new
+        attempt's receipt replaces it, keeping the latest outcome only.
+        """
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
             row = self.db.execute('''SELECT legacy_unknown,dispatch_started,dispatch_receipt
@@ -264,7 +270,16 @@ class TaskStore:
             if row is None or row[0]:
                 return {'state': 'legacy_unknown'}
             if row[1]:
-                return {'state': 'recorded', 'receipt': json.loads(row[2])} if row[2] else {'state': 'attempted'}
+                if row[2]:
+                    receipt = json.loads(row[2])
+                    if receipt.get('stage') == 'profile_busy':
+                        self.db.execute('''UPDATE desktop_dispatch_guard
+                            SET dispatch_started=0, dispatch_receipt=NULL
+                            WHERE scope=? AND request_key=?''', (self.scope, request_key))
+                    else:
+                        return {'state': 'recorded', 'receipt': receipt}
+                if not row[2]:
+                    return {'state': 'attempted'}
             changed = self.db.execute('''UPDATE desktop_dispatch_guard SET dispatch_started=1
                 WHERE scope=? AND request_key=? AND dispatch_started=0 AND EXISTS
                   (SELECT 1 FROM desktop_tasks t WHERE t.scope=desktop_dispatch_guard.scope

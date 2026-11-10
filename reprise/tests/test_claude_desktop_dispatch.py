@@ -465,6 +465,22 @@ class ReviewDispatchTests(unittest.TestCase):
         self.addCleanup(reopened.close)
         self.assertEqual(reopened.reserve_socket_dispatch('lost-key')['state'], 'attempted')
 
+    def test_profile_busy_receipt_is_retryable_other_receipts_stay_frozen(self):
+        # A profile_busy receipt is a busy-route state, not a terminal error
+        # (decision 2026-11-05): the same request_key dispatches again. Any
+        # other recorded outcome keeps frozen idempotence semantics.
+        from desktop_task_store import TaskStore
+        store = TaskStore(self.directory.name, self.directory.name)
+        self.addCleanup(store.close)
+        for key, receipt, replay in (('busy-key', {'stage': 'profile_busy'}, 'reserved'),
+                                     ('sent-key', {'stage': 'envoyé', 'clicked': True}, 'recorded')):
+            store.admit(key, 'Question test', CHAT_ID)
+            store.reserve_socket_dispatch(key)
+            store.record_socket_dispatch(key, receipt)
+            self.assertEqual(store.reserve_socket_dispatch(key)['state'], replay)
+        store.record_socket_dispatch('busy-key', {'stage': 'envoyé', 'clicked': True})
+        self.assertEqual(store.reserve_socket_dispatch('busy-key')['state'], 'recorded')
+
     def test_uncertain_pipe_result_is_recorded_and_never_retried(self):
         endpoint = Endpoint(self.directory.name, project_root=self.directory.name)
         self.addCleanup(endpoint.close)
