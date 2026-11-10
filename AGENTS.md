@@ -11,7 +11,20 @@ Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui s
 - **Branche de travail : `dev`** — pas de commit direct sur `main`.
 - **MR `dev` → `main`** (une MR ouverte : #1). Chaque lot de travail = commit sur `dev`, puis fusion via MR.
 - **Prise en charge d’une issue par un agent** : ajouter le label `agent:<nom>` (ex. `agent:codex`, `agent:claude`) et utiliser `gh issue develop` pour créer une branche liée à l’issue, basée sur `dev` et nommée `codex/<numero>-<sujet>` ; exemple : `gh issue develop <numero> --base dev --name codex/<numero>-<sujet>`. Vérifier le lien avec `gh issue develop <numero> --list`. Cette branche temporaire doit être intégrée à `dev` avant le parcours habituel vers `main`. Préserver le travail concurrent ; ne pas changer la branche d’un workspace utilisé par un autre agent. Le label désigne l’agent responsable ; le lien GitHub désigne la branche, sans déclencher automatiquement un chat.
-- **Layout Git par workspace** : chaque agent possède son propre clone dans `<workspace>/source/` (son propre `.git`, branche de travail), jamais un `.git` partagé hors workspace — la sandbox DSH (`workspace-write`) limite l'écriture à la racine du workspace de session, et un `.git` extérieur (ex. `~/Projets/reprise-harness/source/`) impose une approbation par opération Git. La coordination inter-agents passe par `origin` (push/fetch), pas par des branches locales partagées.
+- **Layout Git par workspace** : chaque agent possède son propre clone dans `<workspace>/source/` (son propre `.git`, branche de travail), jamais un `.git` partagé hors workspace — la sandbox DSH (`workspace-write`) limite l'écriture à la racine du workspace de session, et un `.git` extérieur (ex. `~/Projets/reprise-harness/source/`) impose une approbation par opération Git. La coordination inter-agents passe par `origin` (push/fetch), pas par des branches locales partagées. L'arborescence locale de référence (`~/Projets/reprise-harness/`) :
+
+```
+~/Projets/reprise-harness/
+├── source/                    ← clone racine (source de vérité pour le déploiement opérateur : release_build, bundle)
+├── workspaces/
+│   ├── autoclaw/              ← workspace de l'agent autoclaw (pas de clone source/)
+│   ├── claude/                ← workspace claude (runtime des connecteurs, pas de clone source/)
+│   ├── codex/source/          ← clone de travail de l'agent codex
+│   └── harness/source/        ← clone de travail de l'agent harness
+└── archives/                  ← collections et migrations archivées
+```
+
+Le clone `source/` racine est le seul qui alimente le déploiement opérateur ; les `workspaces/<agent>/source/` sont des clones de travail par agent, coordonnés uniquement via `origin`. Les workspaces sans `source/` (`claude/`, `autoclaw/`) servent de runtime aux connecteurs, pas de clone Git. Convention de nommage : le dossier clone s'appelle toujours `source`, au singulier, quel que soit l'agent.
 - **Worktrees temporaires** : pour un merge, une revalidation ou toute manipulation hors branche de workspace, créer un worktree dédié sous `<workspace>/tmp/<sujet>/` (ex. `workspaces/harness/tmp/merge-99`), jamais dans un autre worktree d'agent ni dans `/private/tmp` (purgé au reboot). Le clone `source/` étant dans le workspace, ces worktrees restent dans le périmètre inscriptible. Supprimer le worktree après usage (`git worktree remove`).
 - Tests : `python3 -m unittest discover -s reprise/tests -q` (suite fusionnée : 1144 OK, 6 skipped — le chiffre évolue, ne pas le figer).
 - CLI : l'entrée utilisateur est `reprise/reprise` ; `reprise/resume` n'est qu'un wrapper déprécié qui l'exécute (#99).
