@@ -31,7 +31,7 @@ from pathlib import Path
 state=Path(sys.argv[sys.argv.index('--state')+1]); saved=state/'job.json'
 for line in sys.stdin:
  x=json.loads(line); op=x['op']
- with (state/'ops').open('a') as f:f.write(op+'\\n')
+ with (state/'ops').open('a', buffering=1) as f:f.write(op+'\\n')
  if op=='job_prepare':
   row={'status':'preparation','project_id':x['project_id'],'operation_id':x['operation_id'],'revision':0,
        'proposal':x['proposal'],'proposal_sha256':hashlib.sha256(json.dumps(x['proposal'],sort_keys=True,separators=(',',':')).encode()).hexdigest()}
@@ -241,7 +241,7 @@ for line in sys.stdin:
 state = pathlib.Path(sys.argv[sys.argv.index('--state')+1])
 for line in sys.stdin:
  x = json.loads(line)
- with (state / 'ops').open('a') as f: f.write(x['op']+'\\n')
+ with (state / 'ops').open('a', buffering=1) as f: f.write(x['op']+'\\n')
  if x['op'] == 'job_prepare':
   if x['proposal']['objective'] == 'rejet':
    print(json.dumps({'id':x['id'], 'status':'invalid_proposal', 'effect':'not_admitted'}), flush=True); continue
@@ -348,7 +348,7 @@ import Darwin
 state = pathlib.Path(sys.argv[sys.argv.index('--state')+1])
 for line in sys.stdin:
  x = json.loads(line)
- with (state / 'ops').open('a') as f: f.write(x['op']+'\\n')
+ with (state / 'ops').open('a', buffering=1) as f: f.write(x['op']+'\\n')
  if x['op'] == 'job_recover': print(json.dumps({'id':x['id'], 'status':'not_found'}), flush=True)
  elif x['op'] == 'job_prepare':
   job = {'status':'preparation', 'project_id':x['project_id'], 'operation_id':x['operation_id'],
@@ -396,7 +396,7 @@ from pathlib import Path
 state=Path(sys.argv[sys.argv.index('--state')+1]); stored=state/'consent.json'
 for line in sys.stdin:
  x=json.loads(line); op=x['op']
- with (state/'ops').open('a') as log: log.write(op+'\\n')
+ with (state/'ops').open('a', buffering=1) as log: log.write(op+'\\n')
  if op=='job_prepare':
   sha=hashlib.sha256(json.dumps(x['proposal'],sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
   row={'status':'preparation','project_id':x['project_id'],'operation_id':x['operation_id'],
@@ -799,7 +799,7 @@ for line in sys.stdin:
 p = pathlib.Path(sys.argv[sys.argv.index('--state')+1])
 for line in sys.stdin:
  x = json.loads(line)
- with (p / 'ops').open('a') as f: f.write(x['op']+'\\n')
+ with (p / 'ops').open('a', buffering=1) as f: f.write(x['op']+'\\n')
  print(json.dumps({'id':x['id'], 'status':'opened' if x['op']=='open' else 'closed'}), flush=True)
 """)
             swift = root / 'StartupOpen.swift'
@@ -846,7 +846,7 @@ if (p / 'eof').exists():
 last_turn = None
 for line in sys.stdin:
     x = json.loads(line)
-    with (p / 'requests').open('a') as f: f.write(x['op'] + (':' + x['request']['op'] if x['op'] == 'memory_call' else '') + '\\n')
+    with (p / 'requests').open('a', buffering=1) as f: f.write(x['op'] + (':' + x['request']['op'] if x['op'] == 'memory_call' else '') + '\\n')
     if (p / 'silent').exists() and x['op'] != 'open': continue
     if (p / 'model-uncertain').exists() and x['op'] == 'turn':
         print(json.dumps({'id':x['id'], 'status':'cleanup_unconfirmed'}), flush=True)
