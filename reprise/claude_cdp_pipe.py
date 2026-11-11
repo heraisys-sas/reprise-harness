@@ -122,6 +122,20 @@ class PipeTransport:
             self._session_id = sid
         return sid
 
+    def attach_to(self, target_id):
+        """attachToTarget {flatten:true} on an explicit target id.
+
+        Public counterpart of pick_and_attach for readers that already know
+        the target (e.g. claude_quota_banner scans pages by URL); the
+        returned sessionId is then sent on every subsequent message.
+        """
+        resp = self.call("Target.attachToTarget",
+                         {"targetId": target_id, "flatten": True})
+        sid = resp.get("sessionId")
+        if isinstance(sid, str):
+            self._session_id = sid
+        return sid
+
     def call(self, method, params=None):
         """Send a CDP command and return the result dict."""
         if self._dead:
