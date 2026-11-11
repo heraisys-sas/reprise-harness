@@ -62,6 +62,7 @@ def identity(observation):
 
 
 def register(db, observation, now, zone):
+    initialize(db)
     ident = identity(observation)
     if ident is None:
         return None
@@ -249,12 +250,12 @@ def run_quick(db, now, client_factory=None):
         submitted = 0
         with db:
             db.execute("UPDATE claude_quota_resumes SET status='uncertain' WHERE status='dispatching'")
-        rows = db.execute("SELECT event_key,chat_id FROM claude_quota_resumes WHERE due<=? AND status IN ('waiting','awaiting_observation')", (now,)).fetchall()
+        rows = db.execute("SELECT event_key,chat_id FROM claude_quota_resumes WHERE due<=? AND status='waiting'", (now,)).fetchall()
         for key, chat in rows:
             if not scheduler.enabled(db) or scheduler.get(db, 'claude_desktop_auto_enabled', True) is not True:
                 break
             with db:
-                changed = db.execute("UPDATE claude_quota_resumes SET status='dispatching' WHERE event_key=? AND status IN ('waiting','awaiting_observation')", (key,)).rowcount
+                changed = db.execute("UPDATE claude_quota_resumes SET status='dispatching' WHERE event_key=? AND status='waiting'", (key,)).rowcount
             if not changed:
                 continue
             try:
@@ -328,13 +329,13 @@ def _run_cdp(db, state, now=None):
             with db:
                 db.execute("UPDATE claude_quota_resumes SET status='uncertain' WHERE status='dispatching'")
             rows = db.execute(
-                "SELECT event_key,chat_id FROM claude_quota_resumes WHERE due<=? AND status IN ('waiting','awaiting_observation')",
+                "SELECT event_key,chat_id FROM claude_quota_resumes WHERE due<=? AND status='waiting'",
                 (now or time.time(),)).fetchall()
             submitted = 0
             for key, chat_id in rows:
                 with db:
                     changed = db.execute(
-                        "UPDATE claude_quota_resumes SET status='dispatching' WHERE event_key=? AND status IN ('waiting','awaiting_observation')",
+                        "UPDATE claude_quota_resumes SET status='dispatching' WHERE event_key=? AND status='waiting'",
                         (key,)).rowcount
                 if not changed:
                     continue
