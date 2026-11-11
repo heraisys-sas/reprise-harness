@@ -130,6 +130,26 @@ class BridgeTests(RequestCalls, unittest.TestCase):
     def test_followup_requires_own_thread(self):
         with self.assertRaises(ValueError):
             self.call('codex_followup', {'thread_id': ID, 'question': 'continue'})
+
+    def test_not_owned_followup_is_typed_issue_100(self):
+        for name, backend, extra in [('codex_followup', 'codex', {}),
+                                     ('reprise_followup', 'claude-code', {'backend': 'claude-code'})]:
+            with self.assertRaises(ValueError) as caught:
+                self.call(name, {'thread_id': ID, 'question': 'continue', **extra})
+            payload = error_payload(caught.exception)
+            self.assertEqual(payload['data']['kind'], 'thread_not_owned')
+            self.assertEqual(payload['data']['backend'], backend)
+            self.assertEqual(payload['data']['thread_id'], ID)
+            self.assertEqual(payload['data']['resume_with'], 'parent_request_key')
+            self.assertIn('parent_request_key', payload['message'])
+            self.assertIn('reprise_delegate', payload['message'])
+
+    def test_owned_thread_followup_still_allowed_after_issue_100(self):
+        with patch('codex_expert_mcp.review', return_value={'status': 'finished', 'resumable': True, 'thread_id': ID, 'response': 'review'}) as review:
+            self.call('codex_review', {'question': 'review'})
+            self.call('codex_followup', {'thread_id': ID, 'question': 'continue'})
+            self.assertEqual(review.call_args.kwargs['thread_id'], ID)
+
     def test_codex_has_no_local_cap_even_after_restart_and_old_counter(self):
         with patch('codex_expert_mcp.review', return_value={'status': 'quota_blocked'}) as review:
             for _ in range(2): self.call('codex_review', {'question': 'review'})

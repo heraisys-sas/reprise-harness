@@ -35,12 +35,31 @@ class WorkspaceWriteNotAuthorized(ValueError):
     """Implementation refused: the operator never granted project workspace writes (issue #104)."""
 
 
+class ThreadNotOwned(ValueError):
+    """Followup refused: this bridge never created the requested thread (issue #100)."""
+
+    def __init__(self, backend, thread_id):
+        self.backend, self.thread_id = backend, thread_id
+        super().__init__(
+            f'Followup refused: this bridge does not own that {backend} thread (thread_id={thread_id}). '
+            'To resume it, reissue the call with the parent_request_key recorded when the turn was '
+            'emitted, or open a new session with reprise_delegate.')
+
+
+
 def error_payload(exc):
     detail = f'{type(exc).__name__}: {exc}'[:200]
     kind, code = 'refused', -32602
     if isinstance(exc, DesktopRegistryUnavailable):
         return {'code': -32000, 'message': 'Desktop registry unavailable; no task created.',
                 'data': {'kind': 'desktop_registry_unavailable'}}
+    if isinstance(exc, ThreadNotOwned):
+        # Issue #100: name the reason and the resume path instead of the generic refusal.
+        return {'code': code,
+                'message': str(exc),
+                'data': {'kind': 'thread_not_owned', 'backend': exc.backend, 'thread_id': exc.thread_id,
+                         'resume_with': 'parent_request_key',
+                         'alternative': 'open a new session with reprise_delegate', 'error': detail}}
     if isinstance(exc, WorkspaceWriteNotAuthorized):
         # Operator configuration, not a secret: say exactly why and how to fix it instead of the generic refusal.
         return {'code': code,
@@ -663,13 +682,13 @@ class Bridge:
                 raise ValueError('Owned Claude session required')
             route = self.db.execute('SELECT program,model,effort FROM claude_expert_routes WHERE scope=? AND id=?', (self.scope, ident)).fetchone()
             if not route or route[0] != self.claude_program:
-                raise ValueError('This bridge does not own that Claude session and executable route')
+                raise ThreadNotOwned('claude-code', ident)
             routing = dict(zip(('model', 'effort'), route[1:]))
         elif name == 'reprise_followup':
             name = 'codex_followup'
         if name == 'codex_followup' and (not isinstance(ident, str) or not self.db.execute(
                 'SELECT 1 FROM expert_threads WHERE scope=? AND id=?', (self.scope, ident)).fetchone()):
-            raise ValueError('This bridge does not own that review thread')
+            raise ThreadNotOwned('codex', ident)
         if ident and backend == 'codex':
             route = self.db.execute('SELECT model,effort FROM expert_routes WHERE scope=? AND id=?', (self.scope, ident)).fetchone()
             if route:
