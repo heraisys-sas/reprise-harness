@@ -353,20 +353,30 @@ struct Dashboard: View {
                         Divider()
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Quotas Claude").font(.headline)
-                            let claudeQuota = app.scheduler["claude_quota"] as? [String: Any] ?? [:]
-                            Text(claudeQuota["enabled"] as? Bool == true ? "Reprise automatique Claude activée" : "Reprise automatique Claude en pause").font(.caption).foregroundStyle(.secondary)
-                            let events = claudeQuota["events"] as? [[String: Any]] ?? []
-                            if events.isEmpty {
-                                Text("Aucune reprise Claude enregistrée.").foregroundStyle(.secondary)
-                            } else {
-                                ForEach(Array(events.enumerated()), id: \.offset) { _, event in
-                                    HStack {
-                                        Text(event["status"] as? String ?? "inconnu").font(.callout.weight(.semibold))
-                                        Text(String((event["chat_id"] as? String ?? "").prefix(8))).font(.callout).foregroundStyle(.secondary)
-                                        Spacer()
-                                        if let due = event["due"] as? Double { Text("Échéance : " + localDateTime(Date(timeIntervalSince1970: due))).font(.caption).foregroundStyle(.secondary) }
-                                    }.accessibilityElement(children: .combine)
+                            if let claudeQuota = app.scheduler["claude_quota"] as? [String: Any] {
+                                let enabled = claudeQuota["enabled"] as? Bool == true
+                                    && app.scheduler["auto_enabled"] as? Bool == true
+                                Text(enabled ? "Reprise automatique Claude activée" : "Reprise automatique Claude en pause").font(.caption).foregroundStyle(.secondary)
+                                let events = claudeQuota["events"] as? [[String: Any]] ?? []
+                                if events.isEmpty {
+                                    Text("Aucune reprise Claude enregistrée.").foregroundStyle(.secondary)
+                                } else {
+                                    let recent = events.prefix(8).compactMap { event -> (Any, [String: Any])? in
+                                    event["event_key"].map { ($0, event) }
                                 }
+                                ForEach(recent, id: \.0) { _, event in
+                                        let status = event["status"] as? String ?? "inconnu"
+                                        HStack {
+                                            Text(quotaStatusLabel(status)).font(.callout.weight(status == "uncertain" ? .bold : .semibold)).foregroundStyle(status == "uncertain" ? Color.orange : .primary)
+                                            Text(String((event["chat_id"] as? String ?? "").prefix(8))).font(.callout).foregroundStyle(.secondary)
+                                            Spacer()
+                                            if let due = event["due"] as? Double, due.isFinite, due > 0 { Text("Échéance : " + localDateTime(Date(timeIntervalSince1970: due))).font(.caption).foregroundStyle(.secondary) }
+                                        }.accessibilityElement(children: .combine)
+                                    }
+                                    if events.count > 8 { Text("+\(events.count - 8) autres reprises").font(.caption).foregroundStyle(.secondary) }
+                                }
+                            } else {
+                                Text("Données indisponibles.").foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -1103,6 +1113,17 @@ struct Dashboard: View {
     }()
     func localTime(_ date: Date) -> String { Self.localTime.string(from: date) }
     func localDateTime(_ date: Date) -> String { Self.localDateTime.string(from: date) }
+    func quotaStatusLabel(_ status: String) -> String {
+        switch status {
+        case "waiting": return "En attente de quota"
+        case "awaiting_observation": return "Observation en attente"
+        case "uncertain": return "Envoi incertain · doublon possible"
+        case "dispatched": return "Envoyé"
+        case "admitted": return "Admis"
+        case "paused": return "En pause"
+        default: return status
+        }
+    }
 
     // Attention count per sidebar section, so the user sees where to act
     // without visiting all 9 tabs.
