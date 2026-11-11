@@ -55,7 +55,7 @@ class ManagedUpdateTests(unittest.TestCase):
     def test_codex_component_uses_shared_plan_apply_verify(self):
         captured = []
         def codex_plan(root, home, state, names, ident=None):
-            self.assertEqual(names, ['reprise_codex'])
+            self.assertEqual(names, ['reprise-harness'])
             return {'id': ident, 'names': names, 'marker': 'shared-plan'}
         def codex_apply(value, root, home, state):
             captured.append(value)
@@ -66,7 +66,7 @@ class ManagedUpdateTests(unittest.TestCase):
         with patch.object(update, 'codex_plan', side_effect=codex_plan), \
              patch.object(update, 'codex_apply', side_effect=codex_apply), \
              patch.object(update, 'codex_verify', side_effect=codex_verify):
-            value = self.plan(components=('codex',), codex_entries=('reprise_codex',))
+            value = self.plan(components=('codex',), codex_entries=('reprise-harness',))
             result = update.apply(value)
             verification = update.verify(result['receipt'])
             self.assertTrue(verification['ok'])

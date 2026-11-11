@@ -136,7 +136,6 @@ private struct ClaudeQuotaRendererObservation: View {
 extension App {
     var codexIntegrationEntries: [String] {
         var entries: [String] = []
-        if codexIntegrationExpert { entries.append("reprise_codex") }
         if codexIntegrationHarness { entries.append("reprise-harness") }
         return entries
     }
@@ -809,7 +808,6 @@ struct Integrations: View {
             SettingsCard(title: "Connecteur Codex", status: "Chargement client inconnu", ok: false) {
                 SettingsHint(text: "La configuration locale peut être vérifiée ; son chargement par Codex reste inconnu.",
                              detail: "La mise à jour conserve les projets et autorisations des entrées reconnues. Elle ne recharge ni ne redémarre Codex. En cas de réponse perdue, vérifiez l’état avant toute nouvelle opération.")
-                Toggle("Mettre à jour reprise_codex", isOn: $app.codexIntegrationExpert)
                 Toggle("Mettre à jour reprise-harness", isOn: $app.codexIntegrationHarness)
                 HStack {
                     Button("Relire l’état") { app.inspectCodexIntegration() }
@@ -1069,7 +1067,6 @@ struct Integrations: View {
             }
         }
         .disabled(app.setupBusy || !app.stateReady)
-        .onChange(of: app.codexIntegrationExpert) { _, _ in app.invalidateCodexIntegrationPlan() }
         .onChange(of: app.codexIntegrationHarness) { _, _ in app.invalidateCodexIntegrationPlan() }
         .onChange(of: app.integrationProfile) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationOutputResumeProject) { _, _ in app.invalidateIntegrationPlan() }
