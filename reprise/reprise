@@ -542,6 +542,13 @@ def main():
         except Exception as error:
             with db:
                 scheduler.put(db, 'claude_desktop_last_observation', {'status': 'unavailable', 'checked_at': dt.datetime.now().timestamp(), 'error': type(error).__name__})
+        # État de quota lisible par le harness (#132) : écrit à chaque tick, jamais bloquant.
+        try:
+            with db:
+                scheduler.put(db, 'claude_quota_state', dict(claude_quota.quota_state(db, now=dt.datetime.now().timestamp()), checked_at=dt.datetime.now().timestamp()))
+        except Exception as error:
+            with db:
+                scheduler.put(db, 'claude_quota_state', {'status': 'unavailable', 'reason': None, 'resume_at': None, 'checked_at': dt.datetime.now().timestamp(), 'error': type(error).__name__})
         # File opt-in (#122) : à l'échéance du quota, admettre la continuation dans la file du
         # projet pour l'exécuteur armé (claim_next). Ne lève jamais ; tracé sous scheduler_meta.
         try:
