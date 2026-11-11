@@ -22,7 +22,7 @@ from yaml_contract import validate_yaml, yaml_hashes
 START = '# BEGIN REPRISE MANAGED INTEGRATION'
 END = '# END REPRISE MANAGED INTEGRATION'
 DOCS = ('REPRISE-AGENTS.template.md', 'CODEX-EXECUTION-CONTRACT.md', 'ASI1-ORCHESTRATOR.template.md', 'ASI1-ORCHESTRATION-CONTRACT.md', 'HANDOFF-CONTRACT.md', 'HARNESS-ROLES-CONTRACT.md', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'HARNESS-SUPERVISION-ARCHITECTURE.md', 'HARNESS-INTEGRATION.md', 'CLARIFICATION-CONTRACT.md')
-OBSERVE = ('reprise_backends', 'reprise_requests', 'reprise_quotas', 'approval_list')
+OBSERVE = ('reprise_backends', 'reprise_requests', 'reprise_quotas', 'approval_list', 'wait_result')
 DELEGATE = ('reprise_delegate', 'reprise_followup', 'reprise_reconcile')
 # approval_respond reattaches to the owning Codex thread before answering a native
 # approval request; it may legitimately take longer than a read-only observation.
@@ -250,7 +250,7 @@ def _bridge_entries(release, state, tools, project, profile, managed, output_res
     entries = [
         {'id': 'reprise-codex-expert', 'name': '@deepseek-ai/dsh-mcp-client', 'config': {
             'transport': 'stdio', 'serverName': 'reprise_codex', 'command': str(program), 'args': args,
-            'toolCallTimeoutMs': 330000, 'failOnStartupError': False, 'reconnect': {'enabled': False}}},
+            'toolCallTimeoutMs': 630000 if 'wait_result' in tools else 330000, 'failOnStartupError': False, 'reconnect': {'enabled': False}}},
         {'id': 'reprise-skill-filesystem', 'name': '@deepseek-ai/dsh-skill-filesystem', 'config': {
             'providerName': 'reprise-' + profile, 'includeDefaultRoots': False,
             'customSkillDirs': [str(managed / 'skills')], 'watch': False}}]

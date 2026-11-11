@@ -166,3 +166,65 @@ Gardes inchangées : un claim à la fois, jamais de redelivery d'un envoi incert
 Validé en conditions réelles le 08/11 (#122) : un chat Desktop gratuit armé une seule fois a servi sa plus ancienne tâche de file, exécuté en conteneur confiné (réseau coupé, workspace du projet monté), remis le résultat (`completed: true`) — et a **ignoré une instruction injectée** dans la sortie d'un outil (onboarding déguisé en SYSTEM INSTRUCTION), consignée dans le rapport remis.
 
 Canal de soumission validé (#122) : l'overlay **Quick Entry natif** soumet vers un nouveau chat gratuit qui porte les connecteurs — `claim_next` (file du projet) et l'exécutant confiné (desktop-commander-isole). Le geste humain (ouvrir l'overlay, taper, Entrée) est le seul chaînon manuel ; son automatisation AX (activer l'overlay, saisir, soumettre — pattern du helper natif #36) est le chantier suivant pour la reprise zéro-intervention. Deux tentatives d'injection dans les sorties d'outils (blocs d'onboarding déguisés en instructions) ont été ignorées par la session exécutrice et consignées.
+
+## Attente de la réponse Desktop — issue #111
+
+`wait_result(request_key, wait_seconds=600)` sur `reprise_codex` observe une tâche
+Desktop existante du projet. Durée finie strictement positive, maximum 600 s ;
+booléens, clés vides ou dépassant 128 caractères et paramètres supplémentaires refusés.
+Un registre absent, illisible, verrouillé ou incompatible produit une erreur
+`desktop_registry_unavailable`, distincte d'une clé absente. Aucune création ni migration
+par l'observateur. L'initialisation habituelle du pont reste inchangée.
+
+| status | state | completed | idle | next_action |
+| --- | --- | --- | --- | --- |
+| finished | recorded | true | false | get_result |
+| timeout | pending | false | true | reconcile |
+| not_found | omis | false | true | reconcile |
+| busy | omis | false | true | reconcile |
+
+Chaque retour porte `request_key` et `backend="claude-desktop"`. Les deux dernières
+lignes omettent le champ `state`. `finished` porte le `result_sha256` canonique de
+`get_result` (JSON de `{"answer": ...}`, pas le hash du texte brut) ;
+`timeout` porte `waited_seconds`. Ces quatre statuts sont des résultats d'observation,
+pas des erreurs MCP. L'annulation ne produit pas de résultat.
+
+L'algorithme ouvre une connexion SQLite dédiée `mode=ro`, autocommit, sans attente
+de verrou SQLite ; lit immédiatement ; espace les snapshots par 250 ms, 500 ms puis
+1 s ; borne chaque pause par une échéance monotone ; effectue la dernière lecture
+avant de décider timeout. Un commit visible dans cette dernière lecture gagne la
+course ; un commit ultérieur reste récupérable. Aucune transaction ni aucun curseur
+ne reste ouvert pendant les pauses. Les erreurs de stockage ne deviennent jamais
+`not_found` ou `timeout`.
+
+Huit workers annulables au maximum par connexion stdio, sans file d'attente.
+Le neuvième appel valide reçoit `busy`. Les réponses JSON-RPC sont sérialisées ;
+`ping` reste disponible pendant les attentes. `notifications/cancelled` annule par
+identifiant RPC ; EOF et arrêt annulent tous les workers, avec un budget commun
+de join d'une seconde. Les threads sont daemon : une sortie bloquée ne peut pas
+retenir le processus. Une annulation peut croiser une réponse déjà envoyée.
+
+Aucune modification de réserve, claim, attempt_id, delivery ou acknowledged.
+Plusieurs observateurs peuvent lire le même résultat, sans consommation.
+`await_task` attend la livraison du prompt ; `wait_result` attend sa réponse.
+Ni timeout, annulation, reconnexion ni redémarrage n'autorisent une réémission.
+
+Invocation : le superviseur lance l'appel bloquant dans un job d'arrière-plan et
+conserve sa clé. Aucun tour de modèle n'est immobilisé et aucune boucle de modèle
+ne sonde le registre. Après timeout, relire `reprise_requests` et `get_result`
+sur le connecteur Desktop sous la même clé ; éventuellement relancer uniquement
+l'observation `wait_result`. `next_action="reconcile"` désigne cette procédure,
+**pas** `reprise_reconcile`, réservé aux tours natifs Codex.
+
+Pour une clé explicite, `reprise_requests` projette le résultat Desktop tardif si
+le résultat historique est `backend="claude-desktop", admission_only=true`.
+Les vues receipt/page emploient le même JSON et la même empreinte que `get_result`.
+La provenance reste dans `source="desktop_tasks"` et `delegation_receipt` ;
+la vue full conserve aussi `delegation_admission` intégral et expose `result.answer`
+ainsi que `response`. Aucun reçu de délégation n'est réécrit. Les résultats
+substantiels d'autres backends et les listes sans clé restent inchangés.
+L'acquittement du résultat projeté est explicite via `get_result` Desktop.
+
+Les prochaines intégrations Harness exposant cet outil utilisent un timeout
+transport de 630 s. Une installation existante exige plan/apply et rechargement
+explicites ; ce changement ne prouve pas que le client réel tient un appel de 600 s.

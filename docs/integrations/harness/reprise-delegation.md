@@ -211,3 +211,39 @@ ranges instead of treating that display as the full file.
   réel ni service n’est modifié par le lot.
 - Les tests utilisent exclusivement des fixtures. L’essai long natif, la continuité réelle
   après fermeture du client et le déploiement restent à valider séparément par l’opérateur.
+
+### Desktop response wait (issue #111)
+
+Expose `wait_result` on `reprise_codex` through the integration allowlist.
+Run `wait_result(request_key=saved_key, wait_seconds=600)` as a blocking
+background job owned by the supervisor. Keep the key before starting the job;
+do not spend a model turn waiting or repeatedly polling. Default and maximum
+are 600 seconds; positive finite fractional seconds are accepted.
+
+Results carry `backend="claude-desktop"`, `request_key`, `status` and `next_action`:
+`finished` means a committed response (`state=recorded, completed=true, idle=false`,
+canonical `result_sha256`, next action `get_result` on the Desktop connector);
+`timeout` means pending (`completed=false, idle=true, waited_seconds`);
+`not_found` is immediate, and `busy` means eight observers already occupy this
+stdio connection. These are observation outcomes, not MCP errors.
+Storage unavailability is a distinct explicit error.
+
+For timeout/not_found/busy, `next_action="reconcile"` means: reread the delegation
+receipt and Desktop `get_result` with the **same** key, then optionally start
+another observer job. It never authorizes dispatch or a new key.
+Native Codex `reprise_reconcile` is not compatible with this Desktop procedure.
+`await_task` terminates at prompt handoff; `wait_result` terminates at the response
+or deadline. Neither timeout nor cancellation stops Desktop inference.
+
+Keyed `reprise_requests` reads now expose late Desktop responses over historical
+`admission_only` receipts without changing them: `source=desktop_tasks`,
+`delegation_receipt` provenance, and the full historical `delegation_admission`
+in full view. Pages contain canonical JSON `{"answer": ...}` with the same hash
+as Desktop `get_result`. Collect `answer` for this projection; acknowledge through
+Desktop `get_result`. Unkeyed lists retain their historical delegation view.
+
+Each observer owns one read-only SQLite connection and no delivery reservation.
+Cancellation notifications and EOF release workers without changing task state.
+The next managed integration plan grants this tool and a 630000 ms call timeout;
+existing profiles require explicit plan/apply and client reload. Validate a real
+long-lived background call independently; source/schema checks do not prove it.
