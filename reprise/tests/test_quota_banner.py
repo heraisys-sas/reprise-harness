@@ -62,6 +62,24 @@ class FakeTransport:
 
 
 class ParseBannerTests(unittest.TestCase):
+    def test_elapsed_time_gives_elapsed_status(self):
+        # (#135) Bannière non rafraîchie : « jusqu'à 20:10 » avec 20:10 déjà
+        # passé → statut honnête 'elapsed', jamais 'unknown' ni future.
+        now = epoch('2026-11-11T21:00:00')
+        text = "Vous n'avez plus de messages gratuits jusqu'à 20:10."
+        out = claude_quota_banner.parse_banner(text, now, ZONE)
+        self.assertEqual(out['deadline_status'], 'elapsed')
+        self.assertEqual(datetime.fromtimestamp(out['resets_at'], ZONE),
+                         datetime(2026, 11, 11, 20, 10, tzinfo=ZONE))
+
+    def test_future_time_stays_future(self):
+        now = epoch('2026-11-11T10:00:00')
+        text = "Vous n'avez plus de messages gratuits jusqu'à 20:10."
+        out = claude_quota_banner.parse_banner(text, now, ZONE)
+        self.assertEqual(out['deadline_status'], 'future')
+        self.assertEqual(datetime.fromtimestamp(out['resets_at'], ZONE),
+                         datetime(2026, 11, 11, 20, 10, tzinfo=ZONE))
+
     def test_reinitialisation_afternoon_future(self):
         now = epoch('2026-11-11T10:00:00')
         out = claude_quota_banner.parse_banner(FIXTURES['reinitialisation'], now, ZONE)
