@@ -22,7 +22,14 @@ import time
 from zoneinfo import ZoneInfo
 
 HHMM = re.compile(r'\b([01]?\d|2[0-3]):([0-5]\d)\b')
-MARKERS = ('en pause', 'rétabli à', 'réinitialisation')
+# Marqueurs issus du DOM réel (11/11) : la bannière sépare « En pause depuis
+# que votre utilisation gratuite est épuisée » et « Vous n'avez plus de
+# messages gratuits jusqu'à 20:10 » — l'heure peut être loin du 1er marqueur
+# dans innerText (bouton « Continuer » entre les deux), d'où plusieurs
+# marqueurs et une fenêtre élargie. Variante « rétabli à » conservée.
+MARKERS = ('en pause', 'jusqu\'à', 'messages gratuits', 'rétabli à',
+           'réinitialisation')
+HHMM_WINDOW = 400
 RAW_TEXT_MAX = 200
 PAGE_TEXT_MAX = 4000
 CREATE_TARGET_POLL_SECONDS = 10.0
@@ -50,7 +57,7 @@ def banner_hhmm(text):
             index = lowered.find(marker, start)
             if index < 0:
                 break
-            window = text[index:index + 120]
+            window = text[index:index + HHMM_WINDOW]
             match = HHMM.search(window)
             if match:
                 return int(match.group(1)), int(match.group(2)), text[index:index + RAW_TEXT_MAX]
