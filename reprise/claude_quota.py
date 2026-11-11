@@ -250,6 +250,70 @@ def status(db):
             for row in db.execute('SELECT event_key,chat_id,observed_at,due,fingerprint,status FROM claude_quota_resumes ORDER BY observed_at DESC LIMIT 100')]
 
 
+BANNER_MIN_INTERVAL = 600.0  # (#135) au plus un cycle Chrome / 10 min
+BANNER_LAST_ATTEMPT = 'banner_cdp_last_attempt'
+
+
+def register_banner_resume(db, resets_at, pause_hash, now):
+    """(#135) Alimente claude_quota_state via le chemin #132 (lignes
+    'awaiting_observation') : la bannière CDP n'a pas de chat_id ni de
+    preuve native, donc chat_id/fingerprint restent vides."""
+    initialize(db)
+    key = hashlib.sha256(('banner:' + str(int(resets_at))).encode()).hexdigest()
+    with db:
+        db.execute('INSERT OR IGNORE INTO claude_quota_resumes VALUES (?,?,?,?,?,?,?)',
+                   (key, '', now, resets_at, '', pause_hash, 'awaiting_observation'))
+    return key
+
+
+def refresh_from_banner(db, now=None, zone=None, banner_reader=None):
+    """(#135) Repli bannière CDP : uniquement si bloqué sans échéance connue.
+
+    En état ok ou avec un resume_at futur du journal (#133) : zéro lancement
+    Chrome. Sinon, garde anti-répétition (≤ 1 cycle Chrome / 10 min, persisté
+    en scheduler_meta), lecture read-only de la bannière dans le Chrome
+    dédié, puis enregistrement de l'échéance via register_banner_resume.
+    Ne lève jamais : le tick reste non bloquant.
+    """
+    import scheduler
+    now = time.time() if now is None else now
+    state = quota_state(db, now=now)
+    # L'état courant du tick (#132, scheduler_meta 'claude_quota_state') porte
+    # le « bloqué sans échéance » / « indéterminé » (unavailable) que
+    # quota_state seul ne peut pas exprimer.
+    cached = scheduler.get(db, 'claude_quota_state')
+    cached_status = cached.get('status') if isinstance(cached, dict) else None
+    if state.get('resume_at') is not None:
+        return {'status': 'skipped', 'reason': 'deadline_known_or_ok'}
+    if state.get('status') == 'ok' and cached_status not in ('blocked', 'unavailable'):
+        return {'status': 'skipped', 'reason': 'deadline_known_or_ok'}
+    if state.get('status') == 'ok' and isinstance(cached, dict) and cached.get('resume_at') is not None:
+        return {'status': 'skipped', 'reason': 'deadline_known_or_ok'}
+    if not isinstance(zone, ZoneInfo):
+        return {'status': 'skipped', 'reason': 'zone_required'}
+    last = scheduler.get(db, BANNER_LAST_ATTEMPT)
+    if isinstance(last, (int, float)) and 0 <= now - last < BANNER_MIN_INTERVAL:
+        return {'status': 'throttled'}
+    with db:
+        scheduler.put(db, BANNER_LAST_ATTEMPT, now)
+    if banner_reader is None:
+        from claude_quota_banner import read_banner as banner_reader
+    try:
+        result = banner_reader(now=now, zone=zone)
+    except Exception as error:
+        return {'status': 'banner_failed', 'error': type(error).__name__}
+    if not isinstance(result, dict):
+        return {'status': 'banner_failed', 'error': 'TypeError'}
+    resets = result.get('resets_at')
+    if result.get('deadline_status') == 'future' and isinstance(resets, (int, float)) \
+            and not isinstance(resets, bool) and resets > now:
+        register_banner_resume(
+            db, float(resets),
+            hashlib.sha256(str(result.get('raw_text', '')).encode()).hexdigest(), now)
+        return {'status': 'deadline_recorded', 'resets_at': float(resets)}
+    return {'status': 'no_deadline', 'detail': result.get('status')}
+
+
 
 def run_quick(db, now, client_factory=None):
     """Use the same daemon API as delegating harnesses, never treat admission as a turn."""
