@@ -363,9 +363,9 @@ struct Dashboard: View {
                                 if events.isEmpty {
                                     Text("Aucune reprise Claude enregistrée.").foregroundStyle(.secondary)
                                 } else {
-                                    let recent = events.prefix(8).compactMap { event -> (Any, [String: Any])? in
-                                    event["event_key"].map { ($0, event) }
-                                }
+                                    let recent = events.prefix(8).compactMap { event -> (String, [String: Any])? in
+                                        (event["event_key"] as? String).map { ($0, event) }
+                                    }
                                 ForEach(recent, id: \.0) { _, event in
                                         let status = event["status"] as? String ?? "inconnu"
                                         HStack {
