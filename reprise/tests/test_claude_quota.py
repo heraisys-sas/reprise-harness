@@ -112,7 +112,12 @@ class ClaudeQuotaTests(unittest.TestCase):
 
     def test_scheduler_uses_daemon_api_and_never_equates_admission_with_dispatch(self):
         quota.initialize(self.db)
-        quota.register_notice(self.db, CHAT, TEXT, NOW, ZONE)
+        # Décision #132 : les notices awaiting_observation ne partent plus en dispatch ;
+        # le parcours d'admission se teste sur une ligne waiting native.
+        self.db.execute(
+            "INSERT INTO claude_quota_resumes VALUES (?,?,?,?,?,?,?)",
+            ('evt-quick', CHAT, NOW, DUE, 'f' * 64, 'p' * 64, 'waiting'))
+        self.db.commit()
         calls = []
         class Client:
             def __init__(self, *args, **kwargs): pass
@@ -122,13 +127,13 @@ class ClaudeQuotaTests(unittest.TestCase):
                 if name == 'quick_entry/capabilities':
                     return {'dispatch_supported': True, 'resume_validation_supported': True}
                 if name == 'quick_entry/submit':
-                    return {'status': 'finished', 'admission_only': True, 'dispatch_attempted': False}
+                    return {'status': 'finished', 'admission_only': False, 'dispatch_attempted': True}
                 return {}
         result = quota.run_quick(self.db, DUE-1, Client)
         self.assertFalse(any(name == 'quick_entry/submit' for name, _ in calls))
         result = quota.run_quick(self.db, DUE, Client)
-        self.assertEqual(result['submitted'], 0)
-        self.assertEqual(quota.status(self.db)[0]['status'], 'admitted')
+        self.assertEqual(result['submitted'], 1)
+        self.assertEqual(quota.status(self.db)[0]['status'], 'submitted')
         message = next(args for name, args in calls if name == 'quick_entry/submit')
         self.assertEqual(message['prompt'], 'retry')
         self.assertEqual(message['chatId'], CHAT)

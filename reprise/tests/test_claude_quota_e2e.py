@@ -66,22 +66,23 @@ class ClaudeQuotaEndToEndTests(unittest.TestCase):
             result = quota.run_native(self.db, str(Path(self.state.name)), str(Path(self.state.name)), now=DUE - 1)
             self.assertEqual(result['submitted'], 0)
             self.assertFalse(any(name == 'quick_entry/submit' for name, _ in receipts))
-            # À l'échéance : run_native soumet les deux lignes (waiting + awaiting_observation).
+            # À l'échéance : seule la ligne waiting part en dispatch (la notice
+            # awaiting_observation reste locale, sans clic).
             result = quota.run_native(self.db, str(Path(self.state.name)), str(Path(self.state.name)), now=DUE + 1)
             self.assertEqual(result['status'], 'observed')
             self.assertEqual(result['transport'], 'quick-apply')
-            self.assertEqual(result['submitted'], 2)
+            self.assertEqual(result['submitted'], 1)
             statuses = {r['chat_id']: r['status'] for r in quota.status(self.db)}
             self.assertEqual(statuses[CHAT], 'submitted')
-            self.assertEqual(statuses[OTHER], 'submitted')
+            self.assertEqual(statuses[OTHER], 'awaiting_observation')
             messages = [args for name, args in receipts if name == 'quick_entry/submit']
-            self.assertEqual(sorted(m['chatId'] for m in messages), sorted([CHAT, OTHER]))
+            self.assertEqual([m['chatId'] for m in messages], [CHAT])
             self.assertTrue(all(m['request_key'].startswith('resume-') for m in messages))
 
             # Une seule soumission par interruption : rejeu refusé.
             result = quota.run_native(self.db, str(Path(self.state.name)), str(Path(self.state.name)), now=DUE + 2)
             self.assertEqual(result['submitted'], 0)
-            self.assertEqual(sum(name == 'quick_entry/submit' for name, _ in receipts), 2)
+            self.assertEqual(sum(name == 'quick_entry/submit' for name, _ in receipts), 1)
 
     def test_manual_action_between_ticks_supersedes_and_blocks_dispatch(self):
         quota.register(self.db, OBSERVATION, NOW, ZONE)
@@ -113,6 +114,97 @@ class ClaudeQuotaEndToEndTests(unittest.TestCase):
             mock_client_cls.assert_not_called()
         self.assertEqual(quota.status(self.db)[0]['status'], 'waiting')
         self.assertFalse(list(Path(self.state.name).glob('claude-quota.lock')))
+
+    # Règle permanente : aucun test ne doit atteindre ~/.claude-desktop/quick-entry.sock.
+    DEAD_SOCKET = '/nonexistent/reprise-test-dead.sock'
+
+    def _guard_real_socket(self):
+        import socket as socket_module
+        real_connect = socket_module.socket.connect
+        self.addCleanup(setattr, socket_module.socket, 'connect', real_connect)
+
+        def forbidden(self_socket, address):
+            raise AssertionError('real socket touched: %r' % (address,))
+        socket_module.socket.connect = forbidden
+        return mock.patch('claude_desktop_rpc.REPRISE_DISPATCH_SOCKET', Path(self.DEAD_SOCKET)), \
+               mock.patch('claude_quota.REPRISE_DISPATCH_SOCKET', Path(self.DEAD_SOCKET), create=True), \
+               mock.patch('claude_desktop.DEFAULT_SOCKET', Path(self.DEAD_SOCKET))
+
+    def test_crash_during_dispatch_marks_uncertain_without_retry(self):
+        quota.register(self.db, OBSERVATION, NOW, ZONE)
+        calls = []
+
+        class Client:
+            def __init__(self, *args, **kwargs): pass
+            def close(self): pass
+            def call(self, name, args):
+                calls.append(name)
+                if name == 'quick_entry/capabilities':
+                    return {'dispatch_supported': True, 'resume_validation_supported': True}
+                if name == 'quick_entry/submit':
+                    raise RuntimeError('dispatch crashed')
+                return {}
+
+        with mock.patch('claude_desktop_rpc.Client', Client):
+            result = quota.run_native(self.db, str(Path(self.state.name)), str(Path(self.state.name)), now=DUE + 1)
+            self.assertEqual(result['submitted'], 0)
+            self.assertEqual(quota.status(self.db)[0]['status'], 'uncertain')
+            # Aucune nouvelle tentative au tick suivant.
+            result = quota.run_native(self.db, str(Path(self.state.name)), str(Path(self.state.name)), now=DUE + 2)
+            self.assertEqual(result['submitted'], 0)
+            self.assertEqual(calls.count('quick_entry/submit'), 1)
+
+    def test_bad_capabilities_fail_clean_without_dispatch(self):
+        quota.register(self.db, OBSERVATION, NOW, ZONE)
+
+        class Client:
+            def __init__(self, *args, **kwargs): pass
+            def close(self): pass
+            def call(self, name, args):
+                if name == 'quick_entry/submit':
+                    raise AssertionError('unavailable driver must not dispatch')
+                return {'dispatch_supported': False, 'resume_validation_supported': False}
+
+        with mock.patch('claude_desktop_rpc.Client', Client):
+            result = quota.run_native(self.db, str(Path(self.state.name)), str(Path(self.state.name)), now=DUE + 1)
+        self.assertEqual(result['status'], 'dispatch_driver_unavailable')
+        self.assertEqual(result['submitted'], 0)
+        self.assertEqual(quota.status(self.db)[0]['status'], 'waiting')
+
+    def test_global_pause_blocks_dispatch(self):
+        quota.register(self.db, OBSERVATION, NOW, ZONE)
+        scheduler.put(self.db, 'claude_desktop_auto_enabled', 'false')
+
+        class Client:
+            def __init__(self, *args, **kwargs): pass
+            def close(self): pass
+            def call(self, name, args):
+                raise AssertionError('paused scheduler must not dispatch')
+
+        with mock.patch('claude_desktop_rpc.Client', Client):
+            result = quota.run_native(self.db, str(Path(self.state.name)), str(Path(self.state.name)), now=DUE + 1)
+        self.assertEqual(result['status'], 'paused')
+        self.assertEqual(result['submitted'], 0)
+        self.assertEqual(quota.status(self.db)[0]['status'], 'waiting')
+
+    def test_run_native_never_touches_real_socket(self):
+        quota.register(self.db, OBSERVATION, NOW, ZONE)
+
+        class Client:
+            def __init__(self, *args, **kwargs): pass
+            def close(self): pass
+            def call(self, name, args):
+                if name == 'quick_entry/capabilities':
+                    return {'dispatch_supported': True, 'resume_validation_supported': True}
+                if name == 'quick_entry/submit':
+                    return {'status': 'finished', 'admission_only': False, 'dispatch_attempted': True}
+                return {}
+
+        patches = self._guard_real_socket()
+        with mock.patch('claude_desktop_rpc.Client', Client), patches[0], patches[1], patches[2]:
+            result = quota.run_native(self.db, str(Path(self.state.name)), str(Path(self.state.name)), now=DUE + 1)
+        self.assertEqual(result['status'], 'observed')
+        self.assertEqual(result['submitted'], 1)
 
 
 if __name__ == '__main__':
