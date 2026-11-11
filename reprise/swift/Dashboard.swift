@@ -302,6 +302,8 @@ struct Dashboard: View {
                         }
                         if app.counters.isEmpty { Text("Aucune application suivie ouverte.").foregroundStyle(.secondary) }
                         ForEach(app.counters, id: \.0) { entry in
+                            let activityText = entry.3.map { $0 > 0 ? "\($0) en cours" : "au repos" } ?? "état indisponible"
+                            let accessibilityText = entry.0 + " : " + activityText
                             HStack(spacing: 12) {
                                 Image(systemName: entry.2).frame(width: 22).foregroundStyle(.secondary).accessibilityHidden(true)
                                 Text(entry.0)
@@ -312,7 +314,7 @@ struct Dashboard: View {
                                             .padding(.horizontal, 10).padding(.vertical, 5).background(Color.accentColor.opacity(0.10), in: Capsule())
                                     } else { Text("Au repos").font(.callout).foregroundStyle(.secondary) }
                                 } else { Text("État indisponible").font(.callout).foregroundStyle(.secondary) }
-                            }.accessibilityElement(children: .combine).accessibilityLabel(entry.0 + " : " + (entry.3.map { $0 > 0 ? "\($0) en cours" : "au repos" } ?? "état indisponible"))
+                            }.accessibilityElement(children: .combine).accessibilityLabel(accessibilityText)
                         }
                     }
                 }
