@@ -21,10 +21,15 @@ function apply(ctx, config = {}) {
     let db;
     try {
       const {DatabaseSync} = require('node:sqlite');
-      db = new DatabaseSync(path.join(path.dirname(directory), 'tasks.sqlite'), {readOnly: true});
+      try { db = new DatabaseSync(path.join(path.dirname(directory), 'tasks.sqlite'), {readOnly: true}); }
+      catch (error) { console.warn('reprise-output-resume: scheduler state unreadable, disabled until fixed:', error.message); return false; }
       const row = db.prepare("SELECT value FROM scheduler_meta WHERE key='auto_enabled'").get();
-      return row !== undefined && JSON.parse(row.value) === true;
-    } catch (_) { return false; }
+      // Absent row = never toggled: matches scheduler.py default (enabled). Explicit 'false' stays disabled.
+      return row === undefined || JSON.parse(row.value) === true;
+    } catch (error) {
+      console.warn('reprise-output-resume: node:sqlite unavailable or corrupt auto_enabled value, disabled:', error.message);
+      return false;
+    }
     finally { if (db) db.close(); }
   }
   function eligible(session, event, agent) {
