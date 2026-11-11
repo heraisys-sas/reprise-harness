@@ -56,8 +56,10 @@ def parse(text):
 
 def snapshot(row):
     """Bind all source content used by attribution and later atomic import."""
-    return digest({key: row.get(key) for key in ('project_id', 'operation_id', 'job_id', 'request_key',
-        'revision', 'status', 'proposal', 'operator_authorization', 'local_execution', 'clarifications')})
+    value = {key: row.get(key) for key in ('project_id', 'operation_id', 'job_id', 'request_key',
+        'revision', 'status', 'proposal', 'operator_authorization', 'local_execution', 'clarifications')}
+    if 'memory_selection' in row: value['memory_selection'] = row['memory_selection']
+    return digest(value)
 
 
 @contextlib.contextmanager

@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import sys
 import unittest
 
 ROOT = Path(__file__).parents[1]
@@ -36,7 +37,7 @@ for line in sys.stdin:
   let a=CommandLine.arguments,state=URL(fileURLWithPath:a[2])
   let defaults=UserDefaults(suiteName:"browser.races."+UUID().uuidString)!
   defaults.set(1,forKey:StartupPreferences.versionKey)
-  let p=ApplePilotUI(python:URL(fileURLWithPath:"/usr/bin/python3"),service:URL(fileURLWithPath:a[1]),state:state,requestTimeout:2,preferences:defaults)
+  let p=ApplePilotUI(python:URL(fileURLWithPath:a[3]),service:URL(fileURLWithPath:a[1]),state:state,requestTimeout:2,preferences:defaults)
   let project="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",work="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",other="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
   p.enabled=true;p.projectID=project;p.workID=work
   p.browseOperations();p.workID=other;p.workID=work
@@ -69,7 +70,7 @@ for line in sys.stdin:
             swift.write_text((ROOT/'swift/ApplePilotUI.swift').read_text() + '\n' + swift.read_text())
             binary = root/'probe'
             subprocess.run(['swiftc','-parse-as-library','-module-cache-path',str(root/'cache'),str(swift),'-o',str(binary)],check=True)
-            subprocess.run([str(binary),str(service),str(state)],check=True,timeout=10)
+            subprocess.run([str(binary),str(service),str(state),sys.executable],check=True,timeout=10)
             ops=(state/'ops').read_text().splitlines()
             self.assertEqual(ops.count('job_list'),3)
             self.assertEqual(ops.count('job_recover'),1)

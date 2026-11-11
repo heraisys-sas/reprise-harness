@@ -293,6 +293,12 @@ class Jobs:
                 if row['project_id'] != project or row.get('operation_id') != operation: continue
                 if 'clarifications' in row:
                     identity['clarifications_sha256'] = hashlib.sha256(_json(row['clarifications']).encode()).hexdigest()
+                if 'memory_selection' in row:
+                    if backend != 'foundation-models': raise ValueError('Explicit local consent required')
+                    memory = row['memory_selection']
+                    if memory['work_id'] != host_context['work_id']:
+                        raise ValueError('Host context changed')
+                    identity['memory_snapshot_sha256'] = memory['snapshot_sha256']
                 digest = hashlib.sha256(_json(identity).encode()).hexdigest()
                 previous = row.get('operator_authorization')
                 if previous and previous['authorization_id'] == authorization:
@@ -345,6 +351,10 @@ class Jobs:
                     clarifications_sha = hashlib.sha256(_json(row['clarifications']).encode()).hexdigest()
                     if (snapshot.get('clarifications_sha256') != clarifications_sha
                             or consent.get('clarifications_sha256') != clarifications_sha):
+                        raise ValueError('Execution manifest mismatch')
+                if 'memory_selection' in row:
+                    memory_sha = hashlib.sha256(_json(row['memory_selection']['snapshot']).encode()).hexdigest()
+                    if snapshot.get('memory_snapshot_sha256') != memory_sha or consent.get('memory_snapshot_sha256') != memory_sha:
                         raise ValueError('Execution manifest mismatch')
                 if (snapshot.get('project_id') != project or snapshot.get('work_id') != host['work_id']
                         or snapshot.get('project_root') != host['project_root']
@@ -473,6 +483,8 @@ class Jobs:
                 raise ValueError('Candidate source changed')
             row = next((row for row in data['jobs'] if row['project_id'] == project
                         and row.get('operation_id') == operation), None)
+            if row and row.get('memory_selection'):
+                raise ValueError('Memory-bound analysis cannot become an imported mission')
             if row and row.get('candidate_import'):
                 if row['candidate_import'] == record:
                     return self._public(row)
@@ -500,6 +512,42 @@ class Jobs:
                               for index, question in enumerate(proposal['questions'])]
             row.update(proposal=proposal, candidate_import=record, clarifications=clarifications,
                        fingerprint=_fingerprint(proposal, None))
+            return self._public(row)
+
+    def attach_memory(self, project_id, operation_id, *, snapshot, selection_id,
+                      snapshot_sha256, expected_revision, work_id, fact_ids):
+        import coordinator_recall as recall
+        from delegation_store import digest
+        project, operation, work, mutation = map(_uuid, (project_id, operation_id, work_id, selection_id))
+        snapshot = recall.validate(snapshot)
+        if (type(expected_revision) is not int or expected_revision < 0
+                or snapshot['project_id'] != project or snapshot['work_id'] != work
+                or digest(snapshot) != snapshot_sha256
+                or sorted(fact_ids) != [fact['id'] for fact in snapshot['facts']]):
+            raise ValueError('Memory selection identity mismatch')
+        self.consent_context(project, work)
+        identity = {'selection_id': mutation, 'snapshot_sha256': snapshot_sha256,
+                    'expected_revision': expected_revision, 'work_id': work, 'fact_ids': fact_ids}
+        with self._store(write=True) as data:
+            row = next((row for row in data['jobs'] if row['project_id'] == project
+                        and row.get('operation_id') == operation), None)
+            if row is None: raise ValueError('Job not found')
+            previous = row.get('memory_selection')
+            if previous and previous['selection_id'] == mutation:
+                if {key: previous[key] for key in identity} != identity:
+                    raise ValueError('Memory selection identity conflict')
+                return self._public(row)
+            if row['status'] != 'preparation': raise ValueError('Mission locked')
+            if row['revision'] != expected_revision: raise ValueError('Revision conflict')
+            import coordinator_local
+            if coordinator_local.analysis_request(row) is None:
+                raise ValueError('Explicit native analysis required')
+            association, bound_work = self._work_association(row)
+            if association == 'inconsistent' or (bound_work is not None and bound_work != work):
+                raise ValueError('Host context changed')
+            row['memory_selection'] = dict(identity, snapshot=snapshot, confirmed_at=time.time())
+            row.update(revision=row['revision'] + 1, revised_at=time.time(),
+                       fingerprint=digest({'proposal':row['proposal'], 'memory_selection':row['memory_selection']}))
             return self._public(row)
 
     def clarify_candidate(self, project_id, operation_id, *, question_id, answer, resolved,
@@ -609,6 +657,10 @@ class Jobs:
                     raise ValueError('Draft only; admitted missions cannot be revised')
                 if any(not item['resolved'] and item['question'] not in proposal['questions'] for item in row.get('clarifications', [])):
                     raise ValueError('Unresolved clarification cannot be removed')
+                if 'memory_selection' in row:
+                    import coordinator_local
+                    if coordinator_local.analysis_request(dict(row, proposal=proposal)) is None:
+                        raise ValueError('Memory-bound analysis template required')
                 fingerprint = _fingerprint(proposal, row.get('authority'))
                 # An exact replay is a no-op even when its original CAS token is now stale.
                 if row.get('fingerprint') == fingerprint and row['proposal'] == proposal:
@@ -639,7 +691,7 @@ class Jobs:
                 'authorization_kind': item.get('authorization_kind'),
                 'operator_authorization': item.get('operator_authorization'),
                 'local_execution': item.get('local_execution')}
-        for field in ('candidate_import', 'clarifications'):
+        for field in ('candidate_import', 'clarifications', 'memory_selection'):
             if field in item:
                 result[field] = item[field]
         if item.get('operation_id') is not None:
@@ -725,6 +777,9 @@ class Jobs:
                 bindings.append(_uuid(context.get('work_id')))
             except ValueError:
                 return 'inconsistent', None
+        if row.get('memory_selection') is not None:
+            try: bindings.append(_uuid(row['memory_selection']['work_id']))
+            except (ValueError, KeyError, TypeError): return 'inconsistent', None
         if len(set(bindings)) > 1:
             return 'inconsistent', None
         return ('bound', bindings[0]) if bindings else ('unbound', None)

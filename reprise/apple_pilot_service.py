@@ -11,6 +11,7 @@ from pathlib import Path
 
 import apple_pilot
 import apple_pilot_transport
+import coordinator_recall
 import coordinator_jobs
 import coordinator_candidate
 import coordinator_local
@@ -116,6 +117,9 @@ class Service:
             'job_authorize': {'id', 'op', 'enabled', 'project_id', 'work_id', 'operation_id',
                 'authorization_id', 'expected_revision', 'expected_proposal_sha256', 'expected_context_sha256'},
             'job_prepare': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'proposal'},
+            'job_memory_preview': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'work_id', 'fact_ids'},
+            'job_memory_attach': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'work_id', 'fact_ids',
+                'snapshot_sha256', 'selection_id', 'expected_revision', 'operator_confirmed'},
             'job_list': {'id', 'op', 'enabled', 'project_id', 'work_id', 'limit', 'offset'},
             'job_recover': {'id', 'op', 'enabled', 'project_id', 'operation_id'},
             'job_revise': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'proposal', 'expected_revision'},
@@ -129,7 +133,7 @@ class Service:
             self._reply(ident, 'error')
 
     def _dispatch(self, ident, op, request):
-        if op in ('job_candidate_extract', 'job_candidate_import', 'job_clarify', 'job_clarification_review', 'job_prepare', 'job_list', 'job_recover', 'job_revise', 'job_consent_context', 'job_authorize', 'job_authorize_local', 'job_local_plan', 'job_local_start', 'job_local_stop'):
+        if op in ('job_candidate_extract', 'job_candidate_import', 'job_clarify', 'job_clarification_review', 'job_prepare', 'job_memory_preview', 'job_memory_attach', 'job_list', 'job_recover', 'job_revise', 'job_consent_context', 'job_authorize', 'job_authorize_local', 'job_local_plan', 'job_local_start', 'job_local_stop'):
             if request.get('enabled') is not True:
                 self._reply(ident, 'not_enabled')
                 return
@@ -401,6 +405,18 @@ class Service:
                     result = self.local_factory(jobs).recover(project, operation)
             elif op == 'job_prepare':
                 result = jobs.prepare_proposal(project, operation, request['proposal'])
+            elif op == 'job_memory_preview':
+                jobs.consent_context(project, _uuid(request['work_id']))
+                row = jobs.recover(project, operation)
+                if row is None or row['status'] != 'preparation' or coordinator_local.analysis_request(row) is None:
+                    raise ValueError('Explicit native analysis required')
+                snapshot = coordinator_recall.read_snapshot(self.memory_factory(self.state), project, request['work_id'], request['fact_ids'])
+                response = {'status': 'finished', 'memory_preview': snapshot, 'snapshot_sha256': coordinator_candidate.digest(snapshot)}
+            elif op == 'job_memory_attach':
+                result = coordinator_recall.attach(jobs, lambda:self.memory_factory(self.state), project, operation,
+                    work=request['work_id'], fact_ids=request['fact_ids'], snapshot_sha256=request['snapshot_sha256'],
+                    selection_id=request['selection_id'], expected_revision=request['expected_revision'],
+                    operator_confirmed=request['operator_confirmed'])
             elif op == 'job_list':
                 result = jobs.browse(project, work_id=request['work_id'], limit=request['limit'], offset=request['offset'])
                 response = {'status': 'finished', 'page': result}
@@ -418,7 +434,7 @@ class Service:
             else:
                 result = jobs.revise(project, operation, request['proposal'],
                                      expected_revision=request['expected_revision'])
-            if op not in ('job_candidate_extract', 'job_consent_context', 'job_local_plan', 'job_list') and (op != 'job_recover' or result is not None):
+            if op not in ('job_candidate_extract', 'job_consent_context', 'job_local_plan', 'job_list', 'job_memory_preview') and (op != 'job_recover' or result is not None):
                 response = {'status': 'finished', 'job': result}
         except coordinator_jobs.WriteUncertainError:
             response = {'status': 'write_uncertain', 'effect': 'indeterminate'}
@@ -441,7 +457,7 @@ class Service:
             else:
                 status = 'invalid_proposal'
             response = {'status': status}
-            if validation_only or op in ('job_candidate_extract', 'job_candidate_import', 'job_clarify', 'job_clarification_review', 'job_authorize', 'job_authorize_local', 'job_consent_context', 'job_local_plan'):
+            if validation_only or op in ('job_candidate_extract', 'job_candidate_import', 'job_clarify', 'job_clarification_review', 'job_memory_preview', 'job_memory_attach', 'job_authorize', 'job_authorize_local', 'job_consent_context', 'job_local_plan'):
                 response['effect'] = 'not_admitted'
         except Exception:
             response = {'status': 'job_unavailable'}

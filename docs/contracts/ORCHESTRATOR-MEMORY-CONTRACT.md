@@ -286,3 +286,19 @@ hostile du même UID qui changerait le Trousseau ou les fichiers simultanément.
 Aucune commande d'administration ne recharge un client, n'installe une intégration,
 n'injecte de souvenir ou ne lance d'inférence. Les indicateurs de chargement client
 et d'échange restent inconnus après une simple inspection.
+
+## Copies de faits approuvées pour une analyse native
+
+La GUI peut rechercher littéralement les faits du projet sélectionné et proposer
+une copie bornée pour une analyse native. La sélection, l’aperçu et l’approbation
+sont des actions humaines distinctes. Le contrat détaillé est dans
+[APPLE-PILOT-CONTRACT.md](APPLE-PILOT-CONTRACT.md), section rappel explicitement
+approuvé. Cette fonction ne crée pas de scope implicite, n’écrit pas de souvenir
+et n’ajoute aucun outil de recherche au modèle.
+
+La relecture des révisions avant copie détecte les modifications déjà visibles
+au contrôle ; elle n’est pas une transaction commune mémoire/Jobs. La copie
+historique datée et versionnée peut précéder une modification ou suppression du
+fait courant. La suppression reste limitée au fait courant : elle ne purge pas
+les snapshots, requêtes et reçus déjà approuvés. Cette conservation est affichée
+avant confirmation, et aucun verrou n’est gardé pendant le modèle.

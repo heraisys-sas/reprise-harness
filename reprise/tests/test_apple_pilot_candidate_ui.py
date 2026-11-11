@@ -33,7 +33,7 @@ class CandidateUIIntegrationTests(unittest.TestCase):
             candidate = {'schema': 'reprise-preparation-candidate-v1', 'proposal': {
                 'objective': 'Créer un compte rendu', 'acceptance': ['Texte relu'],
                 'constraints': ['Sans outils'], 'questions': ['Quel public ?']}}
-            helper.write_text('#!' + sys.executable + '\nimport sys,json,signal\nfrom pathlib import Path\n'
+            helper.write_text('#!' + sys.executable + ' -B\nimport sys,json,signal\nassert sys.dont_write_bytecode\nfrom pathlib import Path\n'
                 'if sys.argv[1:]==["--supervision-contract"]:\n print('+repr(json.dumps(dict(SUPERVISION_CONTRACT, prompt_formats=["operator-question-v2", "preparation-analysis-v2", "preparation-analysis-v3-guided"])))+');sys.exit(0)\n'
                 'signal.signal(signal.SIGALRM,lambda *_:sys.exit(124));signal.alarm(int(sys.argv[2]))\n'
                 'x=json.load(sys.stdin)\n'

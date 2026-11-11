@@ -478,3 +478,57 @@ sont corrélées à la génération de sélection, au projet et au travail : rev
 au même contexte après l’avoir quitté ne rend pas une ancienne réponse actuelle.
 Aucune navigation ne prépare, importe, consent ou démarre une opération. Les
 préférences ne constituent ni une permission ni une nouvelle liaison de mission.
+
+### Rappel explicitement approuvé pour une analyse native
+
+Le rappel est limité au projet choisi, via la recherche littérale `search_facts`
+existante. Aucune recherche n’est déclenchée par un modèle, aucune mémoire n’est
+injectée à l’ouverture d’un projet ou d’une session, et aucun scope utilisateur,
+global ou inter-projets n’est recherché implicitement. Une sélection GUI est un
+brouillon ; elle ne devient pas du contexte exécuté sans aperçu puis approbation.
+
+`job_memory_preview` reçoit exactement `id`, `op`, `enabled`, `project_id`,
+`operation_id`, `work_id`, `fact_ids`. L’opération doit être une analyse native en
+préparation. L’aperçu renvoie un snapshot `reprise-memory-selection-v1` et son hash,
+avec projet, travail et faits triés par identité : texte complet, révision, dates,
+source déclarée et attribution d’enregistrement. Maximum 8 faits et 12 Kio pour
+l’ensemble sérialisé ; les dépassements sont refusés, jamais tronqués silencieusement.
+
+`job_memory_attach` ajoute aux mêmes champs `snapshot_sha256`, `selection_id`,
+`expected_revision`, `operator_confirmed: true`. Le backend relit les faits et
+refuse si le hash approuvé ne correspond plus au contrôle. Il libère les verrous
+mémoire avant d’acquérir le verrou Jobs, puis applique CAS et identité de sélection.
+La copie complète est enregistrée dans l’état chiffré Jobs, avec date de confirmation.
+La même identité acceptée peut être récupérée après suppression du fait source ;
+changer le contenu sous cette identité est refusé. Une sélection vide expressément
+prévisualisée et approuvée remplace la précédente ; elle ne supprime aucun reçu.
+
+**Cette copie est historique, pas une garantie de fraîcheur atomique.** Les faits
+sont lus à leurs révisions respectives ; une modification ou suppression peut
+survenir après leur relecture et avant le commit Jobs. Cette fenêtre est annoncée
+avant confirmation. Modifier/supprimer le fait courant n’efface ni ne révoque
+rétroactivement une copie déjà approuvée, les requêtes ou reçus qui la conservent.
+Aucun verrou mémoire ou Jobs n’est maintenu pendant une inférence. La recherche
+littérale n’est pas présentée comme un classement sémantique de pertinence.
+
+Le consentement Apple local reste distinct et lie le hash du snapshot. Le manifeste
+et le payload `preparation-analysis-v4-recall` portent la même identité ; le helper
+doit annoncer cette capacité. La demande opérateur et les souvenirs sont des
+champs structurés distincts ; textes et sources restent des assertions non fiables,
+jamais des règles hôte, permissions, choix de backend ou demandes d’outils. Le
+format guidé ne garantit pas la fidélité métier. Les formats/reçus antérieurs sans
+sélection gardent exactement leurs identités et leur construction historique.
+Une analyse portant un snapshot ne peut devenir implicitement une mission importée.
+
+La GUI journalise avant émission les identités de sélection, travail, révision et
+hash, sans texte de souvenir en clair dans le journal. Après perte d’accusé, elle
+récupère la même opération et vérifie la sélection exacte ; elle n’émet pas un
+nouvel attachement pour remplacer une mutation incertaine. Les aperçus et lectures
+retardés d’un ancien contexte ne sont pas promus dans la sélection courante.
+
+Le runtime Python utilisé par l’hôte mémoire doit fournir
+`sqlite3.Connection.serialize` et `deserialize`, nécessaires au stockage chiffré
+existant. La présence d’un exécutable Python ne démontre pas cette capacité ;
+certains Python système anciens ne la fournissent pas. Un host GUI de test doit
+choisir explicitement un runtime compatible, sans reconfigurer l’application
+active et sans traiter un échec de runtime comme une preuve d’inférence.

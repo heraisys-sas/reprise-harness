@@ -171,6 +171,54 @@ struct ApplePilotView: View {
         return "\(row["objective"] as? String ?? "") · \(row["status"] as? String ?? "") · révision \(row["revision"] as? Int ?? 0) · \(association) · \(row["operation_id"] as? String ?? "")"
     }
 
+    private func recallFactText(_ fact: [String: Any]) -> String {
+        let source = fact["source"] as? [String: Any] ?? [:]
+        let attribution = fact["recorded_by"] as? [String: Any] ?? [:]
+        let formatter = DateFormatter(); formatter.dateFormat = "dd/MM/yyyy HH:mm"
+        let date = (fact["updated_at"] as? Double).map { formatter.string(from: Date(timeIntervalSince1970: $0)) } ?? "inconnue"
+        return "\(fact["text"] as? String ?? "")\nID \(fact["id"] as? String ?? "") · révision \(fact["revision"] as? Int ?? 0) · assertion non vérifiée\nSource déclarée : \(source["kind"] as? String ?? "") · \(source["reference"] as? String ?? "") · auteur déclaré : \(source["producer"] as? String ?? "") · observation déclarée : \(source["observed_at"] as? String ?? "")\nEnregistré par : \(attribution["harness_id"] as? String ?? "inconnu") · mise à jour locale : \(date)"
+    }
+    private var recallPanel: some View {
+        GroupBox("Souvenirs pour cette analyse — sélection explicite") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Recherche littérale dans ce projet seulement. Aucun souvenir n’est joint automatiquement.").font(.caption)
+                Button("Lier la mémoire à ce projet") { pilot.bindMemory() }.disabled(!pilot.memoryReady)
+                TextField("Texte à rechercher (1 Kio maximum)", text: $pilot.recallQuery)
+                HStack {
+                    Button("Rechercher") { pilot.searchRecallFacts() }
+                    if let offset = pilot.factsNextOffset { Button("Résultats suivants") { pilot.searchRecallFacts(offset: offset) } }
+                }.disabled(!pilot.memoryReady || pilot.memoryProject != pilot.projectID)
+                ForEach(pilot.facts, id: \.selfID) { fact in
+                    if let id = fact["id"] as? String {
+                        if let excerpt = fact["excerpt"] as? String { Text(excerpt + (fact["excerpt_truncated"] as? Bool == true ? "… (extrait)" : "")).font(.caption) }
+                        HStack {
+                            Toggle("Inclure \(id) · révision \(fact["revision"] as? Int ?? 0)", isOn: Binding(get: { pilot.recallSelected.contains(id) }, set: { selected in
+                                if selected { pilot.recallSelected.insert(id) } else { pilot.recallSelected.remove(id) }
+                            })).disabled(!pilot.preparationCanEdit)
+                            Button("Lire le fait et sa source") { pilot.loadFact(id) }.disabled(!pilot.memoryReady)
+                        }
+                    }
+                }
+                if !pilot.factDetail.isEmpty { Text(recallFactText(pilot.factDetail)).textSelection(.enabled) }
+                Button("Prévisualiser les copies sélectionnées (8 faits, 12 Kio maximum)") { pilot.previewRecall() }
+                    .disabled(!pilot.preparationCanEdit || pilot.recallSelected.count > 8)
+                if let facts = pilot.recallPreview["facts"] as? [[String: Any]] {
+                    if facts.isEmpty { Text("Aucun souvenir sélectionné : confirmer remplace la sélection précédente par une copie vide.").font(.caption) }
+                    ForEach(facts, id: \.selfID) { fact in Text(recallFactText(fact)).textSelection(.enabled) }
+                    Text("Ces assertions datées seront copiées dans cette analyse. Leur modification ou suppression en mémoire n’efface pas la copie approuvée ni ses reçus. Une source peut encore changer entre le dernier contrôle et l’enregistrement ; aucune fraîcheur atomique n’est garantie.").font(.caption)
+                    Toggle("J’approuve ces copies historiques pour cette analyse uniquement", isOn: $pilot.recallAcknowledged)
+                    Button("Joindre les copies approuvées") { pilot.attachRecall() }.disabled(!pilot.canAttachRecall)
+                }
+                if !pilot.attachedRecallFacts.isEmpty {
+                    DisclosureGroup("Copies déjà jointes à cette analyse") {
+                        ForEach(pilot.attachedRecallFacts, id: \.selfID) { fact in Text(recallFactText(fact)).textSelection(.enabled) }
+                    }
+                }
+                Text(pilot.memoryStatus).font(.caption)
+            }
+        }
+    }
+
     private var operationBrowser: some View {
         GroupBox("Opérations existantes du projet") {
             VStack(alignment: .leading, spacing: 8) {
@@ -292,6 +340,12 @@ struct ApplePilotView: View {
                     Text("À clarifier").font(.caption.bold())
                     ForEach(Array(items.enumerated()), id: \.offset) { _, question in
                         Text("• " + question).font(.caption).textSelection(.enabled)
+                    }
+                }
+                if pilot.isAnalysis && pilot.preparationCanEdit { recallPanel }
+                else if !pilot.attachedRecallFacts.isEmpty {
+                    DisclosureGroup("Copies historiques approuvées pour cette analyse") {
+                        ForEach(pilot.attachedRecallFacts, id: \.selfID) { fact in Text(recallFactText(fact)).textSelection(.enabled) }
                     }
                 }
                 if !pilot.clarifications.isEmpty { clarificationPanel }
