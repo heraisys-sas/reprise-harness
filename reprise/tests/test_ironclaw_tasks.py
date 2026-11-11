@@ -110,7 +110,6 @@ class TasksTests(unittest.TestCase):
                 self.assertFalse(db.in_transaction)
             finally:
                 db.close()
-
     def test_encoded_french_payload_rejected_before_admission_or_network(self):
         with self.assertRaises(TaskError):
             self.tasks.submit('large', 'é' * 11000, allow_submit=True)
