@@ -26,7 +26,11 @@ Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui s
 
 Le clone `source/` racine est le seul qui alimente le déploiement opérateur ; les `workspaces/<agent>/source/` sont des clones de travail par agent, coordonnés uniquement via `origin`. Les workspaces sans `source/` (`claude/`, `autoclaw/`) servent de runtime aux connecteurs, pas de clone Git. Convention de nommage : le dossier clone s'appelle toujours `source`, au singulier, quel que soit l'agent.
 - **Worktrees temporaires** : pour un merge, une revalidation ou toute manipulation hors branche de workspace, créer un worktree dédié sous `<workspace>/tmp/<sujet>/` (ex. `workspaces/harness/tmp/merge-99`), jamais dans un autre worktree d'agent ni dans `/private/tmp` (purgé au reboot). Le clone `source/` étant dans le workspace, ces worktrees restent dans le périmètre inscriptible. Supprimer le worktree après usage (`git worktree remove`).
-- Tests : `python3 -m unittest discover -s reprise/tests -q` (suite fusionnée : 1144 OK, 6 skipped — le chiffre évolue, ne pas le figer).
+- **Validation locale proportionnée** :
+  - Avant chaque lot : tests ciblés sur les modules modifiés (`python3 -m unittest tests.test_X -q` dans `reprise/`) + `python3 -m py_compile` des fichiers touchés — obligatoires et suffisants avant commit/push si le lot est localisé.
+  - Suite complète locale seulement si : module transversal touché (scheduler, persistance, export, runtime, `reprise/reprise`), doute d'interférence, ou CI indisponible. Commande : `python3 -m unittest discover -s reprise/tests -q` (suite fusionnée — le nombre de tests évolue, ne pas le figer).
+  - Quand elle est nécessaire, l'exécuter en **shards parallèles** via `reprise/ci_test.py` : 4 lancements simultanés `--shard-index 0..3 --shard-count 4` (HOME isolé par shard, géré par ci_test.py). Tant que #136 n'est pas fusionné, ces options n'existent pas encore → suite complète séquentielle unique.
+  - Anti-redondance : le CI reste le garde-fou (suite complète en shards à chaque push après #136). Un échec CI sur un shard = rejeu local ciblé de ce seul module/shard. Ne jamais annoncer une validation non exécutée.
 - CLI : l'entrée utilisateur est `reprise/reprise` ; `reprise/resume` n'est qu'un wrapper déprécié qui l'exécute (#99).
 - Compile Swift (sans relancer l'app) : `sh native-install` ; `--open` pour lancer l'app.
 - Check syntaxe Swift : `swiftc -parse -module-cache-path /private/tmp/agent-resume-swift-cache Native.swift Dashboard.swift` (dans `reprise/`).
