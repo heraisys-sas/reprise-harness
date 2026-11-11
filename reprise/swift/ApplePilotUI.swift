@@ -33,6 +33,70 @@ enum PreparationAnalysisTemplate {
     }
 }
 
+/// Read-only presentation of recorded inputs; never infers documentary content from words.
+enum PreparationInputInventory {
+    static func json(_ value: Any) -> String {
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
+              let text = String(data: data, encoding: .utf8) else { return "Vue JSON indisponible" }
+        return text
+    }
+    static func describe(_ row: [String: Any]) -> String {
+        let execution = row["local_execution"] as? [String: Any]
+        let manifest = execution?["manifest"] as? [String: Any]
+        let format = manifest?["prompt_format"] as? String
+        var lines = [manifest == nil ? "Entrées préparées — aucune transmission déduite de cet aperçu." : "Entrées figées de la tentative locale — la réception ne prouve pas leur bonne interprétation."]
+        if let imported = row["candidate_import"] as? [String: Any] {
+            let origin = imported["origin"] as? [String: Any] ?? [:]
+            lines.append("Mission importée : entrées originales non chargées. Consulter l’opération source : " + (origin["source_operation_id"] as? String ?? "inconnue"))
+        }
+        let known = format == nil || ["operator-question-v2", "preparation-analysis-v2", "preparation-analysis-v3-guided", "preparation-analysis-v4-recall"].contains(format!)
+        if !known {
+            lines.append("Format inconnu : inventaire des entrées indisponible (" + (format ?? "") + ").")
+        } else {
+            let proposal = row["proposal"] as? [String: Any] ?? [:]
+            let objective = proposal["objective"] as? String ?? ""
+            let constraints = proposal["constraints"] as? [String] ?? []
+            var request: String?
+            for version in ["v2", "v3"] {
+                if objective == "Analyse locale de préparation (reprise-analysis-\(version)).",
+                   constraints.count == 1, (proposal["questions"] as? [String])?.isEmpty == true,
+                   let data = constraints[0].data(using: .utf8),
+                   let envelope = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                   Set(envelope.keys) == Set(["request", "template"]),
+                   envelope["template"] as? String == "reprise-analysis-\(version)" {
+                    request = envelope["request"] as? String
+                }
+            }
+            lines.append(request.map { "Demande opérateur enregistrée :\n" + $0 } ?? "Proposition déclarée (pas une preuve des entrées de l’analyse source) :\n" + json(proposal))
+            lines.append("Aucune pièce documentaire distincte enregistrée dans ce parcours. Un texte libre peut contenir du contenu documentaire ; cet aperçu ne le détermine pas.")
+        }
+        if let clarifications = row["clarifications"] {
+            lines.append("Questions, réponses et décisions enregistrées :\n" + json(clarifications))
+        }
+        if let selection = row["memory_selection"] as? [String: Any] {
+            if let snapshot = selection["snapshot"] as? [String: Any],
+               snapshot["schema"] as? String == "reprise-memory-selection-v1",
+               snapshot["project_id"] as? String == row["project_id"] as? String,
+               let work = selection["work_id"] as? String, snapshot["work_id"] as? String == work,
+               let facts = snapshot["facts"] as? [[String: Any]],
+               facts.allSatisfy({ $0["status"] as? String == "asserted" && $0["text"] is String }) {
+                lines.append("Souvenirs joints : \(facts.count) assertion(s) historiques, pas des faits vérifiés ni un document fourni.")
+                lines.append("Copie approuvée : " + String(describing: selection["confirmed_at"] ?? "date inconnue"))
+                lines.append("SHA-256 enregistré : " + (selection["snapshot_sha256"] as? String ?? "inconnu"))
+                if manifest != nil {
+                    lines.append(manifest?["memory_snapshot_sha256"] as? String == selection["snapshot_sha256"] as? String && selection["snapshot_sha256"] is String ? "Cette copie est référencée par le manifeste." : "Référence mémoire du manifeste absente ou différente : transmission de cette copie non établie.")
+                }
+                lines.append(json(snapshot))
+            } else { lines.append("Souvenirs joints : inventaire indisponible (copie ou association non reconnue).") }
+        } else if row["memory_selection"] != nil {
+            lines.append("Souvenirs joints : inventaire indisponible (copie non reconnue).")
+        } else { lines.append("Souvenirs joints à cette opération : 0.") }
+        lines.append("Une proposition générée reste non vérifiée. Mentionner une source ne prouve ni son contenu ni la fidélité de son interprétation. Import et consentement restent des décisions distinctes.")
+        return lines.joined(separator: "\n\n")
+    }
+}
+
 private struct PreparationLink: Codable, Equatable {
     let project: String
     let work: String

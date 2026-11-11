@@ -117,6 +117,7 @@ struct ApplePilotView: View {
                 }
                 if let candidate = pilot.candidateResult["candidate"] as? [String: Any],
                    let proposal = candidate["proposal"] as? [String: Any] {
+                    inputInventoryPanel
                     Text("Candidat non vérifié — à relire").font(.headline)
                     Text(proposal["objective"] as? String ?? "")
                     ForEach(["acceptance", "constraints", "questions"], id: \.self) { field in
@@ -127,6 +128,13 @@ struct ApplePilotView: View {
                         .disabled(!pilot.canSwitchReview || !pilot.isAnalysis)
                 }
             }
+        }
+    }
+
+    private var inputInventoryPanel: some View {
+        GroupBox("Entrées et incertitudes") {
+            Text(PreparationInputInventory.describe(pilot.preparationJob))
+                .font(.caption).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -325,6 +333,10 @@ struct ApplePilotView: View {
                             Button("Demander l’arrêt local") { pilot.stopLocalExecution() }.disabled(pilot.preparationBusy)
                         }
                         if let receipt = execution["receipt"] as? [String: Any] {
+                            inputInventoryPanel
+                            DisclosureGroup("Reçu brut — vue JSON complète") {
+                                Text(PreparationInputInventory.json(receipt)).font(.caption.monospaced()).textSelection(.enabled)
+                            }
                             Text("Reçu : \(receipt["run_id"] as? String ?? "") · \(receipt["status"] as? String ?? "inconnu")").font(.caption).textSelection(.enabled)
                             if let answer = receipt["response"] as? String {
                                 Text("Réponse générée").font(.caption.bold())

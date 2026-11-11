@@ -532,3 +532,22 @@ existant. La présence d’un exécutable Python ne démontre pas cette capacit�
 certains Python système anciens ne la fournissent pas. Un host GUI de test doit
 choisir explicitement un runtime compatible, sans reconfigurer l’application
 active et sans traiter un échec de runtime comme une preuve d’inférence.
+
+### Inventaire visible des entrées et incertitudes
+
+Le candidat et le résultat local présentent un inventaire en lecture seule des données
+persistées de l’opération affichée. La demande native n’est reconnue que par son
+enveloppe versionnée ; aucun mot du texte libre ne sert à reconnaître un document.
+Les parcours actuels ne possèdent pas de pièce documentaire structurée distincte :
+ce constat ne signifie pas qu’un texte libre ne contient aucun document. Une mission
+importée ne permet pas de reconstituer les entrées originales de son analyse ; son
+opération source reste la référence à consulter explicitement.
+
+Les souvenirs joints sont présentés comme des copies historiques d’assertions avec
+leur provenance, date d’approbation et empreinte enregistrée. Leur référence dans le
+manifeste ne garantit ni leur vérité ni leur interprétation par le modèle. Un format
+ou une association non reconnus produit un inventaire indisponible, pas une absence
+présumée. Avant manifeste, l’aperçu décrit des entrées préparées et ne prouve aucune
+transmission. Le reçu complet reste accessible sous forme de vue JSON, sans
+troncature volontaire ; cette mise en forme ne constitue pas les octets originaux.
+Ces vues ne changent aucune identité, autorité, importation ou décision de consentement.
