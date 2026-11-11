@@ -55,6 +55,9 @@ function setup(name, extra={}) {
   s=setup('ambiguous');s.agent.followup=()=>{throw Error('private content');};s.emit();await tick();
   const receipts=fs.readdirSync(path.join(root,'harness-output-resume')).map(n=>JSON.parse(fs.readFileSync(path.join(root,'harness-output-resume',n))));assert(receipts.some(r=>r.status==='uncertain'));assert(!JSON.stringify(receipts).includes('private content'));
   db.exec("UPDATE scheduler_meta SET value='false'");s=setup('paused');s.emit();await tick();assert.equal(s.agent.sent.length,0);db.exec("UPDATE scheduler_meta SET value='true'");
+  // Issue #35: absent auto_enabled row (fresh state) must be treated as enabled.
+  db.exec("DELETE FROM scheduler_meta WHERE key='auto_enabled'");s=setup('absent');s.emit();await tick();assert.equal(s.agent.sent.length,1);
+  db.exec("INSERT INTO scheduler_meta VALUES('auto_enabled','false')");s=setup('absent-paused');s.emit();await tick();assert.equal(s.agent.sent.length,0);
   s=setup('claimfail');fs.rmSync(path.join(root,'harness-output-resume'),{recursive:true});fs.writeFileSync(path.join(root,'harness-output-resume'),'blocked');s.emit();await tick();assert.equal(s.agent.sent.length,0);
   db.close();
 })().catch(e=>{console.error(e);process.exitCode=1;});
