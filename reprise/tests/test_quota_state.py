@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 import json
+import contextlib
 import sqlite3
 import sys
 import tempfile
@@ -48,7 +49,7 @@ class QuotaStateTests(unittest.TestCase):
             module.main()
         run_due.assert_called_once()
         self.assertEqual(run_due.call_args[0][1], None)
-        with sqlite3.connect(folder / 'tasks.sqlite') as reopened:
+        with contextlib.closing(sqlite3.connect(folder / 'tasks.sqlite')) as reopened:
             return scheduler.get(reopened, 'claude_quota_state')
 
     def test_waiting_resume_reports_blocked_with_resume_at(self):

@@ -20,6 +20,7 @@ from pathlib import Path
 import signal
 import socket
 import sqlite3
+import weakref
 import stat
 import threading
 import time
@@ -105,6 +106,7 @@ class Endpoint:
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.state = state
         self.db = sqlite3.connect(state/'quick.sqlite', timeout=2)
+        weakref.finalize(self, type(self)._safe_close, self.db)
         self.db.execute('CREATE TABLE IF NOT EXISTS quick_submissions(scope TEXT,id TEXT,payload TEXT,day INTEGER,PRIMARY KEY(scope,id))')
         self.db.execute('CREATE TABLE IF NOT EXISTS quick_calls(scope TEXT,day INTEGER,count INTEGER,PRIMARY KEY(scope,day))')
         self.db.commit()
@@ -131,6 +133,13 @@ class Endpoint:
         if project_root is not None:
             from desktop_task_store import TaskStore
             self.tasks = TaskStore(state, project_root)
+
+    @staticmethod
+    def _safe_close(connection):
+        try:
+            connection.close()
+        except sqlite3.Error:
+            pass  # finalized from another thread than the one that created it
 
     def close(self):
         if self.tasks:

@@ -38,6 +38,7 @@ class AwaitingHumanTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.db = sqlite3.connect(Path(self.temp.name) / 'expert.sqlite')
+        self.addCleanup(self.db.close)
         self.store = Store(self.db, 'scope')
 
     def test_blocked_permission_is_awaiting_human(self):

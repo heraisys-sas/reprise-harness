@@ -1,5 +1,6 @@
 import json
 import os
+import contextlib
 import sqlite3
 import socket
 import sys
@@ -172,8 +173,8 @@ class EndpointTests(unittest.TestCase):
 
     def test_submission_persisted_in_sqlite(self):
         self.submit({'prompt': 'Un message valide'})
-        row = sqlite3.connect(os.path.join(self.state, 'quick.sqlite')).execute(
-            'SELECT COUNT(*) FROM quick_submissions').fetchone()
+        with contextlib.closing(sqlite3.connect(os.path.join(self.state, 'quick.sqlite'))) as reopened:
+            row = reopened.execute('SELECT COUNT(*) FROM quick_submissions').fetchone()
         self.assertEqual(row[0], 1)
 
     def test_cdp_resume_supported_in_capabilities(self):

@@ -114,7 +114,7 @@ class ApprovalSurfaceTests(unittest.TestCase):
 
     def make_bridge(self):
         bridge = codex_expert_mcp.Bridge(str(self.project), {}, self.state)
-        self.addCleanup(bridge.db.close)
+        self.addCleanup(bridge.close)
         return bridge
 
     def record(self, bridge, event=APPROVAL_EVENT):

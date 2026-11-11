@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import threading
 import time
+import weakref
 from desktop_task_store import TaskStore
 from delegation_store import LOOKUP_SCHEMA, Store, file_evidence, validate_key, validate_lookup, receipt_view
 from delegation_reconcile import reconcile as reconcile_turn
@@ -337,6 +338,16 @@ class Bridge:
             self.desktop_tasks = TaskStore(self.desktop_state, self.root)
         except (OSError, sqlite3.Error, ValueError):
             self.desktop_tasks = None
+        weakref.finalize(self, self._close_databases)
+
+    def close(self):
+        self._close_databases()
+
+    def _close_databases(self):
+        store, self.desktop_tasks = self.desktop_tasks, None
+        if store is not None:
+            TaskStore._safe_close(store.db)
+        TaskStore._safe_close(self.db)
 
     def _ironclaw_configured(self):
         try:

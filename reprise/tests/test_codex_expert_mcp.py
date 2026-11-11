@@ -29,7 +29,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
         self.bridge.program = 'codex'
-        self.addCleanup(self.bridge.db.close)
+        self.addCleanup(self.bridge.close)
     def test_implementation_requires_installed_grant_before_admission(self):
         with patch('codex_expert_mcp.review') as review:
             with self.assertRaises(ValueError):
@@ -78,7 +78,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
             self.call('reprise_delegate', {'question':'Implement', 'kind':'batch', 'mode':'implementation'})
             self.assertTrue(review.call_args.kwargs['implementation'])
         restarted = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', codex_workspace_write=True)
-        self.addCleanup(restarted.db.close)
+        self.addCleanup(restarted.close)
         restarted.program = 'codex'
         with patch('codex_expert_mcp.review', return_value=output.copy()) as review:
             restarted.call('reprise_followup', {'request_key':'continue-implementation', 'thread_id':ID, 'backend':'codex', 'question':'Continue'})
@@ -119,7 +119,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.assertEqual({item['name'] for item in self.bridge.dispatch({'method': 'tools/list'})['tools']}, {'codex_review','codex_followup','reprise_delegate','reprise_backends','reprise_followup','reprise_resume','reprise_history','reprise_health','reprise_requests','reprise_quotas','reprise_reconcile','approval_list','approval_respond','wait_result'})
     def test_selected_tools_are_filtered_and_cannot_be_called_by_name(self):
         restricted = Bridge(self.temp.name, {}, Path(self.temp.name)/'restricted', allowed_tools=['reprise_backends', 'reprise_requests'])
-        self.addCleanup(restricted.db.close)
+        self.addCleanup(restricted.close)
         self.assertEqual({tool['name'] for tool in restricted.dispatch({'method': 'tools/list'})['tools']}, {'reprise_backends', 'reprise_requests'})
         with patch('codex_expert_mcp.review') as review:
             with self.assertRaises(ValueError):
@@ -447,7 +447,7 @@ class ClaudeDesktopBridgeTests(RequestCalls, unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=8,
                              desktop_socket='/private/tmp/quick.sock')
-        self.addCleanup(self.bridge.db.close)
+        self.addCleanup(self.bridge.close)
 
     def test_backends_include_claude_desktop(self):
         ids = {b['id'] for b in self.call('reprise_backends', {})['backends']}
@@ -481,7 +481,7 @@ class ClaudeDesktopBridgeTests(RequestCalls, unittest.TestCase):
 
     def test_delegate_refuses_claude_desktop_without_desktop_socket(self):
         self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state-nosock', daily_limit=8)
-        self.addCleanup(self.bridge.db.close)
+        self.addCleanup(self.bridge.close)
         with patch('claude_desktop.review') as review:
             result = self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise', 'backend': 'claude-desktop'})
         self.assertEqual(result['status'], 'engine_unavailable')
@@ -503,7 +503,7 @@ class IronclawBridgeTests(RequestCalls, unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
         self.bridge.program = 'codex'
-        self.addCleanup(self.bridge.db.close)
+        self.addCleanup(self.bridge.close)
 
     def test_backends_declare_ironclaw_unconfigured(self):
         result = self.bridge.call('reprise_backends', {})
@@ -573,7 +573,7 @@ class CompactReceiptTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state')
         self.bridge.program = 'codex'
-        self.addCleanup(self.bridge.db.close)
+        self.addCleanup(self.bridge.close)
 
     def dispatch(self, name, args, ident=1):
         content = self.bridge.dispatch({'method': 'tools/call', 'id': ident,

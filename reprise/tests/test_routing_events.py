@@ -1,4 +1,5 @@
 import sqlite3
+import weakref
 import sys
 from pathlib import Path
 import unittest
@@ -8,8 +9,9 @@ import external_rankings
 import routing_events
 
 
-def memory_db(version=0, legacy=False):
+def memory_db(owner, version=0, legacy=False):
     db = sqlite3.connect(':memory:')
+    owner.addCleanup(db.close)
     if legacy:
         # Table v1 (lot ①, pré-migration) avec une ligne de test.
         db.execute('CREATE TABLE routing_events(id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, '
@@ -25,7 +27,7 @@ def memory_db(version=0, legacy=False):
 
 class RoutingEventsTests(unittest.TestCase):
     def test_setup_migrates_v1_to_v2_idempotently(self):
-        db = memory_db(version=0, legacy=True)
+        db = memory_db(self, version=0, legacy=True)
         self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],
                          max(routing_events.VERSION, external_rankings.VERSION))
         # La ligne v1 est perdue (recréation assumée) et le schéma v2 est en place.
@@ -41,12 +43,13 @@ class RoutingEventsTests(unittest.TestCase):
 
     def test_setup_rejects_unknown_future_version(self):
         db = sqlite3.connect(':memory:')
+        self.addCleanup(db.close)
         db.execute(f'PRAGMA user_version={max(routing_events.VERSION, external_rankings.VERSION) + 1}')
         with self.assertRaises(ValueError):
             routing_events.setup(db)
 
     def test_migration_v2_to_v3_additive_preserves_data(self):
-        db = memory_db(version=0, legacy=True)
+        db = memory_db(self, version=0, legacy=True)
         # Simule une base v2 (lot ① bis) : une donnée existante, sans les colonnes v3.
         db.execute("INSERT INTO routing_events(ts,type,tool,channel,terminal_state,reason) "
                    "VALUES (0,'routed','t','codex','dispatched','before upgrade')")
@@ -64,7 +67,7 @@ class RoutingEventsTests(unittest.TestCase):
             'not_required')
 
     def test_admissibility_matrix(self):
-        db = memory_db()
+        db = memory_db(self)
         for channel, billing in (('codex', 'included'), ('claude-api', 'paid'),
                                  ('foundation-models', 'free'), ('new-route', 'unknown')):
             routing_events.declare(db, channel, billing)
@@ -79,7 +82,7 @@ class RoutingEventsTests(unittest.TestCase):
         self.assertEqual(routing_events.admissible(db, 'new-route', automatic=False), (True, 'unknown'))
 
     def test_populate_from_quota_requires_known_identity_and_allowed(self):
-        db = memory_db()
+        db = memory_db(self)
         routing_events.populate_from_quota(db, {'identity_status': 'known', 'account_key': 'hmac-1',
                                                 'ordinary_usage_allowed_observed': True,
                                                 'pools': [{'quota_pool_key': 'pool-1'}]})
@@ -94,7 +97,7 @@ class RoutingEventsTests(unittest.TestCase):
         self.assertEqual(row[0], 'unknown')
 
     def test_seed_local_declares_free_channels_once(self):
-        db = memory_db()
+        db = memory_db(self)
         routing_events.seed_local(db)
         routing_events.seed_local(db)
         rows = db.execute("SELECT channel,billing_class FROM route_admissibility WHERE channel IN ('foundation-models','ironclaw')").fetchall()
@@ -105,7 +108,7 @@ class RoutingEventsTests(unittest.TestCase):
         self.assertEqual(row[0], 'unknown')
 
     def test_routed_event(self):
-        db = memory_db()
+        db = memory_db(self)
         event_id = routing_events.record(db, 'routed', 'reprise_delegate', 'codex',
                                          served={'model': 'gpt-6-sol', 'effort': 'medium'},
                                          level='standard', request_key='rk-1', thread_id='sess-123')
@@ -118,7 +121,7 @@ class RoutingEventsTests(unittest.TestCase):
         self.assertEqual(routing_events.recent(db)[0]['terminal_state'], 'finished')
 
     def test_explicit_event(self):
-        db = memory_db()
+        db = memory_db(self)
         routing_events.record(db, 'explicit', 'reprise_delegate', 'codex',
                               requested={'model': 'gpt-6-astra'}, served={'model': 'gpt-6-astra', 'effort': 'high'},
                               level='deep')
@@ -127,7 +130,7 @@ class RoutingEventsTests(unittest.TestCase):
         self.assertIn('gpt-6-astra', row['requested_route'])
 
     def test_routing_substituted_type_accepted_and_thread_pseudonymized(self):
-        db = memory_db()
+        db = memory_db(self)
         # La substitution est gelée : le type est journalisable par le schéma,
         # mais aucun code de production ne le produit aujourd'hui.
         routing_events.record(db, 'routing_substituted', 'reprise_delegate', 'codex',
@@ -139,28 +142,29 @@ class RoutingEventsTests(unittest.TestCase):
         self.assertNotIn('01a1418b', row['thread_hash'])
 
     def test_routing_substituted_requires_both_routes(self):
-        db = memory_db()
+        db = memory_db(self)
         with self.assertRaises(sqlite3.IntegrityError):
             db.execute("INSERT INTO routing_events(ts,type,tool,channel,terminal_state) "
                        "VALUES (0,'routing_substituted','t','codex','dispatched')")
 
     def test_hmac_stable_across_reopens_with_same_salt(self):
-        db = memory_db()
+        db = memory_db(self)
         routing_events.record(db, 'routed', 't', 'codex', thread_id='stable-session')
         first = routing_events.recent(db)[0]['thread_hash']
         # Même sal (copié depuis routing_meta) → même HMAC ; le sal est persistant, pas aléatoire par ouverture.
         db2 = sqlite3.connect(':memory:')
+        self.addCleanup(db2.close)
         db2.execute('CREATE TABLE routing_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)')
         for key, value in db.execute('SELECT key,value FROM routing_meta'):
             db2.execute('INSERT INTO routing_meta VALUES (?,?)', (key, value))
         self.assertEqual(routing_events.pseudonymize(db2, 'stable-session'), first)
 
     def test_hmac_differs_across_salts(self):
-        db1, db2 = memory_db(), memory_db()
+        db1, db2 = memory_db(self), memory_db(self)
         self.assertNotEqual(routing_events.pseudonymize(db1, 'x'), routing_events.pseudonymize(db2, 'x'))
 
     def test_purge_explicit_only(self):
-        db = memory_db()
+        db = memory_db(self)
         routing_events.record(db, 'routed', 't', 'codex')
         db.execute('UPDATE routing_events SET ts=1 WHERE id=(SELECT MAX(id) FROM routing_events)')
         routing_events.record(db, 'routed', 't', 'codex')
@@ -169,14 +173,14 @@ class RoutingEventsTests(unittest.TestCase):
         self.assertEqual(routing_events.retention_days(db), routing_events.DEFAULT_RETENTION_DAYS)
 
     def test_rejects_unknown_type_and_non_dict_route(self):
-        db = memory_db()
+        db = memory_db(self)
         with self.assertRaises(ValueError):
             routing_events.record(db, 'invented', 'tool', 'codex')
         with self.assertRaises(ValueError):
             routing_events.record(db, 'routed', 'tool', 'codex', requested='flash')
 
     def test_no_prompt_content_stored(self):
-        db = memory_db()
+        db = memory_db(self)
         routing_events.record(db, 'routed', 'reprise_delegate', 'claude-desktop',
                               served={'backend': 'claude-desktop'}, reason='Default route, no model requested')
         payload = str(routing_events.recent(db)[0])

@@ -24,7 +24,7 @@ class ReconcileTests(unittest.TestCase):
     def bridge(self):
         bridge = Bridge(self.root, {}, self.state)
         bridge.program = 'codex'
-        self.addCleanup(bridge.db.close)
+        self.addCleanup(bridge.close)
         return bridge
 
     def prepare(self, bridge, owner=None, deadline_at=None, status='running'):

@@ -17,7 +17,7 @@ class AppleExpertTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.bridge = Bridge(self.root, {}, self.root / 'state')
-        self.addCleanup(self.bridge.db.close)
+        self.addCleanup(self.bridge.close)
         self.args = {'request_key': 'apple-1', 'kind': 'review', 'question': 'Analyse',
                      'backend': 'foundation-models', 'model': 'system'}
 
@@ -27,7 +27,7 @@ class AppleExpertTests(unittest.TestCase):
         with patch('apple_expert.configured', return_value=True), patch('apple_expert.review', return_value=answer) as review:
             first = self.bridge.call('reprise_delegate', self.args)
             restarted = Bridge(self.root, {}, self.root / 'state')
-            self.addCleanup(restarted.db.close)
+            self.addCleanup(restarted.close)
             second = restarted.call('reprise_delegate', self.args)
             self.assertEqual(first, second)
             self.assertEqual(restarted.call('reprise_requests', {'request_key': 'apple-1'})['result'], first)
@@ -110,7 +110,7 @@ class AppleExpertTests(unittest.TestCase):
             self.assertEqual(first['inference_outcome'], 'unknown')
             self.assertNotIn('secret prompt', str(first))
             restarted = Bridge(self.root, {}, self.root / 'state')
-            self.addCleanup(restarted.db.close)
+            self.addCleanup(restarted.close)
             self.assertEqual(restarted.call('reprise_delegate', self.args), first)
             self.assertEqual(restarted.call('reprise_requests', {'request_key': 'apple-1'})['state'], 'recorded')
             self.assertEqual(run.call_count, 1)
@@ -189,7 +189,7 @@ class AppleExpertTests(unittest.TestCase):
             result = self.bridge.call('reprise_delegate', self.args)
             self.assertEqual(result['status'], 'needs_review')
             restarted = Bridge(self.root, {}, self.root / 'state')
-            self.addCleanup(restarted.db.close)
+            self.addCleanup(restarted.close)
             self.assertEqual(restarted.call('reprise_requests', {'request_key': 'apple-1'})['state'], 'indeterminate')
             again = restarted.call('reprise_delegate', self.args | {'request_key': 'explicit-second'})
             self.assertEqual(again['status'], 'indeterminate')

@@ -33,7 +33,7 @@ class DesktopRedispatchTests(unittest.TestCase):
         self.socket = str(self.root / 'quick.sock')
         Path(self.socket).touch()
         self.bridge = self.make_bridge()
-        self.addCleanup(self.bridge.db.close)
+        self.addCleanup(self.bridge.close)
 
     def make_bridge(self):
         return Bridge(str(self.project), {}, self.state, desktop_socket=self.socket)
@@ -69,7 +69,7 @@ class DesktopRedispatchTests(unittest.TestCase):
                    return_value=dict(ADMISSION)):
             self.delegate(self.bridge, 'desk-2')
         restarted = self.make_bridge()
-        self.addCleanup(restarted.db.close)
+        self.addCleanup(restarted.close)
         with patch('codex_expert_mcp.claude_desktop.review',
                    return_value=dict(ADMISSION)) as review:
             result = self.delegate(restarted, 'desk-2-retry')
