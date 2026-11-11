@@ -31,7 +31,7 @@ class DurableTests(unittest.TestCase):
     def bridge(self):
         bridge = Bridge(self.root, {}, self.state, daily_limit=0)
         bridge.program = 'codex'
-        self.addCleanup(bridge.db.close)
+        self.addCleanup(bridge.close)
         return bridge
 
     def args(self, key='one', question='Inspect contract', **extra):
@@ -195,7 +195,7 @@ class DurableTests(unittest.TestCase):
     def test_oversized_implementation_result_is_bounded_like_any_full_result(self):
         bridge = Bridge(self.root, {}, self.state, daily_limit=0, codex_workspace_write=True)
         bridge.program = 'codex'
-        self.addCleanup(bridge.db.close)
+        self.addCleanup(bridge.close)
         reply = {'status': 'finished', 'response': 'é' * 60000, 'thread_id': 'impl-thread'}
         with patch('codex_expert_mcp.review', return_value=reply):
             full = bridge.call('reprise_delegate', self.args(kind='batch', mode='implementation'))
@@ -301,10 +301,10 @@ class DurableTests(unittest.TestCase):
         source = self.root/'file.swift'
         source.write_text('original')
         first = Probe(self.state, 'Review', source, 'request')
-        self.addCleanup(first.db.close)
+        self.addCleanup(first.close)
         task = first.call('get_task', {'claim_key': 'executor'})
         other = Probe(self.state, 'Review', source, 'request')
-        self.addCleanup(other.db.close)
+        self.addCleanup(other.close)
         recovered = other.call('get_task', {'claim_key': 'executor'})
         self.assertEqual(task['attempt_id'], recovered['attempt_id'])
         self.assertTrue(recovered['recovered_reservation'])
@@ -322,7 +322,7 @@ class DurableTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             Probe(self.state, 'Review', source, 'request')
         recovery = Probe(self.state, None, None, 'request')
-        self.addCleanup(recovery.db.close)
+        self.addCleanup(recovery.close)
         self.assertEqual(recovery.call('get_result', {'request_key': 'request'})['analysis'], 'late answer')
         self.assertEqual(recovery.attachment, 'original')
 
@@ -432,7 +432,7 @@ class DurableTests(unittest.TestCase):
     def test_desktop_receipt_remains_admission_only_after_recovery(self):
         bridge = Bridge(self.root, {}, self.state, daily_limit=0, desktop_socket='/private/tmp/quick.sock')
         bridge.program = 'codex'
-        self.addCleanup(bridge.db.close)
+        self.addCleanup(bridge.close)
         with patch('codex_expert_mcp.claude_desktop.review', return_value={'status': 'finished', 'response': None}):
             bridge.call('reprise_delegate', self.args(backend='claude-desktop'))
             result = bridge.call('reprise_requests', {'request_key': 'one'})['result']

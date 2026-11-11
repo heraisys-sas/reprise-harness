@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
+import weakref
 import uuid
 
 TOOLS = [
@@ -35,6 +36,18 @@ class Probe:
             self.db.execute("UPDATE job SET status='indeterminate' WHERE status='claimed'")
             if not self.db.execute('SELECT 1 FROM job').fetchone():
                 self.db.execute('INSERT INTO job VALUES (?,?,NULL,0,NULL)', (str(uuid.uuid4()), 'pending'))
+        weakref.finalize(self, self._safe_close, self.db)
+
+    @staticmethod
+    def _safe_close(connection):
+        try:
+            connection.close()
+        except sqlite3.Error:
+            pass  # finalized from another thread than the one that created it
+
+
+    def close(self):
+        self.db.close()
 
     def call(self, name, args):
         if not isinstance(args, dict):

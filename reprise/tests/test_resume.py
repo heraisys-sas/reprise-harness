@@ -62,7 +62,7 @@ class SchedulerTests(unittest.TestCase):
                  patch.object(reprise_health, 'watch') as watch, \
                  patch.object(sys, 'argv', ['reprise', 'tick']):
                 module.main()
-            with sqlite3.connect(Path(folder) / 'tasks.sqlite') as reopened:
+            with contextlib.closing(sqlite3.connect(Path(folder) / 'tasks.sqlite')) as reopened:
                 observation = scheduler.get(reopened, 'claude_desktop_last_observation')
             self.assertEqual(observation['status'], 'unavailable')
             self.assertIsInstance(observation['checked_at'], float)
@@ -88,7 +88,7 @@ class SchedulerTests(unittest.TestCase):
                      patch.object(reprise_health, 'watch'), \
                      patch.object(sys, 'argv', ['reprise', 'tick']):
                     module.main()
-                with sqlite3.connect(Path(folder) / 'tasks.sqlite') as reopened:
+                with contextlib.closing(sqlite3.connect(Path(folder) / 'tasks.sqlite')) as reopened:
                     observation = scheduler.get(reopened, 'claude_desktop_last_observation')
                 self.assertEqual(observation['status'], 'unavailable')
                 self.assertEqual(observation['error'], type(expected).__name__)

@@ -520,6 +520,7 @@ class ReviewDispatchTests(unittest.TestCase):
         import sqlite3
         from desktop_task_store import TaskStore
         db = sqlite3.connect(Path(self.directory.name) / 'quick.sqlite')
+        self.addCleanup(db.close)
         db.execute('''CREATE TABLE desktop_tasks(scope TEXT NOT NULL,request_key TEXT NOT NULL,
             prompt TEXT NOT NULL,chat_id TEXT,claim_key TEXT,attempt_id TEXT,answer TEXT,
             acknowledged INTEGER NOT NULL DEFAULT 0,delivery TEXT,PRIMARY KEY(scope,request_key))''')

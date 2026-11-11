@@ -458,11 +458,13 @@ def patch(app=COPY_APP):
     os.replace(tmp, asar)
     try:
         os.replace(plist_tmp, plist_path)
-        plist2 = plistlib.load(open(plist_path, 'rb'))
+        with open(plist_path, 'rb') as handle:
+            plist2 = plistlib.load(handle)
         digest_hex = integrity_dict_digest(plist2['ElectronAsarIntegrity'])
         slot_patched, slot_offsets = patch_integrity_slot(app, digest_hex)
         if _apply_distinct_bundle_id(app):
-            plist2 = plistlib.load(open(plist_path, 'rb'))
+            with open(plist_path, 'rb') as handle:
+                plist2 = plistlib.load(handle)
         verify_patch(app)
     except BaseException:
         # rollback best effort : asar et plist depuis les backups, framework d'origine
@@ -529,7 +531,8 @@ def verify_patch(app=COPY_APP):
     if entry.get('integrity') != file_integrity(patched.encode()):
         raise PatchError('Intégrité par fichier incohérente après patch.')
     json_bytes = raw[16:16 + json_length]
-    plist = plistlib.load(open(Path(app) / 'Contents' / 'Info.plist', 'rb'))
+    with open(Path(app) / 'Contents' / 'Info.plist', 'rb') as handle:
+        plist = plistlib.load(handle)
     recorded = (plist.get('ElectronAsarIntegrity') or {}).get('Resources/app.asar', {}).get('hash')
     if recorded != hashlib.sha256(json_bytes).hexdigest():
         raise PatchError('Hash ElectronAsarIntegrity incohérent après patch.')
@@ -571,13 +574,15 @@ def restore(app=COPY_APP):
         raise PatchError('Aucun backup pristine à restaurer.')
     pristine = backup.read_bytes()
     raw, tree, header_size, json_length = read_asar_raw(pristine)
-    plist = plistlib.load(open(plist_path, 'rb'))
+    with open(plist_path, 'rb') as handle:
+        plist = plistlib.load(handle)
     plist['ElectronAsarIntegrity']['Resources/app.asar']['hash'] = hashlib.sha256(raw[16:16 + json_length]).hexdigest()
     with open(plist_path, 'wb') as handle:
         plistlib.dump(plist, handle, fmt=plistlib.FMT_BINARY)
     os.replace(backup, asar)
     # le hash du plist doit repasser à la valeur du backup (le plist courant a été swappé)
-    plist_new = plistlib.load(open(plist_path, 'rb'))
+    with open(plist_path, 'rb') as handle:
+        plist_new = plistlib.load(handle)
     plist_new['ElectronAsarIntegrity']['Resources/app.asar']['hash'] = hashlib.sha256(raw[16:16 + json_length]).hexdigest()
     with open(plist_path, 'wb') as handle:
         plistlib.dump(plist_new, handle, fmt=plistlib.FMT_BINARY)

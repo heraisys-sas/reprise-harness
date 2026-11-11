@@ -130,10 +130,14 @@ def daemon_start(socket=None, state=None, daily_limit=8, project_root=None):
             pass
     try:
         log = open(_log_file(state), 'ab')
-        proc = subprocess.Popen([sys.executable, '-E', '-s', '-B', str(SERVER), '--socket', socket,
+        try:
+            proc = subprocess.Popen([sys.executable, '-E', '-s', '-B', str(SERVER), '--socket', socket,
                                  '--state', str(state)] + (['--project-root', str(project_root)] if project_root else []),
                                 stdout=log, stderr=log, stdin=subprocess.DEVNULL,
                                 start_new_session=True)
+        except BaseException:
+            log.close()
+            raise
         _pid_file(state).write_text(str(proc.pid))
         # Write shutdown token (plain hex, verified by SHA-256 in _shutdown)
         shutdown_token = secrets.token_hex(32)

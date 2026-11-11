@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 import time
 import uuid
+import weakref
 
 from delegation_store import receipt_view, validate_lookup
 
@@ -95,6 +96,14 @@ class TaskStore:
             self.db.rollback()
             self.db.close()
             raise
+        weakref.finalize(self, TaskStore._safe_close, self.db)
+
+    @staticmethod
+    def _safe_close(connection):
+        try:
+            connection.close()
+        except sqlite3.Error:
+            pass  # finalized from another thread than the one that created it
 
     @classmethod
     def open_reader(cls, state, project_root):
@@ -107,6 +116,7 @@ class TaskStore:
         database = (Path(state) / 'quick.sqlite').resolve()
         reader.db = sqlite3.connect(database.as_uri() + '?mode=ro',
                                     timeout=0, isolation_level=None, uri=True)
+        weakref.finalize(reader, TaskStore._safe_close, reader.db)
         return reader
 
     def observe_result(self, request_key):

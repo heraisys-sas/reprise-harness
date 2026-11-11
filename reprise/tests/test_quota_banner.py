@@ -9,6 +9,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 import json
 import sqlite3
+import weakref
 import sys
 import tempfile
 import time
@@ -188,6 +189,7 @@ class RefreshFromBannerTests(unittest.TestCase):
     def _db(self):
         folder = tempfile.mkdtemp()
         db = sqlite3.connect(Path(folder) / 'tasks.sqlite')
+        self.addCleanup(db.close)
         scheduler.setup(db)
         claude_quota.initialize(db)
         return db

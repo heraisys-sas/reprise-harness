@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
+import weakref
 import uuid
 from delegation_store import digest, validate_key
 
@@ -63,6 +64,18 @@ class Probe:
         except BaseException:
             self.db.close()
             raise
+        weakref.finalize(self, self._safe_close, self.db)
+
+    @staticmethod
+    def _safe_close(connection):
+        try:
+            connection.close()
+        except sqlite3.Error:
+            pass  # finalized from another thread than the one that created it
+
+
+    def close(self):
+        self.db.close()
 
     def call(self, name, args):
         if not isinstance(args, dict):
