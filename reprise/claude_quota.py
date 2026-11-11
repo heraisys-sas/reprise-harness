@@ -228,6 +228,22 @@ def admit_queue_continuation(db, root, quick_state, project_root, now=None, snap
     return {'status': 'admitted', 'request_key': key, 'resets_at': resets}
 
 
+def quota_state(db, now=None):
+    """Readable quota state (#132): blocked while an unexpired native resume is waiting.
+
+    The only deadline the module knows lives in claude_quota_resumes (status 'waiting');
+    no field is invented beyond it.
+    """
+    now = time.time() if now is None else now
+    initialize(db)
+    row = db.execute(
+        "SELECT MAX(due) FROM claude_quota_resumes WHERE status IN ('waiting','awaiting_observation') AND due>?",
+        (now,)).fetchone()
+    if row and row[0] is not None:
+        return {'status': 'blocked', 'reason': 'quota', 'resume_at': row[0]}
+    return {'status': 'ok', 'reason': None, 'resume_at': None}
+
+
 def status(db):
     initialize(db)
     return [dict(zip(('event_key', 'chat_id', 'observed_at', 'due', 'fingerprint', 'status'), row))
