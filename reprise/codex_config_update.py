@@ -95,7 +95,7 @@ class NativeClient:
                 pipe.close()
 
 
-ENTRIES = {'reprise_codex': 'codex_expert_mcp.py', 'reprise-harness': 'claude_mcp.py'}
+ENTRIES = {'reprise-harness': 'codex_expert_mcp.py'}
 
 
 def _digest(value):
@@ -189,9 +189,6 @@ def _rewrite(entry, script, release_base, target):
                                   '--claude-program', '--desktop-socket', '--ironclaw-config'},
                                  {'--claude-included-quota-confirmed', '--codex-workspace-write'},
                                  {'--project-root', '--state'}),
-        'claude_mcp.py': ({'--project-root', '--state', '--expert-state', '--socket', '--max-wait',
-                            '--progress-interval'}, {'--enable-await'},
-                           {'--project-root', '--state', '--expert-state'}),
     }
     valued, switches, required = options[script]
     seen = set()

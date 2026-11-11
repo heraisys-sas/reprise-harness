@@ -23,7 +23,7 @@ class CodexIntegrationUISmokeTests(unittest.TestCase):
         swift = '''import Foundation
 final class App {
  var stateReady = true, setupBusy = false
- var codexIntegrationExpert = false, codexIntegrationHarness = false
+ var codexIntegrationHarness = false
  var codexIntegrationPlan: [String: Any]? = nil
  var codexIntegrationVerificationPlan: [String: Any]? = nil
  var codexIntegrationResult: [String: Any] = [:]
@@ -42,13 +42,13 @@ final class App {
  static func main() {
   let app = App()
   app.previewCodexIntegration(); precondition(app.calls.isEmpty)
-  app.codexIntegrationExpert = true
-  app.previewCodexIntegration(); precondition(app.calls.last == "codex-integration-plan --entry reprise_codex")
-  let stale = app.callback!; app.codexIntegrationHarness = true; app.invalidateCodexIntegrationPlan()
-  stale(["plan": ["names": ["reprise_codex"], "target": "/release/old"]]); precondition(app.codexIntegrationPlan == nil)
+  app.codexIntegrationHarness = true
+  app.previewCodexIntegration(); precondition(app.calls.last == "codex-integration-plan --entry reprise-harness")
+  let stale = app.callback!; app.invalidateCodexIntegrationPlan()
+  stale(["plan": ["names": ["reprise-harness"], "target": "/release/old"]]); precondition(app.codexIntegrationPlan == nil)
   app.previewCodexIntegration()
-  precondition(app.calls.last == "codex-integration-plan --entry reprise_codex --entry reprise-harness")
-  app.callback!(["plan": ["names": ["reprise_codex", "reprise-harness"], "target": "/release/new"]])
+  precondition(app.calls.last == "codex-integration-plan --entry reprise-harness")
+  app.callback!(["plan": ["names": ["reprise-harness"], "target": "/release/new"]])
   app.codexIntegrationAcknowledged = true
   app.applyCodexIntegration(); precondition(app.calls.last == "codex-integration-apply")
   let count = app.calls.count

@@ -64,8 +64,6 @@ class CodexConfigUpdateTests(unittest.TestCase):
             command = str(self.old / 'Contents/Resources/runtime/bin/python3')
             args = ['-E', '-s', '-B', str(self.old / 'Contents/Resources/helpers' / script),
                     '--project-root', '/tmp/project', '--state', '/tmp/state', '--socket', '/tmp/socket']
-            if script == 'claude_mcp.py':
-                args += ['--expert-state', '/tmp/expert-state']
             entries.append(f'[mcp_servers.{name}]\ncommand = {json.dumps(command)}\nargs = {json.dumps(args)}\n')
         self.config.write_text('\n'.join(entries))
         self.client = Client(self.config)
@@ -125,7 +123,7 @@ class CodexConfigUpdateTests(unittest.TestCase):
             update.apply(self.client, value, self.root / 'operations')
 
     def test_concurrent_config_change_refuses_before_write(self):
-        value = update.plan(self.client, self.config, self.base, self.target, ['reprise_codex'])
+        value = update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
         self.config.write_text(self.config.read_text() + '\n# changed\n')
         with self.assertRaisesRegex(ValueError, 'modifiée'):
             update.apply(self.client, value, self.root / 'operations')
@@ -135,14 +133,14 @@ class CodexConfigUpdateTests(unittest.TestCase):
         text = self.config.read_text().replace(str(self.old / 'Contents/Resources/runtime/bin/python3'), '/usr/bin/python3')
         self.config.write_text(text)
         with self.assertRaisesRegex(ValueError, 'étranger'):
-            update.plan(self.client, self.config, self.base, self.target, ['reprise_codex'])
+            update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
         other = str(self.target / 'Contents/Resources/runtime/bin/python3')
         self.config.write_text(text.replace('/usr/bin/python3', other))
         with self.assertRaisesRegex(ValueError, 'étranger'):
-            update.plan(self.client, self.config, self.base, self.target, ['reprise_codex'])
+            update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
 
     def test_timeout_does_not_replay(self):
-        value = update.plan(self.client, self.config, self.base, self.target, ['reprise_codex'])
+        value = update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
         original = self.client.call
         def uncertain(method, params):
             if method == 'config/batchWrite':
@@ -160,7 +158,7 @@ class CodexConfigUpdateTests(unittest.TestCase):
         state = self.root / 'support/state'
         state.mkdir(parents=True)
         operations = state.parent / 'maintenance/codex-config'
-        value = update.plan(self.client, self.config, self.base, self.target, ['reprise_codex'])
+        value = update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
         update.apply(self.client, value, operations)
         with patch.object(Path, 'home', return_value=self.root), \
              patch('app_paths.state_directory', return_value=state), \
@@ -182,7 +180,7 @@ class CodexConfigUpdateTests(unittest.TestCase):
         state = self.root / 'support/state'
         state.mkdir(parents=True)
         operations = state.parent / 'maintenance/codex-config'
-        value = update.plan(self.client, self.config, self.base, self.target, ['reprise_codex'])
+        value = update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
         result = update.apply(self.client, value, operations)
         (Path(result['operation']) / 'receipt.json').write_text('{')
         _, status = managed_update.codex_operation_read(state, value['id'])
@@ -204,7 +202,7 @@ class CodexConfigUpdateTests(unittest.TestCase):
         state = self.root / 'support/state'
         state.mkdir(parents=True)
         operations = state.parent / 'maintenance/codex-config'
-        value = update.plan(self.client, self.config, self.base, self.target, ['reprise_codex'])
+        value = update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
         update.apply(self.client, value, operations)
         original = update._sync_dir
         def fail_folder(path):
@@ -221,7 +219,7 @@ class CodexConfigUpdateTests(unittest.TestCase):
         state = self.root / 'support/state'
         state.mkdir(parents=True)
         operations = state.parent / 'maintenance/codex-config'
-        value = update.plan(self.client, self.config, self.base, self.target, ['reprise_codex'])
+        value = update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
         def fail(method, params):
             if method == 'config/batchWrite':
                 raise TimeoutError('unknown')
@@ -236,7 +234,7 @@ class CodexConfigUpdateTests(unittest.TestCase):
         self.assertFalse(result['ok'])
 
     def test_malformed_batch_result_remains_indeterminate(self):
-        value = update.plan(self.client, self.config, self.base, self.target, ['reprise_codex'])
+        value = update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
         original = self.client.call
         def malformed(method, params):
             if method == 'config/batchWrite':
@@ -267,7 +265,7 @@ class CodexConfigUpdateTests(unittest.TestCase):
 
     def test_parent_fsync_failure_is_retried_before_native_write(self):
         operations = self.root / 'new-parent' / 'operations'
-        value = update.plan(self.client, self.config, self.base, self.target, ['reprise_codex'])
+        value = update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
         original = update._sync_dir
         failed = []
         def fail_once(path):
@@ -317,7 +315,7 @@ class CodexConfigUpdateTests(unittest.TestCase):
              patch.object(update.integration, 'stage_release', side_effect=stage), \
              patch.object(update, '_sync_dir', side_effect=sync), \
              patch.object(update, '_sync_release', side_effect=sync_release):
-            value = update.plan(self.client, self.config, self.base, self.target, ['reprise_codex'], source=source)
+            value = update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'], source=source)
             update.apply(self.client, value, operations)
         self.assertLess(events.index(('stage', str(self.target))), events.index(('release_synced', str(self.target))))
         self.assertLess(events.index(('release_synced', str(self.target))), events.index(('write', '')))
@@ -353,7 +351,7 @@ class CodexConfigUpdateTests(unittest.TestCase):
              patch.object(update.integration, 'bundle_info', return_value=(source, runtime, self.target.name)), \
              patch.object(update.integration, 'stage_release', side_effect=lambda a, b, c: c.mkdir()), \
              patch.object(update, '_sync_release'):
-            value = managed_update.codex_plan(source, home, state, ['reprise_codex'])
+            value = managed_update.codex_plan(source, home, state, ['reprise-harness'])
             output = io.StringIO()
             with patch.object(Path, 'home', return_value=home), \
                  patch('app_paths.state_directory', return_value=state), \
@@ -422,8 +420,6 @@ class CodexConfigUpdateTests(unittest.TestCase):
         for name, script in update.ENTRIES.items():
             args = ['-E', '-s', '-B', str(old / 'Contents/Resources/helpers' / script),
                     '--project-root', '/tmp/project', '--state', '/tmp/state']
-            if script == 'claude_mcp.py':
-                args += ['--expert-state', '/tmp/expert-state']
             entries.append(f'[mcp_servers.{name}]\ncommand = {json.dumps(str(old / "Contents/Resources/runtime/bin/python3"))}\nargs = {json.dumps(args)}\n')
         self.config.write_text('\n'.join(entries))
         apple = helpers / 'apple_expert.py'
@@ -452,8 +448,6 @@ class CodexConfigUpdateTests(unittest.TestCase):
             project.mkdir()
             args = [sys.executable, str(target / 'Contents/Resources/helpers' / script),
                     '--project-root', str(project), '--state', str(self.root / ('state-' + name))]
-            if script == 'claude_mcp.py':
-                args += ['--expert-state', str(self.root / 'expert-state')]
             env = dict(os.environ, HOME=str(self.root))
             env.pop('PYTHONPATH', None)
             env.pop('AGENT_RESUME_STATE', None)
@@ -477,13 +471,13 @@ class CodexConfigUpdateTests(unittest.TestCase):
         self.assertTrue(update.verify(client, value)['ok'])
         self.assertEqual(result['client_loaded'], 'unknown')
         current = tomllib.loads(self.config.read_text())['mcp_servers']
-        self.assertIn(str(self.target), current['reprise_codex']['command'])
+        self.assertIn(str(self.target), current['reprise-harness']['command'])
         self.assertIn(str(self.target), current['reprise-harness']['command'])
         version = update._layer(client, self.config)['version']
         self.config.write_text(self.config.read_text() + '\n[concurrent]\nvalue = 1\n')
         with self.assertRaisesRegex(ValueError, 'configVersionConflict'):
             client.call('config/batchWrite', {'filePath': str(self.config), 'expectedVersion': version,
-                        'reloadUserConfig': False, 'edits': [{'keyPath': 'mcp_servers.reprise_codex.command',
+                        'reloadUserConfig': False, 'edits': [{'keyPath': 'mcp_servers.reprise-harness.command',
                         'value': 'must-not-write', 'mergeStrategy': 'replace'}]})
         self.assertNotIn('must-not-write', self.config.read_text())
 

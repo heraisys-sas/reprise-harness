@@ -44,7 +44,6 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var integrationDelegate = false
     @Published var integrationCodexWorkspaceWrite = false
     @Published var integrationCodexWorkspaceWriteInstalled = false
-    @Published var codexIntegrationExpert = false
     @Published var codexIntegrationHarness = false
     @Published var codexIntegrationPlan: [String: Any]?
     @Published var codexIntegrationVerificationPlan: [String: Any]?
