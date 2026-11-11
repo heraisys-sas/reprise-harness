@@ -1,7 +1,6 @@
 """Run deterministic unittest fixtures with a disposable HOME, never user state."""
 import argparse
 import concurrent.futures
-import hashlib
 import json
 import os
 import platform
@@ -162,8 +161,8 @@ def main():
                         help='nombre total de shards')
     parser.add_argument('--parallel', type=int, default=None,
                         help='exécute les N shards ci-dessus en parallèle (local, même partition que la CI)')
-    parser.add_argument('--reuse-log', nargs='?', const=24*60, type=int, default=None, metavar='MINUTES',
-                        help='avec --parallel : réutilise le log si plus récent que N minutes (défaut 24 h) au lieu de relancer')
+    parser.add_argument('--reuse-log', nargs='?', const=10, type=int, default=None, metavar='MINUTES',
+                        help="avec --parallel : réutilise le log de moins de N minutes (défaut 10) au lieu de relancer")
     parser.add_argument('--force', action='store_true',
                         help='avec --parallel : relance même si un log frais existe')
     args = parser.parse_args()
@@ -174,13 +173,15 @@ def main():
     if args.parallel:
         log_path = INTERP_CACHE / 'test-parallel.log'
         if args.reuse_log is not None and not args.force:
-            if log_path.is_file() and (time.time() - log_path.stat().st_mtime) < args.reuse_log * 60:
-                print(f'Log frais réutilisé ({log_path}, moins de {args.reuse_log} min) : pas de relance.')
+            fresh = log_path.is_file() and (
+                time.time() - log_path.stat().st_mtime) < args.reuse_log * 60
+            if fresh:
+                print(f'Log réutilisé ({log_path}, moins de {args.reuse_log} min) : pas de relance.')
                 print('Passer --force pour relancer quand même.')
                 tail = log_path.read_text().strip().splitlines()[-1] if log_path.stat().st_size else '(log vide)'
                 print(tail)
                 return 0
-            print(f'Pas de log frais ({log_path} : absent ou > {args.reuse_log} min) : relance nécessaire.')
+            print(f'Log absent ou de plus de {args.reuse_log} min : relance nécessaire ({log_path}).')
             return 1
         python, extra_env = pinned_interpreter()
         if python != sys.executable:
