@@ -12,19 +12,62 @@ concurrency:
   group: reprise-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  test-build:
+  tests:
     # dev is already checked on push; avoid a duplicate macOS job for dev -> main.
     if: github.event_name != 'pull_request' || github.head_ref != 'dev'
     runs-on: macos-26
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Confirm native build prerequisites
         run: |
           test "$(uname -m)" = arm64
           xcrun --sdk macosx --show-sdk-version
           python3 reprise/native_contract.py --check-sdk "$(xcrun --sdk macosx --show-sdk-version)"
-      - uses: actions/cache@v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/reprise-runtime.tar.gz
+          key: reprise-runtime-${{ hashFiles('reprise/python-runtime.lock.json') }}
+      - name: Fetch pinned official runtime if absent
+        env:
+          RUNTIME_ARCHIVE: ${{ runner.temp }}/reprise-runtime.tar.gz
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          from pathlib import Path
+          lock = json.loads(Path('reprise/python-runtime.lock.json').read_text())['targets']['arm64']
+          archive = Path(os.environ['RUNTIME_ARCHIVE'])
+          if not archive.exists():
+              urllib.request.urlretrieve(lock['url'], archive)
+          import sys
+          sys.path.insert(0, 'reprise')
+          from package_runtime import verify_archive
+          verify_archive(archive, lock['sha256'])
+          PY
+      - name: Deterministic tests (shard) with real archive, no services or inference
+        env:
+          REPRISE_TEST_RUNTIME_ARCHIVE: ${{ runner.temp }}/reprise-runtime.tar.gz
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 reprise/ci_test.py --shard-index ${{ matrix.shard }} --shard-count 4
+  test-build:
+    # dev is already checked on push; avoid a duplicate macOS job for dev -> main.
+    if: github.event_name != 'pull_request' || github.head_ref != 'dev'
+    needs: tests
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Confirm native build prerequisites
+        run: |
+          test "$(uname -m)" = arm64
+          xcrun --sdk macosx --show-sdk-version
+          python3 reprise/native_contract.py --check-sdk "$(xcrun --sdk macosx --show-sdk-version)"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/reprise-runtime.tar.gz
           key: reprise-runtime-${{ hashFiles('reprise/python-runtime.lock.json') }}
@@ -48,11 +91,6 @@ jobs:
         run: |
           git diff --check
           sh -n reprise/native-install reprise/restart-chain reprise/relaunch
-      - name: Deterministic tests with real archive, no services or inference
-        env:
-          REPRISE_TEST_RUNTIME_ARCHIVE: ${{ runner.temp }}/reprise-runtime.tar.gz
-          PYTHONDONTWRITEBYTECODE: '1'
-        run: python3 reprise/ci_test.py
       - name: Build isolated standalone bundle and relocated CLI smoke
         run: python3 reprise/release_build.py build --runtime-archive "$RUNNER_TEMP/reprise-runtime.tar.gz"
       - name: Archive exact build with provenance
@@ -61,7 +99,7 @@ jobs:
           python3 reprise/release_build.py check --app "$APP"
           ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/Reprise-${GITHUB_SHA}.zip"
           shasum -a 256 "$RUNNER_TEMP/Reprise-${GITHUB_SHA}.zip" > "$RUNNER_TEMP/Reprise-${GITHUB_SHA}.zip.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Reprise-arm64-${{ github.sha }}
           path: |
