@@ -107,6 +107,30 @@ def _completion_payload(line: str, start: int) -> dict | None:
     return nested if isinstance(nested, dict) and _is_quota_type(nested.get("type")) else None
 
 
+def _local_zone():
+    """Renderer-log timestamps are local wall-clock with no zone marker.
+
+    The producer (Claude Desktop renderer) and the reader run on the same
+    machine, so the system local timezone is the attested zone (#133). On
+    macOS this resolves to a fixed-offset ``datetime.timezone`` unless the
+    IANA name is available, both of which resolve folds deterministically.
+    """
+    zone = datetime.now().astimezone().tzinfo
+    try:
+        return zone if zone is not None and zone.utcoffset(datetime.now(timezone.utc)) is not None else None
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _source_zone_name(zone):
+    if isinstance(zone, ZoneInfo):
+        return zone.key
+    try:
+        return zone.tzname(datetime.now(timezone.utc)) if zone is not None else None
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
 def _valid_source_datetime(value):
     try:
         return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
@@ -119,7 +143,11 @@ def _source_epoch(value, source_zone):
     local = _valid_source_datetime(value)
     if local is None:
         return None, 'invalid'
-    if not isinstance(source_zone, ZoneInfo):
+    try:
+        resolvable = source_zone is not None and source_zone.utcoffset(datetime.now(timezone.utc)) is not None
+    except (TypeError, ValueError, OverflowError, OSError):
+        resolvable = False
+    if not resolvable:
         return None, 'unknown_timezone'
     candidates = set()
     for fold in (0, 1):
@@ -160,32 +188,50 @@ def _finite_number(value):
         return False
 
 
+def _entry_from_line(line, current, source_zone):
+    match = _LINE.match(line)
+    if not match:
+        return None
+    payload = _completion_payload(line, match.end())
+    if payload is None:
+        return None
+    # Invalid wall-clock text is not ordered evidence; an unknown timezone is.
+    source_local = _valid_source_datetime(match.group('ts'))
+    if source_local is None:
+        return None
+    source_observed_at, source_timestamp_status = _source_epoch(match.group('ts'), source_zone)
+    reset = _valid_reset(payload.get('resetsAt'))
+    expired = reset is not None and reset <= current
+    return {
+        "type": payload.get("type"),
+        "resets_at": reset,
+        # Legacy alias retained. It is None until the producer timezone is attested.
+        "observed_at": source_observed_at,
+        "source_observed_at": source_observed_at,
+        "source_timestamp_status": source_timestamp_status,
+        "expired": expired if reset is not None else None,
+        "blocked": True if reset is not None and reset > current else None,
+        "evidence_sha256": sha256(line.encode("utf-8", "replace")).hexdigest(),
+    }
+
+
 def _latest_from_lines(lines, current, source_zone=None):
+    """Most recent quota event; prefer the newest one whose reset is still ahead.
+
+    A reset already elapsed at read time is a historical event: it is returned
+    only when no event carries a future reset, and stays flagged ``expired`` so
+    callers never treat it as the current deadline (#133).
+    """
+    newest = None
     for line in reversed(lines):
-        match = _LINE.match(line)
-        if not match:
+        entry = _entry_from_line(line, current, source_zone)
+        if entry is None:
             continue
-        payload = _completion_payload(line, match.end())
-        if payload is None:
-            continue
-        # Invalid wall-clock text is not ordered evidence; an unknown timezone is.
-        source_local = _valid_source_datetime(match.group('ts'))
-        if source_local is None:
-            continue
-        source_observed_at, source_timestamp_status = _source_epoch(match.group('ts'), source_zone)
-        reset = _valid_reset(payload.get('resetsAt'))
-        expired = reset is not None and reset <= current
-        return {
-            "type": payload.get("type"),
-            "resets_at": reset,
-            # Legacy alias retained. It is None until the producer timezone is attested.
-            "observed_at": source_observed_at,
-            "source_observed_at": source_observed_at,
-            "source_timestamp_status": source_timestamp_status,
-            "expired": expired if reset is not None else None,
-            "blocked": True if reset is not None and reset > current else None,
-            "evidence_sha256": sha256(line.encode("utf-8", "replace")).hexdigest(),
-        }
+        if newest is None:
+            newest = entry
+        if entry["resets_at"] is not None and entry["resets_at"] > current:
+            return entry
+    return newest
 
 
 def latest(path: str = LOG_PATH, now: float | None = None,
@@ -205,19 +251,25 @@ def source_observation(path: str = LOG_PATH, now: float | None = None,
                        event_max_age: float = DEFAULT_EVENT_MAX_AGE) -> dict:
     """Explicit, normalized renderer-log observation; never establishes current quota.
 
-    ``source_zone`` is accepted only when the producer's IANA timezone is attested.
-    The local machine timezone is deliberately not inferred as the producer timezone.
-    ``observed_at`` is this read time; ``source_observed_at`` is the event time, if
-    unambiguous. No line text, account, chat, pool, percentage, or current availability
-    is returned.
+    ``source_zone`` defaults to the system local timezone: the renderer log is
+    written by Claude Desktop on this machine with zone-less local wall-clock
+    timestamps (#133). An explicit ``source_zone=None`` cannot be passed to
+    disable resolution; pass a ``ZoneInfo`` to attest a different zone.
+    ``observed_at`` is this read time; ``source_observed_at`` is the event time.
+    An event whose ``resets_at`` already elapsed at read time is historical
+    (``deadline_status: 'elapsed'``): ``resets_at`` stays exposed for the
+    record, but is not a current deadline. No line text, account, chat, pool,
+    percentage, or current availability is returned.
     """
     read_at = _now() if now is None else now
     if not _finite_number(read_at):
         raise ValueError('Finite read timestamp required')
     if not _finite_number(event_max_age) or event_max_age < 1:
         raise ValueError('Positive finite event age required')
+    if source_zone is None:
+        source_zone = _local_zone()
     read_status, lines, truncated, failure = _read_source(path, max_bytes)
-    zone_name = source_zone.key if isinstance(source_zone, ZoneInfo) else None
+    zone_name = _source_zone_name(source_zone)
     result = {
         'schema_version': 1, 'engine': 'claude-desktop', 'source': 'claude.renderer_log',
         'source_status': read_status, 'event_status': 'not_checked',
@@ -257,12 +309,18 @@ def source_observation(path: str = LOG_PATH, now: float | None = None,
     else:
         freshness = 'recent'
     reset = entry['resets_at']
+    relation = ('future_at_read' if reset > read_at else 'elapsed_at_read') if reset is not None else 'unknown'
     result.update(event_status='recognized', observation_status='observed',
         source_observed_at=source_time,
         source_timestamp_status=entry['source_timestamp_status'],
         event_type=entry['type'], event_age_seconds=age, event_freshness=freshness,
         resets_at=reset,
-        reset_relation=('future_at_read' if reset > read_at else 'elapsed_at_read') if reset is not None else 'unknown')
+        reset_relation=relation,
+        # Historical reset exposed for the record; never a current deadline (#133).
+        deadline_status='current' if relation == 'future_at_read' else
+                        'elapsed' if relation == 'elapsed_at_read' else 'unknown')
+    if relation == 'elapsed_at_read':
+        result['issues'].append('deadline_elapsed_at_read')
     if source_time is None:
         result['issues'].append(entry['source_timestamp_status'])
     if reset is None:

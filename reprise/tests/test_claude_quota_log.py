@@ -120,6 +120,36 @@ class LatestTests(unittest.TestCase):
     def test_unreadable_file(self):
         self.assertIsNone(ql.latest("/nonexistent/claude.log", now=0))
 
+    def test_most_recent_event_is_selected_not_the_first_found(self):
+        older = completion_line({"type": "exceeded_limit", "resetsAt": 1793065800},
+                                "2026-10-26 22:29:57")
+        newer = completion_line({"type": "exceeded_limit", "resetsAt": 1793152200},
+                                "2026-10-27 22:29:57")
+        entry = ql.latest(self._write([older, newer]), now=1793065700)
+        self.assertEqual(entry["resets_at"], 1793152200)
+        self.assertTrue(entry["blocked"])
+
+    def test_newest_future_reset_preferred_over_older_expired_event(self):
+        # Historique : échéance passée, puis événement plus ancien à reset futur
+        # (multi-fenêtre) — l'échéance courante l'emporte sur l'événement périmé.
+        newer_expired = completion_line({"type": "exceeded_limit", "resetsAt": 1793065800},
+                                        "2026-10-27 22:29:57")
+        older_future = completion_line({"type": "rate_limit", "resetsAt": 1793065800 + 3600},
+                                       "2026-10-26 22:29:57")
+        entry = ql.latest(self._write([older_future, newer_expired]), now=1793065900)
+        self.assertEqual(entry["resets_at"], 1793065800 + 3600)
+        self.assertTrue(entry["blocked"])
+
+    def test_all_expired_events_fall_back_to_most_recent_marked_expired(self):
+        older = completion_line({"type": "exceeded_limit", "resetsAt": 1793060000},
+                                "2026-10-26 21:00:00")
+        newer = completion_line({"type": "exceeded_limit", "resetsAt": 1793065800},
+                                "2026-10-26 22:29:57")
+        entry = ql.latest(self._write([older, newer]), now=1793065900)
+        self.assertEqual(entry["resets_at"], 1793065800)  # le plus récent, pas le premier
+        self.assertTrue(entry["expired"])
+        self.assertIsNone(entry["blocked"])
+
     def test_observe_without_zone_has_no_local_time(self):
         path = self._write([LINE_OLD])
         self.assertNotIn("resets_at_local", ql.observe(path, now=0))
@@ -219,29 +249,52 @@ class SourceObservationTests(unittest.TestCase):
         self.assertEqual((no_event['source_status'], no_event['event_status']), ('readable', 'no_event'))
         self.assertEqual(no_event['current_quota_status'], 'unknown')
 
-    def test_event_keeps_read_time_separate_and_unknown_without_attested_zone(self):
-        private_line = LINE_OLD.replace('"remaining":null',
-            '"remaining":null,"diagnostic":"private diagnostic text"')
-        path = self._write([private_line])
-        read_at = 1793065700
-        result = ql.source_observation(path, now=read_at)
-        self.assertEqual(result['source_status'], 'readable')
-        self.assertEqual(result['event_status'], 'recognized')
-        self.assertEqual(result['observed_at'], read_at)
-        self.assertIsNone(result['source_observed_at'])
-        self.assertEqual(result['source_timestamp_status'], 'unknown_timezone')
-        self.assertEqual(result['event_freshness'], 'unknown')
+    def test_default_source_zone_resolves_local_wall_clock(self):
+        path = self._write([LINE_OLD])
+        event_time = datetime.strptime("2026-10-26 22:29:57",
+                                       "%Y-%m-%d %H:%M:%S").astimezone().timestamp()
+        result = ql.source_observation(path, now=event_time + 10)
+        self.assertEqual(result['source_timestamp_status'], 'known')
+        self.assertEqual(result['source_observed_at'], event_time)
+        self.assertEqual(result['event_freshness'], 'recent')
         self.assertEqual(result['resets_at'], 1793065800)
         self.assertEqual(result['reset_relation'], 'future_at_read')
-        self.assertEqual(result['current_quota_status'], 'unknown')
-        self.assertIsNone(result['current_blocked'])
-        self.assertIsNone(result['current_available'])
-        for key in ('account_id', 'account_key', 'chat_id', 'session_key', 'pool_id',
-                    'quota_pool_key', 'used_percent', 'remaining_percent', 'duration_minutes'):
-            self.assertIsNone(result[key])
+        self.assertEqual(result['deadline_status'], 'current')
+        self.assertNotIn('unknown_timezone', result['issues'])
+
+    def test_unknown_timezone_only_when_no_resolvable_zone(self):
+        path = self._write([LINE_OLD])
+        with patch.object(ql, '_local_zone', return_value=None):
+            result = ql.source_observation(path, now=1793065700)
+        self.assertEqual(result['source_timestamp_status'], 'unknown_timezone')
+        self.assertEqual(result['event_freshness'], 'unknown')
+
+    def test_elapsed_reset_is_historical_but_still_exposed(self):
+        path = self._write([LINE_OLD])
+        result = ql.source_observation(path, now=1793065900)
+        self.assertEqual(result['resets_at'], 1793065800)
+        self.assertEqual(result['reset_relation'], 'elapsed_at_read')
+        self.assertEqual(result['deadline_status'], 'elapsed')
+        self.assertIn('deadline_elapsed_at_read', result['issues'])
+        # Attribution remains documented, never blocks the deadline field (#133).
+        self.assertIsNone(result['account_id'])
+        self.assertIn('account_unattributed', result['issues'])
         self.assertNotIn('blocked', result)
         self.assertNotIn('evidence_sha256', result)
+
+    def test_private_payload_content_is_never_exposed(self):
+        private_line = LINE_OLD.replace('"remaining":null',
+            '"remaining":null,"diagnostic":"private diagnostic text"')
+        result = ql.source_observation(self._write([private_line]), now=1793065700)
+        self.assertEqual(result['source_status'], 'readable')
+        self.assertEqual(result['event_status'], 'recognized')
         self.assertNotIn('private diagnostic text', str(result))
+
+    def test_no_current_blocked_flags_without_future_reset(self):
+        result = ql.source_observation(self._write([LINE_OLD]), now=1793065900)
+        self.assertIsNone(result['current_blocked'])
+        self.assertIsNone(result['current_available'])
+        self.assertEqual(result['current_quota_status'], 'unknown')
 
     def test_attested_zone_computes_source_time_and_staleness(self):
         path = self._write([LINE_OLD])
