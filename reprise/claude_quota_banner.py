@@ -65,12 +65,30 @@ def banner_hhmm(text):
     return None
 
 
+RESET_WINDOW_SECONDS = 5 * 3600
+
+
+def _epoch_at(day, hours, minutes, zone):
+    """Epoch de HH:MM à la date donnée ; None si DST ambiguë/inexistante."""
+    local = datetime(day.year, day.month, day.day, hours, minutes)
+    candidates = set()
+    for fold in (0, 1):
+        candidate = local.replace(tzinfo=zone, fold=fold).timestamp()
+        if datetime.fromtimestamp(candidate, zone).replace(tzinfo=None) == local:
+            candidates.add(candidate)
+    return candidates.pop() if len(candidates) == 1 else None
+
+
 def resolve_day(hours, minutes, now, zone):
     """Epoch du reset, jour résolu par fenêtre 5h ; None si ambigu.
 
-    maintenant > HH:MM → le reset est le lendemain ; maintenant < HH:MM →
-    aujourd'hui ; égalité → ambigu (unknown, jamais de pari). Une heure locale
-    inexistante ou ambiguë (DST) est refusée, comme dans claude_quota.
+    maintenant < HH:MM → aujourd'hui (échéance future). HH:MM passé de
+    moins de 5h (resets gratuits Claude espacés d'environ 5h) → aujourd'hui
+    aussi : c'est l'échéance du reset PRÉCÉDENT, déjà passée — bannière non
+    rafraîchie (retour terrain 11/11, issue #135) ; l'appelant la qualifie
+    'elapsed' (#133). Passée de plus de 5h → le lendemain (prochain reset).
+    égalité → ambigu (unknown, jamais de pari). Une heure locale inexistante
+    ou ambiguë (DST) est refusée, comme dans claude_quota.
     """
     if not isinstance(zone, ZoneInfo):
         raise ValueError('Explicit ZoneInfo required')
@@ -78,19 +96,14 @@ def resolve_day(hours, minutes, now, zone):
     banner_time = datetime(2000, 1, 1, hours, minutes).time()
     if current.timetz().replace(tzinfo=None) == banner_time:
         return None
-    day = current.date() if banner_time > current.time() else current.date() + timedelta(days=1)
-    local = datetime(day.year, day.month, day.day, hours, minutes)
-    candidates = set()
-    for fold in (0, 1):
-        candidate = local.replace(tzinfo=zone, fold=fold).timestamp()
-        if datetime.fromtimestamp(candidate, zone).replace(tzinfo=None) == local:
-            candidates.add(candidate)
-    if len(candidates) != 1:
+    due = _epoch_at(current.date(), hours, minutes, zone)
+    if due is None:
         return None
-    due = candidates.pop()
-    if due <= now:
-        return None
-    return due
+    if due > now:
+        return due
+    if now - due <= RESET_WINDOW_SECONDS:
+        return due
+    return _epoch_at(current.date() + timedelta(days=1), hours, minutes, zone)
 
 
 def parse_banner(text, now, zone):
@@ -115,7 +128,10 @@ def parse_banner(text, now, zone):
         return result
     due = resolve_day(hhmm[0], hhmm[1], now, zone)
     if due is not None:
-        result.update(resets_at=due, deadline_status='future')
+        # Échéance passée (bannière non rafraîchie) : statut honnête
+        # 'elapsed' (#133), jamais 'unknown' ni présentée comme future.
+        result.update(resets_at=due,
+                      deadline_status='future' if due > now else 'elapsed')
     return result
 
 
