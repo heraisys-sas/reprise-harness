@@ -12,9 +12,19 @@ PROJECT_ROOT = Path(__file__).parent.parent
 TOP_DURATIONS = 25
 
 
-def discover_module_weights():
-    """Importable test modules with their number of test cases (discovery imports, runs nothing)."""
-    suite = unittest.defaultTestLoader.discover(str(TESTS_DIR))
+def discover_module_weights(tests_dir=TESTS_DIR):
+    """Importable test modules with their number of test cases (discovery imports, runs nothing).
+
+    Discovery failures must abort the run: a module that fails to import yields a
+    `_FailedTest` whose class module is `unittest.loader`, which would silently
+    replace the broken test file in the partition (false green CI).
+    """
+    loader = unittest.TestLoader()
+    suite = loader.discover(str(tests_dir))
+    if loader.errors:
+        details = '\n'.join(loader.errors)
+        raise SystemExit(
+            f'Découverte des tests en échec ({len(loader.errors)} importation(s) impossible(s)) :\n{details}')
     weights = {}
 
     def walk(node):
@@ -28,9 +38,9 @@ def discover_module_weights():
     return weights
 
 
-def partition_modules(count):
+def partition_modules(count, tests_dir=TESTS_DIR):
     """Deterministic assignment: sort by weight desc then name, greedy bin-packing to the lightest shard."""
-    weights = discover_module_weights()
+    weights = discover_module_weights(tests_dir)
     ordered = sorted(weights, key=lambda name: (-weights[name], name))
     shards = [[] for _ in range(count)]
     loads = [0] * count
