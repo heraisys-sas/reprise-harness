@@ -350,6 +350,25 @@ struct Dashboard: View {
                                 if let stamp = quota["measured_at"] as? String { Text("Événement du " + friendlyDate(stamp)).font(.caption).foregroundStyle(.secondary) }
                             }
                         }
+                        Divider()
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Quotas Claude").font(.headline)
+                            let claudeQuota = app.scheduler["claude_quota"] as? [String: Any] ?? [:]
+                            Text(claudeQuota["enabled"] as? Bool == true ? "Reprise automatique Claude activée" : "Reprise automatique Claude en pause").font(.caption).foregroundStyle(.secondary)
+                            let events = claudeQuota["events"] as? [[String: Any]] ?? []
+                            if events.isEmpty {
+                                Text("Aucune reprise Claude enregistrée.").foregroundStyle(.secondary)
+                            } else {
+                                ForEach(Array(events.enumerated()), id: \.offset) { _, event in
+                                    HStack {
+                                        Text(event["status"] as? String ?? "inconnu").font(.callout.weight(.semibold))
+                                        Text(String((event["chat_id"] as? String ?? "").prefix(8))).font(.callout).foregroundStyle(.secondary)
+                                        Spacer()
+                                        if let due = event["due"] as? Double { Text("Échéance : " + localDateTime(Date(timeIntervalSince1970: due))).font(.caption).foregroundStyle(.secondary) }
+                                    }.accessibilityElement(children: .combine)
+                                }
+                            }
+                        }
                     }
                 }
                 claudeSessionsCard
