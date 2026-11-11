@@ -356,12 +356,13 @@ struct Dashboard: View {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Quotas Claude").font(.headline)
                             if let quotaState = app.scheduler["claude_quota_state"] as? [String: Any], let stateStatus = quotaState["status"] as? String, !stateStatus.isEmpty {
-                                let stateLabel: String
-                                switch stateStatus {
-                                case "ok": stateLabel = "État : aucun blocage de quota"
-                                case "blocked": stateLabel = "État : quota bloqué"
-                                default: stateLabel = "État : incertain"
-                                }
+                                let stateLabel = { () -> String in
+                                    switch stateStatus {
+                                    case "ok": return "État : aucun blocage de quota"
+                                    case "blocked": return "État : quota bloqué"
+                                    default: return "État : incertain"
+                                    }
+                                }()
                                 Text(stateLabel).font(.callout.weight(stateStatus == "blocked" ? .bold : .semibold)).foregroundStyle(stateStatus == "blocked" ? Color.orange : .primary)
                                 if let resumeAt = quotaState["resume_at"] as? Double, resumeAt.isFinite, resumeAt > 0 {
                                     Text("Quota rétabli à " + localDateTime(Date(timeIntervalSince1970: resumeAt))).font(.caption).foregroundStyle(.secondary)
