@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import sys
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -286,7 +287,16 @@ for line in sys.stdin:
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
             subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True, timeout=8)
-            self.assertEqual((root / 'ops').read_text().splitlines(), ['job_prepare', 'job_prepare', 'close'])
+            # The Swift binary writes 'close' to the service stdin pipe then exits;
+            # subprocess.run only synchronizes on the binary exit, not on the child
+            # service reading the line. Poll briefly for delivery instead of failing
+            # when the child is merely descheduled under CI load.
+            expected = ['job_prepare', 'job_prepare', 'close']
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if (root / 'ops').read_text().splitlines() == expected: break
+                time.sleep(0.05)
+            self.assertEqual((root / 'ops').read_text().splitlines(), expected)
 
     def test_intent_journal_survives_process_exit_before_response(self):
         with tempfile.TemporaryDirectory() as temp:
