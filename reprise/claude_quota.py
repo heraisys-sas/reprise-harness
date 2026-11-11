@@ -379,7 +379,7 @@ def _run_cdp(db, state, now=None):
     """CDP transport: contact the Quick Apply daemon for resume.
 
     State lives in claude_quota_resumes (event_key, chat_id, status:
-    waiting/awaiting_observation -> dispatching -> submitted/uncertain).
+    waiting/awaiting_observation (en attente, non dispatché) -> dispatching -> submitted/uncertain).
     Mirrors run_quick lines 191-211.
     """
     import fcntl

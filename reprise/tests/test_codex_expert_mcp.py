@@ -1,5 +1,6 @@
 import hashlib
 import io
+import sqlite3
 import json
 import os
 from pathlib import Path
@@ -719,3 +720,25 @@ class CompactReceiptTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.dispatch('reprise_requests', {
                 'request_key': 'key', 'view': 'page', 'acknowledge': True})
+
+class BridgeFinalizerTests(unittest.TestCase):
+    """Le finalizer doit tourner sans close() explicite : pas de méthode liée
+    dans weakref.finalize (elle retiendrait self et la collecte échouerait)."""
+
+    def test_bridge_collected_without_close_closes_databases(self):
+        import gc
+        import weakref as weakref_module
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        bridge = Bridge(temp.name, {}, Path(temp.name)/'state', daily_limit=2)
+        # pre-close sentinel: rexec works now, must fail after collection
+        bridge.db.execute('SELECT 1')
+        bridge_ref = weakref_module.ref(bridge)
+        # Follow the finalizer's captured list through the object to detect closure:
+        import sqlite3 as sqlite3_module
+        connection = bridge.db
+        del bridge
+        gc.collect()
+        self.assertIsNone(bridge_ref(), 'Bridge doit être collectable sans close()')
+        with self.assertRaisesRegex(sqlite3_module.ProgrammingError, 'closed'):
+            connection.execute('SELECT 1')

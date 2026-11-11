@@ -28,7 +28,7 @@ HHMM = re.compile(r'\b([01]?\d|2[0-3]):([0-5]\d)\b')
 # dans innerText (bouton « Continuer » entre les deux), d'où plusieurs
 # marqueurs et une fenêtre élargie. Variante « rétabli à » conservée.
 MARKERS = ('en pause', 'jusqu\'à', 'messages gratuits', 'rétabli à',
-           'réinitialisation')
+           'rétablie à', 'réinitialisation')
 HHMM_WINDOW = 400
 RAW_TEXT_MAX = 200
 PAGE_TEXT_MAX = 4000
@@ -51,6 +51,13 @@ def banner_hhmm(text):
     if not isinstance(text, str):
         return None
     lowered = text.lower()
+    # Garde anti-faux positif (revue 11/11) : « le restaurant est ouvert
+    # jusqu'à 08:00 » dans la conversation ne doit pas être lu comme une
+    # échéance. La bannière réelle contient au moins deux marqueurs
+    # (ex. « en pause » + « jusqu'à » + « messages gratuits ») ; un seul
+    # marqueur est insuffisant.
+    if sum(marker in lowered for marker in MARKERS) < 2:
+        return None
     for marker in MARKERS:
         start = 0
         while True:
