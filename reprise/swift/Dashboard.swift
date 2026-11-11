@@ -355,6 +355,23 @@ struct Dashboard: View {
                         Divider()
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Quotas Claude").font(.headline)
+                            if let quotaState = app.scheduler["claude_quota_state"] as? [String: Any], let stateStatus = quotaState["status"] as? String, !stateStatus.isEmpty {
+                                let stateLabel = { () -> String in
+                                    switch stateStatus {
+                                    case "ok": return "État : aucun blocage de quota"
+                                    case "blocked": return "État : quota bloqué"
+                                    default: return "État : incertain"
+                                    }
+                                }()
+                                Text(stateLabel).font(.callout.weight(stateStatus == "blocked" ? .bold : .semibold)).foregroundStyle(stateStatus == "blocked" ? Color.orange : .primary)
+                                if let resumeAt = quotaState["resume_at"] as? Double, resumeAt.isFinite, resumeAt > 0 {
+                                    Text("Quota rétabli à " + localDateTime(Date(timeIntervalSince1970: resumeAt))).font(.caption).foregroundStyle(.secondary)
+                                }
+                                if let checkedAt = quotaState["checked_at"] as? Double, checkedAt.isFinite, checkedAt > 0 {
+                                    Text("Dernier contrôle : " + localDateTime(Date(timeIntervalSince1970: checkedAt))).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Divider()
+                            }
                             if let claudeQuota = app.scheduler["claude_quota"] as? [String: Any] {
                                 let enabled = claudeQuota["enabled"] as? Bool == true
                                     && app.scheduler["auto_enabled"] as? Bool == true
@@ -433,7 +450,11 @@ struct Dashboard: View {
                     Text(running > 0 ? "\(running) tour(s) démarré(s)" : launching > 0 ? "Connexion au moteur · démarrage non confirmé" : pending > 0 ? "\(pending) reprise(s) en attente" : "Aucune reprise en attente").font(.title3.weight(.semibold))
                     Text(app.scheduler["auto_enabled"] as? Bool == true ? "Surveillance automatique activée" : "Automatisation en pause").foregroundStyle(.secondary)
                     if let due = app.scheduler["next_due"] as? Double {
-                        Text("Prochaine échéance : " + localDateTime(Date(timeIntervalSince1970: due))).font(.caption).foregroundStyle(.secondary)
+                        Text("Prochaine reprise Codex : " + localDateTime(Date(timeIntervalSince1970: due))).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let quotaState = app.scheduler["claude_quota_state"] as? [String: Any],
+                       let resumeAt = quotaState["resume_at"] as? Double, resumeAt.isFinite, resumeAt > 0 {
+                        Text("Quota Claude rétabli à " + localDateTime(Date(timeIntervalSince1970: resumeAt))).font(.caption).foregroundStyle(.secondary)
                     }
                     if pending + running + launching > 0 {
                         Button("Voir les reprises") { app.page = "resumptions"; app.resumeFilter = "En attente" }.buttonStyle(.link)

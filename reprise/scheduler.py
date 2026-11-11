@@ -268,4 +268,5 @@ def status(db, state_dir=None):
             'ready': counts.get('ready', 0), 'waiting_quota': counts.get('waiting_quota', 0),
             'running': counts['running'], 'needs_review': sum(t['status'] in ('needs_review', 'blocked_trust', 'blocked_auth', 'quota_blocked', 'failed', 'timed_out', 'blocked_owner', 'blocked_parent', 'blocked_session', 'blocked_permission', 'needs_input', 'engine_unavailable', 'stopped', 'queued_parent', 'delegated_parent') for t in tasks),
             'next_due': next_due, 'last_tick': get(db, 'last_tick'), 'last_error': get(db, 'last_error'),
-            'quota_checked_at': get(db, 'quota_checked_at'), 'quota_allowed': get(db, 'quota_allowed'), 'quota_retry_at': get(db, 'quota_retry_at')}
+            'quota_checked_at': get(db, 'quota_checked_at'), 'quota_allowed': get(db, 'quota_allowed'), 'quota_retry_at': get(db, 'quota_retry_at'),
+            'claude_quota_state': get(db, 'claude_quota_state')}

@@ -999,7 +999,11 @@ struct Integrations: View {
                 if let events = app.claudeQuotaState["events"] as? [[String: Any]], let latest = events.first,
                    let due = latest["due"] as? Double {
                     HStack(spacing: 16) {
-                        Text("Prochaine tentative : " + Date(timeIntervalSince1970: due).formatted(date: .abbreviated, time: .shortened))
+                        if due > Date().timeIntervalSince1970 {
+                            Text("Prochaine tentative : " + IntegrationDateTime.string(from: Date(timeIntervalSince1970: due)))
+                        } else {
+                            Text("Dernière échéance (passée) : " + IntegrationDateTime.string(from: Date(timeIntervalSince1970: due))).foregroundStyle(.secondary)
+                        }
                         Text("État : " + (latest["status"] as? String ?? "inconnu")).foregroundStyle(.secondary)
                     }.font(.caption)
                 }
