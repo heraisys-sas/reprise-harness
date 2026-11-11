@@ -51,7 +51,7 @@ class PackageHelpersTests(unittest.TestCase):
 
     def test_desktop_apply_assets_preserve_current_packaging(self):
         for name in ('claude_desktop_apply.py',
-                     'claude_quota_log.py', 'claude_cdp_pipe.py', 'claude_inbox.py', 'websocket_transport.py', 'claude_session_store.py', 'claude_session_observer.py', 'managed_update.py',
+                     'claude_quota_log.py', 'claude_quota_banner.py', 'claude_cdp_pipe.py', 'claude_inbox.py', 'websocket_transport.py', 'claude_session_store.py', 'claude_session_observer.py', 'managed_update.py',
                      'delegation_reconcile.py'):
             self.assertIn(name, ASSETS)
         self.assertTrue(any(path.endswith('/CLAUDE-DESKTOP-APPLY.md') for path in package_helpers.DOCS))
@@ -67,7 +67,7 @@ class PackageHelpersTests(unittest.TestCase):
             root = moved / 'Contents/Resources/helpers'
             manifest = json.loads((root / 'payload-manifest.json').read_text())
             self.assertEqual(manifest['runtime'], 'external-python-required')
-            for name in ('apple_expert.py', 'apple_pilot.py', 'apple_pilot_service.py', 'apple_pilot_transport.py', 'orchestrator_memory.py', 'orchestrator_memory_service.py', 'reprise_memory_adapter.py', 'reprise_memory_mcp.py', 'memory_integration.py', 'memory_admin.py', 'coordinator_jobs.py', 'coordinator_local.py', 'coordinator_candidate.py'):
+            for name in ('apple_expert.py', 'apple_pilot.py', 'apple_pilot_service.py', 'apple_pilot_transport.py', 'orchestrator_memory.py', 'orchestrator_memory_service.py', 'reprise_memory_adapter.py', 'reprise_memory_mcp.py', 'memory_integration.py', 'memory_admin.py', 'coordinator_jobs.py', 'coordinator_local.py', 'coordinator_candidate.py', 'claude_quota_banner.py'):
                 self.assertTrue((root / name).is_file())
                 self.assertEqual(manifest['files'][name], hashlib.sha256((root / name).read_bytes()).hexdigest())
                 self.assertEqual((root / name).read_bytes(), (SOURCE / name).read_bytes())
@@ -103,8 +103,15 @@ class PackageHelpersTests(unittest.TestCase):
                 json.loads(admin.stdout)
             self.assertEqual(before, {str(p.relative_to(memory_state)): p.read_bytes() if p.is_file() else None
                                      for p in memory_state.rglob('*')})
-            imported = subprocess.run([sys.executable, '-c', 'import codex_expert_mcp, claude_desktop_apply, claude_inbox, websocket_transport, claude_session_store, claude_session_observer, apple_pilot, apple_pilot_transport, apple_pilot_service, coordinator_candidate, orchestrator_memory, orchestrator_memory_service'],
-                                      cwd=root, capture_output=True, text=True)
+            imported = subprocess.run([
+                sys.executable, '-I', '-B', '-c',
+                "import sys; sys.path.insert(0, sys.argv.pop(1)); "
+                "import codex_expert_mcp, claude_desktop_apply, claude_inbox, "
+                "websocket_transport, claude_session_store, claude_session_observer, "
+                "apple_pilot, apple_pilot_transport, apple_pilot_service, "
+                "coordinator_candidate, orchestrator_memory, orchestrator_memory_service; "
+                "from claude_quota_banner import read_banner; assert callable(read_banner)",
+                str(root)], cwd=folder, capture_output=True, text=True)
             self.assertEqual(imported.returncode, 0, imported.stderr)
             memory = subprocess.run([sys.executable, '-B', str(root / 'reprise_memory_mcp.py'),
                 '--state', str(folder), '--project-id', '67e17924-f8a5-4144-a239-71625f618c4d',
