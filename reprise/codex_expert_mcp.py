@@ -228,8 +228,14 @@ MAX_RESULT_WAITS = 8
 MAX_RESULT_SECONDS = 600
 
 
-class DesktopRegistryUnavailable(RuntimeError):
-    """The existing Desktop registry could not be read."""
+def _close_bridge_databases(desktop_tasks, db):
+    """Niveau module : référencé par weakref.finalize sans retenir self."""
+    if desktop_tasks is not None:
+        TaskStore._safe_close(desktop_tasks.db)
+    TaskStore._safe_close(db)
+
+
+class DesktopRegistryUnavailable(RuntimeError):    """The existing Desktop registry could not be read."""
 
 
 def wait_arguments(args):
@@ -338,16 +344,15 @@ class Bridge:
             self.desktop_tasks = TaskStore(self.desktop_state, self.root)
         except (OSError, sqlite3.Error, ValueError):
             self.desktop_tasks = None
-        weakref.finalize(self, self._close_databases)
+        # Fonction de niveau module + ressources capturées : une méthode
+        # liée retiendrait self (le finalizer ne tournerait qu'à la sortie
+        # du processus). _safe_close est idempotent (close après close
+        # lève sqlite3.Error, avalé).
+        weakref.finalize(self, _close_bridge_databases, self.desktop_tasks, self.db)
 
     def close(self):
-        self._close_databases()
-
-    def _close_databases(self):
-        store, self.desktop_tasks = self.desktop_tasks, None
-        if store is not None:
-            TaskStore._safe_close(store.db)
-        TaskStore._safe_close(self.db)
+        self.desktop_tasks, tasks = None, self.desktop_tasks
+        _close_bridge_databases(tasks, self.db)
 
     def _ironclaw_configured(self):
         try:

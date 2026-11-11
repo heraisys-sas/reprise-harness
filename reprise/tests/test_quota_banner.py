@@ -162,7 +162,7 @@ class ReadBannerTests(unittest.TestCase):
         self.assertEqual(transport.calls, [])
 
     def test_launch_cycle_reads_banner_and_terminates(self):
-        transport = FakeTransport('Quota atteint. Réinitialisation : 14:40')
+        transport = FakeTransport('En pause. Réinitialisation : 14:40.')
         out, launched, terminated = self._run(transport)
         self.assertTrue(out['ok'])
         self.assertEqual(out['deadline_status'], 'future')
@@ -299,3 +299,12 @@ def _mock_reader(return_value=None):
 
 if __name__ == '__main__':
     unittest.main()
+
+    def test_single_marker_conversation_text_is_rejected(self):
+        # Revue 11/11 : un horaire dans la conversation ne doit pas être
+        # pris pour une échéance — un seul marqueur est insuffisant.
+        now = epoch('2026-11-11T10:00:00')
+        out = claude_quota_banner.parse_banner(
+            "Le restaurant est ouvert jusqu'à 08:00.", now, ZONE)
+        self.assertEqual(out['deadline_status'], 'unknown')
+        self.assertIsNone(out['resets_at'])
