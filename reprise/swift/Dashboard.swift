@@ -845,7 +845,7 @@ struct Dashboard: View {
                 detail: app.desktopConnection.isEmpty ? "Lancez une actualisation pour lire l’état du service."
                     : customSocket ? "Socket personnalisé enregistré. Testez la connexion pour vérifier le service." : "Détection automatique du socket local ; la configuration seule ne confirme pas la connexion.")
             SettingsCard(title: "Service et application liée",
-                         status: app.desktopStartup ? "Lancement auto" : "Manuel",
+                         status: (app.quickApplyStartupEnabled || app.desktopStartup) ? "Activation au démarrage" : "Manuel",
                          ok: true) {
                 HStack(spacing: 10) {
                     Button("1. Démarrer l’appli liée") { app.desktopAction("launch") }.disabled(app.desktopBusy)
@@ -854,11 +854,18 @@ struct Dashboard: View {
                     if app.desktopBusy { InlineStatus(busy: true, message: app.desktopNote) }
                 }
                 if !app.desktopNote.isEmpty { InlineStatus(busy: false, message: app.desktopNote) }
-                Toggle("Démarrer l’appli liée et claude-desktopd à l’ouverture de Reprise", isOn: Binding(get: { app.desktopStartup }, set: { app.setDesktopStartup($0) }))
+                Toggle("Démarrer l’application liée à l’ouverture de Reprise", isOn: Binding(get: { app.desktopStartup }, set: { app.setDesktopStartup($0) }))
                     .disabled(app.desktopBusy)
+                Toggle("Démarrer claude-desktopd à l’ouverture de Reprise", isOn: Binding(get: { app.quickApplyStartupEnabled }, set: { app.setQuickApplyStartup($0) }))
+                    .disabled(app.desktopBusy)
+                if !app.quickApplyStartupResult.isEmpty {
+                    SettingsHint(text: "Quick Apply : \(app.quickApplyStartupResult["status"] as? String ?? "état inconnu")",
+                                 detail: (app.quickApplyStartupResult["message"] as? String ?? "")
+                                    + "\nLe greeting du daemon ne prouve pas que le relais de l’application est connecté.")
+                }
                 SettingsHint(
-                    text: "Si cette option est activée, l’application liée et son service démarrent à l’ouverture de Reprise.",
-                    detail: "Le démarrage automatique n’ouvre que l’application liée et son service au lancement de Reprise. Aucun autre élément d’ouverture macOS n’est modifié.")
+                    text: "Les préférences de l’application et du daemon sont indépendantes.",
+                    detail: "Le daemon Quick Apply peut démarrer sans Claude Desktop. Le démarrage de l’application liée ne la ferme ni ne la relance si elle est déjà ouverte. Aucun autre élément d’ouverture macOS n’est modifié.")
             }
             SettingsCard(title: "Socket de claude-desktopd",
                          status: app.desktopConnectionVerified ? "Testé" : (customSocket ? "Personnalisé" : "Automatique"),

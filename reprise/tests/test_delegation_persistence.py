@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from codex_expert_mcp import Bridge
-from claude_desktop_quick import Endpoint, serve
+from claude_desktop_quick import Endpoint, serve, _serve_owned
 from delegation_store import Store
 from support_clock import FakeClock
 from ux_review_probe import Probe
@@ -463,6 +463,19 @@ class DurableTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 serve(path, endpoint)
             self.assertTrue(path.exists())
+
+    def test_quick_does_not_unlink_preexisting_orphan_socket(self):
+        path = self.root/'quick.sock'
+        endpoint = Endpoint(self.state)
+        self.addCleanup(endpoint.close)
+        from types import SimpleNamespace
+        with patch('claude_desktop_quick.Path.exists', return_value=True), \
+             patch('claude_desktop_quick.Path.lstat', return_value=SimpleNamespace(st_mode=0)), \
+             patch('claude_desktop_quick.stat.S_ISSOCK', return_value=True), \
+             patch('claude_desktop_quick.Path.unlink') as unlink:
+            with self.assertRaisesRegex(SystemExit, 'remplacement interdit'):
+                _serve_owned(path, endpoint)
+        unlink.assert_not_called()
 
     def test_non_codex_old_daily_counters_never_block(self):
         bridge = self.bridge()

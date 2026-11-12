@@ -73,8 +73,16 @@ transport `accessibility` persisté (aucune migration, aucun repli silencieux).
 Voir [CLAUDE-CONNECTOR.md](CLAUDE-CONNECTOR.md) : installation native autonome,
 réception/remise des tâches et délégation par un seul serveur MCP. Pour les
 continuations, le planificateur passe par le dispatch natif QTi
-(`quick_entry/submit` sur le socket ReClaude) — le daemon historique
-`claude-desktopd` est arrêté depuis #124 et n'est pas une étape de diagnostic.
+(`quick_entry/submit` sur le socket ReClaude) — depuis la fusion #130, le
+daemon `claude-desktopd` détient le socket et doit répondre au greeting Quick
+Apply. Reprise démarre uniquement son daemon géré si le socket est absent ; un
+socket orphelin ou de protocole inconnu exige une vérification, sans
+remplacement automatique. Le relais de l’application liée reste un état
+distinct du daemon prêt. Les verrous de lancement Reprise coordonnent les entrées
+de la release courante, mais ne sont pas lus par d’anciens lanceurs. Le greeting
+confirme uniquement le protocole Quick Apply : il n’identifie pas la release qui
+sert le socket et ne prouve pas que le relais est chargé. Un socket existant
+n’est jamais remplacé ni reconfiguré automatiquement, même s’il répond au greeting.
 
 ## Connecteur mémoire séparé
 

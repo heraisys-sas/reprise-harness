@@ -55,6 +55,7 @@ class PackageHelpersTests(unittest.TestCase):
                      'delegation_reconcile.py'):
             self.assertIn(name, ASSETS)
         self.assertTrue(any(path.endswith('/CLAUDE-DESKTOP-APPLY.md') for path in package_helpers.DOCS))
+        self.assertIn('docs/runbooks/SCHEDULER-SERVICE.md', package_helpers.DOCS)
 
     def test_moved_payload_runs_without_source_and_keeps_state_outside_bundle(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -85,6 +86,10 @@ class PackageHelpersTests(unittest.TestCase):
             self.assertEqual((root/admin_doc).read_bytes(),
                              (SOURCE.parent/'docs/runbooks'/admin_doc).read_bytes())
             self.assertEqual(manifest['files'][admin_doc], hashlib.sha256((root/admin_doc).read_bytes()).hexdigest())
+            scheduler_doc = 'SCHEDULER-SERVICE.md'
+            self.assertEqual((root / scheduler_doc).read_bytes(),
+                             (SOURCE.parent / 'docs/runbooks' / scheduler_doc).read_bytes())
+            self.assertEqual(manifest['files'][scheduler_doc], hashlib.sha256((root / scheduler_doc).read_bytes()).hexdigest())
             from project_registry import ProjectRegistry
             memory_state = folder/'memory-admin-state'; memory_state.mkdir(mode=0o700)
             fixture_repo = folder/'fixture-repo'; fixture_repo.mkdir()

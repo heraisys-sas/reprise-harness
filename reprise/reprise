@@ -276,6 +276,7 @@ def main():
     sub.add_parser('reprise-health')
     sub.add_parser('restart-chain')
     sub.add_parser('quick-apply-daemon-start')
+    sub.add_parser('quick-apply-daemon-startup')
     sub.add_parser('quick-apply-daemon-stop')
     sub.add_parser('quick-apply-daemon-status')
     sub.add_parser('local-synthesis')
@@ -396,6 +397,9 @@ def main():
     elif args.action == 'quick-apply-daemon-start':
         import desktop_mode
         print(json.dumps(desktop_mode.daemon_start(), ensure_ascii=False))
+    elif args.action == 'quick-apply-daemon-startup':
+        import desktop_mode
+        print(json.dumps(desktop_mode.daemon_startup(), ensure_ascii=False))
     elif args.action == 'quick-apply-daemon-stop':
         import desktop_mode
         print(json.dumps(desktop_mode.daemon_stop(), ensure_ascii=False))

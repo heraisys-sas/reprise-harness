@@ -83,6 +83,13 @@ struct SchedulerService: View {
                 Button("Retirer…") { app.planSchedulerService("remove") }
                 Spacer()
             }
+            Toggle("Démarrer le planificateur Reprise au lancement de Reprise",
+                   isOn: Binding(get: { app.schedulerServiceStartupEnabled },
+                                 set: { app.setSchedulerServiceStartup($0) }))
+            if !app.schedulerStartupResult.isEmpty {
+                SettingsHint(text: "Démarrage : \(app.schedulerStartupResult["status"] as? String ?? "état inconnu")",
+                             detail: app.schedulerStartupResult["message"] as? String ?? "Le chargement launchd doit être vérifié séparément.")
+            }
             Toggle("Activer le service après installation", isOn: $app.schedulerServiceActivate)
             SettingsHint(
                 text: "Sans activation, le service installé reste arrêté.",

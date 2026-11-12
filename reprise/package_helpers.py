@@ -17,6 +17,7 @@ ASSETS += ('memory_integration.py', 'reprise_memory_adapter.py', 'reprise_memory
 DOCS = (
     'docs/integrations/claude/CLAUDE-DESKTOP-APPLY.md',
     'docs/runbooks/MANAGED-UPDATE.md',
+    'docs/runbooks/SCHEDULER-SERVICE.md',
     'docs/templates/REPRISE-AGENTS.template.md',
     'docs/contracts/CODEX-EXECUTION-CONTRACT.md',
     'docs/templates/ASI1-ORCHESTRATOR.template.md',

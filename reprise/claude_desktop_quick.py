@@ -718,22 +718,9 @@ def _serve_owned(path, endpoint):
     if path.exists():
         if not stat.S_ISSOCK(path.lstat().st_mode):
             raise SystemExit('Le chemin de socket existe déjà sans être un socket.')
-        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            probe.settimeout(1)
-            probe.connect(str(path))
-        except (ConnectionRefusedError, FileNotFoundError):
-            pass
-        else:
-            raise SystemExit('Socket is accepting connections; refusing replacement')
-        finally:
-            probe.close()
-        try:
-            path.unlink()
-        except OSError as error:
-            # An orphan socket we are not allowed to remove must fail loudly,
-            # not crash silently: the caller (daemon) reports the real cause.
-            raise SystemExit(f'Impossible de supprimer le socket orphelin {path} : {error}')
+        # A refused connection does not prove ownership or that the listener is
+        # absent (the owner may still be binding). Startup never replaces a socket.
+        raise SystemExit('Socket déjà présent ; remplacement interdit sans réconciliation explicite.')
     try:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     except OSError as error:

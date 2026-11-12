@@ -7,12 +7,20 @@ import Darwin
 enum StartupPreferences {
     static let versionKey = "StartupActivationVersion"
     static let pilotEnabledKey = "ApplePilotEnabled"
+    static let schedulerStartupKey = "SchedulerServiceStartup"
+    static let quickApplyStartupKey = "QuickApplyDaemonStartup"
     static func migrate(_ defaults: UserDefaults) {
-        guard defaults.integer(forKey: versionKey) < 1 else { return }
-        defaults.set(true, forKey: "DesktopLinkedStartup")
-        defaults.set(true, forKey: "SharedCodexStartup")
-        defaults.set(true, forKey: pilotEnabledKey)
-        defaults.set(1, forKey: versionKey)
+        let version = defaults.integer(forKey: versionKey)
+        if version < 1 {
+            defaults.set(true, forKey: "DesktopLinkedStartup")
+            defaults.set(true, forKey: "SharedCodexStartup")
+            defaults.set(true, forKey: pilotEnabledKey)
+        }
+        if version < 2 {
+            defaults.set(true, forKey: schedulerStartupKey)
+            defaults.set(true, forKey: quickApplyStartupKey)
+        }
+        if version < 2 { defaults.set(2, forKey: versionKey) }
     }
     static func startupFlag(_ key: String, defaults: UserDefaults = .standard) -> Bool {
         migrate(defaults)

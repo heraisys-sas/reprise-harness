@@ -87,6 +87,8 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var ironclawTokenFile = ""
     @Published var ironclawNote = "Configurez un accès SSH explicite ; aucune clé ni aucun jeton n’est copié."
     @Published var schedulerService: [String: Any] = [:]
+    @Published var schedulerStartupResult: [String: Any] = [:]
+    @Published var schedulerServiceStartupEnabled = StartupPreferences.startupFlag(StartupPreferences.schedulerStartupKey)
     @Published var schedulerServicePlan: [String: Any]? = nil
     @Published var schedulerServiceMessage = "Inspectez le planificateur avant de préparer une modification."
     @Published var schedulerServiceActivate = false
@@ -137,6 +139,8 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     var lastSynthesisAt: Date = .distantPast
     @Published var desktopBusy = false
     @Published var desktopStartup = StartupPreferences.startupFlag("DesktopLinkedStartup")
+    @Published var quickApplyStartupResult: [String: Any] = [:]
+    @Published var quickApplyStartupEnabled = StartupPreferences.startupFlag(StartupPreferences.quickApplyStartupKey)
     @Published var chainBusy = false
     @Published var chainNote = ""
     @Published var connectionTab = "codex"  // codex | quickapply
@@ -301,7 +305,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                 if !self.startupAttempted {
                     self.startupAttempted = true
                     if self.sharedStartup && !self.running.contains("com.openai.codex") { self.sharedAction("launch", startup: true) }
-                    if self.desktopStartup { self.desktopAction("launch-start") }
+                    self.startManagedServices()
                 }
                 if let result { self.snapshot = result; self.lastRefresh = Date() }
                 else { self.snapshot["error"] = self.runtimeError ?? "Actualisation indisponible. Les dernières informations restent affichées." }
@@ -546,6 +550,38 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     func setDesktopStartup(_ enabled: Bool) {
         desktopStartup = enabled
         UserDefaults.standard.set(enabled, forKey: "DesktopLinkedStartup")
+    }
+    func setSchedulerServiceStartup(_ enabled: Bool) {
+        schedulerServiceStartupEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: StartupPreferences.schedulerStartupKey)
+    }
+    func setQuickApplyStartup(_ enabled: Bool) {
+        quickApplyStartupEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: StartupPreferences.quickApplyStartupKey)
+    }
+    func startManagedServices() {
+        let schedulerEnabled = schedulerServiceStartupEnabled
+        let quickApplyEnabled = quickApplyStartupEnabled
+        let appEnabled = desktopStartup
+        DispatchQueue.global(qos: .utility).async {
+            let scheduler = schedulerEnabled
+                ? (self.execute(["scheduler-service-startup"]) ?? ["status": "unavailable", "message": "État du planificateur indisponible."])
+                : ["status": "disabled_by_user", "message": "Démarrage automatique désactivé dans les préférences."]
+            let quickApply = quickApplyEnabled
+                ? (self.execute(["quick-apply-daemon-startup"]) ?? ["status": "unavailable", "message": "État Quick Apply indisponible."])
+                : ["status": "disabled_by_user", "message": "Démarrage automatique désactivé dans les préférences."]
+            let linkedApp = appEnabled
+                ? (self.execute(["desktop-launch"]) ?? ["ok": false, "reason": "État de l’application liée indisponible."])
+                : ["ok": false, "reason": "Lancement automatique de l’application désactivé dans les préférences."]
+            let serviceInspection = self.execute(["scheduler-service-inspect"]) ?? [:]
+            DispatchQueue.main.async {
+                self.schedulerStartupResult = scheduler
+                if !serviceInspection.isEmpty { self.schedulerService = serviceInspection }
+                self.quickApplyStartupResult = quickApply
+                self.desktopNote = linkedApp["reason"] as? String ?? "État de l’application liée indisponible."
+                self.refresh()
+            }
+        }
     }
     func sharedAction(_ operation: String, startup: Bool = false) {
         guard !sharedBusy else { return }

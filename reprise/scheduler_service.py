@@ -18,6 +18,7 @@ from state_install import initialized
 from harness_integration import atomic, encoded, digest, file_hash, bundle_info, stage_release, release_check, tree_files
 
 LABEL = 'local.agent-resume'
+STARTUP_ACTIVATION_VERSION = 1
 
 
 def paths(home):
@@ -179,8 +180,202 @@ def inspect(root, home=None, runner=launch):
     return result
 
 
-def plan(root, home=None, action='install', activate=False, interval=60):
-    if action not in ('install', 'remove') or type(activate) is not bool or type(interval) is not int or not 30 <= interval <= 86400:
+def _activate_monitoring_once(state):
+    """Apply the explicitly requested startup defaults once, without creating state."""
+    state = Path(state)
+    if not initialized(state):
+        return {'status': 'needs_setup', 'changed': False,
+                'message': 'Registre Reprise non préparé ; aucune configuration créée.'}
+    dbpath = state / 'tasks.sqlite'
+    worker_path = state / 'worker.lock'
+    if (not dbpath.is_file() or dbpath.is_symlink()
+            or any(path.is_symlink() for path in (state, worker_path, *state.parents))):
+        return {'status': 'needs_setup', 'changed': False,
+                'message': 'Registre du planificateur absent ou non régulier ; aucune configuration créée.'}
+    with worker_path.open('a') as worker:
+        try:
+            fcntl.flock(worker, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {'status': 'busy', 'changed': False,
+                    'message': 'Un worker est actif ; activation différée sans modifier le registre.'}
+        with closing(sqlite3.connect(dbpath, timeout=2)) as db:
+            db.execute('BEGIN IMMEDIATE')
+            tables = {row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            if 'scheduler_meta' not in tables:
+                db.rollback()
+                return {'status': 'needs_setup', 'changed': False,
+                        'message': 'Métadonnées du planificateur absentes ; aucune configuration créée.'}
+            try:
+                row = db.execute('SELECT value FROM scheduler_meta WHERE key=?',
+                                 ('startup_activation_version',)).fetchone()
+                version = json.loads(row[0]) if row else 0
+                if type(version) is not int or version < 0:
+                    raise ValueError('Marqueur de démarrage invalide.')
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                db.rollback()
+                return {'status': 'blocked', 'changed': False,
+                        'message': str(error) or 'Marqueur de démarrage invalide.'}
+            if version >= STARTUP_ACTIVATION_VERSION:
+                values = dict(db.execute(
+                    "SELECT key, value FROM scheduler_meta WHERE key IN (?, ?)",
+                    ('auto_enabled', 'claude_desktop_auto_enabled')))
+                db.commit()
+                try:
+                    enabled = {key: json.loads(value) for key, value in values.items()}
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    return {'status': 'blocked', 'changed': False,
+                            'message': 'Réglage d’activation illisible ; conservé sans modification.'}
+                return {'status': 'already_applied', 'changed': False,
+                        'enabled': {'auto_enabled': enabled.get('auto_enabled', True),
+                                    'claude_desktop_auto_enabled': enabled.get('claude_desktop_auto_enabled', True)}}
+            db.executemany('INSERT OR REPLACE INTO scheduler_meta(key,value) VALUES (?,?)', [
+                ('auto_enabled', json.dumps(True)),
+                ('claude_desktop_auto_enabled', json.dumps(True)),
+                ('startup_activation_version', json.dumps(STARTUP_ACTIVATION_VERSION)),
+            ])
+            db.commit()
+            return {'status': 'activated_once', 'changed': True,
+                    'enabled': {'auto_enabled': True, 'claude_desktop_auto_enabled': True}}
+
+
+def _bootstrap_current(root, home, runner, state, plist, managed, activation, operation):
+    worker_path = Path(state) / 'worker.lock'
+    if not worker_path.is_file() or worker_path.is_symlink():
+        return {'status': 'blocked_changed_before_bootstrap', 'activation': activation,
+                'service': None, 'operation': operation,
+                'message': 'Verrou du worker absent ou non régulier ; aucun bootstrap tenté.'}
+    with worker_path.open('a') as worker:
+        try:
+            fcntl.flock(worker, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {'status': 'busy', 'activation': activation, 'service': None,
+                    'operation': operation,
+                    'message': 'Un worker est actif ; bootstrap différé sans modifier le service.'}
+        check = inspect(root, home, runner)
+        manifest = read(managed / 'managed.json')
+        expected_manifest = {'format': 1, 'plist_sha256': file_hash(plist),
+                             'release': check.get('expected_release'), 'state': str(state)}
+        if check['loaded']:
+            return {'status': 'already_loaded' if check['loaded_current'] and manifest == expected_manifest
+                    else 'blocked_changed_before_bootstrap', 'activation': activation,
+                    'service': check, 'operation': operation,
+                    'message': 'Service déjà chargé et vérifié.' if check['loaded_current'] and manifest == expected_manifest
+                    else 'Service chargé ou ownership différent au contrôle final ; aucun remplacement.'}
+        if (not check['configured_current'] or not check['runtime_integrity']
+                or manifest != expected_manifest
+                or not file_hash(plist) or not file_hash(managed / 'managed.json')):
+            return {'status': 'blocked_changed_before_bootstrap', 'activation': activation,
+                    'service': check, 'operation': operation,
+                    'message': 'Plist, manifeste ou release non conforme ; aucun bootstrap tenté.'}
+        plist_hash = file_hash(plist)
+        manifest_hash = file_hash(managed / 'managed.json')
+        if file_hash(plist) != plist_hash or file_hash(managed / 'managed.json') != manifest_hash:
+            return {'status': 'blocked_changed_before_bootstrap', 'activation': activation,
+                    'service': check, 'operation': operation,
+                    'message': 'Plist ou manifeste changé au contrôle final ; aucun bootstrap tenté.'}
+        try:
+            result = runner(['bootstrap', target(), str(plist)])
+            final = inspect(root, home, runner)
+            stable = (file_hash(plist) == plist_hash
+                      and file_hash(managed / 'managed.json') == manifest_hash)
+            current = final['loaded_current'] and stable
+        except Exception as error:
+            return {'status': 'activation_indeterminate', 'activation': activation,
+                    'service': None, 'operation': operation,
+                    'message': f'Bootstrap envoyé mais état ou empreinte impossible à vérifier ({type(error).__name__}) ; aucun nouvel essai.'}
+        if current:
+            return {'status': 'started' if operation is None else 'installed_and_started',
+                    'activation': activation, 'service': final, 'operation': operation,
+                    'message': 'Service Reprise courant chargé et vérifié.'}
+        return {'status': 'activation_unverified', 'activation': activation,
+                'service': final, 'operation': operation,
+                'message': 'Bootstrap lancé sans preuve stable de configuration chargée ; aucun second essai automatique.'}
+
+
+def startup(root, home=None, runner=launch):
+    """Idempotently activate only the current Reprise-owned scheduler service."""
+    state = state_location(root).absolute()
+    activation = None
+    operation = None
+    if not initialized(state) or not (state / 'tasks.sqlite').is_file():
+        return {'status': 'needs_setup', 'activation': {'status': 'needs_setup', 'changed': False,
+                'message': 'Registre Reprise non préparé ; aucune configuration créée.'},
+                'service': None,
+                'message': 'Registre Reprise non préparé ; aucune configuration créée.'}
+    try:
+        observed = inspect(root, home, runner)
+        _, plist, managed = paths(home or Path.home())
+        manifest = read(managed / 'managed.json')
+        expected_manifest = {
+            'format': 1,
+            'plist_sha256': file_hash(plist),
+            'release': observed.get('expected_release'),
+            'state': str(state),
+        }
+        owned_current = (manifest == expected_manifest and observed['configured_current']
+                         and observed['runtime_integrity'])
+        if observed.get('pending_plan') is not None:
+            return {'status': 'blocked_pending_operation', 'activation': None,
+                    'service': observed,
+                    'message': 'Une opération interrompue existe ; reprendre son plan explicitement.'}
+        if observed['loaded'] and not owned_current:
+            return {'status': 'blocked_unverified_service', 'activation': None,
+                    'service': observed,
+                    'message': 'Le service chargé ou sa propriété ne sont pas conformes ; aucune réparation automatique.'}
+        if observed['file_present'] or manifest is not None:
+            if not owned_current:
+                return {'status': 'blocked_unverified_service', 'activation': None,
+                        'service': observed,
+                        'message': 'Service absent, modifié, non géré ou non à jour ; réconciliation explicite requise.'}
+            if observed['loaded'] and not observed['loaded_current']:
+                return {'status': 'blocked_unverified_service', 'activation': None,
+                        'service': observed,
+                        'message': 'Configuration chargée différente ; aucune réparation automatique.'}
+            value = None
+        else:
+            if observed['loaded']:
+                return {'status': 'blocked_unverified_service', 'activation': None,
+                        'service': observed,
+                        'message': 'Service chargé sans installation possédée vérifiable ; aucune action.'}
+            # Planning is read-only; perform it before changing the one-time gates.
+            value = plan(root, home, activate=False, startup_safe=True)
+
+        activation = _activate_monitoring_once(state)
+        if activation['status'] not in ('activated_once', 'already_applied'):
+            return {'status': activation['status'], 'activation': activation,
+                    'service': observed, 'message': activation['message']}
+        if activation.get('enabled', {}).get('auto_enabled') is not True:
+            return {'status': 'paused_by_user', 'activation': activation,
+                    'service': observed,
+                    'message': 'Le mode automatique global a été désactivé après son activation initiale ; service laissé dans son état courant.'}
+
+        # A fresh install is published while stopped. Existing managed configuration
+        # is never re-planned, backed up, or rewritten during startup.
+        if value is not None:
+            operation = apply(root, value, runner)
+            observed = inspect(root, home, runner)
+            manifest = read(managed / 'managed.json')
+            expected_manifest = {'format': 1, 'plist_sha256': file_hash(plist),
+                                 'release': observed.get('expected_release'), 'state': str(state)}
+            if (manifest != expected_manifest or not observed['configured_current']
+                    or not observed['runtime_integrity'] or observed['loaded']):
+                return {'status': 'blocked_after_install', 'activation': activation,
+                        'service': observed, 'operation': operation,
+                        'message': 'Configuration installée mais non conforme ou déjà chargée ; aucun démarrage tenté.'}
+        if observed['loaded']:
+            return {'status': 'already_loaded', 'activation': activation,
+                    'service': observed, 'message': 'Service Reprise chargé et conforme ; aucune modification.'}
+
+        return _bootstrap_current(root, home, runner, state, plist, managed, activation, operation)
+    except Exception as error:
+        return {'status': 'blocked', 'activation': activation, 'service': None,
+                'message': f'Démarrage bloqué ({type(error).__name__}) ; aucune réparation automatique.'}
+
+def plan(root, home=None, action='install', activate=False, interval=60, startup_safe=False):
+    if (action not in ('install', 'remove') or type(activate) is not bool
+            or type(startup_safe) is not bool or type(interval) is not int
+            or not 30 <= interval <= 86400):
         raise ValueError('Paramètres du plan invalides.')
     home = str(Path(home or Path.home()).absolute())
     support, plist, managed = paths(home)
@@ -233,12 +428,15 @@ def plan(root, home=None, action='install', activate=False, interval=60):
                     'StartInterval': interval, 'EnvironmentVariables': {'AGENT_RESUME_STATE': str(state), 'PYTHONDONTWRITEBYTECODE': '1', 'PATH': os.environ.get('PATH', '/usr/bin:/bin')},
                     'StandardOutPath': str(state / 'service.log'), 'StandardErrorPath': str(state / 'service-error.log')}
         content = plistlib.dumps(settings).decode()
-    value = {'format': 1, 'home': home, 'action': action, 'activate': activate, 'interval': interval,
+    value = {'format': 1, 'home': home, 'action': action, 'activate': activate,
+             'interval': interval,
              'state': str(state), 'state_marker_sha256': file_hash(state / '.reprise-state.json'), 'plist': str(plist), 'before_sha256': before, 'manifest_sha256': file_hash(managed / 'managed.json'),
              'release': str(release) if release else None, 'repair_tree_sha256': repair_tree,
              'release_backup': str(release) + '.damaged-' + repair_tree if repair_tree else None, 'content': content, 'adopt_legacy': adoption,
              'effects': 'Si chargé, le service est déchargé pour remplacement ou retrait. Sans activation cochée, il reste arrêté après remplacement. Activation : le prochain tick peut reprendre les travaux autorisés si le mode automatique est actif. La pause enregistrée est conservée.',
              'recovery': 'Sauvegarde du plist et journal conservés ; registres, résultats et releases conservés au retrait.'}
+    if startup_safe:
+        value['startup_safe'] = True
     value['fingerprint'] = digest(encoded(value).encode())
     return value
 
@@ -268,7 +466,8 @@ def _apply_locked(root, value, runner):
             if journal['plan'] != value:
                 raise ValueError('Une opération interrompue doit être reprise avant un nouveau plan.')
         else:
-            expected = plan(root, value['home'], value['action'], value['activate'], value['interval'])
+            expected = plan(root, value['home'], value['action'], value['activate'], value['interval'],
+                            value.get('startup_safe', False))
             if expected != value:
                 raise ValueError('Plan périmé ; prévisualiser de nouveau.')
             wanted_hash = digest(value['content'].encode()) if value['content'] else None
@@ -300,6 +499,8 @@ def _apply_locked(root, value, runner):
         stale_loaded = observed.returncode == 0 and not loaded_matches(observed, settings)
         changed = value['before_sha256'] != after
         should_unload = changed or value['action'] == 'remove' or bool(value.get('repair_tree_sha256'))
+        if value.get('startup_safe') and observed.returncode == 0:
+            raise ValueError('Service chargé apparu pendant installation startup-safe ; aucun déchargement effectué.')
         if stale_loaded or (should_unload and 'unloaded' not in journal['steps']):
             if observed.returncode == 0:
                 if loaded_registry(observed) != value['state']:
@@ -350,13 +551,15 @@ def _apply_locked(root, value, runner):
 
 def main(root, argv):
     parser = argparse.ArgumentParser()
-    parser.add_argument('command', choices=('scheduler-service-inspect', 'scheduler-service-plan', 'scheduler-service-apply', 'scheduler-service-verify'))
+    parser.add_argument('command', choices=('scheduler-service-inspect', 'scheduler-service-plan', 'scheduler-service-apply', 'scheduler-service-verify', 'scheduler-service-startup'))
     parser.add_argument('--action', choices=('install', 'remove'), default='install')
     parser.add_argument('--activate', action='store_true')
     parser.add_argument('--interval', type=int, default=60)
     args = parser.parse_args(argv)
     try:
-        if args.command.endswith('-plan'):
+        if args.command.endswith('-startup'):
+            result = startup(root)
+        elif args.command.endswith('-plan'):
             result = {'plan': plan(root, action=args.action, activate=args.activate, interval=args.interval), 'message': 'Plan sans écriture ; confirmez les effets avant application.'}
         elif args.command.endswith('-apply'):
             result = apply(root, json.load(sys.stdin)['plan'])

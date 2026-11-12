@@ -1,5 +1,6 @@
 import sys
 import unittest
+import fcntl
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,17 +24,24 @@ class StatusTests(unittest.TestCase):
 
 class LaunchTests(unittest.TestCase):
     def test_launch_when_already_running_does_not_reopen(self):
-        with patch.object(dm, 'app_running', return_value=True):
+        with patch.object(dm, 'app_state', return_value='running'):
             result = dm.launch()
         self.assertTrue(result['ok'])
         self.assertFalse(result['launched'])
 
     def test_launch_when_not_running_opens_app(self):
-        with patch.object(dm, 'app_running', return_value=False), patch('subprocess.run') as run:
+        with patch.object(dm, 'app_state', return_value='absent'), patch('subprocess.run') as run:
             run.return_value.returncode = 0
             result = dm.launch()
         self.assertTrue(result['ok'])
         self.assertTrue(result['launched'])
+
+    def test_launch_with_unknown_process_state_does_not_open_app(self):
+        with patch.object(dm, 'app_state', return_value='unknown'), patch('subprocess.run') as run:
+            result = dm.launch()
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['status'], 'unknown')
+        run.assert_not_called()
 
     def test_start_reports_failure_with_cause(self):
         # start() must report failure with a cause, not claim success.
@@ -57,10 +65,11 @@ class QuickApplyDaemonTests(unittest.TestCase):
         self.state = tempfile.mkdtemp()
 
     def test_new_daemon_reads_managed_connector_project(self):
-        with patch.object(dm, 'server_running', side_effect=[False, True]), \
+        with patch.object(dm, 'DEFAULT_SOCKET', Path(self.state) / 'quick.sock'), \
+             patch.object(dm, 'server_running', side_effect=[False, True]), \
              patch('claude_integration.inspect', return_value={'managed': True, 'project': self.state}), \
              patch('subprocess.Popen') as popen, patch('time.sleep'), \
-             patch.object(dm, 'app_running', return_value=True):
+             patch.object(dm, 'app_state', return_value='running'):
             popen.return_value.pid = 999999
             result = dm.start(state=self.state)
         self.assertTrue(result['ok'])
@@ -93,7 +102,94 @@ class QuickApplyDaemonTests(unittest.TestCase):
         self.assertFalse(result['stopped'])
 
     def test_daemon_start_is_idempotent_when_running(self):
-        with patch.object(dm, 'server_running', return_value=True):
+        with patch.object(dm, 'DEFAULT_SOCKET', Path(self.state) / 'quick.sock'), \
+             patch.object(dm, 'server_running', return_value=True):
             result = dm.daemon_start(state=self.state)
         self.assertTrue(result['ok'])
         self.assertFalse(result['started'])
+
+    def test_startup_starts_only_an_absent_socket_and_verifies_greeting(self):
+        with patch.object(dm, 'socket_state', return_value='stopped'), \
+             patch.object(dm, 'DEFAULT_SOCKET', Path(self.state) / 'quick.sock') as socket_path, \
+             patch.object(dm, 'daemon_start', return_value={'ok': True, 'started': True}), \
+             patch.object(dm, 'app_state', return_value='absent'), \
+             patch('claude_desktop_rpc.probe_dispatch_socket', return_value=True) as probe:
+            result = dm.daemon_startup(self.state)
+        self.assertEqual(result['status'], 'started')
+        self.assertTrue(result['daemon_ready'])
+        self.assertFalse(result['app_running'])
+        self.assertIsNone(result['relay_ready'])
+        probe.assert_called_once()
+
+    def test_startup_does_not_duplicate_a_ready_daemon(self):
+        with patch.object(dm, 'socket_state', return_value='running'), \
+             patch.object(dm, 'DEFAULT_SOCKET', Path(self.state) / 'quick.sock'), \
+             patch.object(dm, 'daemon_start') as start, \
+             patch.object(dm, 'app_state', return_value='running'), \
+             patch('claude_desktop_rpc.probe_dispatch_socket', return_value=True):
+            result = dm.daemon_startup(self.state)
+        self.assertEqual(result['status'], 'already_ready')
+        self.assertTrue(result['daemon_ready'])
+        start.assert_not_called()
+
+    def test_startup_does_not_replace_orphan_or_unverified_socket(self):
+        with patch.object(dm, 'socket_state', return_value='stopped'), \
+             patch.object(dm, 'DEFAULT_SOCKET', Path(self.state) / 'quick.sock') as socket_path, \
+             patch.object(dm, 'daemon_start') as start, \
+             patch.object(dm, 'app_state', return_value='absent'):
+            socket_path.write_text('synthetic orphan')
+            orphan = dm.daemon_startup(self.state)
+        self.assertEqual(orphan['status'], 'orphan_socket')
+        start.assert_not_called()
+        with patch.object(dm, 'socket_state', return_value='running'), \
+             patch.object(dm, 'DEFAULT_SOCKET', Path(self.state) / 'quick.sock'), \
+             patch.object(dm, 'daemon_start') as start, \
+             patch.object(dm, 'app_state', return_value='absent'), \
+             patch('claude_desktop_rpc.probe_dispatch_socket', return_value=False):
+            unverified = dm.daemon_startup(self.state)
+        self.assertEqual(unverified['status'], 'unverified_socket')
+        start.assert_not_called()
+
+    def test_startup_leaves_unknown_socket_state_untouched(self):
+        with patch.object(dm, 'socket_state', return_value='unknown'), \
+             patch.object(dm, 'DEFAULT_SOCKET', Path(self.state) / 'quick.sock'), \
+             patch.object(dm, 'daemon_start') as start, \
+             patch.object(dm, 'app_state', return_value='unknown'):
+            result = dm.daemon_startup(self.state)
+        self.assertEqual(result['status'], 'unknown')
+        start.assert_not_called()
+
+    def test_startup_serializes_concurrent_launch_attempts(self):
+        with patch.object(dm, 'DEFAULT_SOCKET', Path(self.state) / 'quick.sock'):
+            self._assert_startup_busy_with_state_lock()
+
+    def _assert_startup_busy_with_state_lock(self):
+        lock_path = Path(self.state) / 'daemon-startup.lock'
+        with lock_path.open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch.object(dm, 'daemon_start') as start:
+                result = dm.daemon_startup(self.state)
+        self.assertEqual(result['status'], 'startup_busy')
+        start.assert_not_called()
+
+    def test_manual_start_uses_same_startup_lock(self):
+        lock_path = Path(self.state) / 'daemon-startup.lock'
+        with lock_path.open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch.object(dm, 'DEFAULT_SOCKET', Path(self.state) / 'quick.sock'), \
+                 patch('subprocess.Popen') as popen:
+                result = dm.daemon_start(state=self.state)
+        self.assertEqual(result['status'], 'startup_busy')
+        popen.assert_not_called()
+
+    def test_different_states_share_socket_startup_lock(self):
+        socket_path = Path(self.state) / 'shared.sock'
+        socket_lock = socket_path.with_name(socket_path.name + '.reprise-startup.lock')
+        other_state = Path(self.state) / 'other-state'
+        other_state.mkdir()
+        with socket_lock.open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch('subprocess.Popen') as popen:
+                result = dm.daemon_start(socket=str(socket_path), state=str(other_state))
+        self.assertEqual(result['status'], 'startup_busy')
+        popen.assert_not_called()
