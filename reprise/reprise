@@ -70,6 +70,12 @@ if len(sys.argv) > 1 and sys.argv[1].startswith('claude-integration-'):
     import claude_integration
     sys.exit(claude_integration.main(Path(__file__).resolve().parent, sys.argv[1:]))
 
+if len(sys.argv) > 1 and sys.argv[1] in ('approval-delegation-grant', 'approval-delegation-list', 'approval-delegation-revoke'):
+    import approval_delegation
+    operation = sys.argv[1].removeprefix('approval-delegation-')
+    sys.exit(approval_delegation.main(Path(__file__).resolve().parent,
+                                      [operation, *sys.argv[2:]]))
+
 if len(sys.argv) > 1 and sys.argv[1] in ('claude-inbox-list', 'claude-inbox-read', 'claude-inbox-ack'):
     import claude_inbox
     operation = {'claude-inbox-list': 'list', 'claude-inbox-read': 'read',
