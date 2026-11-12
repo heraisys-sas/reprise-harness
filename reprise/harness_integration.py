@@ -2,6 +2,8 @@
 import argparse
 from contextlib import contextmanager
 import fcntl
+import errno
+import stat
 import hashlib
 import json
 import os
@@ -316,6 +318,121 @@ def release_check(release):
         raise ValueError('Copie installée altérée ; aucune exécution de ce release.')
 
 
+def _sync_file(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError('Fichier régulier requis pour synchronisation.')
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _sync_tree(root):
+    """Sync every owned regular file, then directories bottom-up, without following links."""
+    directories = [root]
+    for path in root.rglob('*'):
+        if path.is_symlink():
+            continue
+        if path.is_dir():
+            directories.append(path)
+        else:
+            _sync_file(path)
+    for path in sorted(directories, key=lambda value: len(value.parts), reverse=True):
+        _sync_directory(path)
+
+
+def _provenance_fingerprint(path):
+    if sys.platform == 'darwin':
+        import ctypes
+        library = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+        library.listxattr.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+        library.listxattr.restype = ctypes.c_ssize_t
+        size = library.listxattr(os.fsencode(path), None, 0, 1)
+        if size < 0:
+            raise OSError(ctypes.get_errno(), 'Lecture des attributs étendus impossible')
+        if not size:
+            return None
+        names = ctypes.create_string_buffer(size)
+        if library.listxattr(os.fsencode(path), names, size, 1) != size or names.raw != b'com.apple.provenance\0':
+            raise ValueError('Attributs étendus non pris en charge ; aucune adoption.')
+        library.getxattr.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32, ctypes.c_int]
+        library.getxattr.restype = ctypes.c_ssize_t
+        args = (os.fsencode(path), b'com.apple.provenance')
+        size = library.getxattr(*args, None, 0, 0, 1)
+        if size < 0:
+            raise OSError(ctypes.get_errno(), 'Lecture provenance impossible')
+        value = ctypes.create_string_buffer(size)
+        if library.getxattr(*args, value, size, 0, 1) != size:
+            raise ValueError('Provenance modifiée pendant la lecture.')
+        return digest(value.raw)
+    if not hasattr(os, 'listxattr') or os.listxattr(path, follow_symlinks=False):
+        raise ValueError('Attributs étendus non pris en charge.')
+    return None
+
+
+def _simple_metadata(path):
+    """Only plain owned files can be replaced without losing ACL/xattr semantics."""
+    if file_hash(path) is None:
+        return None
+    observed = path.stat(follow_symlinks=False)
+    if (not stat.S_ISREG(observed.st_mode) or observed.st_uid != os.geteuid()
+            or observed.st_nlink != 1 or observed.st_mode & 0o7000 or getattr(observed, 'st_flags', 0)):
+        raise ValueError('Métadonnées étendues, liens multiples ou propriétaire non pris en charge ; aucune adoption.')
+    if sys.platform == 'darwin':
+        import ctypes
+        library = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+        library.acl_get_file.argtypes = [ctypes.c_char_p, ctypes.c_int]
+        library.acl_get_file.restype = ctypes.c_void_p
+        library.acl_free.argtypes = [ctypes.c_void_p]
+        acl = library.acl_get_file(os.fsencode(path), 0x100)  # ACL_TYPE_EXTENDED, SDK sys/acl.h.
+        if acl:
+            library.acl_free(acl)
+            raise ValueError('ACL étendue non prise en charge ; aucune adoption.')
+        if ctypes.get_errno() != errno.ENOENT:
+            raise ValueError('État ACL non vérifiable ; aucune adoption.')
+    elif not sys.platform.startswith('linux'):
+        raise ValueError('Vérification des ACL indisponible sur cette plateforme.')
+    current = path.stat(follow_symlinks=False)
+    if (current.st_dev, current.st_ino, current.st_mode, current.st_uid, current.st_gid) != (observed.st_dev, observed.st_ino, observed.st_mode, observed.st_uid, observed.st_gid):
+        raise ValueError('Métadonnées modifiées pendant leur contrôle.')
+    return {'mode': stat.S_IMODE(observed.st_mode), 'uid': observed.st_uid, 'gid': observed.st_gid,
+            'provenance_sha256': _provenance_fingerprint(path)}
+
+
+def _reconcile_atomic(path, text, metadata):
+    """Preserve supported POSIX metadata; unsupported metadata is refused before rename."""
+    target = metadata or {'mode': 0o600, 'uid': os.geteuid(), 'gid': os.getegid()}
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.NamedTemporaryFile(mode='wb', dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        try:
+            handle.write(text.encode('utf-8'))
+            handle.flush()
+            os.fchown(handle.fileno(), target['uid'], target['gid'])
+            os.fchmod(handle.fileno(), target['mode'])
+            if metadata is not None and sys.platform == 'darwin':
+                import ctypes
+                library = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+                library.copyfile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_uint32]
+                if library.copyfile(os.fsencode(path), os.fsencode(temporary), None, 4) != 0:  # COPYFILE_XATTR, never content.
+                    raise OSError(ctypes.get_errno(), 'Préservation de provenance impossible')
+            observed = _simple_metadata(temporary)
+            if (metadata is not None and observed != target) or any(observed[key] != target[key] for key in ('mode', 'uid', 'gid')):
+                raise ValueError('Métadonnées temporaires non préservables.')
+            os.fsync(handle.fileno())
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+    try:
+        if _simple_metadata(path) != metadata:
+            raise ValueError('Métadonnées modifiées avant publication.')
+        temporary.replace(path)
+        _sync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def stage_release(helpers, runtime, release):
     payload = json.loads((helpers / 'payload-manifest.json').read_text())
     validate_yaml(helpers, payload)
@@ -330,8 +447,12 @@ def stage_release(helpers, runtime, release):
         validate_yaml(target_helpers, target_payload)
         if bundle_info(target_helpers)[2] != release.name:
             raise ValueError('Identité de release différente du plan.')
+        _sync_tree(release)
+        _sync_directory(release.parent)
+        _sync_directory(release.parent.parent)
         return
     release.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _sync_directory(release.parent.parent)
     with tempfile.TemporaryDirectory(prefix='.release-', dir=release.parent) as temporary:
         stage = Path(temporary) / 'release'
         resources = stage / 'Contents/Resources'
@@ -358,6 +479,7 @@ def stage_release(helpers, runtime, release):
         if bundle_info(helper_target)[2] != release.name:
             raise ValueError('Identité du bundle différente du plan ; publication refusée.')
         atomic(stage / 'release.json', encoded({'format': 1, 'files': tree_files(stage)}))
+        _sync_tree(stage)
         stage.rename(release)
         _sync_directory(release.parent)
     release_check(release)
@@ -382,6 +504,12 @@ def inspect(home, profile=None):
         result['bash_sandbox_disabled'] = (old or {}).get('bash_sandbox_disabled', False)
         result['desktop_socket'] = (old or {}).get('desktop_socket')
         result['codex_workspace_write'] = (old or {}).get('codex_workspace_write', False)
+        reconciliation = managed / 'reconciliation.json'
+        if reconciliation.exists() or reconciliation.is_symlink():
+            data = read_journal(reconciliation)
+            if data.get('status') == 'pending':
+                result['pending_plan'] = data['plan']
+                result['message'] = 'Réconciliation partielle conservée ; reprendre ce plan sans restauration.'
         journal = managed / 'operation.json'
         if journal.exists() or journal.is_symlink():
             data = read_journal(journal)
@@ -865,6 +993,8 @@ def locked(managed):
 
 
 def apply(root, public):
+    if isinstance(public, dict) and public.get('format') == 2 and public.get('action') == 'reconcile':
+        return reconcile_apply(root, public)
     if not isinstance(public, dict) or public.get('format') != 1:
         raise ValueError('Plan incompatible.')
     unsigned = {k: v for k, v in public.items() if k != 'fingerprint'}
@@ -872,6 +1002,9 @@ def apply(root, public):
         raise ValueError('Plan altéré ; refaire la prévisualisation.')
     _, folder, managed = context(public['home'], public['profile'])
     with locked(managed):
+        reconciliation = managed / 'reconciliation.json'
+        if file_hash(reconciliation) is not None and read_journal(reconciliation).get('status') == 'pending':
+            raise ValueError('Réconciliation partielle : reprendre son plan explicite.')
         journal_path = managed / 'operation.json'
         journal = read_journal(journal_path)
         if journal.get('status') == 'pending':
@@ -940,6 +1073,243 @@ def apply(root, public):
         atomic(journal_path, encoded(journal))
     return {'status': 'completed', 'changed': True, 'backup': journal['backup'],
             'message': 'Configuration appliquée. Aucun client chargé ni service redémarré ; vérification séparée requise.'}
+
+
+# Reconciliation is deliberately separate from ordinary installation ownership checks.
+# Its journal stores target managed data only, never a copy of the original config.
+def _reconcile_span(text):
+    if text.count(START) != 1 or text.count(END) != 1:
+        raise ValueError('Un seul bloc Reprise délimité est requis.')
+    match = re.search(r'(?m)^' + re.escape(START) + r'\r?\n.*?^' + re.escape(END) + r'(?:\r?\n|$)', text, re.S)
+    if match is None:
+        raise ValueError('Délimiteurs Reprise invalides.')
+    return match
+
+
+def _reconcile_inputs(root, home, profile, project, resume_project, write, accepted_block):
+    if type(write) is not bool or not isinstance(accepted_block, str) or not re.fullmatch('[0-9a-f]{64}', accepted_block):
+        raise ValueError('Choix explicite du droit write et empreinte du bloc requis.')
+    home, folder, managed = context(home, profile)
+    for name in ('managed.json', 'operation.json', 'reconciliation.json'):
+        safe_profile_path(managed / name, folder)
+    manifest_before = file_hash(managed / 'managed.json')
+    journal_before = file_hash(managed / 'operation.json')
+    old = manifest(managed)
+    if not old or old.get('status') != 'installed' or not old.get('output_resume'):
+        raise ValueError('Intégration gérée avec continuation existante requise.')
+    project = str(Path(project).expanduser().resolve(strict=True))
+    resume_project = str(Path(resume_project).expanduser().resolve(strict=True))
+    if project != old['project'] or not Path(project).is_dir() or not Path(resume_project).is_dir():
+        raise ValueError('Projet du pont inchangé et continuation existante explicitement choisie requis.')
+    if write and 'reprise_delegate' not in old['tools']:
+        raise ValueError('Write requiert la délégation déjà autorisée.')
+    journal = read_journal(managed / 'operation.json')
+    if journal.get('status') == 'pending':
+        raise ValueError('Opération ordinaire partielle : aucune adoption.')
+    for relative, expected in old.get('managed_files', {}).items():
+        path = folder / relative
+        if Path(relative).is_absolute() or '..' in Path(relative).parts or not any(path.is_relative_to(managed / part) for part in ('skills', 'plugins')):
+            raise ValueError('Fichier géré hors périmètre.')
+        safe_profile_path(path, folder)
+        if file_hash(path) != expected:
+            raise ValueError('Fichier géré absent ou modifié ; réconciliation limitée au bloc.')
+    config = folder / 'cordis.patch.yml'
+    safe_profile_path(config, folder)
+    text = config.read_bytes().decode('utf-8')
+    span = _reconcile_span(text)
+    block = span.group()
+    if digest(block.encode()) != accepted_block:
+        raise ValueError('Bloc différent de l’empreinte explicitement acceptée.')
+    if not initialized(Path(old['state'])) and not (Path(old['state']) / 'tasks.sqlite').is_file():
+        raise ValueError('État Reprise préexistant requis ; aucun registre neuf implicite.')
+    memory = memory_integration.selected(old)
+    expected = _bridge_entries(Path(old['release']), old['state'], old['tools'], project, profile, managed,
+        True, old.get('output_resume_project'), old.get('codex_workspace_write', False),
+        old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory)
+    actual = block_entries(block.replace('\r\n', '\n'))
+    # Normalize only fields explicitly replaced by this operation. All remaining
+    # arguments, tools, permissions and plugin settings must match the old owner.
+    normalized = json.loads(json.dumps(actual))
+    if len(normalized) != len(expected):
+        raise ValueError('Entrées supplémentaires ou manquantes ; adoption refusée.')
+    for live, owned in zip(normalized, expected):
+        if not isinstance(live, dict) or live.get('id') != owned['id']:
+            raise ValueError('Ordre ou identité des entrées modifiés.')
+        if owned['id'] in ('reprise-codex-expert', memory_integration.CONNECTOR):
+            config_live, config_owned = live.get('config', {}), owned['config']
+            if not isinstance(config_live, dict):
+                raise ValueError('Configuration de pont non reconnue.')
+            command, args = config_live.get('command'), config_live.get('args')
+            if (not isinstance(command, str) or not Path(command).is_absolute()
+                    or Path(command).name not in ('python3', 'python3.13') or not isinstance(args, list)
+                    or len(args) < 4 or not isinstance(args[3], str)
+                    or Path(args[3]).name != Path(config_owned['args'][3]).name):
+                raise ValueError('Chemins de pont non reconnus.')
+            config_live['command'] = config_owned['command']
+            args[3] = config_owned['args'][3]
+            if owned['id'] == 'reprise-codex-expert':
+                if args.count('--codex-workspace-write') > 1:
+                    raise ValueError('Droit write ambigu.')
+                args[:] = [arg for arg in args if arg != '--codex-workspace-write']
+                if old.get('codex_workspace_write', False):
+                    args.append('--codex-workspace-write')
+        elif owned['id'] == 'reprise-output-resume':
+            if not isinstance(live.get('name'), str) or Path(live['name']).name != 'harness-output-resume.cjs':
+                raise ValueError('Plugin de continuation non reconnu.')
+            live['name'] = owned['name']
+            # The current project may be obsolete; its replacement is explicit.
+            if not isinstance(live.get('config'), dict) or not isinstance(live['config'].get('projectRoot'), str):
+                raise ValueError('Projet de continuation non reconnu.')
+            live['config']['projectRoot'] = owned['config']['projectRoot']
+    if normalized != expected:
+        raise ValueError('Différence hors chemins, continuation et droit write ; adoption refusée.')
+    helpers, runtime, identity = bundle_info(root)
+    release = Path(old['state']).parent / 'integration-releases' / identity
+    memory_integration.validate_binding(old['state'], memory, project, 'harness')
+    entries = _bridge_entries(release, old['state'], old['tools'], project, profile, managed,
+        True, resume_project, write, old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory)
+    newline = '\n'  # Canonical managed block; outer bytes retain their original endings.
+    target_block = START + newline + '- insert: ' + json.dumps(entries, ensure_ascii=False) + newline + END
+    if block.endswith('\n'):
+        target_block += newline
+    target_config = text[:span.start()] + target_block + text[span.end():]
+    target_manifest = dict(old, release=str(release), output_resume_project=resume_project,
+        codex_workspace_write=write, block_sha256=digest(target_block.encode()),
+        reconciled_from_sha256=accepted_block)
+    guards = {name: file_hash(managed / name) for name in ('managed.json', 'operation.json', 'reconciliation.json')}
+    guards['cordis.patch.yml'] = file_hash(config)
+    if guards['managed.json'] != manifest_before or guards['operation.json'] != journal_before or guards['cordis.patch.yml'] != digest(text.encode()):
+        raise ValueError('Entrées modifiées pendant la lecture ; refaire le plan.')
+    public = {'format': 2, 'action': 'reconcile', 'home': str(home), 'profile': profile,
+        'project': project, 'output_resume_project': resume_project, 'codex_workspace_write': write,
+        'accepted_block_sha256': accepted_block, 'release': str(release), 'guards': guards,
+        'metadata': {name: _simple_metadata(folder / name if name == 'cordis.patch.yml' else managed / name) for name in guards},
+        'concurrency': 'operator-exclusive-access-required',
+        'outside_sha256': [digest(text[:span.start()].encode()), digest(text[span.end():].encode())],
+        'after_config_sha256': digest(target_config.encode()), 'after_manifest_sha256': digest(encoded(target_manifest).encode())}
+    public['fingerprint'] = digest(encoded(public).encode())
+    return public, target_block, target_manifest, helpers, runtime
+
+
+def reconcile_plan(root, home, profile, project, output_resume_project, codex_workspace_write, accepted_block_sha256):
+    _, _, managed = context(home, profile)
+    pending = managed / 'reconciliation.json'
+    if file_hash(pending) is not None and read_journal(pending).get('status') == 'pending':
+        raise ValueError('Réconciliation partielle : reprendre le même plan.')
+    return _reconcile_inputs(root, home, profile, project, output_resume_project,
+                             codex_workspace_write, accepted_block_sha256)[0]
+
+
+def reconcile_apply(root, public):
+    unsigned = {key: value for key, value in public.items() if key != 'fingerprint'}
+    if public.get('format') != 2 or public.get('action') != 'reconcile' or digest(encoded(unsigned).encode()) != public.get('fingerprint'):
+        raise ValueError('Plan de réconciliation altéré ou incompatible.')
+    _, folder, managed = context(public['home'], public['profile'])
+    required = {'format', 'action', 'home', 'profile', 'project', 'output_resume_project',
+        'codex_workspace_write', 'accepted_block_sha256', 'release', 'guards', 'outside_sha256',
+        'after_config_sha256', 'after_manifest_sha256', 'fingerprint', 'metadata', 'concurrency'}
+    if (set(public) != required or type(public['codex_workspace_write']) is not bool
+            or not isinstance(public['guards'], dict)
+            or set(public['guards']) != {'managed.json', 'operation.json', 'reconciliation.json', 'cordis.patch.yml'}
+            or public['concurrency'] != 'operator-exclusive-access-required'
+            or not isinstance(public['metadata'], dict) or set(public['metadata']) != set(public['guards'])):
+        raise ValueError('Champs du plan incompatibles.')
+    with locked(managed):
+        journal_path = managed / 'reconciliation.json'
+        journal = read_journal(journal_path)
+        if journal.get('plan') == public and journal.get('status') in ('pending', 'completed'):
+            pass
+        else:
+            if journal.get('status') == 'pending':
+                raise ValueError('Autre réconciliation partielle ; aucune écriture.')
+            current, block, target, helpers, runtime = _reconcile_inputs(root, public['home'], public['profile'], public['project'],
+                public['output_resume_project'], public['codex_workspace_write'], public['accepted_block_sha256'])
+            if current != public:
+                raise ValueError('Entrées modifiées depuis le plan ; aucune écriture.')
+            stage_release(helpers, runtime, Path(public['release']))
+            for name, expected_hash in public['guards'].items():
+                path = folder / name if name == 'cordis.patch.yml' else managed / name
+                if file_hash(path) != expected_hash:
+                    raise ValueError('Entrées modifiées pendant la préparation du release.')
+            # No old content or full config is copied into this journal.
+            updates = {key: target[key] for key in ('release', 'output_resume_project', 'codex_workspace_write', 'block_sha256', 'reconciled_from_sha256')}
+            journal = {'format': 1, 'status': 'pending', 'plan': public, 'target_block': block, 'manifest_updates': updates}
+            _reconcile_atomic(journal_path, encoded(journal), public['metadata']['reconciliation.json'])
+        release_check(Path(public['release']))
+        _sync_tree(Path(public['release']))
+        _sync_directory(Path(public['release']).parent)
+        _sync_directory(Path(public['release']).parent.parent)
+        block, updates = journal.get('target_block'), journal.get('manifest_updates')
+        if (not isinstance(block, str) or not isinstance(updates, dict)
+                or set(updates) != {'release', 'output_resume_project', 'codex_workspace_write', 'block_sha256', 'reconciled_from_sha256'}
+                or digest(block.encode()) != updates.get('block_sha256')
+                or updates.get('release') != public['release']
+                or updates.get('output_resume_project') != public['output_resume_project']
+                or updates.get('codex_workspace_write') is not public['codex_workspace_write']
+                or updates.get('reconciled_from_sha256') != public['accepted_block_sha256']):
+            raise ValueError('Cible du journal altérée ; aucune écriture.')
+        manifest_path = managed / 'managed.json'
+        if file_hash(manifest_path) not in (public['guards']['managed.json'], public['after_manifest_sha256']):
+            raise ValueError('Conflit manifeste après interruption ; aucune restauration automatique.')
+        # Reconstruct from the surviving manifest, never from a copy of old metadata.
+        target = dict(manifest(managed), **updates)
+        if digest(encoded(target).encode()) != public['after_manifest_sha256']:
+            raise ValueError('Cible manifeste altérée ; aucune écriture.')
+        for key in ('project', 'output_resume_project'):
+            path = Path(public[key])
+            if str(path.resolve(strict=True)) != public[key] or not path.is_dir():
+                raise ValueError('Projet choisi disparu ou déplacé ; réconciliation suspendue.')
+        memory_integration.validate_binding(target['state'], memory_integration.selected(target), public['project'], 'harness')
+        for relative, expected_hash in target.get('managed_files', {}).items():
+            path = folder / relative
+            if Path(relative).is_absolute() or '..' in Path(relative).parts or not any(path.is_relative_to(managed / part) for part in ('skills', 'plugins')):
+                raise ValueError('Cible gérée hors périmètre.')
+            safe_profile_path(path, folder)
+            if file_hash(path) != expected_hash:
+                raise ValueError('Fichier géré modifié ; réconciliation suspendue.')
+        config, manifest_path = folder / 'cordis.patch.yml', managed / 'managed.json'
+        # Validate all current objects before any resumed write. No old content is available.
+        for path, before, after in ((config, public['guards']['cordis.patch.yml'], public['after_config_sha256']),
+                (manifest_path, public['guards']['managed.json'], public['after_manifest_sha256'])):
+            safe_profile_path(path, folder)
+            if file_hash(path) not in (before, after):
+                raise ValueError('Conflit après interruption ; aucune restauration automatique.')
+        if file_hash(managed / 'operation.json') != public['guards']['operation.json']:
+            raise ValueError('Journal ordinaire modifié ; réconciliation suspendue.')
+        text = config.read_bytes().decode('utf-8')
+        span = _reconcile_span(text)
+        outside = [digest(text[:span.start()].encode()), digest(text[span.end():].encode())]
+        result = text[:span.start()] + block + text[span.end():]
+        if outside != public['outside_sha256'] or digest(result.encode()) != public['after_config_sha256']:
+            raise ValueError('Contenu hors bloc différent ; aucune écriture.')
+        for name, expected_metadata in public['metadata'].items():
+            path = folder / name if name == 'cordis.patch.yml' else managed / name
+            if name == 'reconciliation.json' and expected_metadata is None:
+                expected_metadata = {'mode': 0o600, 'uid': os.geteuid(), 'gid': os.getegid(),
+                    'provenance_sha256': _simple_metadata(path)['provenance_sha256']}
+            if _simple_metadata(path) != expected_metadata:
+                raise ValueError('Métadonnées modifiées ; réconciliation suspendue.')
+        # A previous rename may have succeeded while its directory fsync failed.
+        # Re-sync the actual surviving files and directories before accepting any state.
+        for path in (config, manifest_path, journal_path):
+            _sync_file(path)
+            _sync_directory(path.parent)
+        if journal['status'] == 'completed':
+            if file_hash(config) != public['after_config_sha256'] or file_hash(manifest_path) != public['after_manifest_sha256']:
+                raise ValueError('Réconciliation déjà terminée mais état divergent ; aucun rejeu.')
+            return {'status': 'completed', 'changed': False, 'message': 'Même réconciliation déjà terminée ; aucune écriture.'}
+        for path, text, before, after in ((config, result, public['guards']['cordis.patch.yml'], public['after_config_sha256']),
+                (manifest_path, encoded(target), public['guards']['managed.json'], public['after_manifest_sha256'])):
+            observed = file_hash(path)
+            if observed == after:
+                continue
+            if observed != before:
+                raise ValueError('Conflit avant écriture ; opération suspendue.')
+            name = 'cordis.patch.yml' if path == config else 'managed.json'
+            _reconcile_atomic(path, text, public['metadata'][name])
+        journal['status'] = 'completed'
+        _reconcile_atomic(journal_path, encoded(journal), _simple_metadata(journal_path))
+    return {'status': 'completed', 'changed': True, 'message': 'Réconciliation écrite sans sauvegarde ni activation. Aucun rollback disponible.'}
 
 
 def bridge_capabilities(tools):
@@ -1092,12 +1462,25 @@ def main(root, argv=None):
             command.add_argument('--memory-access', choices=('off', 'read', 'write'), default=None)
             command.add_argument('--memory-project-id')
             command.add_argument('--memory-scope-id', help='Scope v2 préexistant explicitement sélectionné')
+    command = sub.add_parser('integration-reconcile-plan')
+    command.add_argument('--home', default=str(Path.home() / '.dsh'))
+    command.add_argument('--profile', required=True)
+    command.add_argument('--project', required=True)
+    command.add_argument('--output-resume-project', required=True)
+    command.add_argument('--accept-block-sha256', required=True)
+    toggle = command.add_mutually_exclusive_group(required=True)
+    toggle.add_argument('--codex-workspace-write', action='store_true', default=None)
+    toggle.add_argument('--no-codex-workspace-write', dest='codex_workspace_write', action='store_false')
     sub.add_parser('integration-apply')
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
         if args.command == 'integration-inspect':
             result = inspect(args.home, args.profile)
+        elif args.command == 'integration-reconcile-plan':
+            result = {'status': 'planned', 'plan': reconcile_plan(root, args.home, args.profile, args.project,
+                args.output_resume_project, args.codex_workspace_write, args.accept_block_sha256),
+                'message': 'Plan explicite sans écriture ni sauvegarde ; aucune activation ni rollback.'}
         elif args.command == 'integration-plan':
             old = manifest(context(args.home, args.profile)[2])
             installed = old if old and old.get('status') == 'installed' else {}

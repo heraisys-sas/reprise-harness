@@ -199,3 +199,81 @@ permettent la révocation sans retrait complet : `--no-delegate`,
 respecte la contrainte préexistante selon laquelle un grant workspace nécessite
 la délégation. Une modification de configuration ne révoque pas les processus
 MCP déjà chargés ; leur rechargement reste une opération distincte.
+
+
+## Réconciliation explicite d’un bloc divergent, sans sauvegarde
+
+`integration-reconcile-plan` est un parcours distinct de l’installation ordinaire.
+Il exige l’empreinte du bloc réellement observé, le projet inchangé du pont, un
+projet de continuation existant explicitement choisi et un choix explicite de
+`--codex-workspace-write` ou `--no-codex-workspace-write`. La présence d’un droit
+write dans un bloc divergent ne constitue jamais à elle seule une autorisation.
+Le plan enregistre ces choix et les empreintes de configuration, manifeste,
+journal ordinaire et journal de réconciliation. `integration-apply` applique le
+plan retourné ; aucune commande de chargement du client n’est exécutée.
+
+Ce parcours exige une intégration gérée avec continuation déjà activée et des
+fichiers skills/plugins intacts. Il peut remplacer les chemins connus du pont et
+du plugin de continuation depuis une release vérifiée, le projet de continuation
+et le droit write choisi ; toute autre différence sémantique bloque l’adoption.
+Les outils, autres permissions, réglages de plugins, mémoire et projet du pont
+ne sont pas adoptés depuis le bloc divergent. Les gardes de propriété de
+`integration-plan`, du retrait et de `integration-verify` ne sont pas affaiblies.
+
+Le remplacement conserve les octets avant et après le bloc à leur position
+initiale, y compris commentaires et fins de ligne. Seul le bloc est régénéré sous
+forme canonique. Le manifeste conserve ses autres métadonnées. Aucune copie de
+sauvegarde n’est produite par la réconciliation ; le journal ordinaire et les
+sauvegardes préexistantes restent intacts.
+
+`.reprise/reconciliation.json` est un journal opérationnel privé : identité du
+plan, empreintes, bloc cible et seuls champs à mettre à jour dans le manifeste.
+Il ne contient ni copie de la configuration, ni ancien bloc, ni copie complète
+du manifeste. La reprise reconstruit le manifeste depuis sa version survivante
+et exige son empreinte avant ou après, ainsi que les octets hors bloc inchangés.
+Une interruption peut donc rester bloquée : sans état courant reconnu, il n’y a
+ni réémission de plan, ni restauration, ni rollback promis. Une opération terminée
+n’est pas rejouée si ses fichiers ont ensuite divergé.
+
+Le verrou du profil est coopératif et non bloquant. Une réconciliation partielle
+bloque les plans et applications ordinaires. Les empreintes sont revérifiées
+après préparation de la release, puis avant les publications ; la préparation
+peut laisser une release vérifiée non référencée si un conflit survient. Aucun
+CAS atomique multi-fichiers ni exclusion d’un éditeur externe non coopératif n’est
+promis : arrêter le client et les autres auteurs reste une précondition opératoire.
+Les écritures atomiques et synchronisations héritées n’ont pas de borne temporelle
+stricte face à un stockage bloqué. Le dépôt permet de reconstruire les fichiers
+gérés, pas de récupérer des réglages personnels perdus hors du bloc.
+
+
+### Préconditions de concurrence et durabilité de la réconciliation
+
+L’autorisation opérateur existante reste valable ; aucune confirmation humaine
+supplémentaire n’est déduite d’un défaut technique. Le plan porte
+`concurrency: operator-exclusive-access-required` : le client DSH, ses agents,
+les éditeurs/synchroniseurs et tout autre auteur du profil doivent être arrêtés
+pendant la prévisualisation et l’application. Le programme vérifie le verrou
+coopératif du profil, l’absence d’opération ordinaire partielle, les empreintes et
+les métadonnées avant publication. Ces contrôles ne peuvent démontrer l’absence
+de tout écrivain non coopératif : une liste de processus à un instant ne le
+prouverait pas non plus. Il n’y a pas de CAS atomique fichier fourni par ce parcours.
+Si cette exclusivité opérationnelle ne peut être établie, ne pas appliquer au
+profil actif ; rester sur une copie isolée ou conserver l’état bloqué.
+
+La release est synchronisée récursivement (fichiers réguliers puis répertoires du
+bas vers le haut) avant sa publication ; une release déjà présente est revérifiée
+et resynchronisée. Une reprise resynchronise également configuration, manifeste,
+journal et leurs répertoires, même si les renommages avaient réussi avant un
+échec de synchronisation. Un journal déjà `completed` n’est reconnu comme succès
+idempotent qu’après ces contrôles et synchronisations. `fsync` fournit la garantie
+annoncée par le système de fichiers et le stockage, pas une preuve physique contre
+toute panne matérielle.
+
+Le mode POSIX, uid et gid des fichiers remplacés sont conservés et liés au plan.
+Liens multiples, propriétaire différent, flags spéciaux et ACL étendues sont
+refusés. Sur macOS, l’attribut système `com.apple.provenance`, automatiquement
+présent sur des fichiers neufs, est transféré par copie des seules métadonnées et
+son empreinte est revérifiée ; aucun contenu original n’est ainsi copié. Les autres
+attributs étendus sont refusés plutôt que supprimés silencieusement. Une plateforme
+ou un état de métadonnées non vérifiable reste bloqué. Ces refus ne suppriment ni
+ne normalisent les attributs de l’original.
