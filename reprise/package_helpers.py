@@ -21,6 +21,7 @@ DOCS = (
     'docs/runbooks/SCHEDULER-SERVICE.md',
     'docs/templates/REPRISE-AGENTS.template.md',
     'docs/contracts/CODEX-EXECUTION-CONTRACT.md',
+    'docs/contracts/APPROVALS-CONTRACT.md',
     'docs/templates/ASI1-ORCHESTRATOR.template.md',
     'docs/contracts/ASI1-ORCHESTRATION-CONTRACT.md',
     'docs/contracts/HANDOFF-CONTRACT.md',
