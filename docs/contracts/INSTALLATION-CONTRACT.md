@@ -182,7 +182,7 @@ Le déploiement Reprise doit aussi proposer son point d’entrée MCP au harness
 
 ## Organisation et configuration des dépôts — 24/10
 
-L’onglet Dépôts (#57) doit guider la configuration du dépôt et appliquer un plan explicite lorsque les droits le permettent. Les rôles hyperviseur, référent technique principal et worker sont configurables selon [HARNESS-ROLES-CONTRACT.md](HARNESS-ROLES-CONTRACT.md). Même contrat pour nouvelles sessions sans boucle et archivage proposé ; aucune de ces capacités n’est annoncée installée par cette documentation.
+L’onglet « Dépôts » attendu par #57 (rouvert le 12/11 : la fonctionnalité n’est pas livrée, voir l’issue) doit guider la configuration du dépôt et appliquer un plan explicite lorsque les droits le permettent. Les rôles hyperviseur, référent technique principal et worker sont configurables selon [HARNESS-ROLES-CONTRACT.md](HARNESS-ROLES-CONTRACT.md). Même contrat pour nouvelles sessions sans boucle et archivage proposé ; aucune de ces capacités n’est annoncée installée par cette documentation.
 
 
 ## Remplacement explicite du seul bundle app sans sauvegarde

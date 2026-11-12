@@ -14,7 +14,7 @@ Décisions utilisateur du 24 octobre 2026. Contrat de conception ; les capacité
 
 Le rôle est attribué explicitement au couple harness/profil ; le modèle peut changer sans perdre le rôle. Porter l’abonnement principal motive une préférence économique, pas une compétence garantie ou de nouvelles permissions. Ces affectations sont des valeurs initiales de cette installation, pas des constantes universelles.
 
-Dans l’onglet Dépôts (#57), choisir hyperviseur, référent technique et worker, puis afficher capacités, disponibilité et droits séparément. L’installation réutilise inspect/plan/apply/verify/remove et les instructions gérées ; aucun nouveau moteur de politique ou cascade d’orchestrateurs.
+Dans l’onglet « Dépôts » attendu par #57 (rouvert le 12/11 : non livré, registre de projets seul en place via project_registry.py), choisir hyperviseur, référent technique et worker, puis afficher capacités, disponibilité et droits séparément. L’installation réutilise inspect/plan/apply/verify/remove et les instructions gérées ; aucun nouveau moteur de politique ou cascade d’orchestrateurs.
 
 ## Worker permanent : premier pilote
 
@@ -57,7 +57,7 @@ Action explicite de l’utilisateur, pas de nettoyage automatique. Utiliser l’
 - Rotation de session avec checkpoint et progrès ; refus répétés sans progrès → pas de boucle ; pas de plafond de sessions arbitraire.
 - Archivage sélectionné et confirmé, exclusions des sessions utiles/actives/incertaines, aucune suppression, réaffichage possible ; capacité native absente annoncée.
 
-#57 couvre l’interface de configuration, #48 les réservations/passations, #10 la reprise multi-harness, #54 les observations Morph, #28 le découplage GUI/service. #59 couvre l’adaptation de la politique de reprise ; #60 l’archivage proposé dans Sessions. Aucun service réel modifié par cette décision.
+#57 (rouvert 12/11, non livré) couvre l’interface de configuration, #48 les réservations/passations, #10 la reprise multi-harness, #54 les observations Morph, #28 le découplage GUI/service. #59 couvre l’adaptation de la politique de reprise ; #60 l’archivage proposé dans Sessions. Aucun service réel modifié par cette décision.
 
 ## Routage : corrections faisant autorité (revue croisée consolidée)
 
