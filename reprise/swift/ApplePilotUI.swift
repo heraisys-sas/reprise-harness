@@ -1102,11 +1102,18 @@ final class ApplePilotUI: ObservableObject {
         selectOperation(operation); preparationBusy = true
         request("job_recover", fields: ["enabled": true, "project_id": projectID, "operation_id": operation])
     }
+    private var canPrepareInOpenSession: Bool {
+        sessionOpen && enabled && !busy && !memoryBusy && !preparationBusy && !closing
+            && !cleanupUnconfirmed && !hostTerminating && !operationBrowserBusy
+            && !preparationUncertain && !preparationJournalUnavailable && canonical(workID)
+            && !["local_pending", "local_admitted", "local_running"].contains(preparationJob["status"] as? String ?? "")
+    }
     /// Allocate a local work identity only for an explicit user action and only
     /// when there is no existing selection or unassigned checkpoint draft.
     func prepareGuidedWork() -> Bool {
-        guard canSwitchReview, canonical(projectID) else { return false }
+        guard (canSwitchReview || canPrepareInOpenSession), canonical(projectID) else { return false }
         if workID.isEmpty {
+            guard !sessionOpen else { return false }
             guard knownProjects?.contains(projectID) == true else { return false }
             guard checkpointDraftWorkID.isEmpty && checkpointID.isEmpty else {
                 preparationStatus = "Un checkpoint ou brouillon existant doit être associé à son travail dans les options avancées."
@@ -1127,9 +1134,9 @@ final class ApplePilotUI: ObservableObject {
         open()
     }
     var canPrepareAnalysis: Bool {
-        canSwitchReview && canonical(projectID)
+        (canSwitchReview || canPrepareInOpenSession) && canonical(projectID)
             && (workID.isEmpty ? (knownProjects?.contains(projectID) == true && checkpointDraftWorkID.isEmpty && checkpointID.isEmpty) : canonical(workID))
-            && analysisOperationID.isEmpty
+            && analysisOperationID.isEmpty && preparationOperationID.isEmpty
     }
     var canStartNewAnalysis: Bool {
         canSwitchReview && isAnalysis && checkpointDraftWorkID.isEmpty

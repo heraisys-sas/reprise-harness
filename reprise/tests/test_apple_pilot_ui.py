@@ -24,6 +24,59 @@ class ApplePilotViewCopyTests(unittest.TestCase):
 
 @unittest.skipUnless(os.uname().sysname == 'Darwin', 'requires macOS Swift')
 class ApplePilotUISmokeTests(unittest.TestCase):
+    def test_analysis_can_be_prepared_without_closing_existing_conversation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); service = root / 'service.py'
+            service.write_text("""import json,sys,hashlib
+from pathlib import Path
+state=Path(sys.argv[sys.argv.index('--state')+1])
+for line in sys.stdin:
+ x=json.loads(line); op=x['op']
+ with (state/'ops').open('a') as f:f.write(op+'\\n')
+ if op=='open': out={'status':'opened'}
+ elif op=='job_prepare':
+  out={'status':'finished','job':{'status':'preparation','project_id':x['project_id'],
+      'operation_id':x['operation_id'],'revision':0,'proposal':x['proposal'],
+      'proposal_sha256':hashlib.sha256(json.dumps(x['proposal'],sort_keys=True,separators=(',',':')).encode()).hexdigest()}}
+ elif op=='job_consent_context':
+  out={'status':'finished','context':{'project_id':x['project_id'],'work_id':x['work_id'],
+       'project_root':'/test','execution_verification':'not_performed'},'context_sha256':'a'*64}
+ elif op=='close': out={'status':'closed'}
+ else: raise AssertionError(op)
+ print(json.dumps({'id':x['id'],**out}),flush=True)
+""")
+            swift = root / 'Conversation.swift'
+            swift.write_text(r'''import Foundation
+@main struct ConversationTest {
+ @MainActor static func main() async {
+  let a=CommandLine.arguments
+  let p=ApplePilotUI(python:URL(fileURLWithPath:a[1]),service:URL(fileURLWithPath:a[2]),state:URL(fileURLWithPath:a[3]),requestTimeout:2)
+  p.enabled=true;p.projectID="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";p.workID="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+  p.updateKnownProjects([p.projectID]);p.open()
+  for _ in 0..<150 {if !p.busy {break};try? await Task.sleep(nanoseconds:20_000_000)}
+  precondition(p.sessionOpen && !p.canSelect)
+  let work=p.workID
+  p.analysisRequest="Préparer une synthèse"
+  precondition(p.canPrepareAnalysis)
+  p.prepareAnalysis()
+  for _ in 0..<150 {if !p.preparationBusy {break};try? await Task.sleep(nanoseconds:20_000_000)}
+  precondition(p.sessionOpen && p.workID==work)
+  precondition(p.preparationJob["status"] as? String == "preparation",p.preparationStatus)
+  precondition(p.canConsent)
+  p.close()
+  for _ in 0..<150 {if !p.hostRunning {break};try? await Task.sleep(nanoseconds:20_000_000)}
+ }
+}
+''')
+            binary = root / 'conversation'
+            subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root/'cache'),
+                            str(ROOT/'swift'/'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
+            subprocess.run([str(binary), sys.executable, str(service), str(root)], check=True, timeout=12)
+            ops = (root/'ops').read_text().splitlines()
+            self.assertEqual(ops.count('job_prepare'), 1)
+            self.assertNotIn('turn', ops)
+            self.assertNotIn('job_local_start', ops)
+
     def test_local_start_journal_recovers_exact_run_without_resubmission(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp); fake=root/'service.py'

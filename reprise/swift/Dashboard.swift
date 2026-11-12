@@ -299,20 +299,20 @@ struct Dashboard: View {
     private func ecosystemLink(_ target: String, symbol: String, value: EcosystemStatus.Value,
                                action: @escaping () -> Void) -> some View {
         let color = ecosystemColor(value.level)
-        return HStack(alignment: .top, spacing: 12) {
-            VStack(spacing: 0) {
-                Image(systemName: "circle.fill").font(.system(size: 8)).foregroundStyle(color)
-                Rectangle().fill(color).frame(width: 2, height: 38)
-                Image(systemName: symbol).font(.system(size: 14)).foregroundStyle(color)
-            }.frame(width: 20).accessibilityHidden(true)
+        return HStack(alignment: .center, spacing: 0) {
+            Rectangle().fill(color).frame(width: 24, height: 2).accessibilityHidden(true)
+            Image(systemName: symbol).font(.system(size: 15, weight: .medium))
+                .foregroundStyle(color).frame(width: 32, height: 32)
+                .background(color.opacity(0.1), in: Circle()).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
-                HStack {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Button(target, action: action).buttonStyle(.link).font(.headline)
-                    Spacer()
+                    Spacer(minLength: 8)
                     Text(value.label).font(.caption.weight(.semibold)).foregroundStyle(color)
+                        .multilineTextAlignment(.trailing)
                 }
                 Text(value.detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
+            }.padding(.leading, 10)
         }.accessibilityElement(children: .contain)
     }
     private func applicationPresent(_ bundleID: String) -> Bool {
@@ -349,14 +349,23 @@ struct Dashboard: View {
         return VStack(alignment: .leading, spacing: 18) {
             Surface {
                 VStack(alignment: .leading, spacing: 16) {
-                    Label("Reprise", systemImage: "arrow.clockwise.circle.fill").font(.title3.weight(.semibold))
                     Text("Les couleurs concernent l’observation indiquée : elles ne prouvent ni le chargement des outils par un client, ni la réussite d’une tâche.")
                         .font(.caption).foregroundStyle(.secondary)
+                    HStack(alignment: .center, spacing: 0) {
+                        VStack(spacing: 8) {
+                            Image(systemName: "arrow.clockwise.circle.fill").font(.title)
+                            Text("Reprise").font(.headline)
+                        }
+                        .frame(width: 84).padding(.vertical, 14)
+                        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                        .accessibilityElement(children: .combine)
+                        Rectangle().fill(Color.secondary.opacity(0.35)).frame(width: 24, height: 2).accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 18) {
                     if app.scheduler["installed"] as? Bool == true {
                         ecosystemLink("Planificateur", symbol: "clock.arrow.circlepath", value: EcosystemStatus.scheduler(app.scheduler)) { app.page = "resumptions" }
                     }
-                    if EcosystemStatus.present(installed: applicationPresent("com.openai.codex"), detected: detectedSocket(app.connection) || codexCLI) {
-                        ecosystemLink("Codex · socket", symbol: "terminal", value: codex) { app.connectionTab = "codex"; app.page = "connections" }
+                    if EcosystemStatus.present(installed: applicationPresent("com.openai.codex"), detected: codexCLI || codex.level == .ready) {
+                        ecosystemLink("Codex", symbol: "terminal", value: codex) { app.connectionTab = "codex"; app.page = "connections" }
                     }
                     if EcosystemStatus.present(installed: FileManager.default.fileExists(atPath: app.root.appendingPathComponent("claude_desktop_quick.py").path), detected: detectedSocket(app.desktopConnection)) {
                         ecosystemLink("Quick Apply · adaptateur", symbol: "bolt.horizontal", value: quick) { app.connectionTab = "quickapply"; app.page = "connections" }
@@ -373,11 +382,17 @@ struct Dashboard: View {
                     if applicationPresent("com.zhipuai.autoclaw") {
                         ecosystemLink("AutoClaw", symbol: "bolt", value: .init(level: .attention, label: "Présent · lien non vérifié", detail: "La présence de l’application ne confirme pas un échange avec Reprise.")) { app.page = "integrations" }
                     }
-                    if ironclawConfigured {
-                        ecosystemLink("IronClaw · configuration distante", symbol: "network", value: .init(level: .attention, label: "Non vérifié", detail: "L’état d’une connexion distante n’est pas suivi en continu ici.")) { app.connectionTab = "ironclaw"; app.page = "connections" }
+                    if ironclawConfigured && FileManager.default.fileExists(atPath: app.root.appendingPathComponent("ironclaw_connection.py").path) {
+                        ecosystemLink("IronClaw · adaptateur local", symbol: "network", value: .init(level: .attention, label: "Distant non vérifié", detail: "L’adaptateur et sa configuration sont présents ; le service distant n’est pas confirmé.")) { app.connectionTab = "ironclaw"; app.page = "connections" }
                     }
                     if FileManager.default.fileExists(atPath: app.root.appendingPathComponent("apple_pilot_service.py").path) && FileManager.default.fileExists(atPath: "/System/Library/Frameworks/FoundationModels.framework") {
                         ecosystemLink("Pilote Apple · adaptateur", symbol: "sparkles", value: .init(level: .attention, label: applePilot.sessionOpen ? "Session ouverte" : "Session non ouverte", detail: "La disponibilité du modèle et le résultat d’une analyse sont vérifiés séparément.")) { app.page = "apple-pilot" }
+                    }
+                        }
+                        .overlay(alignment: .leading) {
+                            Rectangle().fill(Color.secondary.opacity(0.35)).frame(width: 1)
+                                .padding(.vertical, 20).accessibilityHidden(true)
+                        }
                     }
                 }
             }
@@ -855,9 +870,11 @@ struct Dashboard: View {
                 title: app.connection.isEmpty ? "Configuration indisponible" : "Configuration Codex chargée",
                 detail: app.connection.isEmpty ? "Lancez une actualisation pour lire l’état du service."
                     : customSocket ? "Socket personnalisé enregistré. Testez la connexion pour vérifier le service." : "Détection automatique du socket local ou de la CLI ; la configuration seule ne confirme pas la connexion.")
-            SettingsCard(title: "Partage avec Codex Desktop",
+            SettingsCard(title: "Partage des sessions avec Codex Desktop",
                          status: shared["startup_eligible"] as? Bool == true ? "Validé" : "À valider",
                          ok: shared["startup_eligible"] as? Bool == true) {
+                Text("Ce parcours vérifie un chat dans le service partagé. Le transport utilisé par Desktop et la propriété de ses chats ne sont pas déduits de ce seul test.")
+                    .font(.caption).foregroundStyle(.secondary)
                 HStack(spacing: 10) {
                     Button("1. Préparer codexd") { app.sharedAction("prepare") }.disabled(app.sharedBusy)
                     Button("2. Démarrer l’appli liée") { app.sharedAction("launch") }
@@ -876,7 +893,7 @@ struct Dashboard: View {
                 if !app.sharedNote.isEmpty { InlineStatus(busy: false, message: app.sharedNote) }
                 SettingsHint(
                     text: "Après validation, choisissez le socket et réactivez les reprises depuis leur vue.",
-                    detail: "La vérification confirme que le chat est bien chargé dans Desktop. Vérifiez aussi les outils de Desktop lui-même avant d’activer le lancement automatique. Les reprises restent en pause jusqu’à leur réactivation manuelle.")
+                    detail: "La vérification confirme que le chat est chargé dans le service partagé, sans prouver que Desktop utilise ce même propriétaire. Vérifiez aussi les outils de Desktop avant d’activer le lancement automatique. Contrôlez l’état des reprises après validation.")
                 Toggle("Lancer ce mode à l’ouverture de Reprise", isOn: Binding(get: { app.sharedStartup }, set: { app.setSharedStartup($0) }))
                     .disabled(app.sharedBusy || (shared["startup_eligible"] as? Bool != true && !app.sharedStartup))
                 SettingsHint(
