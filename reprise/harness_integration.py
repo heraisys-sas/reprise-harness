@@ -271,6 +271,43 @@ def _bridge_entries(release, state, tools, project, profile, managed, output_res
     return entries
 
 
+def _validate_target_entries(entries):
+    # Garde-fous contre les corruptions observées hors Reprise : interpréteur
+    # absent, hash de release épissé dans un chemin, bloc plié (style yaml.dump).
+    for entry in entries:
+        config = entry.get('config') if isinstance(entry, dict) else None
+        if not isinstance(config, dict):
+            continue
+        paths = [config.get('command'), entry.get('name')]
+        args = config.get('args')
+        if isinstance(args, list):
+            paths.extend(arg for arg in args if isinstance(arg, str))
+        for path in paths:
+            if not isinstance(path, str) or not path:
+                continue
+            for part in Path(path).parts:
+                if re.fullmatch('[0-9a-fA-F]{65,}', part):
+                    raise ValueError('Chemin épissé ou hash collé : ' + part)
+        command = config.get('command')
+        if config.get('transport') == 'stdio' and isinstance(command, str) and command:
+            if not Path(command).is_file():
+                raise ValueError("Le chemin de l'interpréteur du serveur n'existe pas : " + command)
+
+
+def _canonical_paths(entries):
+    stack = list(entries)
+    while stack:
+        value = stack.pop()
+        if isinstance(value, str):
+            if '\n' in value or value.endswith('\\'):
+                return False
+        elif isinstance(value, list):
+            stack.extend(value)
+        elif isinstance(value, dict):
+            stack.extend(value.values())
+    return True
+
+
 def tree_files(root):
     result = {}
     for entry in sorted(root.rglob('*')):
@@ -1167,8 +1204,14 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
     memory_integration.validate_binding(old['state'], memory, project, 'harness')
     entries = _bridge_entries(release, old['state'], old['tools'], project, profile, managed,
         True, resume_project, write, old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory)
+    _validate_target_entries(entries)
+    if not _canonical_paths(entries):
+        raise ValueError('Bloc non canonique : une seule ligne entre les délimiteurs, sans continuation.')
     newline = '\n'  # Canonical managed block; outer bytes retain their original endings.
-    target_block = START + newline + '- insert: ' + json.dumps(entries, ensure_ascii=False) + newline + END
+    payload = '- insert: ' + json.dumps(entries, ensure_ascii=False)
+    if '\n' in payload:
+        raise ValueError('Bloc non canonique : le JSON des entries doit tenir sur une seule ligne.')
+    target_block = START + newline + payload + newline + END
     if block.endswith('\n'):
         target_block += newline
     target_config = text[:span.start()] + target_block + text[span.end():]

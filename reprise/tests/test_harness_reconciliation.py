@@ -227,6 +227,50 @@ class HarnessReconciliationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'd\u00e9j\u00e0 active'): self.apply_plan(proposed)
         self.assertEqual(integration.tree_files(self.folder), before)
 
+    def test_missing_interpreter_path_refuses_plan_without_any_block_write(self):
+        import shutil
+        self.divergent()
+        release = self.base / 'integration-releases'
+        identity = next(release.iterdir())
+        shutil.rmtree(identity)
+        before = integration.tree_files(self.folder)
+        with self.assertRaisesRegex(ValueError, "n'existe pas"):
+            self.reconcile()
+        self.assertEqual(integration.tree_files(self.folder), before)
+
+    def test_spliced_hash_longer_than_64_in_any_path_is_refused(self):
+        self.divergent()
+        original = integration.bundle_info
+        before = integration.tree_files(self.folder)
+        with patch.object(integration, 'bundle_info',
+                          side_effect=lambda root: original(root)[:2] + ('f' * 128,)):
+            with self.assertRaisesRegex(ValueError, 'hash collé'):
+                self.reconcile()
+        self.assertEqual(integration.tree_files(self.folder), before)
+
+    def test_folded_block_is_regenerated_canonical_single_line(self):
+        self.install(delegate=True, output_resume=True, output_resume_project=self.project)
+        text = self.config.read_bytes().decode()
+        span = integration._reconcile_span(text)
+        entries = integration.block_entries(span.group())
+        body = integration._yaml_module().dump([{'insert': entries}], allow_unicode=True,
+                                               default_flow_style=False)
+        block = integration.START + '\n' + body + integration.END + '\n'
+        self.config.write_bytes(block.encode())
+        self.assertGreater(len(block.strip().splitlines()), 3)
+        proposed = self.reconcile()
+        self.apply_plan(proposed)
+        published = integration._reconcile_span(self.config.read_bytes().decode()).group()
+        lines = published.strip().splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(lines[1].startswith('- insert: '))
+        self.assertNotIn('\\', lines[1])
+        rewritten = integration.block_entries(published)
+        rewritten[0]['config']['args'].remove('--codex-workspace-write')
+        self.assertEqual(rewritten, entries)
+        manifest = json.loads((self.managed / 'managed.json').read_bytes())
+        self.assertEqual(manifest['block_sha256'], integration.digest(published.encode()))
+
     def test_cli_requires_explicit_write_and_produces_only_a_plan(self):
         import contextlib
         import io
