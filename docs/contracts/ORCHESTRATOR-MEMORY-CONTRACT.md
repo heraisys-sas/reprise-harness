@@ -302,3 +302,39 @@ historique datée et versionnée peut précéder une modification ou suppression
 fait courant. La suppression reste limitée au fait courant : elle ne purge pas
 les snapshots, requêtes et reçus déjà approuvés. Cette conservation est affichée
 avant confirmation, et aucun verrou n’est gardé pendant le modèle.
+
+### Socle interne du rappel qualifié (#151)
+
+`Memory.recall_scopes(project_id, work_id)` résout en lecture seule le namespace
+projet historique et l'éventuel scope du travail courant. Une base v1 ou un scope
+travail absent est signalé sans migration ni création. Une association contradictoire,
+un doublon de scope travail ou une collision avec un UUID de projet est refusé.
+Cette résolution n'est pas une autorisation : le service doit valider le contexte
+hôte avant son utilisation.
+
+`coordinator_recall.read_scoped_snapshot` et `validate_v2` constituent un socle
+interne, sans raccordement au service ou à la GUI à ce stade. Le snapshot
+`reprise-memory-selection-v2` conserve les clés racines `schema`, `project_id`,
+`work_id`, `facts`. Chaque fait conserve les champs v1 et ajoute `scope`, copie
+du descripteur `{id, kind, subject_id, project_id, work_id}`. Seuls le projet
+sélectionné et l'unique scope du travail courant sont admissibles ; aucun scope
+utilisateur ou héritage implicite n'est autorisé. La sélection porte des références
+`{scope_id, fact_id}`, triées par ce couple, sans doublon. Deux faits portant le
+même UUID dans deux namespaces restent distincts. Les limites cumulées restent
+huit faits et 12 Kio. La validation historique ne relit jamais les scopes vivants.
+
+Le lecteur, validateur et parcours d'approbation v1 restent inchangés ; le lecteur
+v2 ne les remplace pas implicitement. `attach_scoped` revalide la copie avant
+mutation et conserve les références qualifiées dans l'identité d'approbation.
+Un rejeu déjà accepté retrouve sa copie historique sans relire la mémoire ; un
+même identifiant avec une autre identité est refusé. Le CAS de révision Jobs
+reste applicable aux approbations concurrentes.
+
+Le SHA-256 du snapshot v2 participe au consentement et au manifeste comme celui
+de v1. Le format `preparation-analysis-v4-recall` reste exclusivement associé au
+snapshot v1 ; `preparation-analysis-v5-scoped-recall` exige v2. Un helper qui
+n'annonce pas v5 est refusé avant réservation d'une tentative. Le payload contient
+la copie approuvée exacte ; sa reconstruction ne recherche pas de faits vivants.
+Le helper valide le contexte et les scopes de v2 avant de sérialiser les souvenirs
+comme données non fiables, sans leur conférer d'autorité. La liaison service/GUI
+doit être vérifiée avant de considérer le parcours opérateur complet.

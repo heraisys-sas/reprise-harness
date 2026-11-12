@@ -72,6 +72,78 @@ class MemoryTests(unittest.TestCase):
 
     def tearDown(self): self.temp.cleanup()
 
+    def test_recall_scope_resolution_preserves_legacy_and_does_not_create_scopes(self):
+        fact = self.store.create_fact(self.p1, uid(), 'Historical project fact', SOURCE)
+        historical = self.store.get_fact(self.p1, fact['id'])
+        work = uid()
+        path = self.store.directory / 'memory.enc'
+        before = path.read_bytes()
+        result = self.store.recall_scopes(self.p1, work)
+        self.assertEqual(result['work_scope_status'], 'legacy_store')
+        self.assertIsNone(result['work_scope'])
+        self.assertEqual(path.read_bytes(), before)
+        self.store.migrate_scopes_v2()
+        before = path.read_bytes()
+        result = self.store.recall_scopes(self.p1, work)
+        self.assertEqual(result['work_scope_status'], 'not_registered')
+        self.assertEqual(self.store.get_fact(self.p1, fact['id']), historical)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_recall_scope_resolution_only_returns_current_work(self):
+        self.store.migrate_scopes_v2()
+        work = uid()
+        current = self.store.register_scope('work', project_id=self.p1, work_id=work)
+        self.store.register_scope('work', project_id=self.p1, work_id=uid())
+        self.store.register_scope('user', subject_id=uid())
+        path = self.store.directory / 'memory.enc'
+        before = path.read_bytes()
+        result = self.store.recall_scopes(self.p1, work)
+        self.assertEqual(result['work_scope_status'], 'available')
+        self.assertEqual(result['work_scope']['id'], current)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_recall_scope_resolution_refuses_conflicting_associations(self):
+        self.store.migrate_scopes_v2()
+        work = uid()
+        self.store.register_scope('work', project_id=self.p2, work_id=work)
+        with self.assertRaisesRegex(ValueError, 'association conflict'):
+            self.store.recall_scopes(self.p1, work)
+
+    def test_recall_scope_resolution_refuses_project_namespace_collision(self):
+        self.store.migrate_scopes_v2()
+        work = uid()
+        # p2 is registered but has no facts and therefore no migrated scope.
+        with self.store._store(write=True) as db:
+            db.execute('INSERT INTO scopes VALUES (?, ?, NULL, ?, ?)',
+                       (self.p2, 'work', self.p1, work))
+        with self.assertRaisesRegex(ValueError, 'namespace collision'):
+            self.store.recall_scopes(self.p1, work)
+
+    def test_recall_scope_resolution_refuses_duplicate_associations(self):
+        self.store.migrate_scopes_v2()
+        work = uid()
+        self.store.register_scope('work', project_id=self.p1, work_id=work)
+        # Synthetic corruption/duplicate: nullable UNIQUE columns do not
+        # establish uniqueness of a host work association in SQLite.
+        with self.store._store(write=True) as db:
+            db.execute('INSERT INTO scopes VALUES (?, ?, NULL, ?, ?)',
+                       (uid(), 'work', self.p1, work))
+        with self.assertRaisesRegex(ValueError, 'association conflict'):
+            self.store.recall_scopes(self.p1, work)
+
+    def test_recall_scope_resolution_registry_failure_is_not_unknown_project(self):
+        self.store.migrate_scopes_v2()
+        work = uid()
+        namespace = self.store.register_scope('work', project_id=self.p1, work_id=work)
+        original = memory.Memory._project
+        def fail_scope(store, project):
+            if project == namespace:
+                raise ValueError('Malformed project registry schema')
+            return original(store, project)
+        with patch.object(memory.Memory, '_project', fail_scope):
+            with self.assertRaisesRegex(ValueError, 'Malformed project registry schema'):
+                self.store.recall_scopes(self.p1, work)
+
     def checkpoint(self, fact_ids, *, project=None, work=None, operation=None, version=0):
         return self.store.create_checkpoint(project or self.p1, work or uid(), operation or uid(), version,
             fact_ids=fact_ids, decisions=['décision'], constraints=['contrainte'], next_action='vérifier',

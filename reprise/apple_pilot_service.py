@@ -118,6 +118,11 @@ class Service:
             'job_authorize': {'id', 'op', 'enabled', 'project_id', 'work_id', 'operation_id',
                 'authorization_id', 'expected_revision', 'expected_proposal_sha256', 'expected_context_sha256'},
             'job_prepare': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'proposal'},
+            'job_memory_search': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'work_id', 'query', 'project_offset', 'work_offset'},
+            'job_memory_fact': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'work_id', 'fact_ref'},
+            'job_memory_preview_v2': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'work_id', 'fact_refs'},
+            'job_memory_attach_v2': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'work_id', 'fact_refs',
+                'snapshot_sha256', 'selection_id', 'expected_revision', 'operator_confirmed'},
             'job_memory_preview': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'work_id', 'fact_ids'},
             'job_memory_attach': {'id', 'op', 'enabled', 'project_id', 'operation_id', 'work_id', 'fact_ids',
                 'snapshot_sha256', 'selection_id', 'expected_revision', 'operator_confirmed'},
@@ -134,7 +139,7 @@ class Service:
             self._reply(ident, 'error')
 
     def _dispatch(self, ident, op, request):
-        if op in ('job_candidate_extract', 'job_candidate_import', 'job_clarify', 'job_clarification_review', 'job_prepare', 'job_memory_preview', 'job_memory_attach', 'job_list', 'job_recover', 'job_revise', 'job_consent_context', 'job_authorize', 'job_authorize_local', 'job_local_plan', 'job_local_start', 'job_local_stop'):
+        if op in ('job_memory_search', 'job_memory_fact', 'job_memory_preview_v2', 'job_memory_attach_v2', 'job_candidate_extract', 'job_candidate_import', 'job_clarify', 'job_clarification_review', 'job_prepare', 'job_memory_preview', 'job_memory_attach', 'job_list', 'job_recover', 'job_revise', 'job_consent_context', 'job_authorize', 'job_authorize_local', 'job_local_plan', 'job_local_start', 'job_local_stop'):
             if request.get('enabled') is not True:
                 self._reply(ident, 'not_enabled')
                 return
@@ -405,6 +410,52 @@ class Service:
                     result = self.local_factory(jobs).recover(project, operation)
             elif op == 'job_prepare':
                 result = jobs.prepare_proposal(project, operation, request['proposal'])
+            elif op == 'job_memory_attach_v2':
+                result = coordinator_recall.attach_scoped(jobs, lambda: self.memory_factory(self.state), project, operation,
+                    work=request['work_id'], fact_refs=request['fact_refs'], snapshot_sha256=request['snapshot_sha256'],
+                    selection_id=request['selection_id'], expected_revision=request['expected_revision'],
+                    operator_confirmed=request['operator_confirmed'])
+            elif op in ('job_memory_search', 'job_memory_fact', 'job_memory_preview_v2'):
+                work = _uuid(request['work_id'])
+                jobs.consent_context(project, work)
+                row = jobs.recover(project, operation)
+                if row is None or row['status'] != 'preparation' or coordinator_local.analysis_request(row) is None:
+                    raise ValueError('Explicit native analysis required')
+                association, bound_work = jobs._work_association(row)
+                if association == 'inconsistent' or (bound_work is not None and bound_work != work):
+                    raise ValueError('Recall scope association conflict')
+                memory = self.memory_factory(self.state)
+                resolved = memory.recall_scopes(project, work)
+                context = dict(resolved, operation_id=operation)
+                if op == 'job_memory_search':
+                    query = orchestrator_memory._text(request['query'], limit=1024)
+                    sections = {}
+                    for kind in ('project', 'work'):
+                        offset = request[kind + '_offset']
+                        memory._page(20, offset)
+                        scope = ({'id': project, 'kind': 'project', 'subject_id': None,
+                                  'project_id': project, 'work_id': None} if kind == 'project' else resolved['work_scope'])
+                        rows = []
+                        if scope is not None:
+                            store = memory if kind == 'project' else orchestrator_memory.ScopedMemory(memory.state, scope['id'], crypt=memory.crypt)
+                            if kind == 'work' and store.bound_scope != scope:
+                                raise ValueError('Recall scope association conflict')
+                            rows = store.search_facts(scope['id'], query, limit=21, offset=offset)
+                        items = [{'id': fact['id'], 'revision': fact['revision'], 'scope': scope,
+                                  'excerpt': fact['text'][:256], 'excerpt_truncated': len(fact['text']) > 256}
+                                 for fact in rows[:20]]
+                        sections[kind] = {'items': items, 'next_offset': offset + 20 if len(rows) > 20 and offset + 20 <= 10000 else None}
+                    response = {'status': 'finished', 'recall_context': context, 'sections': sections}
+                elif op == 'job_memory_fact':
+                    snapshot = coordinator_recall.read_scoped_snapshot(memory, project, work, [request['fact_ref']])
+                    response = {'status': 'finished', 'recall_context': context, 'fact': snapshot['facts'][0]}
+                elif op == 'job_memory_preview_v2':
+                    refs = coordinator_recall.qualified_references(request['fact_refs'])
+                    if refs != request['fact_refs']:
+                        raise ValueError('Noncanonical scoped memory selection')
+                    snapshot = coordinator_recall.read_scoped_snapshot(memory, project, work, refs)
+                    response = {'status': 'finished', 'recall_context': context, 'memory_preview': snapshot,
+                                'snapshot_sha256': coordinator_candidate.digest(snapshot)}
             elif op == 'job_memory_preview':
                 jobs.consent_context(project, _uuid(request['work_id']))
                 row = jobs.recover(project, operation)
@@ -434,13 +485,15 @@ class Service:
             else:
                 result = jobs.revise(project, operation, request['proposal'],
                                      expected_revision=request['expected_revision'])
-            if op not in ('job_candidate_extract', 'job_consent_context', 'job_local_plan', 'job_list', 'job_memory_preview') and (op != 'job_recover' or result is not None):
+            if op not in ('job_memory_search', 'job_memory_fact', 'job_memory_preview_v2', 'job_candidate_extract', 'job_consent_context', 'job_local_plan', 'job_list', 'job_memory_preview') and (op != 'job_recover' or result is not None):
                 response = {'status': 'finished', 'job': result}
         except coordinator_jobs.WriteUncertainError:
             response = {'status': 'write_uncertain', 'effect': 'indeterminate'}
         except ValueError as exc:
             message = str(exc)
-            if op in ('job_authorize', 'job_authorize_local', 'job_consent_context', 'job_local_plan', 'job_local_start', 'job_local_stop'):
+            if (op.startswith('job_memory_') and op.endswith('_v2')) or op in ('job_memory_search', 'job_memory_fact'):
+                status = 'memory_scope_conflict' if message in ('Recall scope association conflict', 'Recall scope namespace collision') else 'invalid_memory_request'
+            elif op in ('job_authorize', 'job_authorize_local', 'job_consent_context', 'job_local_plan', 'job_local_start', 'job_local_stop'):
                 statuses = {'Revision conflict': 'revision_conflict', 'Mission locked': 'mission_locked',
                     'Authorization conflict': 'authorization_conflict', 'Clarification required': 'clarification_required',
                     'Host context changed': 'host_context_changed', 'Host context unavailable': 'host_context_unavailable',
@@ -457,10 +510,10 @@ class Service:
             else:
                 status = 'invalid_proposal'
             response = {'status': status}
-            if validation_only or op in ('job_candidate_extract', 'job_candidate_import', 'job_clarify', 'job_clarification_review', 'job_memory_preview', 'job_memory_attach', 'job_authorize', 'job_authorize_local', 'job_consent_context', 'job_local_plan'):
+            if validation_only or op in ('job_memory_search', 'job_memory_fact', 'job_memory_preview_v2', 'job_memory_attach_v2', 'job_candidate_extract', 'job_candidate_import', 'job_clarify', 'job_clarification_review', 'job_memory_preview', 'job_memory_attach', 'job_authorize', 'job_authorize_local', 'job_consent_context', 'job_local_plan'):
                 response['effect'] = 'not_admitted'
         except Exception:
-            response = {'status': 'job_unavailable'}
+            response = {'status': 'memory_unavailable' if op in ('job_memory_search', 'job_memory_fact', 'job_memory_preview_v2') else 'job_unavailable'}
         # Release admission before publishing the terminal reply: a client may
         # submit its next step as soon as it receives that reply. Keep the
         # emitting thread tracked separately so shutdown still waits for it.

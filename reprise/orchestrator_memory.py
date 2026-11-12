@@ -376,6 +376,58 @@ class Memory:
             db.execute('PRAGMA user_version=2')
         return {'status': 'migrated', 'version': 2, 'backup': 'memory.v1-backup.enc' if has_backup else None}
 
+    def recall_scopes(self, project_id, work_id):
+        """Resolve existing recall namespaces; never register or migrate them.
+
+        This internal host primitive is not an authorization API. The caller
+        must establish the current project/work context before using its result.
+        Legacy project facts remain addressable even without a scopes row.
+        """
+        Memory._project(self, project_id)
+        _uuid(work_id)
+        with self._store() as db:
+            version = db.execute('PRAGMA user_version').fetchone()[0]
+            if version == 1:
+                return {'project_id': project_id, 'work_id': work_id,
+                        'project_namespace': project_id, 'work_scope': None,
+                        'work_scope_status': 'legacy_store'}
+            if version != 2:
+                raise ValueError('Unsupported memory schema version')
+            # Inspect every row claiming this work, including malformed rows
+            # whose kind or project association contradicts that claim.
+            rows = [dict(row) for row in db.execute(
+                'SELECT * FROM scopes WHERE work_id=? OR id=?', (work_id, project_id))]
+            work = []
+            for row in rows:
+                _uuid(row['id'])
+                if row['id'] == project_id:
+                    if row != {'id': project_id, 'kind': 'project', 'subject_id': None,
+                               'project_id': project_id, 'work_id': None}:
+                        raise ValueError('Recall scope association conflict')
+                if row['work_id'] == work_id:
+                    if (row['kind'] != 'work' or row['subject_id'] is not None
+                            or row['project_id'] != project_id):
+                        raise ValueError('Recall scope association conflict')
+                    # A scope ID occupies the same storage namespace as a
+                    # legacy project UUID. Reject collisions with *any* known
+                    # project, including projects with no scope row or facts.
+                    try:
+                        Memory._project(self, row['id'])
+                    except ValueError as exc:
+                        # _project classifies only a successful registry lookup
+                        # with no matching row as 'Unknown project'. Every
+                        # transport, permission and schema failure must escape.
+                        if str(exc) != 'Unknown project':
+                            raise
+                    else:
+                        raise ValueError('Recall scope namespace collision')
+                    work.append(row)
+            if len(work) > 1:
+                raise ValueError('Recall scope association conflict')
+            return {'project_id': project_id, 'work_id': work_id,
+                    'project_namespace': project_id, 'work_scope': work[0] if work else None,
+                    'work_scope_status': 'available' if work else 'not_registered'}
+
     def register_scope(self, kind, *, subject_id=None, project_id=None, work_id=None):
         """Administrative host API, absent from the MCP catalogue.
 

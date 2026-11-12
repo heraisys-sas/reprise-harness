@@ -63,6 +63,7 @@ SUPERVISION_CONTRACT = {'contract': 'foundation-explain-v1-self-deadline', 'max_
 ANALYSIS_FORMAT = 'preparation-analysis-v2'
 ANALYSIS_V3 = 'preparation-analysis-v3-guided'
 ANALYSIS_RECALL = 'preparation-analysis-v4-recall'
+ANALYSIS_SCOPED_RECALL = 'preparation-analysis-v5-scoped-recall'
 ANALYSIS_OBJECTIVE = 'Analyse locale de préparation (reprise-analysis-v2).'
 
 
@@ -92,7 +93,10 @@ def analysis_request(row):
 
 
 def analysis_format(row):
-    if 'memory_selection' in row: return ANALYSIS_RECALL
+    if 'memory_selection' in row:
+        import coordinator_recall
+        snapshot = coordinator_recall.validate_selection(row['memory_selection']['snapshot'])
+        return ANALYSIS_SCOPED_RECALL if snapshot['schema'] == coordinator_recall.SCHEMA_V2 else ANALYSIS_RECALL
     return ANALYSIS_V3 if row['proposal']['objective'] == ANALYSIS_OBJECTIVE.replace('-v2', '-v3') else ANALYSIS_FORMAT
 
 
@@ -155,7 +159,7 @@ class LocalExecution:
         if 'memory_selection' in row:
             import coordinator_recall
             selection = row['memory_selection']
-            snapshot = coordinator_recall.validate(selection['snapshot'])
+            snapshot = coordinator_recall.validate_selection(selection['snapshot'])
             if snapshot['project_id'] != project or snapshot['work_id'] != manifest['work_id']:
                 raise ValueError('Memory selection context mismatch')
             manifest['memory_snapshot_sha256'] = digest(snapshot)
@@ -217,13 +221,13 @@ class LocalExecution:
         if version is None:
             model_input = {'facts': jobs_module._json(row['proposal']),
                            'question': 'Réponds à l’objectif décrit dans ces données et précise les limites de ta réponse.'}
-        elif version in (ANALYSIS_FORMAT, ANALYSIS_V3, ANALYSIS_RECALL):
+        elif version in (ANALYSIS_FORMAT, ANALYSIS_V3, ANALYSIS_RECALL, ANALYSIS_SCOPED_RECALL):
             request = analysis_request(row)
             if request is None or analysis_format(row) != version: raise ValueError('Invalid analysis template')
             model_input = {'prompt_format': version, 'operator_request': request}
-            if version == ANALYSIS_RECALL:
+            if version in (ANALYSIS_RECALL, ANALYSIS_SCOPED_RECALL):
                 import coordinator_recall
-                snapshot = coordinator_recall.validate(row['memory_selection']['snapshot'])
+                snapshot = coordinator_recall.validate_selection(row['memory_selection']['snapshot'])
                 if digest(snapshot) != manifest.get('memory_snapshot_sha256'):
                     raise ValueError('Memory selection identity changed')
                 model_input['selected_memory'] = snapshot
@@ -299,7 +303,7 @@ class LocalExecution:
                 with snapshot.open('xb') as stream:
                     stream.write(binary); stream.flush(); os.fsync(stream.fileno())
                 snapshot.chmod(0o500)
-                _probe(str(snapshot), required_format=manifest.get('prompt_format') if manifest.get('prompt_format') in (ANALYSIS_FORMAT, ANALYSIS_V3, ANALYSIS_RECALL) else None)
+                _probe(str(snapshot), required_format=manifest.get('prompt_format') if manifest.get('prompt_format') in (ANALYSIS_FORMAT, ANALYSIS_V3, ANALYSIS_RECALL, ANALYSIS_SCOPED_RECALL) else None)
                 with self._store(manifest['project_root']) as store:
                     # Rights, one-request budget and immutable payload are committed atomically.
                     with control.lock:
