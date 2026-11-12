@@ -56,6 +56,8 @@ class PackageHelpersTests(unittest.TestCase):
             self.assertIn(name, ASSETS)
         self.assertTrue(any(path.endswith('/CLAUDE-DESKTOP-APPLY.md') for path in package_helpers.DOCS))
         self.assertIn('docs/runbooks/SCHEDULER-SERVICE.md', package_helpers.DOCS)
+        self.assertIn('approval_delegation.py', ASSETS)
+        self.assertIn('docs/contracts/APPROVALS-CONTRACT.md', package_helpers.DOCS)
 
     def test_moved_payload_runs_without_source_and_keeps_state_outside_bundle(self):
         with tempfile.TemporaryDirectory() as temporary:
