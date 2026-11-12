@@ -101,4 +101,13 @@ composeur vidé) et la preuve de traitement sur un `claim_key`/`attempt_id`
 attribués. Seul un résultat `submit_result` accepté clôt
 une tâche entrante.
 
+Pour une délégation (`purpose=delegation`), le texte poussé dans le composeur
+— par `quick_entry/submit` comme par `quick_entry/dispatch` (#155) — est un
+**pointeur court** : il contient la `request_key` et l’instruction d’appeler
+`get_task`. Le chat ne reçoit jamais la consigne complète par le canal push ;
+celle-ci est livrée **une seule fois** par `get_task`, qui reste la source
+unique (traçabilité `claim_key`/`attempt_id`). Ne pas écrire une consigne
+détaillée directement dans le prompt d’admission en comptant sur le composeur :
+elle ne sera visible que via `get_task`.
+
 Après le rechargement de Claude, autoriser les outils du connecteur **reprise-harness**. Reprise ne peut pas accorder cette autorisation à votre place. Une ancienne entrée `reprise` gérée est migrée ; une entrée appartenant à un autre connecteur est conservée.
