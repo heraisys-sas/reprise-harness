@@ -89,8 +89,8 @@ ne désignent aucune installation existante.
 Tests statiques et unitaires à exécuter par le harness repreneur :
 `python3 -m unittest reprise.tests.test_approval_delegation
 reprise.tests.test_approval_surface -v`, puis
-`python3 reprise/ci_test.py --parallel 8 --reuse-log` après vérification
-des journaux préexistants. Vérifier aussi le bundle autonome et
+`python3 reprise/ci_test.py --parallel 8 --force` (nouveau run impératif
+sur la branche, ne pas réutiliser un log d'un autre SHA). Vérifier aussi le bundle autonome et
 la conservation de l'accès en lecture seule à `approval_list`.
 Tests ciblés, CI et protocole Codex réel **non exécutés par ChatGPT** dans
 le lot initial. Il n'existe encore aucune preuve de livraison E2E.
