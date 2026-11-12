@@ -20,6 +20,7 @@ from codex_expert import STOP_REASONS, positive, review, review_config
 from codex_rpc import Client
 from claude_expert import review as claude_review
 import claude_desktop
+import chatgpt_quick
 import apple_expert
 import ironclaw
 import reprise_logs
@@ -91,6 +92,7 @@ BACKEND_MODELS = {
     'claude-code': ('sonnet', 'opus'),
     'ironclaw': (),
     'claude-desktop': (),
+    'chatgpt': (),
     'foundation-models': ('system',),
 }
 RETURN_MODES = {'type': 'string', 'enum': ['full', 'receipt'], 'default': 'full'}
@@ -140,7 +142,7 @@ TOOLS = [
          'kind': {'type': 'string', 'enum': ['expertise', 'review', 'batch']},
          'level': {'type': 'string', 'enum': ['standard', 'deep']},
          'model': MODEL_SCHEMA,
-         'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models']},
+         'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models', 'chatgpt']},
          'paths': {'type': 'array', 'maxItems': 30, 'items': {'type': 'string'}},
          'chatId': {'type': 'string'},
          'filePaths': {'type': 'array', 'maxItems': 10, 'items': {'type': 'string'}}},
@@ -154,7 +156,7 @@ TOOLS = [
     {'name': 'reprise_followup', 'description': 'Continue an owned project session and inherit its execution mode. Omitted model preserves the thread route; explicit model overrides it, preserving effort. No fallback.',
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | POLICY_PROPERTIES | {
          'model': MODEL_SCHEMA, 'mode': MODE_SCHEMA,
-         'thread_id': {'type': 'string'}, 'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models']}},
+         'thread_id': {'type': 'string'}, 'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models', 'chatgpt']}},
          'required': ['question', 'thread_id', 'backend', 'request_key']}},
     {'name': 'reprise_resume', 'description': 'List interrupted tasks reconstructed from local logs that can be retried (quota, guard or missing dispatch). Read-only; no automatic retry.',
      'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
@@ -296,9 +298,15 @@ def wait_content(result, ident):
 
 
 class Bridge:
-    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, codex_workspace_write=False):
+    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, codex_workspace_write=False, chatgpt_socket=None, chatgpt_workspace_write=False):
         if type(codex_workspace_write) is not bool:
             raise ValueError('Explicit workspace-write grant required')
+        if type(chatgpt_workspace_write) is not bool:
+            raise ValueError('Explicit workspace-write grant required')
+        if chatgpt_socket is not None and (not isinstance(chatgpt_socket, str) or not Path(chatgpt_socket).is_absolute()):
+            raise ValueError('Absolute ChatGPT socket path required')
+        self.chatgpt_socket = chatgpt_socket
+        self.chatgpt_workspace_write = chatgpt_workspace_write
         self.codex_workspace_write = codex_workspace_write
         known_tools = {item['name'] for item in TOOLS}
         if allowed_tools is not None and (not allowed_tools or set(allowed_tools) - known_tools):
@@ -344,6 +352,15 @@ class Bridge:
             self.desktop_tasks = TaskStore(self.desktop_state, self.root)
         except (OSError, sqlite3.Error, ValueError):
             self.desktop_tasks = None
+        # ChatGPT roundtrip: same TaskStore contract over a dedicated state directory
+        # (channel independence), opened only when the local channel is configured.
+        self.chatgpt_state = state_location(self.root, 'chatgpt-state')
+        self.chatgpt_tasks = None
+        if self.chatgpt_socket:
+            try:
+                self.chatgpt_tasks = TaskStore(self.chatgpt_state, self.root)
+            except (OSError, sqlite3.Error, ValueError):
+                self.chatgpt_tasks = None
         # Fonction de niveau module + ressources capturées : une méthode
         # liée retiendrait self (le finalizer ne tournerait qu'à la sortie
         # du processus). _safe_close est idempotent (close après close
@@ -352,7 +369,10 @@ class Bridge:
 
     def close(self):
         self.desktop_tasks, tasks = None, self.desktop_tasks
+        self.chatgpt_tasks, chatgpt = None, self.chatgpt_tasks
         _close_bridge_databases(tasks, self.db)
+        if chatgpt is not None:
+            chatgpt.close()
 
     def _ironclaw_configured(self):
         try:
@@ -390,6 +410,8 @@ class Bridge:
                 raise ValueError('Followup cannot change the original execution mode')
             mode = stored
         if mode == 'implementation':
+            if name in ('reprise_delegate', 'reprise_followup') and args.get('backend') == 'chatgpt':
+                raise ValueError('Backend chatgpt refused in v1: consultative expertise/review only, no implementation mode.')
             if name not in ('reprise_delegate', 'reprise_followup') or args.get('backend', 'codex') != 'codex':
                 raise ValueError('Implementation requires generic Codex delegation tools')
             if not self.codex_workspace_write:
@@ -646,7 +668,12 @@ class Bridge:
                  'Configuration IronClaw requise (--ironclaw-config : host, port, user, key).',
                  'billing': 'Remote IronClaw runtime (paid) — moteur lu via ironclaw.engine()',
                  'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': False,
-                 'context': 'Experimental CLI retained for audit; use explicit durable ironclaw-submit/poll/result commands.'}],
+                 'context': 'Experimental CLI retained for audit; use explicit durable ironclaw-submit/poll/result commands.'},
+                *([{'id': 'chatgpt', 'configured': True, 'models': [],
+                    'billing': 'Compte ChatGPT (Pro/Work)',
+                    'kinds': ['expertise', 'review'], 'levels': ['standard', 'deep'],
+                    'writes': self.chatgpt_workspace_write,
+                    'context': 'admission durable + canal local indéterminé'}] if self.chatgpt_socket else [])],
                 'automatic_fallback': False}
         allowed = {'question', 'thread_id'} if name in ('codex_followup', 'reprise_followup') else {'question', 'paths'}
         if name == 'reprise_followup':
@@ -660,7 +687,7 @@ class Bridge:
         mode = self.execution_mode(name, args)
         routing = {}
         backend = args.get('backend', 'codex')
-        if backend not in ('codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models'):
+        if backend not in ('codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models', 'chatgpt'):
             raise ValueError('Unknown expertise backend')
         if 'model' in args:
             if not isinstance(args['model'], str) or args['model'] not in BACKEND_MODELS[backend]:
@@ -693,6 +720,8 @@ class Bridge:
             raise ValueError('Pas de session IronClaw suiveuse ; run -m est sans état.')
         if name == 'reprise_followup' and backend == 'claude-desktop':
             raise ValueError('Pas de session Quick Apply suiveuse ; la soumission est unidirectionnelle.')
+        if name == 'reprise_followup' and backend == 'chatgpt':
+            raise ValueError('Pas de session ChatGPT suiveuse ; admission unidirectionnelle + retour par get_task/submit_result.')
         if name == 'reprise_followup' and backend == 'claude-code':
             if not isinstance(ident, str):
                 raise ValueError('Owned Claude session required')
@@ -751,7 +780,14 @@ class Bridge:
         if backend == 'foundation-models' and not apple_expert.configured():
             return {'status': 'engine_unavailable', 'backend': backend,
                     'reason': 'Apple fm executable unavailable.', 'automatic_fallback': False}
-        if backend not in ('claude-desktop', 'foundation-models') and not (self.ironclaw_program if backend == 'ironclaw'
+        if backend == 'chatgpt' and not self.chatgpt_socket:
+            return {'status': 'engine_unavailable',
+                    'reason': '--chatgpt-socket non configuré'}
+        if backend == 'chatgpt' and self.chatgpt_tasks is None:
+            return {'status': 'return_channel_unavailable', 'backend': backend,
+                    'reason': 'Canal de retour MCP indisponible (TaskStore non initialisé) ; aucun aller-retour garanti.',
+                    'automatic_fallback': False}
+        if backend not in ('claude-desktop', 'foundation-models', 'chatgpt') and not (self.ironclaw_program if backend == 'ironclaw'
                                                 else (self.program if backend == 'codex' else self.claude_program)):
             return {'status': 'engine_unavailable', 'backend': backend, 'reason': 'Requested executable not configured', 'automatic_fallback': False}
         if backend == 'claude-code' and not self.claude_subscription_only:
@@ -805,6 +841,12 @@ class Bridge:
                                           program=self.desktop_program, values=self.desktop_values,
                                           request_key=self.requests.active_key, tasks=self.desktop_tasks,
                                           max_wait=max_wait)
+            routing_events.finalize(self.db, event_id, str(result.get('status') or 'unknown'))
+            return result | {'backend': backend, 'automatic_fallback': False}
+        if backend == 'chatgpt':
+            result = chatgpt_quick.review(self.root, question, kind=args.get('kind', 'expertise'),
+                                          level=args.get('level', 'standard'), paths=args.get('paths'),
+                                          socket=self.chatgpt_socket, request_key=self.requests.active_key)
             routing_events.finalize(self.db, event_id, str(result.get('status') or 'unknown'))
             return result | {'backend': backend, 'automatic_fallback': False}
         if backend == 'claude-code':
@@ -1090,6 +1132,8 @@ def main():
     parser.add_argument('--claude-included-quota-confirmed', action='store_true', help='Operator confirms paid usage credits disabled; CLI cannot verify this')
     parser.add_argument('--codex-workspace-write', action='store_true', help='Operator grant: implementation may write this project; native approvals remain required')
     parser.add_argument('--desktop-socket', help='Explicit absolute Quick Entry socket path; disabled by default')
+    parser.add_argument('--chatgpt-socket', help='Explicit absolute ChatGPT socket path; disabled by default')
+    parser.add_argument('--chatgpt-workspace-write', action='store_true', help='Operator grant: ChatGPT roundtrip may declare write capability')
     parser.add_argument('--ironclaw-config', help='JSON 0600: {host,port,user,key} du point d’acceptation IronClaw')
     args = parser.parse_args()
     ironclaw_values = {}
@@ -1101,7 +1145,8 @@ def main():
     bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.state or str(state_directory(Path(__file__).parent)), args.daily_limit,
                     claude_program=args.claude_program, claude_subscription_only=args.claude_included_quota_confirmed,
                     desktop_socket=args.desktop_socket, allowed_tools=args.tools.split(',') if args.tools is not None else None,
-                    ironclaw_values=ironclaw_values, codex_workspace_write=args.codex_workspace_write)
+                    ironclaw_values=ironclaw_values, codex_workspace_write=args.codex_workspace_write,
+                    chatgpt_socket=args.chatgpt_socket, chatgpt_workspace_write=args.chatgpt_workspace_write)
     def terminate(signum, frame):
         # Unwind active CLI cleanup before closing the DB and releasing the lock.
         raise SystemExit(128 + signum)
@@ -1112,6 +1157,8 @@ def main():
         bridge.db.close()
         if bridge.desktop_tasks is not None:
             bridge.desktop_tasks.close()
+        if bridge.chatgpt_tasks is not None:
+            bridge.chatgpt_tasks.close()
         signal.signal(signal.SIGTERM, previous_sigterm)
 
 

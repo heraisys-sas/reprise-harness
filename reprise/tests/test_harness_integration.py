@@ -994,6 +994,122 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertEqual(integration.split_block(self.config.read_text())[1],
                          integration.START + '\n' + body + integration.END + '\n')
 
+    def test_claude_code_options_roundtrip_and_disable(self):
+        program = str(self.base / 'claude-fixture')
+        (self.base / 'claude-fixture').write_text('#!/bin/sh\n')
+        os.chmod(program, 0o755)
+        with self.assertRaises(ValueError):
+            integration.plan(self.root, self.home, 'desktop', self.project, claude_quota_confirmed=True)
+        with self.assertRaises(ValueError):
+            integration.plan(self.root, self.home, 'desktop', self.project, claude_program='claude')
+        proposed = integration.plan(self.root, self.home, 'desktop', self.project,
+                                    delegate=True, claude_program=program,
+                                    claude_quota_confirmed=True)
+        self.assertEqual(proposed['claude_program'], program)
+        self.assertTrue(proposed['claude_quota_confirmed'])
+        integration.apply(self.root, proposed)
+        text = self.config.read_text()
+        self.assertIn('--claude-program', text)
+        self.assertIn('--claude-included-quota-confirmed', text)
+        inspected = integration.inspect(self.home, 'desktop')
+        self.assertEqual(inspected['claude_program'], program)
+        self.assertTrue(inspected['claude_quota_confirmed'])
+        # Update omitting the options keeps the installed values.
+        carried = integration.plan(self.root, self.home, 'desktop', self.project, delegate=True)
+        self.assertEqual(carried['claude_program'], program)
+        self.assertTrue(carried['claude_quota_confirmed'])
+        self.assertFalse(carried['changes'])
+        # Reinstall after removal = disabled (old manifest gone).
+        removed = integration.plan(self.root, self.home, 'desktop', self.project, 'remove')
+        integration.apply(self.root, removed)
+        self.assertNotIn('--claude-program', self.config.read_text())
+        self.assertFalse(integration.inspect(self.home, 'desktop')['claude_quota_confirmed'])
+
+    def test_claude_code_invalid_settings_are_refused(self):
+        self.install(delegate=True)
+        with self.assertRaisesRegex(ValueError, 'Programme Claude'):
+            integration.plan(self.root, self.home, 'desktop', self.project, delegate=True,
+                             claude_program='claude')
+        missing = self.base / 'claude-absent'
+        with self.assertRaisesRegex(ValueError, 'Programme Claude'):
+            integration.plan(self.root, self.home, 'desktop', self.project, delegate=True,
+                             claude_program=str(missing))
+        not_executable = self.base / 'claude-noexec'
+        not_executable.write_text('#!/bin/sh\n')
+        os.chmod(not_executable, 0o644)
+        with self.assertRaisesRegex(ValueError, 'Programme Claude'):
+            integration.plan(self.root, self.home, 'desktop', self.project, delegate=True,
+                             claude_program=str(not_executable))
+        with self.assertRaisesRegex(ValueError, 'Confirmation du quota'):
+            integration.plan(self.root, self.home, 'desktop', self.project, delegate=True,
+                             claude_quota_confirmed=True)
+        with self.assertRaisesRegex(ValueError, 'Action ou capacité invalide'):
+            integration.plan(self.root, self.home, 'desktop', self.project, delegate=True,
+                             claude_program='claude', claude_quota_confirmed='yes')
+
+    def test_claude_code_plan_tamper_and_staleness_are_refused(self):
+        program = str(self.base / 'claude-fixture')
+        (self.base / 'claude-fixture').write_text('#!/bin/sh\n')
+        os.chmod(program, 0o755)
+        proposed = integration.plan(self.root, self.home, 'desktop', self.project,
+                                    delegate=True, claude_program=program,
+                                    claude_quota_confirmed=True)
+        integration.apply(self.root, proposed)
+        tampered = dict(proposed, claude_program=str(self.base / 'claude-other'))
+        with self.assertRaisesRegex(ValueError, 'Plan altéré'):
+            integration.apply(self.root, tampered)
+        # Staleness: plan after install re-derives from the manifest, so a new
+        # plan omitting the options must carry the installed values forward.
+        current = integration.plan(self.root, self.home, 'desktop', self.project, delegate=True,
+                                   claude_program=program, claude_quota_confirmed=True)
+        self.assertEqual(current['claude_program'], program)
+        self.assertTrue(current['claude_quota_confirmed'])
+        integration.apply(self.root, current)
+        with self.assertRaisesRegex(ValueError, 'Plan altéré'):
+            integration.apply(self.root, dict(current, claude_quota_confirmed=False))
+
+    def test_reformatted_block_preserves_claude_code_settings(self):
+        program = str(self.base / 'claude-fixture')
+        (self.base / 'claude-fixture').write_text('#!/bin/sh\n')
+        os.chmod(program, 0o755)
+        self.install(delegate=True, claude_program=program, claude_quota_confirmed=True)
+        self.config.write_text(self.reformatted_config())
+        old_block = self.config.read_text()[self.config.read_text().index(integration.START):]
+        proposed = self.plan()
+        self.assertEqual(proposed['block_reconciled']['from_sha256'],
+                         integration.digest(old_block.encode()))
+        integration.apply(self.root, proposed)
+        inspected = integration.inspect(self.home, 'desktop')
+        self.assertEqual(inspected['claude_program'], program)
+        self.assertTrue(inspected['claude_quota_confirmed'])
+        text = self.config.read_text()
+        self.assertIn('--claude-program', text)
+        self.assertIn('--claude-included-quota-confirmed', text)
+
+    def test_claude_code_and_workspace_write_are_independent(self):
+        program = str(self.base / 'claude-fixture')
+        (self.base / 'claude-fixture').write_text('#!/bin/sh\n')
+        os.chmod(program, 0o755)
+        self.install(delegate=True, claude_program=program, claude_quota_confirmed=True)
+        self.assertIn('--claude-program', self.config.read_text())
+        self.assertNotIn('--codex-workspace-write', self.config.read_text())
+        self.install(delegate=True, claude_program=program, claude_quota_confirmed=True,
+                     codex_workspace_write=True)
+        text = self.config.read_text()
+        self.assertIn('--claude-program', text)
+        self.assertIn('--codex-workspace-write', text)
+        # Revoking workspace writes alone must not touch the claude settings.
+        revoked = integration.plan(self.root, self.home, 'desktop', self.project, delegate=True,
+                                   codex_workspace_write=False)
+        integration.apply(self.root, revoked)
+        text = self.config.read_text()
+        self.assertIn('--claude-program', text)
+        self.assertNotIn('--codex-workspace-write', text)
+        inspected = integration.inspect(self.home, 'desktop')
+        self.assertEqual(inspected['claude_program'], program)
+        self.assertTrue(inspected['claude_quota_confirmed'])
+        self.assertFalse(inspected['codex_workspace_write'])
+
 
 if __name__ == '__main__':
     unittest.main()

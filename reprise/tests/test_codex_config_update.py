@@ -481,6 +481,49 @@ class CodexConfigUpdateTests(unittest.TestCase):
                         'value': 'must-not-write', 'mergeStrategy': 'replace'}]})
         self.assertNotIn('must-not-write', self.config.read_text())
 
+    def test_update_preserves_claude_code_options(self):
+        name = 'reprise-harness'
+        entry = tomllib.loads(self.config.read_text())['mcp_servers'][name]
+        program = self.root / 'claude-fixture'
+        program.write_text('#!/bin/sh\n')
+        program.chmod(0o755)
+        entry = dict(entry, args=entry['args'] + ['--claude-program', str(program),
+                                                  '--claude-included-quota-confirmed',
+                                                  '--codex-workspace-write'])
+        # Install the enriched entry in the config so plan() derives 'after' from it.
+        lines = [f'[mcp_servers.{name}]\ncommand = {json.dumps(entry["command"])}\nargs = {json.dumps(entry["args"])}\n']
+        self.config.write_text('\n'.join(lines))
+        self.client = Client(self.config)
+        value = update.plan(self.client, self.config, self.base, self.target, [name])
+        result = update.apply(self.client, value, self.root / 'operations')
+        self.assertEqual(result['status'], 'written')
+        current = tomllib.loads(self.config.read_text())['mcp_servers'][name]
+        self.assertIn('--claude-program', current['args'])
+        self.assertEqual(current['args'][current['args'].index('--claude-program') + 1], str(program))
+        self.assertIn('--claude-included-quota-confirmed', current['args'])
+        self.assertIn('--codex-workspace-write', current['args'])
+
+    def test_rewrite_rejects_duplicate_or_incomplete_claude_options(self):
+        name = 'reprise-harness'
+        entry = tomllib.loads(self.config.read_text())['mcp_servers'][name]
+        program = str(self.root / 'claude-fixture')
+        # Duplicate valued option.
+        with self.assertRaisesRegex(ValueError, 'Options MCP ambiguës'):
+            update._rewrite(dict(entry, args=entry['args'] + ['--claude-program', program, '--claude-program', program]),
+                            update.ENTRIES[name], self.base, self.target)
+        # Duplicate switch.
+        with self.assertRaisesRegex(ValueError, 'Options MCP ambiguës'):
+            update._rewrite(dict(entry, args=entry['args'] + ['--claude-included-quota-confirmed', '--claude-included-quota-confirmed']),
+                            update.ENTRIES[name], self.base, self.target)
+        # Valued option without its value.
+        with self.assertRaisesRegex(ValueError, 'Valeur MCP absente'):
+            update._rewrite(dict(entry, args=entry['args'] + ['--claude-program']),
+                            update.ENTRIES[name], self.base, self.target)
+        # Unknown flag in the claude family.
+        with self.assertRaisesRegex(ValueError, 'Options MCP ambiguës'):
+            update._rewrite(dict(entry, args=entry['args'] + ['--claude-program-x', program]),
+                            update.ENTRIES[name], self.base, self.target)
+
 
 if __name__ == '__main__':
     unittest.main()
