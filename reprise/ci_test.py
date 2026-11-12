@@ -108,6 +108,7 @@ def pinned_interpreter():
         package_runtime.safe_extract(archive_path, interp_root)
         # L'archive install_only contient un dossier racine 'python/'.
         binary = next(p for p in interp_root.glob('*/bin/python3'))
+        stamp = interp_root / 'archive.txt'
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.write_text(archive_path.name + '\n')
     return str(binary), {'REPRISE_TEST_RUNTIME_ARCHIVE': str(archive_path)}
