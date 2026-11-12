@@ -2,8 +2,9 @@
 
 Chaîne testée : boucle d'attente (`codex_expert.review`) émet un événement
 `awaiting_approval` portant l'approbation ; le pont la persiste de façon durable
-(`desktop_approvals`) ; `approval_list` la restitue ; `approval_respond`
-réattache le client, envoie la réponse JSON-RPC et marque la résolution.
+(`desktop_approvals`) ; `approval_list` la restitue. Depuis #117 T2a,
+`approval_respond` est désactivé applicativement : toute invocation est refusée
+avant reattach, sans consommer ni résoudre l'approbation (voie opérateur en T2b/T2c).
 """
 import sys
 import tempfile
@@ -14,8 +15,6 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import codex_expert as expert
 import codex_expert_mcp
-from codex_rpc import Unavailable
-from desktop_task_store import TaskStore
 
 ID = '12345678-1234-1234-1234-123456789abc'
 
@@ -67,35 +66,6 @@ class ReviewFake:
         return {}
 
 
-class RespondFake:
-    """Fake reattach client for approval_respond."""
-    fail = None
-    last = None
-
-    def __init__(self, *args):
-        self.sent = []
-        self.closed = False
-        RespondFake.last = self
-
-    def call(self, method, params=None):
-        if RespondFake.fail == 'reattach':
-            raise Unavailable('owner_unavailable', 'codex unreachable')
-        if method == 'config/read':
-            return {'config': {'mcp_servers': {}}}
-        if method == 'thread/resume':
-            self.resume_params = params
-            return {'thread': {'id': params.get('threadId'), 'status': {'type': 'idle'}}}
-        return {}
-
-    def send(self, message):
-        if RespondFake.fail == 'send':
-            raise Unavailable('owner_unavailable', 'peer closed')
-        self.sent.append(message)
-
-    def close(self):
-        self.closed = True
-
-
 class ApprovalSurfaceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -107,7 +77,6 @@ class ApprovalSurfaceTests(unittest.TestCase):
         self.state = self.root / 'expert'
         ReviewFake.root = str(self.project)
         ReviewFake.approval = False
-        RespondFake.fail = None
         self.patch_client = patch('codex_expert.Client', ReviewFake)
         self.patch_client.start()
         self.addCleanup(self.patch_client.stop)
@@ -162,80 +131,46 @@ class ApprovalSurfaceTests(unittest.TestCase):
         self.assertEqual(row['params'], {'command': 'rm -rf build'})
         self.assertEqual(row['rpc_id'], '12')
 
-    def test_3_approval_respond_happy_path_sends_and_resolves(self):
+    def test_3_approval_respond_is_disabled_before_reattach(self):
         bridge = self.make_bridge()
         self.record(bridge)
-        with patch('codex_expert_mcp.Client', RespondFake):
-            result = bridge.call('approval_respond', {'approval_id': APPROVAL_EVENT['approval']['approval_id'],
-                                                      'decision': 'approved'})
+
+        def no_client(*args, **kwargs):
+            raise AssertionError('approval_respond ne doit pas réattacher le thread (#117 T2a)')
+        for args in ({'approval_id': APPROVAL_EVENT['approval']['approval_id'], 'decision': 'approved'},
+                     {'approval_id': APPROVAL_EVENT['approval']['approval_id'], 'decision': 'denied'},
+                     {}):
+            with self.subTest(args=args):
+                with patch('codex_expert_mcp.Client', no_client):
+                    with self.assertRaises(codex_expert_mcp.Unavailable) as caught:
+                        bridge.call('approval_respond', args)
+                self.assertEqual(caught.exception.state, 'approval_disabled')
+                self.assertIn('#117 T2b', caught.exception.reason)
+                # Refus sans effet : l'approbation reste pending, jamais résolue.
+                pending = bridge.desktop_tasks.pending_approval(APPROVAL_EVENT['approval']['approval_id'])
+                self.assertIsNotNone(pending)
+                self.assertEqual(pending['rpc_id'], '12')
+
+    def test_4_approval_list_unchanged_after_respond_refusal(self):
+        bridge = self.make_bridge()
+        self.record(bridge)
+        with self.assertRaises(codex_expert_mcp.Unavailable):
+            bridge.call('approval_respond', {'approval_id': APPROVAL_EVENT['approval']['approval_id'],
+                                             'decision': 'approved'})
+        result = bridge.call('approval_list', {})
         self.assertEqual(result['status'], 'finished')
-        self.assertEqual(result['decision'], 'approved')
-        self.assertIn({'id': 12, 'result': {'decision': 'accept'}}, RespondFake.last.sent)
-        # The resume replays the session policy captured at detection time.
-        self.assertEqual(RespondFake.last.resume_params['sandbox'], 'workspace-write')
-        self.assertEqual(RespondFake.last.resume_params['approvalPolicy'], 'on-request')
-        self.assertTrue(RespondFake.last.resume_params['config'])
-        self.assertTrue(RespondFake.last.closed)
-        self.assertIsNone(bridge.desktop_tasks.pending_approval(APPROVAL_EVENT['approval']['approval_id']))
+        self.assertEqual(len(result['approvals']), 1)
+        self.assertIsNone(result['approvals'][0].get('decision'))
+        self.assertEqual(result['approvals'][0]['method'], 'item/commandExecution/requestApproval')
 
-    def test_4_approval_respond_refuses_missing_or_invalid_decision(self):
+    def test_5_respond_refusal_does_not_resolve_any_approval(self):
         bridge = self.make_bridge()
         self.record(bridge)
-        for args in ({'approval_id': APPROVAL_EVENT['approval']['approval_id']},
-                     {'approval_id': APPROVAL_EVENT['approval']['approval_id'], 'decision': 'auto-yes'}):
-            with self.assertRaises(ValueError):
-                bridge.call('approval_respond', args)
-        self.assertEqual(bridge.desktop_tasks.pending_approval(APPROVAL_EVENT['approval']['approval_id'])['rpc_id'], '12')
-
-    def test_5_approval_respond_reattach_failure_keeps_request_pending(self):
-        bridge = self.make_bridge()
-        self.record(bridge)
-        RespondFake.fail = 'reattach'
-        with patch('codex_expert_mcp.Client', RespondFake):
-            with self.assertRaises(codex_expert_mcp.Bridge.ApprovalReattachFailed) as caught:
+        with patch.object(bridge.desktop_tasks, 'resolve_approval',
+                          side_effect=AssertionError('resolve_approval ne doit pas être appelé par MCP (#117 T2a)')):
+            with self.assertRaises(codex_expert_mcp.Unavailable):
                 bridge.call('approval_respond', {'approval_id': APPROVAL_EVENT['approval']['approval_id'],
-                                                 'decision': 'denied'})
-        self.assertTrue(issubclass(type(caught.exception), Unavailable))
-        self.assertIn('stays pending', caught.exception.args[-1])
-        self.assertIsNotNone(bridge.desktop_tasks.pending_approval(APPROVAL_EVENT['approval']['approval_id']))
-        # Same guarantee when the raw send fails after a successful reattach.
-        RespondFake.fail = 'send'
-        with patch('codex_expert_mcp.Client', RespondFake):
-            with self.assertRaises(codex_expert_mcp.Bridge.ApprovalReattachFailed):
-                bridge.call('approval_respond', {'approval_id': APPROVAL_EVENT['approval']['approval_id'],
-                                                 'decision': 'denied'})
-        self.assertIsNotNone(bridge.desktop_tasks.pending_approval(APPROVAL_EVENT['approval']['approval_id']))
-
-    def test_6_approval_respond_legacy_v1_uses_legacy_vocabulary(self):
-        bridge = self.make_bridge()
-        legacy = {'phase': 'awaiting_approval', 'thread_id': ID, 'approval': {
-            'approval_id': '66666666-2222-3333-4444-555555555555', 'rpc_id': 42,
-            'method': 'execCommandApproval', 'thread_id': ID,
-            'turn_id': 'own', 'params': {'command': 'ls'}, 'requested_at': 200.0}}
-        self.record(bridge, event=legacy)
-        with patch('codex_expert_mcp.Client', RespondFake):
-            bridge.call('approval_respond', {'approval_id': legacy['approval']['approval_id'],
-                                             'decision': 'denied'})
-        self.assertIn({'id': 42, 'result': {'decision': {'denied': {'rejection': 'Denied by operator'}}}},
-                      RespondFake.last.sent)
-
-    def test_7_approval_respond_rejects_non_idle_or_foreign_thread(self):
-        bridge = self.make_bridge()
-        self.record(bridge)
-        original_call = RespondFake.call
-
-        def foreign(self, method, params=None):
-            if method == 'thread/resume':
-                return {'thread': {'id': 'other-thread', 'status': {'type': 'idle'}}}
-            return original_call(self, method, params)
-        RespondFake.call = foreign
-        try:
-            with patch('codex_expert_mcp.Client', RespondFake):
-                with self.assertRaises(codex_expert_mcp.Bridge.ApprovalReattachFailed):
-                    bridge.call('approval_respond', {'approval_id': APPROVAL_EVENT['approval']['approval_id'],
-                                                     'decision': 'approved'})
-        finally:
-            RespondFake.call = original_call
+                                                 'decision': 'approved'})
         self.assertIsNotNone(bridge.desktop_tasks.pending_approval(APPROVAL_EVENT['approval']['approval_id']))
 
 

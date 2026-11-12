@@ -164,7 +164,7 @@ TOOLS = [
      'inputSchema': {'type': 'object', 'properties': {'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100}}, 'additionalProperties': False}},
     {'name': 'approval_list', 'description': 'List native Codex approval requests waiting for a human decision. Read-only; never decides, never resumes anything.',
      'inputSchema': {'type': 'object', 'properties': {'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100}}, 'additionalProperties': False}},
-    {'name': 'approval_respond', 'description': 'Answer a native Codex approval request the operator has decided. Reattaches to the owning thread, sends the JSON-RPC response to the stored request id, then marks the request resolved. Explicit decision required; never approves or denies automatically. May be slow (thread reattach).',
+    {'name': 'approval_respond', 'description': 'Disabled since #117 T2a: operator decision is required. Returns a typed refusal and the approval request stays pending. Will be replaced by a token-gated delegation path in #117 T2b.',
      'inputSchema': {'type': 'object', 'properties': {'approval_id': {'type': 'string', 'maxLength': 128},
                      'decision': {'type': 'string', 'enum': ['approved', 'denied']}},
                      'required': ['approval_id', 'decision'], 'additionalProperties': False}},
@@ -873,66 +873,13 @@ class Bridge:
         return {'status': 'finished', 'automatic_fallback': False, 'approvals': approvals}
 
     def _approval_respond(self, args, client_factory=None):
-        if not isinstance(args, dict) or set(args) != {'approval_id', 'decision'}:
-            raise ValueError('approval_id and an explicit decision are required')
-        approval_id, decision = args['approval_id'], args['decision']
-        if decision not in ('approved', 'denied'):
-            raise ValueError('Decision must be approved or denied')
-        if self.desktop_tasks is None:
-            raise Unavailable('storage_error', 'Approval store unavailable; approvals cannot be answered.')
-        approval = self.desktop_tasks.pending_approval(approval_id)
-        if approval is None:
-            raise ValueError('Unknown or already resolved approval_id')
-        rpc_id = approval.get('rpc_id')
-        if rpc_id is None or not approval.get('thread_id'):
-            raise ValueError('Stored approval lacks its JSON-RPC identity; cannot respond')
-        if str(rpc_id).lstrip('-').isdigit():
-            rpc_id = int(rpc_id)
-        client = None
-        try:
-            try:
-                client = (client_factory or Client)(self.program, self.values)
-                client.call('initialize', {'clientInfo': {'name': 'reprise-approval-respond', 'version': '0.1.0'},
-                                           'capabilities': {'experimentalApi': True}})
-                client.send({'method': 'initialized'})
-                resumed = client.call('thread/resume', {'threadId': approval['thread_id'],
-                    'excludeTurns': True, 'config': review_config(client, self.root),
-                    'sandbox': approval.get('sandbox') or 'read-only',
-                    'approvalPolicy': 'on-request'})
-                confirmed = resumed.get('thread') or {}
-                if (confirmed.get('id') != approval['thread_id']
-                        or (confirmed.get('status') or {}).get('type') != 'idle'):
-                    raise Unavailable('blocked_owner', 'Expert identity or idle state changed; approval not sent.')
-            except (OSError, ValueError, TimeoutError, Unavailable) as error:
-                raise self.ApprovalReattachFailed('owner_unavailable',
-                    f'Codex thread reattach failed; approval stays pending. {error}') from error
-            try:
-                # The native request expects a ReviewDecision as its result. The
-                # schema (v0.166.0-alpha.6) wraps it: result = {'decision': …}.
-                # Vocabulary depends on the request generation: v2 methods
-                # (item/*/requestApproval) use accept/decline; legacy v1
-                # (execCommandApproval/applyPatchApproval) use approved/denied,
-                # with denied as an object carrying a rejection reason.
-                method = approval.get('method') or ''
-                if method.startswith('item/'):
-                    native_decision = 'accept' if decision == 'approved' else 'decline'
-                elif decision == 'approved':
-                    native_decision = 'approved'
-                else:
-                    native_decision = {'denied': {'rejection': 'Denied by operator'}}
-                client.send({'id': rpc_id, 'result': {'decision': native_decision}})
-            except (OSError, ValueError, TimeoutError, Unavailable) as error:
-                raise self.ApprovalReattachFailed('owner_unavailable',
-                    f'Sending the approval response failed; approval stays pending. {error}') from error
-        finally:
-            if client:
-                try:
-                    client.close()
-                except (OSError, ValueError):
-                    pass
-        resolved = self.desktop_tasks.resolve_approval(approval_id, decision)
-        return {'status': 'finished', 'automatic_fallback': False, 'approval_id': approval_id,
-                'decision': decision, 'resolved': resolved}
+        # Issue #117 T2a : aucune décision d'approbation par la voie MCP. Le refus
+        # est levé avant tout reattach et ne consomme ni ne résout l'approbation
+        # (elle reste pending). La décision opérateur passe par la voie
+        # desktop_task_store.resolve_approval (CLI/app — tranches T2b/T2c de #117),
+        # pas par cet outil.
+        raise Unavailable('approval_disabled',
+            'approval_respond est désactivé jusqu’à la tranche délégation (#117 T2b) : réponse opérateur requise.')
 
     def _reconcile(self, args):
         if not isinstance(args, dict) or args.keys() - {'request_key', 'action', 'reason'}:
