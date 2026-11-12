@@ -74,7 +74,11 @@ class ApprovalDelegations:
             raise ValueError('Durée autorisée : 1h, 24h, 7d')
         if type(max_decisions) is not int or not 1 <= max_decisions <= 100:
             raise ValueError('max_decisions doit être compris entre 1 et 100')
-        if not isinstance(thread_id, str) or str(uuid.UUID(thread_id)) != thread_id:
+        try:
+            canonical_thread = str(uuid.UUID(thread_id)) if isinstance(thread_id, str) else None
+        except ValueError:
+            canonical_thread = None
+        if canonical_thread != thread_id or canonical_thread is None:
             raise ValueError('thread_id doit être un UUID canonique')
         if not isinstance(token_file, (str, os.PathLike)):
             raise ValueError('token_file requis')
@@ -131,7 +135,11 @@ class ApprovalDelegations:
                  **dict(zip(names, row))} for row in rows]
 
     def revoke(self, grant_id, now=None):
-        if not isinstance(grant_id, str) or str(uuid.UUID(grant_id)) != grant_id:
+        try:
+            canonical_grant = str(uuid.UUID(grant_id)) if isinstance(grant_id, str) else None
+        except ValueError:
+            canonical_grant = None
+        if canonical_grant != grant_id or canonical_grant is None:
             raise ValueError('grant_id invalide')
         now = time.time() if now is None else float(now)
         with self.store.db:
