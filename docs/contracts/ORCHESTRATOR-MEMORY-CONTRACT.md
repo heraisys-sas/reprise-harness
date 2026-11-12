@@ -27,6 +27,11 @@ La suppression est **logique** ; aucune garantie d’effacement physique des sna
 
 ## Adaptateur commun local inter-harness — capture explicite
 
+L'[évaluation documentaire de Claude-Mem](../integrations/CLAUDE-MEM-EVALUATION.md)
+consigne la décision de conserver Reprise comme source canonique et les conditions
+non encore démontrées d'une éventuelle adaptation, sans installation ni capture
+automatique autorisée.
+
 `reprise_memory_mcp.py` expose un frontend MCP stdio local, sans inférence, sans
 écoute réseau et sans capture automatique. Reprise demeure la source canonique :
 les frontends partagent le même répertoire d’état privé et le même stockage
