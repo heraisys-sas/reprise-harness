@@ -247,12 +247,21 @@ def _validate_claude_program(value):
     return str(candidate)
 
 
-def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, codex_workspace_write=False, desktop_socket=None, bash_sandbox_disabled=False, memory=None, claude_program=None, claude_quota_confirmed=False):
+def _validate_chatgpt_socket(value):
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        raise ValueError('Socket ChatGPT : chemin absolu requis.')
+    return str(candidate)
+
+
+def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, codex_workspace_write=False, desktop_socket=None, bash_sandbox_disabled=False, memory=None, claude_program=None, claude_quota_confirmed=False, chatgpt_socket=None):
     program = release / 'Contents/Resources/runtime/bin/python3'
     args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/codex_expert_mcp.py'),
             '--project-root', project]
     if desktop_socket:
         args.extend(['--desktop-socket', str(desktop_socket)])
+    if chatgpt_socket is not None:
+        args.extend(['--chatgpt-socket', _validate_chatgpt_socket(chatgpt_socket)])
     args.extend(['--state', state, '--tools', ','.join(tools)])
     if codex_workspace_write:
         args.append('--codex-workspace-write')
@@ -551,6 +560,7 @@ def inspect(home, profile=None):
             result['agent_role'] = old.get('agent_role', 'standard')
         result['bash_sandbox_disabled'] = (old or {}).get('bash_sandbox_disabled', False)
         result['desktop_socket'] = (old or {}).get('desktop_socket')
+        result['chatgpt_socket'] = (old or {}).get('chatgpt_socket')
         result['codex_workspace_write'] = (old or {}).get('codex_workspace_write', False)
         result['claude_program'] = (old or {}).get('claude_program')
         result['claude_quota_confirmed'] = (old or {}).get('claude_quota_confirmed', False)
@@ -821,7 +831,9 @@ def apply_asi1_preset(text, old, enable, plugin_path):
     return ''.join(lines), [digest(''.join(block).encode())], False
 
 
-def desired(root, home, profile, project, action, delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False, bash_sandbox_disabled=None, memory_access=None, memory_project_id=None, memory_scope_id=None, claude_program=None, claude_quota_confirmed=None):
+def desired(root, home, profile, project, action, delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False, bash_sandbox_disabled=None, memory_access=None, memory_project_id=None, memory_scope_id=None, claude_program=None, claude_quota_confirmed=None, chatgpt_socket=None):
+    if chatgpt_socket is not None:
+        chatgpt_socket = _validate_chatgpt_socket(chatgpt_socket)
     home, folder, managed = context(home, profile)
     old = manifest(managed)
     memory = memory_integration.selected(old, memory_access, memory_project_id, memory_scope_id, action=action)
@@ -907,7 +919,7 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         entries = _bridge_entries(release, state, tools, project, profile, managed,
                                   output_resume, resume_project, codex_workspace_write,
                                   desktop_socket, bash_sandbox_disabled, memory,
-                                  claude_program, claude_quota_confirmed)
+                                  claude_program, claude_quota_confirmed, chatgpt_socket)
         if mismatched_block:
             try:
                 parsed = block_entries(block)
@@ -924,7 +936,7 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
                     profile, managed, old.get('output_resume', False),
                     old.get('output_resume_project'), old.get('codex_workspace_write', False),
                     old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), previous_memory,
-                    old.get('claude_program'), old.get('claude_quota_confirmed', False))
+                    old.get('claude_program'), old.get('claude_quota_confirmed', False), old.get('chatgpt_socket'))
             else:
                 expected = entries
             if parsed != expected:
@@ -975,6 +987,8 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
             next_manifest['claude_quota_confirmed'] = bool(claude_quota_confirmed)
         if desktop_socket:
             next_manifest['desktop_socket'] = desktop_socket
+        if chatgpt_socket is not None:
+            next_manifest['chatgpt_socket'] = chatgpt_socket
         if bash_sandbox_disabled:
             next_manifest['bash_sandbox_disabled'] = True
         if reconciled_from:
@@ -996,6 +1010,8 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
             files[folder / relative] = None
         next_manifest = {'format': 1, 'status': 'removed', 'project': project, 'profile': profile,
                          'state': old['state'], 'release': old['release'], 'managed_files': {}}
+        if 'chatgpt_socket' in old:
+            next_manifest['chatgpt_socket'] = old['chatgpt_socket']
     if memory_managed:
         next_manifest['memory'] = memory
     files[managed / 'managed.json'] = encoded(next_manifest)
@@ -1014,7 +1030,9 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
     return files, extra, next_manifest
 
 
-def plan(root, home, profile, project, action='install', delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False, bash_sandbox_disabled=None, memory_access=None, memory_project_id=None, memory_scope_id=None, claude_program=None, claude_quota_confirmed=None):
+def plan(root, home, profile, project, action='install', delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False, bash_sandbox_disabled=None, memory_access=None, memory_project_id=None, memory_scope_id=None, claude_program=None, claude_quota_confirmed=None, chatgpt_socket=None):
+    if chatgpt_socket is not None:
+        chatgpt_socket = _validate_chatgpt_socket(chatgpt_socket)
     if bash_sandbox_disabled is None:
         old = manifest(context(home, profile)[2])
         previous = old if old and old.get('status') == 'installed' else {}
@@ -1041,7 +1059,7 @@ def plan(root, home, profile, project, action='install', delegate=False, agent_r
         raise ValueError('Action ou capacité invalide.')
     if inspect(home, profile).get('pending_plan'):
         raise ValueError('Reprendre l’opération partielle conservée avant de créer un autre plan.')
-    files, extra, _ = desired(root, home, profile, project, action, delegate, agent_role, output_resume, output_resume_project, codex_workspace_write, asi1_effort, bash_sandbox_disabled, memory_access, memory_project_id, memory_scope_id, claude_program, claude_quota_confirmed)
+    files, extra, _ = desired(root, home, profile, project, action, delegate, agent_role, output_resume, output_resume_project, codex_workspace_write, asi1_effort, bash_sandbox_disabled, memory_access, memory_project_id, memory_scope_id, claude_program, claude_quota_confirmed, chatgpt_socket)
     changes = []
     for path, text in files.items():
         before, after = file_hash(path), digest(text.encode()) if text is not None else None
@@ -1052,6 +1070,8 @@ def plan(root, home, profile, project, action='install', delegate=False, agent_r
     result = {'format': 1, 'action': action, 'home': str(canonical_home), 'profile': profile,
               'project': str(Path(project).expanduser().resolve(strict=True)), 'delegate': delegate,
               'changes': changes, **extra}
+    if chatgpt_socket is not None:
+        result['chatgpt_socket'] = chatgpt_socket
     if codex_workspace_write:
         result['codex_workspace_write'] = True
     if claude_program:
@@ -1103,12 +1123,12 @@ def apply(root, public):
             if journal['plan'] != public:
                 raise ValueError('Un autre plan est en attente ; reprendre ce plan sans écrasement.')
         else:
-            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False), public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id'), public.get('claude_program'), public.get('claude_quota_confirmed', False))
+            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False), public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id'), public.get('claude_program'), public.get('claude_quota_confirmed', False), public.get('chatgpt_socket'))
             if current != public:
                 raise ValueError('Entrées modifiées depuis la prévisualisation. Refaire le plan.')
             if not public['changes']:
                 return {'status': 'completed', 'changed': False, 'message': 'Configuration identique ; aucune écriture.'}
-            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False), public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id'), public.get('claude_program'), public.get('claude_quota_confirmed', False))
+            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False), public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id'), public.get('claude_program'), public.get('claude_quota_confirmed', False), public.get('chatgpt_socket'))
             if public['action'] == 'install':
                 helpers, runtime, identity = bundle_info(root)
                 if identity != Path(public['release']).name:
@@ -1218,7 +1238,7 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
     expected = _bridge_entries(Path(old['release']), old['state'], old['tools'], project, profile, managed,
         True, old.get('output_resume_project'), old.get('codex_workspace_write', False),
         old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory,
-        old.get('claude_program'), old.get('claude_quota_confirmed', False))
+        old.get('claude_program'), old.get('claude_quota_confirmed', False), old.get('chatgpt_socket'))
     actual = block_entries(block.replace('\r\n', '\n'))
     # Normalize only fields explicitly replaced by this operation. All remaining
     # arguments, tools, permissions and plugin settings must match the old owner.
@@ -1278,7 +1298,7 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
     memory_integration.validate_binding(old['state'], memory, project, 'harness')
     entries = _bridge_entries(release, old['state'], old['tools'], project, profile, managed,
         True, resume_project, write, old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory,
-        old.get('claude_program'), old.get('claude_quota_confirmed', False))
+        old.get('claude_program'), old.get('claude_quota_confirmed', False), old.get('chatgpt_socket'))
     _validate_target_entries(entries)
     if not _canonical_paths(entries):
         raise ValueError('Bloc non canonique : une seule ligne entre les délimiteurs, sans continuation.')
@@ -1461,14 +1481,15 @@ def verify(home, profile, root=None, project=None):
     config_text = (folder / 'cordis.patch.yml').read_bytes().decode('utf-8')
     base, block = split_block(config_text)
     reconciled = None
-    if block is None or digest(block.encode()) != old['block_sha256']:
-        expected = _bridge_entries(Path(old['release']), old['state'], old['tools'], old['project'],
-                                   old['profile'], managed, old.get('output_resume', False),
-                                   old.get('output_resume_project'), old.get('codex_workspace_write', False),
-                                   old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory_integration.selected(old),
-                                   old.get('claude_program'), old.get('claude_quota_confirmed', False))
-        if block is None or block_entries(block) != expected:
-            raise ValueError('Configuration Reprise absente ou modifiée.')
+    expected = _bridge_entries(
+        Path(old['release']), old['state'], old['tools'], old['project'],
+        old['profile'], managed, old.get('output_resume', False),
+        old.get('output_resume_project'), old.get('codex_workspace_write', False),
+        old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory_integration.selected(old),
+        old.get('claude_program'), old.get('claude_quota_confirmed', False), old.get('chatgpt_socket'))
+    if block is None or block_entries(block) != expected:
+        raise ValueError('Configuration Reprise absente ou modifiée.')
+    if digest(block.encode()) != old['block_sha256']:
         # Bloc reformatté équivalent : accepté sans réécriture ici.
         reconciled = digest(block.encode())
     memory = memory_integration.selected(old)
@@ -1574,6 +1595,9 @@ def main(root, argv=None):
             toggle.add_argument('--codex-workspace-write', action='store_true', default=None, help='Autoriser les implémentations Codex dans le projet sélectionné')
             toggle.add_argument('--no-codex-workspace-write', dest='codex_workspace_write', action='store_false', default=None)
             toggle = command.add_mutually_exclusive_group()
+            toggle.add_argument('--chatgpt-socket', metavar='PATH', default=None, help='Socket ChatGPT v1 (chemin absolu, sans droit d’écriture)')
+            toggle.add_argument('--no-chatgpt-socket', dest='chatgpt_socket', action='store_const', const=None)
+            toggle = command.add_mutually_exclusive_group()
             toggle.add_argument('--disable-bash-sandbox', action='store_true', default=None, help='Générer l’entrée plugin bash-sandbox désactivée (choix local persisté)')
             toggle.add_argument('--enable-bash-sandbox', dest='disable_bash_sandbox', action='store_false', default=None)
             command.add_argument('--agent-role', choices=('standard', 'coordinator'), default=None)
@@ -1624,7 +1648,7 @@ def main(root, argv=None):
             if args.output_resume and args.output_resume_project is None and not changed_project:
                 args.output_resume_project = installed.get('output_resume_project')
             result = {'status': 'planned', 'message': 'Plan sans écriture. L’installation n’autorise ni inférence ni activation automatique.',
-                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role, args.output_resume, args.output_resume_project, args.codex_workspace_write, args.asi1_effort, args.disable_bash_sandbox, args.memory_access, args.memory_project_id, args.memory_scope_id, args.claude_program, args.claude_included_quota_confirmed)}
+                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role, args.output_resume, args.output_resume_project, args.codex_workspace_write, args.asi1_effort, args.disable_bash_sandbox, args.memory_access, args.memory_project_id, args.memory_scope_id, args.claude_program, args.claude_included_quota_confirmed, args.chatgpt_socket)}
         elif args.command == 'integration-apply':
             public = json.loads(sys.stdin.read(1024 * 1024))['plan']
             result = apply(root, public)

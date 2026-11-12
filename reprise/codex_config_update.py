@@ -186,7 +186,7 @@ def _rewrite(entry, script, release_base, target):
     # equal as JSON values. Reject a second script/executable or malformed flags.
     options = {
         'codex_expert_mcp.py': ({'--project-root', '--socket', '--state', '--tools', '--daily-limit',
-                                  '--claude-program', '--desktop-socket', '--ironclaw-config'},
+                                  '--claude-program', '--desktop-socket', '--ironclaw-config', '--chatgpt-socket'},
                                  {'--claude-included-quota-confirmed', '--codex-workspace-write'},
                                  {'--project-root', '--state'}),
     }

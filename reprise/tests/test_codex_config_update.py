@@ -122,6 +122,25 @@ class CodexConfigUpdateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             update.apply(self.client, value, self.root / 'operations')
 
+    def test_apply_preserves_chatgpt_socket_argument(self):
+        socket = str(self.root / 'future-chatgpt.sock')
+        text = self.config.read_text()
+        text = text.replace('"--socket", "/tmp/socket"',
+                            '"--socket", "/tmp/socket", "--chatgpt-socket", ' + json.dumps(socket))
+        self.config.write_text(text)
+        old = tomllib.loads(text)['mcp_servers']
+        for entry in old.values():
+            self.assertIn('--chatgpt-socket', entry['args'])
+        value = update.plan(self.client, self.config, self.base, self.target, list(update.ENTRIES))
+        update.apply(self.client, value, self.root / 'operations')
+        self.assertTrue(update.verify(self.client, value)['ok'])
+        new = tomllib.loads(self.config.read_text())['mcp_servers']
+        for name in update.ENTRIES:
+            self.assertEqual(old[name]['args'][4:], new[name]['args'][4:])
+            args = new[name]['args']
+            self.assertEqual(args[args.index('--chatgpt-socket') + 1], socket)
+            self.assertNotIn('--chatgpt-workspace-write', args)
+
     def test_concurrent_config_change_refuses_before_write(self):
         value = update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
         self.config.write_text(self.config.read_text() + '\n# changed\n')

@@ -159,9 +159,9 @@ def main():
                         help='index du shard (0-based), avec --shard-count')
     parser.add_argument('--shard-count', type=int, default=None,
                         help='nombre total de shards')
-    parser.add_argument('--parallel', type=int, default=None,
-                        help='exécute les N shards ci-dessus en parallèle (local, même partition que la CI)')
-    parser.add_argument('--reuse-log', nargs='?', const=10, type=int, default=None, metavar='MINUTES',
+    parser.add_argument('--parallel', type=int, default=8,
+                        help='exécute les N shards en parallèle (défaut 8) ; 0 pour la route séquentielle, --shard-* explicite pour un shard CI')
+    parser.add_argument('--reuse-log', nargs='?', const=10, type=int, default=10, metavar='MINUTES',
                         help="avec --parallel : réutilise le log de moins de N minutes (défaut 10) au lieu de relancer")
     parser.add_argument('--force', action='store_true',
                         help='avec --parallel : relance même si un log frais existe')
@@ -170,7 +170,8 @@ def main():
         print('Python >= 3.11 requis (le runtime épinglé est 3.13) : les tests sur interpréteurs anciens crashent (sqlite3/mémoire).')
         return 2
     shard = parse_shard_args(parser, args)
-    if args.parallel:
+    # --shard-index/--shard-count explicites conservent la route shards CI (parallel ignoré)
+    if args.parallel and shard is None:
         log_path = INTERP_CACHE / 'test-parallel.log'
         if args.reuse_log is not None and not args.force:
             fresh = log_path.is_file() and (

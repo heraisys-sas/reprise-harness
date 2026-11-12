@@ -788,6 +788,111 @@ class HarnessIntegrationTests(unittest.TestCase):
                 integration.plan(self.root, self.home, 'desktop', self.project, action,
                                  asi1_effort=action == 'install')
 
+    def test_chatgpt_socket_entries_are_optional_without_workspace_write(self):
+        for socket in (None, '/tmp/future-chatgpt.sock'):
+            with self.subTest(socket=socket):
+                entries = integration._bridge_entries(
+                    Path('/release'), '/state', ('reprise_backends',), '/project',
+                    'desktop', self.managed, chatgpt_socket=socket)
+                args = entries[0]['config']['args']
+                self.assertEqual('--chatgpt-socket' in args, socket is not None)
+                if socket is not None:
+                    self.assertEqual(args[args.index('--chatgpt-socket') + 1], socket)
+                self.assertNotIn('--chatgpt-workspace-write', args)
+                self.assertNotIn('--codex-workspace-write', args)
+
+    def test_chatgpt_socket_lifecycle_preserves_removed_manifest_and_state(self):
+        probe = self.bridge_probe()
+        socket = str(self.base / 'future-chatgpt.sock')
+        self.assertFalse(Path(socket).exists())
+        proposed = self.install(chatgpt_socket=socket)
+        self.assertEqual(proposed['chatgpt_socket'], socket)
+        self.assertEqual(integration.inspect(self.home, 'desktop')['chatgpt_socket'], socket)
+        manifest_path = self.managed / 'managed.json'
+        installed = json.loads(manifest_path.read_text())
+        self.assertEqual(installed['chatgpt_socket'], socket)
+        self.assertEqual(integration.plan(self.root, self.home, 'desktop', self.project,
+                                         chatgpt_socket=socket)['changes'], [])
+        with patch.object(integration.subprocess, 'run', return_value=probe):
+            integration.verify(self.home, 'desktop', root=self.root, project=self.project)
+        state_before = integration.tree_files(self.state)
+        integration.apply(self.root, self.plan('remove'))
+        removed = json.loads(manifest_path.read_text())
+        self.assertEqual(removed['chatgpt_socket'], socket)
+        self.assertEqual(removed['status'], 'removed')
+        self.assertEqual(removed['state'], installed['state'])
+        self.assertEqual(removed['release'], installed['release'])
+        self.assertTrue(Path(removed['release']).is_dir())
+        self.assertEqual(integration.tree_files(self.state), state_before)
+        self.assertNotIn('--chatgpt-socket', self.config.read_text())
+        self.assertNotIn('chatgpt_socket', self.plan())
+
+    def test_chatgpt_socket_defaults_to_disabled_and_omission_revokes(self):
+        self.install()
+        self.assertIsNone(integration.inspect(self.home, 'desktop')['chatgpt_socket'])
+        self.assertNotIn('chatgpt_socket', json.loads((self.managed / 'managed.json').read_text()))
+        self.install(chatgpt_socket='/tmp/chatgpt.sock')
+        proposed = self.plan()
+        self.assertNotIn('chatgpt_socket', proposed)
+        integration.apply(self.root, proposed)
+        self.assertNotIn('--chatgpt-socket', self.config.read_text())
+        self.assertIsNone(integration.inspect(self.home, 'desktop')['chatgpt_socket'])
+
+    def test_chatgpt_socket_rejects_relative_paths(self):
+        for socket in ('chatgpt.sock', '~/chatgpt.sock', ''):
+            with self.subTest(socket=socket):
+                with self.assertRaisesRegex(ValueError, 'Socket ChatGPT'):
+                    integration.plan(self.root, self.home, 'desktop', self.project,
+                                     chatgpt_socket=socket)
+                with self.assertRaisesRegex(ValueError, 'Socket ChatGPT'):
+                    integration.desired(self.root, self.home, 'desktop', self.project,
+                                        'install', chatgpt_socket=socket)
+                with self.assertRaisesRegex(ValueError, 'Socket ChatGPT'):
+                    integration._bridge_entries(Path('/release'), '/state', (), '/project',
+                                                'desktop', self.managed, chatgpt_socket=socket)
+
+    def test_chatgpt_socket_cli_toggles_and_omission(self):
+        base_args = ['integration-plan', '--home', str(self.home), '--profile', 'desktop',
+                     '--project', str(self.project), '--action', 'install']
+        self.install(chatgpt_socket='/tmp/previous-chatgpt.sock')
+        for options, expected in ((['--chatgpt-socket', '/tmp/new-chatgpt.sock'], '/tmp/new-chatgpt.sock'),
+                                  (['--no-chatgpt-socket'], None), ([], None)):
+            with self.subTest(options=options):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    status = integration.main(self.root, base_args + options)
+                self.assertEqual(status, 0, output.getvalue())
+                proposed = json.loads(output.getvalue())['plan']
+                self.assertEqual(proposed.get('chatgpt_socket'), expected)
+                integration.apply(self.root, proposed)
+                self.assertEqual(integration.inspect(self.home, 'desktop')['chatgpt_socket'], expected)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            status = integration.main(self.root, base_args + ['--chatgpt-socket', 'relative.sock'])
+        self.assertEqual(status, 1)
+        self.assertIn('Socket ChatGPT', json.loads(output.getvalue())['message'])
+
+    def test_chatgpt_socket_verify_rejects_manifest_divergence_with_matching_hash(self):
+        self.install(chatgpt_socket='/tmp/chatgpt.sock')
+        manifest_path = self.managed / 'managed.json'
+        old = json.loads(manifest_path.read_text())
+        _, block = integration.split_block(self.config.read_text())
+        self.assertEqual(old['block_sha256'], integration.digest(block.encode()))
+        old['chatgpt_socket'] = '/tmp/other-chatgpt.sock'
+        manifest_path.write_text(json.dumps(old))
+        with self.assertRaisesRegex(ValueError, 'Configuration Reprise'):
+            integration.verify(self.home, 'desktop', root=self.root, project=self.project)
+
+    def test_chatgpt_socket_reformatted_block_can_be_updated(self):
+        self.install(chatgpt_socket='/tmp/chatgpt.sock')
+        self.config.write_text(self.reformatted_config())
+        proposed = integration.plan(self.root, self.home, 'desktop', self.project,
+                                    chatgpt_socket='/tmp/new-chatgpt.sock')
+        self.assertIn('block_reconciled', proposed)
+        integration.apply(self.root, proposed)
+        self.assertEqual(integration.inspect(self.home, 'desktop')['chatgpt_socket'],
+                         '/tmp/new-chatgpt.sock')
+
     def test_desktop_socket_is_generated_when_present_and_persisted(self):
         socket = self.base / 'quick-entry.sock'
         socket.write_text('')
