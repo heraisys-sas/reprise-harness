@@ -251,7 +251,7 @@ class Jobs:
         """
         project, work = _uuid(project_id), _uuid(work_id)
         try:
-            response = subprocess.run([sys.executable, '-I', '-c', orchestrator_memory._REGISTRY_PROBE],
+            response = subprocess.run([sys.executable, '-I', '-B', '-c', orchestrator_memory._REGISTRY_PROBE],
                 input=_json({'state': str(self.state), 'project_id': project, 'include_root': True}),
                 text=True, capture_output=True, timeout=5, check=False)
             found = json.loads(response.stdout)

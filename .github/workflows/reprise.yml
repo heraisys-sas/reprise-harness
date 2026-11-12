@@ -93,6 +93,10 @@ jobs:
           sh -n reprise/native-install reprise/restart-chain reprise/relaunch
       - name: Build isolated standalone bundle and relocated CLI smoke
         run: python3 reprise/release_build.py build --runtime-archive "$RUNNER_TEMP/reprise-runtime.tar.gz"
+      - name: Verify no bytecode drift after runtime launch
+        run: |
+          APP=$(python3 -c 'import sys;sys.path.insert(0,"reprise");import release_build as b;print(b.ROOT/"builds"/b.identity(b.inputs(b.ROOT))/"Reprise.app")')
+          python3 reprise/release_build.py verify-no-drift --app "$APP"
       - name: Archive exact build with provenance
         run: |
           APP=$(python3 -c 'import sys;sys.path.insert(0,"reprise");import release_build as b;print(b.ROOT/"builds"/b.identity(b.inputs(b.ROOT))/"Reprise.app")')

@@ -180,7 +180,7 @@ class Memory:
         """Query the registry in another process, preserving this process's SQLite locks."""
         _uuid(project_id)
         try:
-            response = subprocess.run([sys.executable, '-I', '-c', _REGISTRY_PROBE],
+            response = subprocess.run([sys.executable, '-I', '-B', '-c', _REGISTRY_PROBE],
                 input=_json({'state': str(self.state), 'project_id': project_id}),
                 text=True, capture_output=True, timeout=5, check=False)
             if response.returncode != 0:
