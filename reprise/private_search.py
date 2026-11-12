@@ -27,14 +27,24 @@ def cosine(a, b):
 
 def embeddings(root, texts):
     binary = native_binary(root, 'Embedding')
-    try:
-        p = subprocess.run([str(binary)], input=json.dumps(texts), text=True, capture_output=True, timeout=20)
-        values = json.loads(p.stdout)
-        if p.returncode == 0 and len(values) == len(texts):
-            return values
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        pass
-    return [{'language': None, 'vector': None} for _ in texts]
+    results = []
+    started = time.monotonic()
+    for offset in range(0, len(texts), 100):
+        batch = texts[offset:offset + 100]
+        remaining = 20 - (time.monotonic() - started)
+        if remaining <= 0:
+            results.extend({'language': None, 'vector': None} for _ in texts[offset:])
+            break
+        try:
+            p = subprocess.run([str(binary)], input=json.dumps(batch), text=True, capture_output=True, timeout=remaining)
+            values = json.loads(p.stdout)
+            if p.returncode == 0 and isinstance(values, list) and len(values) == len(batch):
+                results.extend(values)
+                continue
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+        results.extend({'language': None, 'vector': None} for _ in batch)
+    return results
 
 
 def search(state, root, query):
@@ -68,14 +78,20 @@ def search(state, root, query):
         query_embedding = embeddings(root, [query])[0]
         tokens = words(query)
         results = []
+        compatible_embeddings = 0
         for ident, title, provider, text, raw in db.execute('SELECT id,title,provider,text,embedding FROM documents'):
             vector = json.loads(raw)
             lexical = len(tokens & words(title+' '+text))/max(1,len(tokens))
-            semantic = max(0,cosine(query_embedding.get('vector'),vector.get('vector'))) if query_embedding['language'] == vector['language'] and query_embedding.get('revision') == vector.get('revision') else 0
+            compatible = bool(query_embedding.get('vector')) and bool(vector.get('vector')) and len(query_embedding['vector']) == len(vector['vector']) and query_embedding['language'] == vector['language'] and query_embedding.get('revision') == vector.get('revision')
+            if compatible:
+                compatible_embeddings += 1
+            semantic = max(0,cosine(query_embedding.get('vector'),vector.get('vector'))) if compatible else 0
             score = lexical * 0.65 + semantic * 0.35
             if lexical > 0 or semantic >= 0.55:
                 results.append(dict(id=ident,title=title,provider=provider,text=text[:600],score=round(score,4)))
-    return {'results': sorted(results,key=lambda r:r['score'],reverse=True)[:8], 'semantic_available': bool(query_embedding.get('vector')), 'scope': 'États récents et comptes rendus déjà analysés · index privé'}
+        total_documents = db.execute('SELECT COUNT(*) FROM documents').fetchone()[0]
+    semantic_available = bool(query_embedding.get('vector'))
+    return {'results': sorted(results,key=lambda r:r['score'],reverse=True)[:8], 'semantic_available': semantic_available, 'semantic_partial': semantic_available and compatible_embeddings < total_documents, 'scope': 'États récents et comptes rendus déjà analysés · index privé'}
 
 
 def schema(db):

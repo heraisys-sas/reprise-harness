@@ -652,7 +652,13 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             guard let result else { self.searchNote = "Recherche indisponible. Autorisez le cache dans Confidentialité si le Trousseau bloque son accès."; return }
             self.searchHasRun = true
             self.searchResults = result["results"] as? [[String: Any]] ?? []
-            self.searchNote = result["semantic_available"] as? Bool == true ? "Mots-clés et recherche sémantique Apple · index chiffré" : "Mots-clés · modèle sémantique indisponible"
+            if result["semantic_available"] as? Bool != true {
+                self.searchNote = "Mots-clés · modèle sémantique indisponible"
+            } else if result["semantic_partial"] as? Bool == true {
+                self.searchNote = "Mots-clés et recherche sémantique Apple partielle · certains éléments non comparables (langue, révision ou dimensions)"
+            } else {
+                self.searchNote = "Mots-clés et recherche sémantique Apple · index chiffré"
+            }
         }
     }
     func clearIndex() {
