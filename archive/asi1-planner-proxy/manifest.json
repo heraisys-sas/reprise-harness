@@ -1,0 +1,27 @@
+{
+  "baseline": "940ccbb34749f66c6572bc3a29b6643070aabd8f",
+  "reason": "User reports CUDOS staff confirmed planner is not implemented; explicit retirement request 2026-10-28.",
+  "archive": "source-940ccbb.tar.gz",
+  "sha256": "c88a9867efcec6fd855d509e700b3d60fa42cc4340ee5a05bf4a59cd4b445938",
+  "retired_paths": [
+    "proxy",
+    "launchagents",
+    "agent-resume/asi1_planner_proxy.py",
+    "agent-resume/proxy_service.py",
+    "agent-resume/PROXY-SERVICE.md",
+    "agent-resume/ASI1-ORCHESTRATOR-E2E.md",
+    "agent-resume/tests/test_asi1_planner_proxy.py",
+    "agent-resume/tests/test_proxy_service.py",
+    "agent-resume/security-audit-78"
+  ],
+  "context_paths": [
+    "agent-resume/ASI1-ORCHESTRATION-CONTRACT.md",
+    "agent-resume/harness_integration.py",
+    "agent-resume/Native.swift",
+    "agent-resume/Integrations.swift",
+    "agent-resume/SchedulerService.swift",
+    "agent-resume/resume",
+    "agent-resume/package_helpers.py",
+    "deepseek-harness-config/cordis.patch.yml"
+  ]
+}

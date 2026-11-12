@@ -1,0 +1,738 @@
+"""Experimental claude.ai transport; not connected to the Quick Apply daemon.
+
+A click is neither admission nor a model result. The adapter changes only the
+explicitly selected page and never launches or stops a browser during apply.
+"""
+from __future__ import annotations
+
+import hashlib
+from http.client import HTTPException, HTTPResponse
+import io
+import json
+import math
+import os
+import re
+import socket
+import time
+from urllib.parse import urlsplit
+
+from claude_desktop import validate_chat_id
+from websocket_transport import WebSocketTransport
+
+DEFAULT_PORT = int(os.environ.get("CLAUDE_CDP_PORT", "9333"))
+MAX_PROMPT_CHARS = 12000
+CHROME_BIN = os.environ.get(
+    "CHROME_BIN", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+PROFILE = os.environ.get("CLAUDE_CDP_PROFILE",
+                         os.path.expanduser("~/.local/share/claude-cdp/chrome"))
+VISIBLE_POSITION = (120, 120)
+# Config-driven transport (issue #36): the claude-web registry entry preserves
+# the historical hardcoded selectors so existing expressions stay byte-identical.
+# Fallback literals only when the registry file itself is unavailable.
+DEFAULT_ORIGIN = "https://claude.ai"
+DEFAULT_CHAT_PREFIX = "/chat/"
+def _default_selectors():
+    try:
+        import cdp_targets
+        return cdp_targets.load('claude-web')['selectors']
+    except Exception:
+        return {
+            "composer": '[data-testid="compose-textarea"]',
+            "send": '[data-testid="chat-input-send"]',
+            "user_message": '[data-testid^="user-message"]',
+            "assistant_message": '[data-testid="assistant-message"]',
+        }
+DEFAULT_SELECTORS = _default_selectors()
+
+
+def _sel(selectors):
+    merged = dict(DEFAULT_SELECTORS)
+    if isinstance(selectors, dict):
+        merged.update(selectors)
+    return merged
+
+
+def _js_str(value):
+    # Single-quoted JS string literal; selectors use double quotes inside.
+    return "'" + str(value).replace('\\', '\\\\').replace("'", "\\'") + "'"
+
+
+class WSError(RuntimeError):
+    pass
+
+
+def _page_path(url, *, origin=DEFAULT_ORIGIN):
+    try:
+        expected = urlsplit(origin)
+        parsed = urlsplit(url)
+        if (parsed.scheme != "https" or parsed.netloc != expected.netloc
+                or parsed.query or parsed.fragment):
+            return None
+        return parsed.path
+    except (TypeError, ValueError):
+        return None
+
+
+def _port(value):
+    if type(value) is not int or not 1 <= value <= 65535:
+        raise ValueError("Port CDP local invalide")
+    return value
+
+
+class WebSocket(WebSocketTransport):
+    def __init__(self, host, port, path, timeout=10.0):
+        self.sock = socket.create_connection((host, port), timeout=timeout)
+        self.buffer, self.timeout = bytearray(), timeout
+        try:
+            self._handshake(f"{host}:{port}", path, timeout)
+        except BaseException:
+            self.close()
+            raise
+
+    def _write(self, data):
+        self.sock.sendall(data)
+
+    def _read(self, deadline):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Délai CDP dépassé")
+        self.sock.settimeout(remaining)
+        chunk = self.sock.recv(65536)
+        if not chunk:
+            self._peer_closed()
+        self.buffer.extend(chunk)
+
+    def _peer_closed(self):
+        raise WSError("Connexion CDP fermée")
+
+    def close(self):
+        self.sock.close()
+
+
+class _DeadlineHTTPReader(io.RawIOBase):
+    """Let stdlib HTTP parsing use one deadline, including slow headers/body."""
+    def __init__(self, sock, deadline):
+        self.sock, self.deadline = sock, deadline
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Délai des métadonnées CDP dépassé")
+        self.sock.settimeout(remaining)
+        return self.sock.recv_into(buffer)
+
+    def makefile(self, mode):
+        # HTTPResponse only needs a buffered binary reader; the caller owns socket.
+        return io.BufferedReader(self)
+
+
+def local_json(port, path, *, timeout=1.0):
+    _port(port)
+    if path not in ('/json/list', '/json/version'):
+        raise WSError("Endpoint CDP metadata invalide")
+    if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("Délai CDP positif requis")
+    deadline = time.monotonic() + timeout
+    # Numeric loopback only, no proxy, redirect, credentials or background worker.
+    with socket.create_connection(('127.0.0.1', port), timeout=timeout) as sock:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Délai des métadonnées CDP dépassé")
+        sock.settimeout(remaining)
+        sock.sendall(f'GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n'.encode('ascii'))
+        try:
+            with HTTPResponse(_DeadlineHTTPReader(sock, deadline)) as response:
+                response.begin()
+                if response.status != 200:
+                    raise WSError("Réponse HTTP CDP refusée")
+                data = response.read(WebSocketTransport.LIMIT + 1)
+        except HTTPException as error:
+            raise WSError("Réponse HTTP CDP invalide") from error
+    if len(data) > WebSocketTransport.LIMIT:
+        raise WSError("Métadonnées CDP trop volumineuses")
+    try:
+        return json.loads(data)
+    except (ValueError, RecursionError) as error:
+        raise WSError("JSON CDP invalide") from error
+
+
+def read_targets(port, *, timeout=1.0):
+    targets = local_json(port, '/json/list', timeout=timeout)
+    if not isinstance(targets, list) or len(targets) > 100 or not all(isinstance(t, dict) for t in targets):
+        raise WSError("Liste CDP invalide")
+    return targets
+
+
+class CDP:
+    def __init__(self, port=DEFAULT_PORT, timeout=10.0, *, chat_id=None, target_id=None,
+                 origin=DEFAULT_ORIGIN, chat_prefix=DEFAULT_CHAT_PREFIX):
+        self.port, self.timeout, self._id = _port(port), timeout, 0
+        targets = self._targets()
+        if target_id is None:
+            page = self._pick_page(targets, chat_id, origin, chat_prefix)
+        else:
+            matches = [t for t in targets if t.get('id') == target_id and t.get('type') == 'page'
+                       and _page_path(t.get('url'), origin=origin) == chat_prefix + str(chat_id)]
+            page = matches[0] if len(matches) == 1 else None
+        if page is None:
+            raise WSError("Page cible unique requise")
+        self.target_id = page.get("id")
+        if not isinstance(self.target_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", self.target_id):
+            raise WSError("Identité CDP invalide")
+        try:
+            endpoint = urlsplit(page.get("webSocketDebuggerUrl", ""))
+            valid = (endpoint.scheme == "ws" and endpoint.hostname in ("127.0.0.1", "localhost")
+                     and endpoint.port == self.port and not endpoint.username and not endpoint.password
+                     and not endpoint.query and not endpoint.fragment
+                     and endpoint.path == "/devtools/page/" + self.target_id)
+        except (TypeError, ValueError):
+            valid = False
+        if not valid:
+            raise WSError("Endpoint CDP local invalide")
+        self.ws = WebSocket("127.0.0.1", self.port, endpoint.path, timeout=timeout)
+
+    def _targets(self):
+        return read_targets(self.port, timeout=self.timeout)
+
+    @staticmethod
+    def _pick_page(targets, chat_id=None, origin=DEFAULT_ORIGIN, chat_prefix=DEFAULT_CHAT_PREFIX):
+        pages = [t for t in targets if t.get("type") == "page"
+                 and _page_path(t.get("url"), origin=origin) is not None]
+        if chat_id is not None:
+            matching = [t for t in pages
+                        if _page_path(t.get("url"), origin=origin) == chat_prefix + chat_id]
+            if matching:
+                pages = matching
+        return pages[0] if len(pages) == 1 else None
+
+    def call(self, method, params=None):
+        self._id += 1
+        message_id = self._id
+        self.ws.send({"id": message_id, "method": method, "params": params or {}})
+        deadline = time.monotonic() + self.timeout
+        for _ in range(201):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Délai CDP dépassé")
+            payload = self.ws.receive(remaining)
+            if payload.get("id") != message_id:
+                continue
+            if "error" in payload or not isinstance(payload.get("result", {}), dict):
+                raise WSError("Commande CDP refusée")
+            return payload.get("result", {})
+        raise WSError("Trop de notifications CDP")
+
+    def evaluate(self, expression):
+        result = self.call("Runtime.evaluate", {
+            "expression": expression, "returnByValue": True, "awaitPromise": True})
+        if result.get("exceptionDetails"):
+            raise WSError("Évaluation CDP refusée")
+        value = result.get("result") or {}
+        if not isinstance(value, dict):
+            raise WSError("Résultat CDP invalide")
+        return value.get("value")
+
+    def navigate(self, url, *, origin=DEFAULT_ORIGIN):
+        if _page_path(url, origin=origin) is None:
+            raise WSError("Destination https requise")
+        if self.call("Page.navigate", {"url": url}).get("errorText"):
+            raise WSError("Navigation CDP refusée")
+
+    def close(self):
+        self.ws.close()
+
+
+# All page actions use the same composer lookup and full-text fingerprint.
+def canonical_text(text):
+    """Shared textual representation (issue #108).
+
+    Single documented form against which the pre-send fingerprint AND the
+    insertion validation are computed, on both dispatch paths. ProseMirror
+    renders paragraphs with a newline count that differs from the raw prompt
+    (one LF becomes an innerText blank line between <p> blocks), so equivalence
+    is decided on the sequence of NON-EMPTY lines: CRLF→LF, NBSP→space,
+    trailing blanks removed, blank lines dropped. Truncation still mismatches
+    (a missing line changes the sequence). Mirrors the JS `canon()` helper in
+    JS_HELPERS — keep both in sync.
+    """
+    lines = [line.rstrip(' \t') for line in
+             text.replace('\r', '').replace('\u00a0', ' ').split('\n')]
+    return '\n'.join(line for line in lines if line)
+
+
+_JS_HELPERS_TEMPLATE = r"""
+  const composer = () => {
+    const inputs = [...document.querySelectorAll('div[contenteditable="true"], textarea')]
+      .filter(el => {
+        const box = el.getBoundingClientRect();
+        return box.width >= 100 && box.height >= 10 && !el.disabled && !el.readOnly;
+      });
+    return inputs.length === 1 ? inputs[0] : null;
+  };
+  const readText = el => {
+    if (!el) return '';
+    if (el.tagName === 'TEXTAREA') return el.value;
+    const text = el.innerText;
+    const paragraph = el.childNodes.length === 1 ? el.childNodes[0] : null;
+    const br = paragraph?.childNodes.length === 1 ? paragraph.childNodes[0] : null;
+    // ProseMirror's sole trailing break renders a newline without draft content.
+    const placeholder = el.tagName === 'DIV' && el.isContentEditable === true
+      && text === '\n' && el.textContent === ''
+      && paragraph?.nodeType === 1 && paragraph.tagName === 'P'
+      && br?.nodeType === 1 && br.tagName === 'BR' && br.childNodes.length === 0
+      && br.classList.length === 1 && br.classList.contains('ProseMirror-trailingBreak');
+    return placeholder ? '' : text;
+  };
+  const sendButton = () => {
+    const buttons = [...document.querySelectorAll(__SEND_SELECTOR__)];
+    return buttons.length === 1 ? buttons[0] : null;
+  };
+  // Mirrors Python canonical_text(): keep both in sync.
+  const canon = s => {
+    const lines = s.replace(/\r/g, '').replace(/\u00a0/g, ' ')
+      .split('\n').map(line => line.replace(/[ \t]+$/, ''));
+    return lines.filter(line => line.length > 0).join('\n');
+  };
+  const digest = async text => [...new Uint8Array(await crypto.subtle.digest(
+    'SHA-256', new TextEncoder().encode(text)))].map(b => b.toString(16).padStart(2, '0')).join('');
+  const atTarget = path => location.origin === __ORIGIN__
+    && location.pathname === path && !location.search && !location.hash;
+"""
+
+def js_helpers(selectors=None, origin=None):
+    """JS helper prelude for one target: send selector and origin injected."""
+    merged = _sel(selectors)
+    return (_JS_HELPERS_TEMPLATE
+            .replace('__SEND_SELECTOR__', _js_str(merged['send']))
+            .replace('__ORIGIN__', _js_str(origin or DEFAULT_ORIGIN)))
+
+
+JS_HELPERS = js_helpers()
+
+def _js_state(helpers):
+    return "(async () => {" + helpers + """
+  const doc = document, el = composer(), text = readText(el), url = location.href;
+  const sha = el ? await digest(canon(text)) : null;
+  if (doc !== document || el !== composer() || text !== readText(el) || url !== location.href)
+    return {changed: true};
+  const send = sendButton();
+  return {url, composerPresent: Boolean(el), text_sha256: sha,
+    text_length: el ? text.length : null, hasText: Boolean(text.length),
+    sendDisabled: send ? Boolean(send.disabled) : null};
+})()"""
+
+
+def state(cdp, helpers=JS_HELPERS):
+    result = cdp.evaluate(_js_state(helpers))
+    if not isinstance(result, dict):
+        raise WSError("État du composeur indisponible")
+    return result
+
+
+def _prepare(cdp, path, helpers=JS_HELPERS):
+    return cdp.evaluate("(async () => {" + helpers + "\nconst path = " + json.dumps(path) + ";" + """
+      if (!atTarget(path)) return false;
+      const el = composer();
+      if (!el || readText(el).length !== 0 || !sendButton()) return false;
+      el.focus();
+      if (el.tagName === 'TEXTAREA') {
+        el.setSelectionRange(0, el.value.length);
+      } else {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      return atTarget(path) && el === composer() && readText(el).length === 0;
+    })()""") is True
+
+
+def _send(cdp, path, expected_sha256, helpers=JS_HELPERS):
+    return cdp.evaluate("(async () => {" + helpers + "\nconst path = " + json.dumps(path)
+                        + ", expected = " + json.dumps(expected_sha256) + ";" + """
+      if (!atTarget(path)) return {stage: 'cible', clicked: false};
+      const doc = document, el = composer(), raw = readText(el), text = canon(raw);
+      if (!el || !text.length) return {stage: 'composeur', clicked: false};
+      const sha = await digest(text);
+      // Recheck synchronously after hashing, before the only click primitive.
+      if (doc !== document || !atTarget(path)) return {stage: 'target_changed', clicked: false};
+      if (el !== composer()) return {stage: 'composer_replaced', clicked: false};
+      if (readText(el) !== raw)
+        return {stage: 'text_changed', clicked: false, length: raw.length, sha: sha};
+      if (sha !== expected)
+        return {stage: 'text_mismatch', clicked: false, length: raw.length, sha: sha};
+      const button = sendButton();
+      if (!button) return {stage: 'composeur', clicked: false};
+      // No Enter keydown fallback: a synthetic Enter can send by itself and
+      // defeat the single guarded click. React must enable the button.
+      if (button.disabled) return {stage: 'readiness_timeout', clicked: false};
+      button.click();
+      return {stage: 'envoyé', clicked: true};
+    })()""")
+
+
+def _insert(cdp, text, *, selectors=None):
+    """Event-driven insertion into the composer.
+
+    Focus the composer then insert through document.execCommand('insertText'),
+    which drives the browser's real input pipeline (beforeinput/input bubbling)
+    so React state updates. Fallback: content assignment plus a dispatched
+    bubbling InputEvent. A plain innerText assignment never reaches React.
+    """
+    expression = ("(async () => {" + js_helpers(selectors) + "\nconst text = " + json.dumps(text)
+                  + ", composerSelector = " + _js_str(_sel(selectors)['composer']) + ";" + """
+      const el = document.querySelector(composerSelector) || composer();
+      if (!el) return {inserted: false, length: 0};
+      el.focus();
+      let executed = false;
+      try { executed = document.execCommand('insertText', false, text); } catch (error) {}
+      let current = el.tagName === 'TEXTAREA' ? el.value : readText(el);
+      if (!executed || current.length === 0) {
+        if (el.tagName === 'TEXTAREA') el.value = text;
+        else el.textContent = text;
+        try { el.dispatchEvent(new InputEvent('input', {bubbles: true, composed: true})); }
+        catch (error) {}
+      }
+      current = el.tagName === 'TEXTAREA' ? el.value : readText(el);
+      // ProseMirror renders paragraph breaks as innerText newlines that can
+      // differ from the raw text; compare the shared canonical form so
+      // equivalent layout (blank lines, CRLF, NBSP) is not rejected.
+      return {inserted: canon(current) === canon(text),
+              length: current.length, expected_length: text.length};
+    })()""")
+    result = cdp.evaluate(expression)
+    return result if isinstance(result, dict) else {'inserted': False, 'length': 0}
+
+
+def _arm(cdp, *, selectors=None):
+    """Verify the send button is enabled before the click.
+
+    No fallback: React must enable the button from the inserted text. A
+    synthetic Enter could send the message by itself, so a still-disabled
+    button is reported as not ready (readiness_timeout upstream).
+    """
+    merged = _sel(selectors)
+    result = cdp.evaluate("(function(){" + js_helpers(selectors) + """
+      const el = document.querySelector(""" + _js_str(merged['composer']) + """) || composer();
+      const buttons = [...document.querySelectorAll(""" + _js_str(merged['send']) + """)];
+      const button = buttons.length === 1 ? buttons[0] : null;
+      if (!el || !button) return {ready: false, stage: 'composeur'};
+      if (!button.disabled) return {ready: true, stage: 'composeur'};
+      return {ready: false, stage: 'readiness_timeout'};
+    })()""")
+    return result if isinstance(result, dict) else {'ready': False}
+
+
+def _confirm(cdp, before_state=None, *, selectors=None):
+    """Post-click send evidence: composer emptied AND a new user message AND
+    still on the expected chat path.
+
+    'Composer emptied' alone also confirms a redirect to a fresh chat, so it
+    is never sufficient: the message counter must have increased since the
+    pre-click baseline and the URL must still be the attached chat. Any
+    failure or absence of evidence returns False so the caller reports
+    incertain, never envoyé.
+    """
+    before = before_state if isinstance(before_state, dict) else {}
+    expected_url = before.get('url') if isinstance(before.get('url'), str) else None
+    try:
+        result = cdp.evaluate("(async () => {" + js_helpers(selectors) + "\nconst messageSelector = "
+                              + _js_str(_sel(selectors)['user_message']) + """;
+      const messages = () => document.querySelectorAll(messageSelector).length;
+      const deadline = Date.now() + 4000;
+      let outcome = {confirmed: false, url: location.href,
+                     user_messages: messages(), user_messages_before: """ + str(int(before.get('n', -1))) + """,
+                     composer_left: -1};
+      while (Date.now() < deadline) {
+        const el = composer();
+        outcome.composer_left = el ? readText(el).length : 0;
+        const n = messages();
+        const grew = outcome.user_messages_before >= 0 ? n > outcome.user_messages_before : null;
+        if (outcome.composer_left === 0 && (grew === true || (grew === null && n > 0))) {
+          outcome.confirmed = true; outcome.user_messages = n; break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      outcome.user_messages = messages();
+      outcome.url = location.href;
+      if (outcome.confirmed && """ + ('true' if expected_url else 'false') + """) {
+        outcome.confirmed = location.pathname === """ + json.dumps(expected_url) + """;
+        outcome.url_match = location.pathname === """ + json.dumps(expected_url) + """;
+      }
+      return outcome;
+    })()""")
+    except (OSError, ValueError, WSError, TimeoutError, RuntimeError):
+        return False
+    if not isinstance(result, dict) or result.get('confirmed') is not True:
+        return False
+    cdp.last_confirm = result
+    return True
+
+
+def _result(stage, *, ok=False, staged=False, dispatch_attempted=False,
+            click_observed=False, **detail):
+    return {"ok": ok, "stage": stage, "staged": staged,
+            "dispatch_attempted": dispatch_attempted, "click_observed": click_observed,
+            "admission_confirmed": False, "response_received": False,
+            "lifecycle_supported": False, "lifecycle_reason": "lifecycle_unverified", "detail": detail}
+
+
+def _check(info, path, *, origin=DEFAULT_ORIGIN):
+    if info.get("changed") or _page_path(info.get("url"), origin=origin) != path:
+        return "session" if _page_path(info.get("url"), origin=origin) == "/login" else "cible"
+    if info.get("composerPresent") is not True or not isinstance(info.get("sendDisabled"), bool):
+        return "composeur"
+    return None
+
+
+def wait_composer(cdp, timeout=10.0, *, origin=DEFAULT_ORIGIN, helpers=JS_HELPERS):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        info = state(cdp, helpers)
+        if info.get("composerPresent") is True and info.get("sendDisabled") is not None:
+            return True
+        if _page_path(info.get("url"), origin=origin) == "/login":
+            return False
+        time.sleep(0.25)
+    return False
+
+
+def _dispatch(cdp, path, fingerprint, *, helpers=JS_HELPERS, selectors=None):
+    # A lost response to this evaluation may conceal a click, never retry it.
+    try:
+        # Keep the historical 3-argument call when helpers are unchanged.
+        outcome = _send(cdp, path, fingerprint) if helpers == JS_HELPERS \
+            else _send(cdp, path, fingerprint, helpers)
+    except (OSError, ValueError, WSError, TimeoutError):
+        return _result("incertain", staged=None, dispatch_attempted=True)
+    if not isinstance(outcome, dict):
+        return _result("incertain", staged=None, dispatch_attempted=True)
+    if outcome.get("clicked") is True and outcome.get("stage") == "envoyé":
+        # A click is not a send: require real evidence (composer emptied or
+        # message in the DOM) before admitting envoyé.
+        if _confirm(cdp, selectors=selectors):
+            return _result("envoyé", ok=True, staged=None, dispatch_attempted=True, click_observed=True,
+                           expected_sha256=fingerprint)
+        return _result("incertain", staged=None, dispatch_attempted=True, click_observed=True,
+                       expected_sha256=fingerprint)
+    # Certain pre-click failures: the exact motif carries lengths/hashes only,
+    # never prompt content.
+    if outcome.get("clicked") is False and outcome.get("stage") in (
+            "cible", "composeur", "bloqué", "empreinte", "text_mismatch",
+            "text_changed", "composer_replaced", "target_changed", "readiness_timeout"):
+        stage = outcome["stage"]
+        return _result(stage, staged=True if stage == "bloqué" else None,
+                       expected_sha256=fingerprint)
+    return _result("incertain", staged=None, dispatch_attempted=True)
+
+
+def _close(cdp):
+    if cdp:
+        try:
+            cdp.close()
+        except (OSError, ValueError, WSError):
+            pass
+
+
+def quota(port=DEFAULT_PORT):
+    """An interface observation is not an attributed provider quota."""
+    cdp = None
+    try:
+        cdp = CDP(port)
+        info = state(cdp)
+        available = (not info.get("changed") and info.get("composerPresent") is True
+                     and isinstance(info.get("sendDisabled"), bool))
+        return {"available": bool(available), "blocked": None,
+                "sendDisabled": info.get("sendDisabled") if available else None,
+                "hasText": info.get("hasText") if available else None,
+                "source": "interface", "quota_confirmed": False,
+                "lifecycle_supported": False, "lifecycle_reason": "lifecycle_unverified"}
+    except (OSError, ValueError, WSError, TimeoutError):
+        return {"available": False, "blocked": None, "source": "interface", "quota_confirmed": False,
+                "lifecycle_supported": False, "lifecycle_reason": "lifecycle_unverified"}
+    finally:
+        _close(cdp)
+
+
+def to_submission(result):
+    """Preserve uncertainty; a draft or click is never a completed task."""
+    stage = result.get("stage")
+    attempted = result.get("dispatch_attempted") is True or stage in ("envoyé", "incertain")
+    return {"status": "blocked_auth" if stage == "session" and not attempted else "needs_review",
+            "resumable": False, "model": "claude-desktop", "automatic_fallback": False,
+            "response": None, "admission_only": True, "dispatch": "cdp-web",
+            "dispatch_attempted": attempted, "click_observed": result.get("click_observed") is True,
+            "admission_confirmed": False, "response_received": False,
+            "staged": result.get("staged"), "transport": {"stage": stage},
+            "reason": "Connexion claude.ai requise" if stage == "session" else
+                      "Transport expérimental ; admission et résultat non confirmés"}
+
+
+def apply(prompt, chat_id=None, *, port=DEFAULT_PORT, settle=3.0, submit=True, on_login="fail",
+          target=None):
+    """Stage into an existing, exact chat; optionally attempt one guarded click.
+
+    target names an entry of the cdp_targets registry; the default claude-web
+    config preserves the historical hardcodes. An unknown or disabled target
+    yields route_disabled without touching any transport.
+    """
+    config = None
+    if target is not None:
+        import cdp_targets
+        config = cdp_targets.load(target)
+        if config is None or not config['enabled']:
+            return _result("route_disabled")
+    origin = config['origin'] if config else DEFAULT_ORIGIN
+    path_pattern = config['chat_url_pattern'] if config else DEFAULT_CHAT_PREFIX + '{chat_id}'
+    max_chars = config['max_prompt_chars'] if config else MAX_PROMPT_CHARS
+    selectors = config['selectors'] if config else None
+    try:
+        chat_id = validate_chat_id(chat_id)
+        if chat_id is None:
+            raise ValueError("Conversation Desktop existante requise")
+    except (ValueError, TypeError):
+        return _result("paramètres")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return _result("vide")
+    prompt = prompt.strip()
+    if len(prompt) > max_chars:
+        return _result("trop-long", length=len(prompt), max=max_chars)
+    try:
+        _port(port)
+        if (not isinstance(settle, (int, float)) or isinstance(settle, bool)
+                or not math.isfinite(settle) or not 0 <= settle <= 30
+                or type(submit) is not bool or on_login not in ("fail", "raise")):
+            raise ValueError("Options invalides")
+    except (ValueError, TypeError):
+        return _result("paramètres")
+    path = path_pattern.replace("{chat_id}", chat_id)
+    chat_prefix = path_pattern.split("{chat_id}")[0]
+    try:
+        fingerprint = hashlib.sha256(canonical_text(prompt).encode()).hexdigest()
+    except UnicodeError:
+        return _result("paramètres")
+    cdp, staged = None, False
+    helpers = js_helpers(selectors, origin)
+    try:
+        cdp = CDP(port, chat_id=chat_id, origin=origin, chat_prefix=chat_prefix)
+        initial = state(cdp, helpers)
+        if _page_path(initial.get("url"), origin=origin) == "/login":
+            return _result("session")
+        if initial.get("changed") or _page_path(initial.get("url"), origin=origin) is None:
+            return _result("cible")
+        if initial.get("composerPresent") is not True or initial.get("text_length") is None:
+            return _result("composeur")
+        if initial["text_length"] != 0:
+            return _result("brouillon")
+        # Do not reload the target unnecessarily or navigate away from a draft.
+        if _page_path(initial["url"], origin=origin) != path:
+            if origin == DEFAULT_ORIGIN:
+                cdp.navigate(origin + path)
+            else:
+                cdp.navigate(origin + path, origin=origin)
+        time.sleep(settle)
+        wait_composer(cdp, origin=origin, helpers=helpers)
+        info = state(cdp, helpers)
+        problem = _check(info, path, origin=origin)
+        if problem:
+            return _result(problem)
+        if info.get("text_length") != 0:
+            return _result("brouillon")
+        if not _prepare(cdp, path, helpers):
+            return _result("cible")
+        staged = None  # A lost insertion response can conceal an existing draft.
+        cdp.call("Input.insertText", {"text": prompt})
+        info = state(cdp, helpers)
+        problem = _check(info, path, origin=origin)
+        if problem:
+            return _result(problem, staged=staged)
+        if info.get("text_sha256") != fingerprint:
+            return _result("empreinte", staged=staged)
+        staged = True
+        if not submit:
+            return _result("posé", ok=True, staged=True, expected_sha256=fingerprint)
+        return _dispatch(cdp, path, fingerprint, helpers=helpers, selectors=selectors)
+    except (OSError, ValueError, WSError, TimeoutError):
+        return _result("connexion", staged=staged)
+    finally:
+        _close(cdp)
+
+
+def send_staged(port=DEFAULT_PORT, *, chat_id, expected_sha256):
+    """Attempt one click only for the supplied target and full composer hash."""
+    try:
+        chat_id = validate_chat_id(chat_id)
+        _port(port)
+        if chat_id is None or not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise ValueError("Cible et empreinte requises")
+    except (ValueError, TypeError):
+        return _result("paramètres")
+    path = "/chat/" + chat_id
+    cdp = None
+    try:
+        cdp = CDP(port, chat_id=chat_id)
+        info = state(cdp)
+        problem = _check(info, path)
+        if problem:
+            return _result(problem)
+        if info.get("text_length") == 0:
+            return _result("vide")
+        if info.get("text_sha256") != expected_sha256:
+            return _result("empreinte")
+        return _dispatch(cdp, path, expected_sha256)
+    except (OSError, ValueError, WSError, TimeoutError):
+        return _result("connexion", staged=None)
+    finally:
+        _close(cdp)
+
+
+def browser_up(port=DEFAULT_PORT):
+    """HTTP liveness only; does not establish browser ownership or identity."""
+    try:
+        _port(port)
+        opener = build_opener(ProxyHandler({}), _NoRedirect())
+        with opener.open(f"http://127.0.0.1:{port}/json/version", timeout=2):
+            return True
+    except (OSError, ValueError, WSError):
+        return False
+
+
+def shutdown(port=DEFAULT_PORT, wait=8.0):
+    """Refuse shutdown: neither a port nor a profile prefix proves ownership."""
+    return False
+
+
+def launch(port=DEFAULT_PORT, visible=False, timeout=20.0, chromeless=True):
+    """Refuse launch/adoption until an owned browser lifecycle is implemented."""
+    return False
+
+
+def raise_for_login(port=DEFAULT_PORT):
+    """Human action required; never stop or relaunch an unverified instance."""
+    return False
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Transport apply expérimental (CDP).")
+    parser.add_argument("text", nargs="?")
+    parser.add_argument("--chat")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--quota", action="store_true")
+    parser.add_argument("--send-staged", action="store_true")
+    parser.add_argument("--expected-sha256")
+    args = parser.parse_args()
+    if args.quota:
+        payload = quota(args.port)
+    elif args.send_staged:
+        if not args.chat or not args.expected_sha256:
+            parser.error("--send-staged exige --chat et --expected-sha256")
+        payload = send_staged(args.port, chat_id=args.chat, expected_sha256=args.expected_sha256)
+    else:
+        payload = apply(args.text or "", args.chat, port=args.port)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))

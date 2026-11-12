@@ -1,0 +1,199 @@
+import json
+import os
+from pathlib import Path
+import sqlite3
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
+import claude_desktop
+import engines
+
+
+class FakeClient:
+    def __init__(self, *args, **kw):
+        self.calls = []
+        self.closed = False
+        FakeClient.last = self
+
+    def call(self, method, params):
+        self.calls.append(method)
+        return {'thread': {'id': params.get('threadId'), 'status': {'type': 'idle'}}} if method == 'thread/read' else {}
+
+    def send(self, message):
+        self.calls.append(message['method'])
+
+    def close(self):
+        self.closed = True
+
+
+class PayloadTests(unittest.TestCase):
+    def test_text_guard_accepts_over_two_chars(self):
+        self.assertEqual(claude_desktop.build_payload('abc')['text'], 'abc')
+        with self.assertRaises(ValueError):
+            claude_desktop.build_payload('ab')
+        with self.assertRaises(ValueError):
+            claude_desktop.build_payload('   ')
+
+    def test_image_satisfies_guard_without_text(self):
+        payload = claude_desktop.build_payload('ab', images=[{'base64': 'x', 'mimeType': 'image/jpeg'}])
+        self.assertEqual(len(payload['images']), 1)
+
+    def test_non_string_prompt_rejected(self):
+        with self.assertRaises(ValueError):
+            claude_desktop.build_payload(123)
+
+    def test_image_shape_enforced(self):
+        with self.assertRaises(ValueError):
+            claude_desktop.build_payload('abc', images=[{'base64': 'x'}])
+        with self.assertRaises(ValueError):
+            claude_desktop.build_payload('abc', images=['not-a-dict'])
+
+    def test_chat_id_must_be_uuid_or_none(self):
+        self.assertIsNone(claude_desktop.build_payload('abc')['chatId'])
+        self.assertEqual(claude_desktop.build_payload('abc', chat_id='178dcceb-fcd3-4f2d-ac4f-116a8a153bc3')['chatId'],
+                         '178dcceb-fcd3-4f2d-ac4f-116a8a153bc3')
+        with self.assertRaises(ValueError):
+            claude_desktop.build_payload('abc', chat_id='pas-uuid')
+
+    def test_file_must_be_regular_and_under_cap(self):
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(b'x' * 10)
+            path = f.name
+        try:
+            payload = claude_desktop.build_payload('abc', file_paths=[path])
+            self.assertEqual(payload['filePaths'], [os.path.realpath(path)])
+        finally:
+            os.unlink(path)
+        big = tempfile.NamedTemporaryFile(delete=False)
+        big.write(b'x' * (claude_desktop.MAX_FILE_BYTES + 1))
+        big.close()
+        try:
+            with self.assertRaises(ValueError):
+                claude_desktop.build_payload('abc', file_paths=[big.name])
+        finally:
+            os.unlink(big.name)
+        with self.assertRaises(ValueError):
+            claude_desktop.build_payload('abc', file_paths=['/does/not/exist'])
+
+
+class ConnectionTests(unittest.TestCase):
+    def setUp(self):
+        self.db = sqlite3.connect(':memory:')
+        self.addCleanup(self.db.close)
+        engines.setup(self.db)
+
+    def test_probe_initializes_without_model_calls(self):
+        with patch('claude_desktop_rpc.Client', FakeClient):
+            result = claude_desktop.probe('supervisor', '/private/tmp/private.sock')
+        self.assertTrue(result['connected'])
+        self.assertFalse(result['model_called'])
+        self.assertEqual(FakeClient.last.calls, ['initialize', 'initialized'])
+        self.assertTrue(FakeClient.last.closed)
+
+    def test_failed_probe_is_structured_and_preserves_config(self):
+        self.db.execute('INSERT INTO engine_settings VALUES (?,?)', ('claude-desktop', json.dumps({'socket': '/old.sock'})))
+        self.db.commit()
+        with patch('claude_desktop_rpc.Client', side_effect=engines.Unavailable('engine_unavailable', 'Unavailable')):
+            result = claude_desktop.configure(self.db, 'supervisor', '/new.sock')
+        self.assertFalse(result['saved'])
+        self.assertEqual(json.loads(self.db.execute('SELECT options FROM engine_settings').fetchone()[0])['socket'], '/old.sock')
+
+    def test_verified_socket_saved_then_auto_restored(self):
+        with patch('claude_desktop_rpc.Client', FakeClient):
+            self.assertTrue(claude_desktop.configure(self.db, 'supervisor', '/chosen.sock')['saved'])
+        self.assertEqual(claude_desktop.status(self.db, '/private/tmp')['configured_socket'], '/chosen.sock')
+        with patch('claude_desktop_rpc.Client') as client:
+            self.assertTrue(claude_desktop.configure(self.db, 'supervisor')['saved'])
+            client.assert_not_called()
+        self.assertEqual(claude_desktop.status(self.db, '/private/tmp')['mode'], 'auto')
+
+    def test_missing_program_or_bad_path_cannot_connect(self):
+        self.assertFalse(claude_desktop.probe(None, '/chosen.sock')['connected'])
+        self.assertFalse(claude_desktop.probe('supervisor', 'relative.sock')['connected'])
+
+    def test_review_defaults_to_quick_apply_socket(self):
+        class Recorder(FakeClient):
+            init_args = ()
+            def __init__(self, *args, **kw):
+                super().__init__(*args, **kw)
+                Recorder.init_args = args
+            def call(self, method, params):
+                return {'status': 'finished', 'submission_id': 'sub-1'} if method == 'quick_entry/submit' else {}
+        for values in (None, {}):
+            with patch('claude_desktop_rpc.Client', Recorder):
+                result = claude_desktop.review('.', 'Explain the delegation contract', values=values)
+            self.assertEqual(result['status'], 'finished')
+            self.assertEqual(Recorder.init_args[1], {'socket': str(claude_desktop.DEFAULT_SOCKET)})
+        with patch('claude_desktop_rpc.Client', Recorder):
+            claude_desktop.review('.', 'Explain the delegation contract', values={'socket': '/chosen.sock'})
+        self.assertEqual(Recorder.init_args[1], {'socket': '/chosen.sock'})
+
+class CdpStatusClient(FakeClient):
+    payload = {'status': 'idle'}
+    def call(self, method, params):
+        return CdpStatusClient.payload if method == 'cdp/status' else super().call(method, params)
+
+
+class RoutesTests(unittest.TestCase):
+    def setUp(self):
+        self.db = sqlite3.connect(':memory:')
+        self.addCleanup(self.db.close)
+        engines.setup(self.db)
+
+    def routes(self, client):
+        with patch('claude_desktop_rpc.Client', client):
+            return claude_desktop.status(self.db, '/private/tmp')['routes']
+
+    def test_no_targets_reports_cdp_route_disabled(self):
+        routes = self.routes(CdpStatusClient)
+        self.assertEqual(routes['cdp_web'], {'enabled': False, 'state': 'désactivée',
+                                             'reason': 'Aucune cible CDP activée ; activation par configuration uniquement.'})
+
+    def test_enabled_ready_target_reports_ready(self):
+        CdpStatusClient.payload = {'status': 'idle', 'targets': {'x': {'enabled': True, 'ready': True}}}
+        self.addCleanup(setattr, CdpStatusClient, 'payload', {'status': 'idle'})
+        routes = self.routes(CdpStatusClient)
+        self.assertEqual(routes['cdp_web']['state'], 'prête')
+        self.assertTrue(routes['cdp_web']['enabled'])
+
+    def test_enabled_busy_target_reports_unavailable(self):
+        CdpStatusClient.payload = {'status': 'busy', 'targets': {'x': {'enabled': True, 'ready': False}}}
+        self.addCleanup(setattr, CdpStatusClient, 'payload', {'status': 'idle'})
+        self.assertEqual(self.routes(CdpStatusClient)['cdp_web']['state'], 'indisponible')
+
+    def test_unreachable_daemon_reports_unavailable_with_reason(self):
+        with patch('claude_desktop_rpc.Client', side_effect=engines.Unavailable('engine_unavailable', 'Daemon Quick Apply injoignable.')):
+            result = claude_desktop.status(self.db, '/private/tmp')['routes']
+        self.assertEqual(result['cdp_web']['state'], 'indisponible')
+        self.assertEqual(result['cdp_web']['reason'], 'Daemon Quick Apply injoignable.')
+
+    def test_native_patch_follows_socket_probe(self):
+        import socket as socket_module
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / 'probe.sock')
+            listener = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+            self.addCleanup(listener.close)
+            listener.bind(path)
+            self.db.execute('INSERT INTO engine_settings VALUES (?,?)', ('claude-desktop', json.dumps({'socket': path})))
+            self.db.commit()
+            routes = self.routes(CdpStatusClient)
+            self.assertEqual(routes['native_patch']['state'], 'disponible')
+            listener.close()
+            Path(path).unlink()
+            routes = self.routes(CdpStatusClient)
+        self.assertEqual(routes['native_patch']['state'], 'indisponible')
+
+    def test_status_payload_stays_backward_compatible(self):
+        with patch('claude_desktop_rpc.Client', CdpStatusClient):
+            result = claude_desktop.status(self.db, '/private/tmp')
+        self.assertEqual(result['mode'], 'auto')
+        self.assertIn('configured_socket', result)
+        self.assertIn('candidates', result)
+        self.assertTrue(result['candidates'])
+
+
+if __name__ == '__main__':
+    unittest.main()
