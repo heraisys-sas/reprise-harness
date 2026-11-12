@@ -103,8 +103,9 @@ finally:host.shutdown()
   precondition(p.isAnalysis && p.preparationJob["status"] as? String=="preparation")
   precondition((p.preparationJob["proposal"] as! [String:Any])["objective"] as? String==PreparationAnalysisTemplate.objective)
   precondition(!FileManager.default.fileExists(atPath:state.appendingPathComponent("generations").path))
-  p.loadConsentContext();await idle(p);precondition(p.canConsent)
-  p.authorizePreparation();await idle(p);p.planLocalExecution();await idle(p);precondition(p.canStartLocal)
+  precondition(p.canConsent,"guided context should be checked after preparation")
+  p.authorizePreparation();await idle(p)
+  precondition(p.canStartLocal,"guided manifest should be prepared after local consent")
   p.startLocalExecution();await idle(p)
   for _ in 0..<400 {
    if p.preparationJob["status"] as? String=="local_recorded"{break}
@@ -180,6 +181,16 @@ finally:host.shutdown()
   precondition(r.preparationJob["status"] as? String=="preparation","no inherited mission authorization")
   r.consentBackend="foundation-models";r.authorizePreparation();await idle(r)
   precondition(r.preparationJob["status"] as? String=="consented",r.preparationStatus)
+  r.showReviewOperation(analysis:true);await idle(r)
+  precondition(r.canStartNewAnalysis)
+  let oldWork=r.workID
+  r.analysisRequest="Demande suivante déjà saisie"
+  r.startNewAnalysis()
+  precondition(r.analysisRequest=="Demande suivante déjà saisie")
+  precondition(r.workID != oldWork && UUID(uuidString:r.workID) != nil)
+  precondition(r.analysisOperationID.isEmpty && r.checkpointID.isEmpty)
+  r.workID=oldWork
+  precondition(r.analysisOperationID==source && r.missionOperationID==target)
   r.close()
  }
 }

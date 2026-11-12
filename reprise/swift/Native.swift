@@ -118,6 +118,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var connectionNote = ""
     @Published var testedSocket = ""
     @Published var connectionVerified = false
+    @Published var connectionTestedAt: Date?
     var connectionLoaded = false
     @Published var desktopConnection: [String: Any] = [:]
     @Published var desktopSocketPath = ""
@@ -125,6 +126,8 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var desktopConnectionNote = ""
     @Published var desktopTestedSocket = ""
     @Published var desktopConnectionVerified = false
+    @Published var desktopConnectionTestedAt: Date?
+    @Published var desktopRoutesCheckedAt: Date?
     var desktopConnectionLoaded = false
     @Published var health: [String: Any] = [:]
     @Published var healthState = "unavailable"
@@ -279,6 +282,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                 self.scheduler = scheduler ?? [:]
                 self.connection = connection ?? [:]
                 self.desktopConnection = desktopConnection ?? [:]
+                self.desktopRoutesCheckedAt = desktopConnection == nil ? nil : Date()
                 if let health,
                    health["versions"] is [String: Any],
                    health["actions_for_human"] is [String],
@@ -467,6 +471,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             self.connectionBusy = false
             self.testedSocket = path
             self.connectionVerified = result?["connected"] as? Bool == true
+            self.connectionTestedAt = result?["connected"] is Bool ? Date() : nil
             self.connectionNote = result?["reason"] as? String ?? "Vérification indisponible. Configuration conservée."
             if save && result?["saved"] as? Bool == true { self.refresh() }
         }
@@ -491,6 +496,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             self.desktopConnectionBusy = false
             self.desktopTestedSocket = path
             self.desktopConnectionVerified = result?["connected"] as? Bool == true
+            self.desktopConnectionTestedAt = result?["connected"] is Bool ? Date() : nil
             self.desktopConnectionNote = result?["reason"] as? String ?? "Vérification indisponible. Configuration conservée."
             if save && result?["saved"] as? Bool == true { self.refresh() }
         }

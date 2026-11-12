@@ -576,7 +576,7 @@ final class ApplePilotUI: ObservableObject {
     var attachedRecallFacts: [[String: Any]] {
         ((preparationJob["memory_selection"] as? [String: Any])?["snapshot"] as? [String: Any])?["facts"] as? [[String: Any]] ?? []
     }
-    @Published var consentBackend = "codex"
+    @Published var consentBackend = "foundation-models"
     @Published var localMaxSeconds = 60 { didSet { localPlan = [:] } }
     @Published private(set) var localPlan: [String: Any] = [:]
     private var localSelections: [String: [String]] = [:]
@@ -1092,7 +1092,7 @@ final class ApplePilotUI: ObservableObject {
         var values = preferences?.dictionary(forKey: "ApplePilotPreparationOperations") as? [String: String] ?? [:]
         values[projectID] = operation; preferences?.set(values, forKey: "ApplePilotPreparationOperations")
         preparationJob = [:]; localPlan = [:]; consentContext = [:]; consentContextSHA256 = ""
-        consentBackend = isAnalysis ? "foundation-models" : "codex"
+        consentBackend = "foundation-models"
         proposalObjective = ""; proposalAcceptance = ""; proposalConstraints = ""; proposalQuestions = ""
     }
     func showReviewOperation(analysis: Bool) {
@@ -1102,9 +1102,50 @@ final class ApplePilotUI: ObservableObject {
         selectOperation(operation); preparationBusy = true
         request("job_recover", fields: ["enabled": true, "project_id": projectID, "operation_id": operation])
     }
+    /// Allocate a local work identity only for an explicit user action and only
+    /// when there is no existing selection or unassigned checkpoint draft.
+    func prepareGuidedWork() -> Bool {
+        guard canSwitchReview, canonical(projectID) else { return false }
+        if workID.isEmpty {
+            guard knownProjects?.contains(projectID) == true else { return false }
+            guard checkpointDraftWorkID.isEmpty && checkpointID.isEmpty else {
+                preparationStatus = "Un checkpoint ou brouillon existant doit être associé à son travail dans les options avancées."
+                return false
+            }
+            workID = UUID().uuidString.lowercased()
+        }
+        return canonical(workID) && !preparationUncertain && !preparationJournalUnavailable
+    }
+    var canOpenGuided: Bool {
+        enabled && canSelect && canonical(projectID) && knownProjects?.contains(projectID) == true
+            && (workID.isEmpty ? (checkpointDraftWorkID.isEmpty && checkpointID.isEmpty) : canonical(workID))
+            && (checkpointID.isEmpty || canonical(checkpointID)) && validSkills.contains(skill)
+            && !preparationUncertain && !preparationJournalUnavailable
+    }
+    func openGuided() {
+        guard canOpenGuided, prepareGuidedWork() else { return }
+        open()
+    }
+    var canPrepareAnalysis: Bool {
+        canSwitchReview && canonical(projectID)
+            && (workID.isEmpty ? (knownProjects?.contains(projectID) == true && checkpointDraftWorkID.isEmpty && checkpointID.isEmpty) : canonical(workID))
+            && analysisOperationID.isEmpty
+    }
+    var canStartNewAnalysis: Bool {
+        canSwitchReview && isAnalysis && checkpointDraftWorkID.isEmpty
+            && recallSelected.isEmpty && recallPreview.isEmpty
+            && (preparationJob["local_execution"] as? [String: Any])?["stage"] as? String == "recorded"
+    }
+    func startNewAnalysis() {
+        guard canStartNewAnalysis else { return }
+        // The previous work and its receipt remain in Jobs; never copy its checkpoint.
+        checkpointID = ""
+        workID = UUID().uuidString.lowercased()
+        preparationStatus = "Nouvelle demande prête ; la précédente reste consultable dans les opérations."
+    }
     func prepareAnalysis() {
-        guard canSwitchReview, canonical(workID), analysisOperationID.isEmpty,
-              let proposal = PreparationAnalysisTemplate.proposal(analysisRequest) else {
+        guard canPrepareAnalysis, let proposal = PreparationAnalysisTemplate.proposal(analysisRequest),
+              prepareGuidedWork(), analysisOperationID.isEmpty else {
             preparationStatus = "Demande requise (1 Kio maximum). Une analyse existante se recharge ; un autre travail permet une autre analyse."
             return
         }
@@ -1689,6 +1730,16 @@ final class ApplePilotUI: ObservableObject {
                     preparationStatus = authorizationBackend(job) == "foundation-models"
                         ? "Consentement Apple local enregistré ; aucune exécution avant validation du manifeste."
                         : "Consentement enregistré ; exécution pas encore disponible. Facturation non vérifiée."
+                }
+                // Read-only technical steps follow only a confirmed, current user action.
+                // Recovery and indeterminate effects never trigger another mutation or inference.
+                if operation == "job_prepare", isAnalysis, !preparationUncertain,
+                   job["status"] as? String == "preparation" {
+                    loadConsentContext()
+                } else if operation == "job_authorize_local", !preparationUncertain,
+                          job["status"] as? String == "consented",
+                          authorizationBackend(job) == "foundation-models" {
+                    planLocalExecution()
                 }
                 if let execution = job["local_execution"] as? [String: Any], !preparationUncertain {
                     let receipt = execution["receipt"] as? [String: Any]

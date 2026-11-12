@@ -188,7 +188,7 @@ struct Dashboard: View {
         self.app = app
         _applePilot = StateObject(wrappedValue: ApplePilotUI.make(app: app))
     }
-    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("apple-pilot", "Pilote Apple", "bubble.left.and.text.bubble.right"), ("search", "Recherche", "magnifyingglass"), ("connections", "Connexions", "point.3.connected.trianglepath.dotted"), ("integrations", "Intégrations", "puzzlepiece.extension"), ("health", "Santé post-update", "heart.text.square"), ("privacy", "Confidentialité", "lock.shield")]
+    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("ecosystem", "Écosystème", "point.3.connected.trianglepath.dotted"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("apple-pilot", "Pilote Apple", "bubble.left.and.text.bubble.right"), ("search", "Recherche", "magnifyingglass"), ("connections", "Connexions", "point.3.connected.trianglepath.dotted"), ("integrations", "Intégrations", "puzzlepiece.extension"), ("health", "Santé post-update", "heart.text.square"), ("privacy", "Confidentialité", "lock.shield")]
     var title: String { sections.first { $0.0 == app.page }?.1 ?? "Reprise" }
     @ViewBuilder var body: some View {
         if app.stateReady {
@@ -245,6 +245,7 @@ struct Dashboard: View {
                     if let error = app.snapshot["error"] as? String { Label(error, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary) }
                     if !app.navigationNote.isEmpty { Label(app.navigationNote, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary) }
                     switch app.page {
+                    case "ecosystem": ecosystem
                     case "sessions": sessions
                     case "resumptions": resumptions
                     case "analysis": analysis
@@ -275,6 +276,7 @@ struct Dashboard: View {
     }
     var subtitle: String {
         switch app.page {
+        case "ecosystem": return "Comprenez les liaisons et ouvrez leur diagnostic."
         case "sessions": return "Distinguez les interruptions récentes des arrêts et de l’historique."
         case "resumptions": return "Les tentatives sont regroupées par cause. Les détails restent accessibles à la demande."
         case "analysis": return "Un second regard sur les comptes rendus, sur votre Mac."
@@ -287,6 +289,103 @@ struct Dashboard: View {
         default: return "L’essentiel de vos sessions, sans les interrompre."
         }
     }
+    private func ecosystemColor(_ level: EcosystemStatus.Level) -> Color {
+        switch level {
+        case .ready: return .green
+        case .attention: return .orange
+        case .problem: return .red
+        }
+    }
+    private func ecosystemLink(_ target: String, symbol: String, value: EcosystemStatus.Value,
+                               action: @escaping () -> Void) -> some View {
+        let color = ecosystemColor(value.level)
+        return HStack(alignment: .top, spacing: 12) {
+            VStack(spacing: 0) {
+                Image(systemName: "circle.fill").font(.system(size: 8)).foregroundStyle(color)
+                Rectangle().fill(color).frame(width: 2, height: 38)
+                Image(systemName: symbol).font(.system(size: 14)).foregroundStyle(color)
+            }.frame(width: 20).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Button(target, action: action).buttonStyle(.link).font(.headline)
+                    Spacer()
+                    Text(value.label).font(.caption.weight(.semibold)).foregroundStyle(color)
+                }
+                Text(value.detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }.accessibilityElement(children: .contain)
+    }
+    private func applicationPresent(_ bundleID: String) -> Bool {
+        if app.running.contains(bundleID) { return true }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+    private func detectedSocket(_ connection: [String: Any]) -> Bool {
+        (connection["candidates"] as? [[String: Any]] ?? []).contains { $0["detected"] as? Bool == true }
+    }
+    private var ironclawConfigured: Bool {
+        let state: URL
+        if let override = ProcessInfo.processInfo.environment["AGENT_RESUME_STATE"], !override.isEmpty {
+            state = URL(fileURLWithPath: (override as NSString).expandingTildeInPath, isDirectory: true)
+        } else if app.usesBundledRuntime {
+            state = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Reprise/state", isDirectory: true)
+        } else {
+            state = app.root.appendingPathComponent("state", isDirectory: true)
+        }
+        return FileManager.default.fileExists(atPath: state.appendingPathComponent("ironclaw-endpoint.json").path)
+    }
+    var ecosystem: some View {
+        let codexMatches = app.testedSocket == app.socketPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let desktopMatches = app.desktopTestedSocket == app.desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let codex = EcosystemStatus.probe(connected: codexMatches ? app.connectionVerified : nil,
+                                          checkedAt: codexMatches ? app.connectionTestedAt : nil)
+        let quick = EcosystemStatus.probe(connected: desktopMatches ? app.desktopConnectionVerified : nil,
+                                          checkedAt: desktopMatches ? app.desktopConnectionTestedAt : nil)
+        let routes = app.desktopConnection["routes"] as? [String: Any] ?? [:]
+        let engines = app.scheduler["engines"] as? [[String: Any]] ?? []
+        let codexCLI = engines.contains { $0["id"] as? String == "codex-cli" && $0["available"] as? Bool == true }
+        let harnessCLI = engines.contains { $0["id"] as? String == "harness-cli" && $0["available"] as? Bool == true }
+        let cdp = EcosystemStatus.cdp(routes["cdp_web"] as? [String: Any] ?? [:], checkedAt: app.desktopRoutesCheckedAt)
+        return VStack(alignment: .leading, spacing: 18) {
+            Surface {
+                VStack(alignment: .leading, spacing: 16) {
+                    Label("Reprise", systemImage: "arrow.clockwise.circle.fill").font(.title3.weight(.semibold))
+                    Text("Les couleurs concernent l’observation indiquée : elles ne prouvent ni le chargement des outils par un client, ni la réussite d’une tâche.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if app.scheduler["installed"] as? Bool == true {
+                        ecosystemLink("Planificateur", symbol: "clock.arrow.circlepath", value: EcosystemStatus.scheduler(app.scheduler)) { app.page = "resumptions" }
+                    }
+                    if EcosystemStatus.present(installed: applicationPresent("com.openai.codex"), detected: detectedSocket(app.connection) || codexCLI) {
+                        ecosystemLink("Codex · socket", symbol: "terminal", value: codex) { app.connectionTab = "codex"; app.page = "connections" }
+                    }
+                    if EcosystemStatus.present(installed: FileManager.default.fileExists(atPath: app.root.appendingPathComponent("claude_desktop_quick.py").path), detected: detectedSocket(app.desktopConnection)) {
+                        ecosystemLink("Quick Apply · adaptateur", symbol: "bolt.horizontal", value: quick) { app.connectionTab = "quickapply"; app.page = "connections" }
+                    }
+                    if applicationPresent("com.anthropic.claudefordesktop") {
+                        ecosystemLink("Claude Desktop", symbol: "bubble.left.and.bubble.right", value: .init(level: .attention, label: app.running.contains("com.anthropic.claudefordesktop") ? "Application ouverte" : "Application présente", detail: "La connexion du relais et le chargement des outils ne sont pas confirmés.")) { app.connectionTab = "quickapply"; app.page = "connections" }
+                    }
+                    if FileManager.default.fileExists(atPath: app.root.appendingPathComponent("claude_cdp_pipe.py").path), (routes["cdp_web"] as? [String: Any])?["enabled"] as? Bool == true {
+                        ecosystemLink("CDP web · via Quick Apply", symbol: "globe", value: cdp) { app.connectionTab = "quickapply"; app.page = "connections" }
+                    }
+                    if EcosystemStatus.present(installed: applicationPresent("com.deepseek.dsh"), detected: harnessCLI) {
+                        ecosystemLink("Harness · outils MCP", symbol: "hammer", value: .init(level: .attention, label: "Client non vérifié", detail: "L’installation ou l’ouverture de Harness ne confirme pas le chargement des outils.")) { app.page = "integrations" }
+                    }
+                    if applicationPresent("com.zhipuai.autoclaw") {
+                        ecosystemLink("AutoClaw", symbol: "bolt", value: .init(level: .attention, label: "Présent · lien non vérifié", detail: "La présence de l’application ne confirme pas un échange avec Reprise.")) { app.page = "integrations" }
+                    }
+                    if ironclawConfigured {
+                        ecosystemLink("IronClaw · configuration distante", symbol: "network", value: .init(level: .attention, label: "Non vérifié", detail: "L’état d’une connexion distante n’est pas suivi en continu ici.")) { app.connectionTab = "ironclaw"; app.page = "connections" }
+                    }
+                    if FileManager.default.fileExists(atPath: app.root.appendingPathComponent("apple_pilot_service.py").path) && FileManager.default.fileExists(atPath: "/System/Library/Frameworks/FoundationModels.framework") {
+                        ecosystemLink("Pilote Apple · adaptateur", symbol: "sparkles", value: .init(level: .attention, label: applePilot.sessionOpen ? "Session ouverte" : "Session non ouverte", detail: "La disponibilité du modèle et le résultat d’une analyse sont vérifiés séparément.")) { app.page = "apple-pilot" }
+                    }
+                }
+            }
+            Text("Vert : observation confirmée · Orange : attente ou preuve manquante · Rouge : erreur observée. Les tests de connexion ne lancent pas de modèle.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     var overview: some View {
         VStack(alignment: .leading, spacing: 20) {
             if app.lastRefresh == nil && app.busy {

@@ -551,3 +551,28 @@ présumée. Avant manifeste, l’aperçu décrit des entrées préparées et ne 
 transmission. Le reçu complet reste accessible sous forme de vue JSON, sans
 troncature volontaire ; cette mise en forme ne constitue pas les octets originaux.
 Ces vues ne changent aucune identité, autorité, importation ou décision de consentement.
+
+### Entrée guidée et plusieurs demandes
+
+La vue peut créer automatiquement un UUID de travail local lors d'une action
+explicite d'ouverture ou de préparation si aucun travail n'est sélectionné et
+si le projet est présent dans la liste chargée. Elle ne remplace pas un travail
+existant ou invalide ; un checkpoint sans travail ou un brouillon de checkpoint
+interdit cette création. L'UUID identifie un contexte Reprise local, pas un travail
+confirmé par un harness. La création de ce contexte ne vaut ni consentement ni
+exécution ; les contrôles et reçus existants s'appliquent inchangés.
+
+Après réception terminale d'une analyse, une action explicite peut créer un
+nouveau travail pour une nouvelle demande. Elle est refusée en présence d'une
+intention incertaine, d'une action en cours ou d'un brouillon de checkpoint ou de
+rappel non traité. Le checkpoint précédent n'est pas repris automatiquement.
+Les opérations, reçus et liaisons historiques restent consultables ; aucun appel
+modèle ni import de candidat ne découle de ce changement de sélection.
+
+Après une préparation d'analyse confirmée sur la sélection courante, la GUI peut
+valider automatiquement le contexte local. Après confirmation durable du
+consentement Apple local, elle peut préparer le manifeste local sans nouvelle
+saisie technique. Ces étapes ne démarrent aucune inférence. Elles ne sont pas
+réémises automatiquement après récupération d'une mutation incertaine ; une
+préparation manquante peut être redemandée explicitement. L'exécution conserve
+son action opérateur distincte et ses contrôles habituels.

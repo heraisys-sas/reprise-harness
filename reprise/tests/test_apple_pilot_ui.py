@@ -459,6 +459,7 @@ for line in sys.stdin:
   p.proposalQuestions="question"; precondition(!p.canConsent); p.proposalQuestions=""
   let work=p.workID; p.workID="cccccccc-cccc-4ccc-8ccc-cccccccccccc"; precondition(!p.canConsent)
   p.workID=work; p.loadConsentContext(); await wait(p); precondition(p.canConsent)
+  p.consentBackend="codex" // Exercise the historical remote-consent recovery path.
   p.authorizePreparation(); await wait(p)
   precondition(p.preparationUncertain)
   let q=make(); q.enabled=true
@@ -774,6 +775,20 @@ for line in sys.stdin:
     let file = URL(fileURLWithPath: CommandLine.arguments[1])
     let p = ApplePilotUI(python: file, service: file, state: file, preferences: d)
     precondition(!p.enabled && p.contextNeedsConfiguration && !p.hostRunning)
+    let guided = ApplePilotUI(python: file, service: file, state: file)
+    guided.enabled = true
+    guided.projectID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    precondition(!guided.prepareGuidedWork() && guided.workID.isEmpty)
+    guided.updateKnownProjects([guided.projectID])
+    guided.checkpointID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    precondition(!guided.canOpenGuided && !guided.prepareGuidedWork() && guided.workID.isEmpty)
+    guided.checkpointID = ""
+    precondition(guided.canOpenGuided && guided.workID.isEmpty)
+    precondition(guided.prepareGuidedWork())
+    let generated = guided.workID
+    precondition(UUID(uuidString: generated) != nil && guided.prepareGuidedWork() && guided.workID == generated)
+    guided.workID = "invalid"
+    precondition(!guided.prepareGuidedWork() && guided.workID == "invalid")
     p.enabled = true
     p.projectID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     p.workID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"

@@ -22,7 +22,7 @@ if [ -n "$RUNTIME_ARCHIVE" ]; then
 fi
 python3 "$ROOT/package_helpers.py" "$ROOT" "$APP"
 mkdir -p "$APP/Contents/MacOS"
-swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/swift/Native.swift" "$ROOT/swift/Dashboard.swift" "$ROOT/swift/StateSetup.swift" "$ROOT/swift/Integrations.swift" "$ROOT/swift/SchedulerService.swift" "$ROOT/swift/IronClawConnection.swift" "$ROOT/swift/ApplePilotUI.swift" "$ROOT/swift/ApplePilotView.swift" -o "$APP/Contents/MacOS/Reprise"
+swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/swift/Native.swift" "$ROOT/swift/Dashboard.swift" "$ROOT/swift/EcosystemStatus.swift" "$ROOT/swift/StateSetup.swift" "$ROOT/swift/Integrations.swift" "$ROOT/swift/SchedulerService.swift" "$ROOT/swift/IronClawConnection.swift" "$ROOT/swift/ApplePilotUI.swift" "$ROOT/swift/ApplePilotView.swift" -o "$APP/Contents/MacOS/Reprise"
 swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/swift/Embedding.swift" -o "$APP/Contents/MacOS/Embedding"
 swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/swift/FoundationExplain.swift" -o "$APP/Contents/MacOS/FoundationExplain"
 swiftc -target "$TARGET" -module-cache-path /private/tmp/agent-resume-swift-cache "$ROOT/swift/Vault.swift" -o "$APP/Contents/MacOS/Vault"

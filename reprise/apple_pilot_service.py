@@ -76,6 +76,7 @@ class Service:
         self.memory_worker = None
         self.memory_closing = False
         self.job_worker = None
+        self.job_emitters = set()
         self.job_closing = False
         self.consent_binding = None
 
@@ -372,27 +373,26 @@ class Service:
                         raise ValueError('Execution identity conflict')
                     with self.lock: active = self.local_runs.get((project, operation))
                     result = self.local_factory(jobs).recover(project, operation, active=bool(active and active[2].is_alive()))
-                    self.emit({'id': ident, 'status': 'finished', 'job': result})
-                    return
-                with self.lock: plan = copy.deepcopy(self.local_plans.get((project, operation)))
-                if not plan or plan['manifest_sha256'] != request['expected_manifest_sha256']:
-                    raise ValueError('Execution manifest mismatch')
-                # Re-read helper/context without invoking it; never accept a client-supplied manifest.
-                fresh = self.local_factory(jobs).plan(project, operation, plan['manifest']['max_seconds'])
-                if fresh != plan: raise ValueError('Execution manifest mismatch')
-                result, created = jobs.reserve_local(project, operation, run_id=run,
-                    expected_revision=request['expected_revision'], manifest=plan['manifest'])
-                if created:
-                    control = coordinator_local.Control()
-                    thread = threading.Thread(target=self._local_run, args=(project, operation, run, control), daemon=True)
-                    with self.lock:
-                        # Registration and start are atomic with closing. A start
-                        # already preparing may not escape shutdown's snapshot.
-                        if self.job_closing:
-                            result = jobs.local_update(project, operation, run, stop=True, stage='indeterminate')
-                        else:
-                            self.local_runs[(project, operation)] = (run, control, thread)
-                            thread.start()
+                else:
+                    with self.lock: plan = copy.deepcopy(self.local_plans.get((project, operation)))
+                    if not plan or plan['manifest_sha256'] != request['expected_manifest_sha256']:
+                        raise ValueError('Execution manifest mismatch')
+                    # Re-read helper/context without invoking it; never accept a client-supplied manifest.
+                    fresh = self.local_factory(jobs).plan(project, operation, plan['manifest']['max_seconds'])
+                    if fresh != plan: raise ValueError('Execution manifest mismatch')
+                    result, created = jobs.reserve_local(project, operation, run_id=run,
+                        expected_revision=request['expected_revision'], manifest=plan['manifest'])
+                    if created:
+                        control = coordinator_local.Control()
+                        thread = threading.Thread(target=self._local_run, args=(project, operation, run, control), daemon=True)
+                        with self.lock:
+                            # Registration and start are atomic with closing. A start
+                            # already preparing may not escape shutdown's snapshot.
+                            if self.job_closing:
+                                result = jobs.local_update(project, operation, run, stop=True, stage='indeterminate')
+                            else:
+                                self.local_runs[(project, operation)] = (run, control, thread)
+                                thread.start()
             elif op == 'job_local_stop':
                 run = _uuid(request['run_id'])
                 with self.lock: active = self.local_runs.get((project, operation))
@@ -461,13 +461,21 @@ class Service:
                 response['effect'] = 'not_admitted'
         except Exception:
             response = {'status': 'job_unavailable'}
+        # Release admission before publishing the terminal reply: a client may
+        # submit its next step as soon as it receives that reply. Keep the
+        # emitting thread tracked separately so shutdown still waits for it.
+        current = threading.current_thread()
+        with self.lock:
+            if self.job_worker is current:
+                self.job_worker = None
+            self.job_emitters.add(current)
         try:
             self.emit({'id': ident, **response})
         except OSError:
             pass
         finally:
             with self.lock:
-                self.job_worker = None
+                self.job_emitters.discard(current)
 
     def _local_run(self, project, operation, run, control):
         try:
@@ -489,15 +497,16 @@ class Service:
             worker = self.worker
             memory_worker = self.memory_worker
             job_worker = self.job_worker
+            job_emitters = tuple(self.job_emitters)
             local_runs = list(self.local_runs.values())
         for _, control, _ in local_runs:
             with control.lock: control.cancelled.set()
-        for pending in (worker, memory_worker, job_worker, *(x[2] for x in local_runs)):
+        for pending in (worker, memory_worker, job_worker, *job_emitters, *(x[2] for x in local_runs)):
             if pending:
                 pending.join(timeout=max(0, deadline - time.monotonic()))
         return (worker is None or not worker.is_alive()) and (
             memory_worker is None or not memory_worker.is_alive()) and (
-            job_worker is None or not job_worker.is_alive()) and all(not x[2].is_alive() for x in local_runs) and not self.poisoned
+            job_worker is None or not job_worker.is_alive()) and all(not x.is_alive() for x in job_emitters) and all(not x[2].is_alive() for x in local_runs) and not self.poisoned
 
 
 def serve(input_stream, output_stream, state, *, memory_factory=orchestrator_memory.Memory,

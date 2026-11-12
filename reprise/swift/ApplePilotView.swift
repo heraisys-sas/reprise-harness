@@ -4,23 +4,23 @@ struct ApplePilotView: View {
     @ObservedObject var app: App
     @ObservedObject var pilot: ApplePilotUI
     var retryStartupProjects: () -> Void
+    @State private var showAdvancedContext = false
+    @State private var showAdvancedPreparation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Pilote Apple expérimental").font(.headline)
             Text("Pilote expérimental. Préparez et clarifiez la demande sans exécution. Après votre consentement explicite, vous pouvez relire le manifeste et autoriser une exécution Apple locale, sans repli.")
                 .foregroundStyle(.secondary)
-            Toggle("Activer le pilote", isOn: $pilot.enabled)
-                .disabled(!pilot.canSelect || pilot.hostRunning)
+            if !pilot.enabled {
+                Button("Activer le pilote") { pilot.enabled = true }
+                    .disabled(!pilot.canSelect || pilot.hostRunning)
+            }
             if app.pilotProjectsLoadFailed {
                 Text("Chargement initial des projets non confirmé.").font(.callout)
                 Button("Réessayer le chargement initial") { retryStartupProjects() }.disabled(app.setupBusy)
             }
-            HStack {
-                Button("Charger les projets") { app.refreshProjects() }
-                    .disabled(!pilot.enabled || !pilot.canSelect || app.setupBusy)
-                Text(app.projectMessage).font(.caption).foregroundStyle(.secondary)
-            }
+            Text(app.projectMessage).font(.caption).foregroundStyle(.secondary)
             Picker("Projet", selection: $pilot.projectID) {
                 Text("Choisir un projet").tag("")
                 if !pilot.projectID.isEmpty && !app.projects.contains(where: { $0["id"] as? String == pilot.projectID }) {
@@ -34,6 +34,20 @@ struct ApplePilotView: View {
             }
             .disabled(!pilot.enabled || !pilot.canSelect)
             .onChange(of: pilot.projectID) { _, _ in pilot.clearCheckpoints() }
+            HStack {
+                Button("Ouvrir la conversation") { pilot.openGuided() }
+                    .disabled(!pilot.canOpenGuided)
+                if pilot.hostRunning {
+                    Button("Fermer") { pilot.close() }
+                        .disabled(pilot.closing || pilot.memoryBusy || pilot.preparationBusy)
+                }
+            }
+            DisclosureGroup("Contexte et options avancées", isExpanded: $showAdvancedContext) {
+                VStack(alignment: .leading, spacing: 8) {
+            Toggle("Activer le pilote", isOn: $pilot.enabled)
+                .disabled(!pilot.canSelect || pilot.hostRunning)
+            Button("Actualiser les projets") { app.refreshProjects() }
+                .disabled(!pilot.enabled || !pilot.canSelect || app.setupBusy)
             HStack {
                 TextField("UUID du travail", text: $pilot.workID)
                     .textFieldStyle(.roundedBorder).disabled(!pilot.enabled || !pilot.canSelect)
@@ -63,15 +77,19 @@ struct ApplePilotView: View {
                 Text("Examiner le checkpoint").tag("checkpoint-review")
                 Text("Résumer le contexte").tag("project-summary")
             }.disabled(!pilot.enabled || !pilot.canSelect)
-            HStack {
-                Button("Ouvrir la session") { pilot.open() }.disabled(!pilot.canOpen)
-                Button("Fermer la session") { pilot.close() }.disabled(pilot.closing || pilot.memoryBusy || pilot.preparationBusy || !pilot.hostRunning)
+                }
             }
-            if pilot.contextNeedsConfiguration { Text(pilot.contextConfigurationMessage).font(.callout) }
+            if pilot.contextNeedsConfiguration && !pilot.canOpenGuided { Text(pilot.contextConfigurationMessage).font(.callout) }
             Text(pilot.status).font(.callout).accessibilityLabel("État du pilote : " + pilot.status)
             Divider()
             analysisPanel
-            preparationPanel
+            if !pilot.preparationOperationID.isEmpty || !pilot.preparationJob.isEmpty {
+                preparationPanel
+            } else {
+                DisclosureGroup("Autres préparations et opérations", isExpanded: $showAdvancedPreparation) {
+                    preparationPanel
+                }
+            }
             Divider()
             DisclosureGroup("Mémoire du projet — actions de l’opérateur", isExpanded: $pilot.showMemory) {
                 memoryPanel
@@ -98,15 +116,17 @@ struct ApplePilotView: View {
     private var analysisPanel: some View {
         GroupBox("De la demande à la mission") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Une analyse locale propose un brouillon. Vous relisez et importez ce candidat ; la mission demande ensuite son propre consentement. Aucune réponse n’est capturée automatiquement en mémoire.").font(.caption)
+                Text("Décrivez votre demande. Une analyse locale préparera une proposition à relire ; son exécution et la mission restent soumises à votre accord.").font(.caption)
                 TextField("Demande à clarifier (1 Kio maximum)", text: $pilot.analysisRequest, axis: .vertical)
                     .textFieldStyle(.roundedBorder).lineLimit(2...5)
-                Button("Créer la préparation d’analyse locale") { pilot.prepareAnalysis() }
-                    .disabled(!pilot.canSwitchReview || !pilot.analysisOperationID.isEmpty || pilot.workID.isEmpty)
+                Button("Préparer ma demande") { pilot.prepareAnalysis() }
+                    .disabled(!pilot.canPrepareAnalysis)
                 if !pilot.analysisOperationID.isEmpty {
                     Text("Analyse : \(pilot.analysisOperationID)").font(.caption).textSelection(.enabled)
                     Button("Recharger l’analyse et son reçu") { pilot.showReviewOperation(analysis: true) }.disabled(!pilot.canSwitchReview)
-                    Text("Une analyse par travail dans ce parcours. Pour une autre analyse, sélectionnez explicitement un autre travail.").font(.caption)
+                    if pilot.canStartNewAnalysis {
+                        Button("Nouvelle demande") { pilot.startNewAnalysis() }
+                    }
                 }
                 if !pilot.missionOperationID.isEmpty {
                     Text("Mission : \(pilot.missionOperationID)").font(.caption).textSelection(.enabled)
@@ -298,17 +318,22 @@ struct ApplePilotView: View {
                         .font(.caption)
                 }
                 if pilot.preparationJob["status"] as? String == "preparation" {
-                    Button("Valider le contexte sélectionné") { pilot.loadConsentContext() }
-                        .disabled(!pilot.enabled || pilot.projectID.isEmpty || pilot.workID.isEmpty || pilot.preparationBusy || pilot.preparationUncertain)
+                    if pilot.consentContext.isEmpty {
+                        Button("Continuer") { pilot.loadConsentContext() }
+                            .disabled(!pilot.enabled || pilot.projectID.isEmpty || pilot.workID.isEmpty || pilot.preparationBusy || pilot.preparationUncertain)
+                    }
                     if let root = pilot.consentContext["project_root"] as? String {
                         Text("Projet : \(root) · travail : \(pilot.workID)").font(.caption).textSelection(.enabled)
                         if pilot.isAnalysis {
                             Text("Cible : Apple local. Ce consentement concerne uniquement l’analyse ; aucune mission future n’est autorisée.").font(.caption)
                         } else {
-                        Picker("Cible du consentement", selection: $pilot.consentBackend) {
-                            Text("Codex — exécution indisponible").tag("codex")
-                            Text("Apple local — sans repli").tag("foundation-models")
-                        }
+                            Text(pilot.consentBackend == "foundation-models" ? "Cible proposée : Apple local, sans repli." : "Cible choisie : Codex ; exécution indisponible dans ce parcours.").font(.caption)
+                            DisclosureGroup("Choisir une autre cible") {
+                                Picker("Cible du consentement", selection: $pilot.consentBackend) {
+                                    Text("Apple local — sans repli").tag("foundation-models")
+                                    Text("Codex — exécution indisponible").tag("codex")
+                                }
+                            }
                         }
                         Text("Expertise sans outils ni écriture. La cible est explicite ; aucune substitution automatique. Disponibilité non vérifiée.").font(.caption)
                         Button(pilot.isAnalysis ? "Consentir à l’analyse locale" : "Consentir à cette mission") { pilot.authorizePreparation() }
@@ -317,15 +342,24 @@ struct ApplePilotView: View {
                 }
                 if (pilot.preparationJob["operator_authorization"] as? [String: Any])?["backend"] as? String == "foundation-models" {
                     if pilot.preparationJob["status"] as? String == "consented" {
-                        Stepper("Échéance et arrêt : \(pilot.localMaxSeconds) s", value: $pilot.localMaxSeconds, in: 1...120)
-                            .disabled(pilot.preparationBusy || pilot.preparationUncertain)
-                        Button("Préparer le manifeste local") { pilot.planLocalExecution() }
-                            .disabled(pilot.preparationBusy || pilot.preparationUncertain)
                         if let manifest = pilot.localPlan["manifest"] as? [String: Any] {
-                            Text("Foundation Models local · une exécution · aucun outil ni repli · arrêt à l’échéance").font(.caption)
-                            Text(manifest["helper_path"] as? String ?? "").font(.caption).textSelection(.enabled)
-                            Text("SHA-256 : \(manifest["helper_sha256"] as? String ?? "")").font(.caption).textSelection(.enabled)
+                            Text("Apple local · une exécution · aucun outil ni repli").font(.caption)
                             Button(pilot.isAnalysis ? "Exécuter l’analyse une fois" : "Exécuter cette mission une fois") { pilot.startLocalExecution() }.disabled(!pilot.canStartLocal)
+                            DisclosureGroup("Détails de l’exécution") {
+                                Text("Arrêt demandé après \(pilot.localMaxSeconds) s · \(manifest["helper_path"] as? String ?? "")").font(.caption).textSelection(.enabled)
+                                Text("SHA-256 : \(manifest["helper_sha256"] as? String ?? "")").font(.caption).textSelection(.enabled)
+                            }
+                        } else if !pilot.preparationBusy {
+                            Button("Réessayer la préparation") { pilot.planLocalExecution() }
+                                .disabled(pilot.preparationUncertain)
+                        }
+                        DisclosureGroup("Réglages d’exécution") {
+                            Stepper("Échéance et arrêt : \(pilot.localMaxSeconds) s", value: $pilot.localMaxSeconds, in: 1...120)
+                                .disabled(pilot.preparationBusy || pilot.preparationUncertain)
+                            if pilot.localPlan.isEmpty {
+                                Button("Préparer à nouveau") { pilot.planLocalExecution() }
+                                    .disabled(pilot.preparationBusy || pilot.preparationUncertain)
+                            }
                         }
                     }
                     if let execution = pilot.preparationJob["local_execution"] as? [String: Any] {
