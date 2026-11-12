@@ -183,3 +183,52 @@ Le déploiement Reprise doit aussi proposer son point d’entrée MCP au harness
 ## Organisation et configuration des dépôts — 24/10
 
 L’onglet Dépôts (#57) doit guider la configuration du dépôt et appliquer un plan explicite lorsque les droits le permettent. Les rôles hyperviseur, référent technique principal et worker sont configurables selon [HARNESS-ROLES-CONTRACT.md](HARNESS-ROLES-CONTRACT.md). Même contrat pour nouvelles sessions sans boucle et archivage proposé ; aucune de ces capacités n’est annoncée installée par cette documentation.
+
+
+## Remplacement explicite du seul bundle app sans sauvegarde
+
+Le plan CLI de mise à jour accepte `--no-app-backup` uniquement pour `app`, sans
+autre composant, profil, entrée Codex ou activation scheduler. Le comportement
+historique avec sauvegarde reste le défaut et les anciens plans restent lisibles.
+Cette option ne modifie aucun état/session ni configuration d’intégration.
+
+Le bundle source et le stage sibling sont vérifiés intégralement. Le stage et ses
+répertoires sont synchronisés avant qu’une intention durable autorise la première
+suppression de l’ancienne app. Le reçu contient les empreintes de l’inventaire et
+les chemins des anciens fichiers/répertoires, jamais leurs contenus. Cet inventaire
+sert seulement à reconnaître une suppression partielle appartenant au même plan :
+un fichier restant modifié ou un nouvel élément observé avant reprise bloque toute
+suppression supplémentaire. La suppression itère exclusivement sur les chemins et
+empreintes possédés du reçu ; les parents internes sont ouverts par descripteurs
+sans suivre les liens symboliques, et les répertoires sont retirés uniquement par
+`rmdir`, qui refuse un enfant inattendu. Un ajout concurrent peut donc laisser une
+suppression partielle, mais n’est pas adopté comme fichier à détruire. La fenêtre
+ultime entre contrôle et unlink reste soumise à l’exclusivité opérationnelle ; aucun
+CAS contre un auteur non coopératif n’est promis. Les types spéciaux sont refusés.
+
+L’ancien bundle est supprimé, sans copie ni renommage en sauvegarde. Une interruption
+peut laisser la destination absente ou partielle, même durablement si le stage est
+perdu ou altéré. Aucune restauration ni rollback n’est disponible. Le même reçu
+permet de publier le stage vérifié après réconciliation ; une source de build
+jetable n’est plus requise après l’intention de remplacement enregistrée. Une app
+publiée puis modifiée n’est jamais réinstallée automatiquement par ce reçu.
+L’inventaire des répertoires du nouveau bundle est également lié au plan : un
+dossier vide ajouté au stage ou à la cible publiée est une divergence. Le reçu est
+validé avant le raccourci reconnaissant une cible déjà conforme. Ce raccourci ne
+supprime pas un stage survivant ; aucun nettoyage récursif implicite n’est autorisé.
+
+L’updater, son runtime Python, son répertoire courant et ses chemins d’import doivent
+être indépendants de la cible supprimée ; l’updater refuse les dépendances évidentes
+situées dans celle-ci. Reprise est observé avant préparation, suppression et
+publication ; s’il est ouvert, aucune fermeture ni arrêt forcé n’est tenté. Ces
+observations et le verrou coopératif ne prouvent pas l’absence de tout écrivain
+externe : tous les auteurs et relanceurs de la cible doivent rester arrêtés pendant
+l’opération. Aucun CAS atomique contre un auteur non coopératif n’est promis.
+
+La publication et les reçus sont synchronisés ; une reprise resynchronise leur état
+survivant avant de le reconnaître. Le lancement reste une option distincte. Son
+intention est enregistrée et synchronisée avant `open` ; une réponse perdue ou un
+crash ne provoque jamais une seconde demande automatique de lancement. Un reçu et
+une empreinte conforme prouvent l’état des fichiers, pas le chargement de la nouvelle
+version ni le succès de son initialisation. Les sauvegardes d’autres opérations
+restent intactes ; un reçu sans sauvegarde ne peut en réclamer au nettoyage.

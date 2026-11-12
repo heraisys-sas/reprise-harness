@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import plistlib
 import shutil
+import stat
 import subprocess
 import time
 import tomllib
@@ -102,6 +103,8 @@ def validate(plan):
     if plan.get('format') != 1 or plan.get('fingerprint') != fingerprint({k:v for k,v in plan.items() if k != 'fingerprint'}):
         raise ValueError('Plan incompatible ou altéré.')
     operation(plan)
+    if 'app_backup_policy' in plan:
+        no_backup_scope(plan)
 
 
 def logs(state):
@@ -282,14 +285,19 @@ def codex_cli(root, argv):
 
 
 def plan(source, destination, home, state, components=('app',), profiles=(), activate=False,
-         relaunch=False, ident=None, codex_entries=()):
+         relaunch=False, ident=None, codex_entries=(), no_app_backup=False):
     ident = ident or str(uuid.uuid4())
     source, destination, home, state = map(safe, (source, destination, home, state))
     selected = list(components)
+    if type(no_app_backup) is not bool or (no_app_backup and (selected != ['app'] or profiles or activate or codex_entries)):
+        raise ValueError('Sans sauvegarde : seul le composant app est permis, sans activation ni intégration.')
     if not selected or len(selected) != len(set(selected)) or set(selected) - set(COMPONENTS):
         raise ValueError('Composants explicites et uniques requis.')
     if source == destination or source in destination.parents or destination in source.parents:
         raise ValueError('Bundle source et destination doivent être disjoints.')
+    if no_app_backup:
+        regular_app_tree(source)
+        if destination.exists(): regular_app_tree(destination)
     identity = bundle(source)
     helpers = source / 'Contents/Resources/helpers'
     nested = {}
@@ -336,6 +344,12 @@ def plan(source, destination, home, state, components=('app',), profiles=(), act
              'manual_actions': ['Codex : aucun client ouvert n’est rechargé.',
                                 'claude-desktopd : arrêt/remplacement authentifié séparé (#25/#27).',
                                 'Fermer Reprise avant un remplacement du bundle.']}
+    if no_app_backup:
+        value['app_backup_policy'] = 'none'
+        value['before_app_directories'] = fingerprint(app_directories(destination))
+        value['new_app_directories'] = fingerprint(app_directories(source))
+        value['manual_actions'] += ['Sans sauvegarde : ancien bundle supprimé définitivement ; une interruption peut laisser la destination absente ou partielle. Aucun rollback. Tous les écrivains et Reprise doivent rester arrêtés.']
+        no_backup_scope(value)
     value['fingerprint'] = fingerprint(value)
     return value
 
@@ -349,6 +363,8 @@ def app_running():
 
 def save(folder, receipt):
     harness.atomic(folder / 'receipt.json', harness.encoded(receipt))
+    if receipt.get('plan', {}).get('app_backup_policy') == 'none':
+        sync_update_receipt(folder)
 
 
 def remember_backup(receipt, path):
@@ -394,6 +410,206 @@ def install_app(value, folder, receipt):
         raise ValueError('Intégrité de l’application publiée non confirmée.')
 
 
+def regular_app_tree(path):
+    for entry in path.rglob('*'):
+        mode = entry.lstat().st_mode
+        if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
+            raise ValueError('Type spécial dans un bundle ; aucun remplacement sans sauvegarde.')
+
+
+def sync_app_tree(path):
+    regular_app_tree(path)
+    harness._sync_tree(path)
+
+
+def app_directories(path):
+    if not path.exists():
+        return []
+    if not path.is_dir():
+        raise ValueError('Destination app : dossier requis.')
+    return sorted(str(p.relative_to(path)) for p in path.rglob('*') if p.is_dir() and not p.is_symlink())
+
+
+def no_backup_scope(value):
+    if value.get('app_backup_policy') != 'none':
+        raise ValueError('Politique de sauvegarde app inconnue.')
+    if (value['components'] != ['app'] or value['profiles'] or value['activate']
+            or value.get('codex_entries') or value['nested']):
+        raise ValueError('Sans sauvegarde : seul le composant app est permis, sans activation ni intégration.')
+    source, target, state = map(safe, (value['source'], value['destination'], value['state']))
+    folder = operation(value)
+    stage = target.parent / ('.Reprise-' + value['id'] + '.app')
+    if target.suffix != '.app' or (target.exists() and not target.is_dir()):
+        raise ValueError('Sans sauvegarde : destination .app dédiée requise.')
+    if any(path == root or root in path.parents for path in (state, folder, source) for root in (target, stage)):
+        raise ValueError('État, reçu et source doivent rester hors des bundles remplacés.')
+    if source == stage or source in stage.parents or stage in source.parents:
+        raise ValueError('Source et stage doivent être disjoints.')
+
+
+def sync_update_receipt(folder):
+    harness._sync_file(folder / 'receipt.json')
+    # Persist the UUID directory and its maintenance/updates ancestors as well.
+    for path in (folder, folder.parent, folder.parent.parent, folder.parent.parent.parent):
+        harness._sync_directory(path)
+
+
+def _remaining_owned_app(target, owned, directories):
+    if target.exists(): regular_app_tree(target)
+    current = inventory(target)
+    if current is None:
+        return
+    if not isinstance(current, dict) or any(key not in owned or owned[key] != entry for key, entry in current.items()):
+        raise ValueError('Ancien bundle partiellement supprimé mais divergent ; aucune suppression supplémentaire.')
+    if not set(app_directories(target)).issubset(directories):
+        raise ValueError('Répertoire nouveau dans l’ancien bundle ; suppression suspendue.')
+
+
+@contextmanager
+def owned_parent(root_fd, relative):
+    parts = Path(relative).parts
+    if not parts or Path(relative).is_absolute() or any(part in ('.', '..') for part in parts):
+        raise ValueError('Chemin de l’inventaire hors bundle.')
+    descriptor = os.dup(root_fd)
+    try:
+        for part in parts[:-1]:
+            next_descriptor = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor); descriptor = next_descriptor
+        yield descriptor, parts[-1]
+    finally:
+        os.close(descriptor)
+
+
+def _remove_owned_app(target, owned, directories):
+    _remaining_owned_app(target, owned, directories)
+    if not target.exists():
+        return
+    root_fd = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        # Never reinterpret a newly read value as ownership. Only receipt paths and
+        # expected digests authorize deletion; new entries are not recursively removed.
+        for relative, expected in sorted(owned.items(), reverse=True):
+            try:
+                with owned_parent(root_fd, relative) as (parent, name):
+                    try:
+                        entry = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    if isinstance(expected, dict) and set(expected) == {'symlink'}:
+                        if not stat.S_ISLNK(entry.st_mode) or os.readlink(name, dir_fd=parent) != expected['symlink']:
+                            raise ValueError('Lien de l’ancien bundle modifié ; suppression suspendue.')
+                    else:
+                        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                        try:
+                            observed = os.fstat(descriptor)
+                            if not stat.S_ISREG(observed.st_mode):
+                                raise ValueError('Type de fichier de l’ancien bundle modifié.')
+                            digest = hashlib.sha256()
+                            while chunk := os.read(descriptor, 1024 * 1024): digest.update(chunk)
+                            current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                            if digest.hexdigest() != expected or (observed.st_dev, observed.st_ino) != (current.st_dev, current.st_ino):
+                                raise ValueError('Fichier de l’ancien bundle modifié ; suppression suspendue.')
+                        finally:
+                            os.close(descriptor)
+                    os.unlink(name, dir_fd=parent)
+            except FileNotFoundError:
+                # A previous interrupted deletion may already have removed this parent.
+                continue
+        for relative in sorted(directories, key=lambda p: (len(Path(p).parts), p), reverse=True):
+            try:
+                with owned_parent(root_fd, relative) as (parent, name): os.rmdir(name, dir_fd=parent)
+            except FileNotFoundError:
+                continue
+        current = target.stat(follow_symlinks=False)
+        opened = os.fstat(root_fd)
+        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ValueError('Racine app remplacée ; suppression suspendue.')
+        target.rmdir()  # Refuses every unowned child, including an added empty directory.
+    finally:
+        os.close(root_fd)
+    harness._sync_directory(target.parent)
+
+
+def install_app_without_backup(value, folder, receipt):
+    no_backup_scope(value)
+    if receipt.get('backups'):
+        raise ValueError('Reçu sans sauvegarde incohérent ; aucune suppression.')
+    source, target = Path(value['source']), safe(value['destination'])
+    desired = value['bundle']
+    stage = safe(target.parent / ('.Reprise-' + value['id'] + '.app'))
+    progress = receipt.get('app_replacement')
+    if progress is not None and (not isinstance(progress, dict) or progress.get('phase') not in ('prepared', 'removing', 'removed', 'published')
+            or progress.get('stage') != str(stage)
+            or fingerprint(progress.get('old_inventory')) != value['before_app']
+            or fingerprint(progress.get('old_directories')) != value['before_app_directories']):
+        raise ValueError('Reçu de remplacement altéré ; aucune suppression.')
+    if stage.exists(): regular_app_tree(stage)
+    if stage.exists() and (bundle_if_valid(stage) != desired or fingerprint(app_directories(stage)) != value['new_app_directories']):
+        raise ValueError('Stage inconnu ou modifié ; aucune substitution.')
+    if target.exists() and bundle_if_valid(target) == desired:
+        if fingerprint(app_directories(target)) != value['new_app_directories']:
+            raise ValueError('Répertoires de l’application publiée modifiés ; aucun nettoyage implicite.')
+        sync_app_tree(target); harness._sync_directory(target.parent)
+        # Retain a surviving stage; never recursively remove an unproven empty directory.
+        if progress is not None:
+            progress['phase'] = 'published'
+            save(folder, receipt)
+        return
+    if app_running():
+        raise ValueError('Reprise est ouvert : le fermer normalement avant application. Aucun arrêt automatique.')
+    if progress is None:
+        if fingerprint(inventory(target)) != value['before_app'] or fingerprint(app_directories(target)) != value['before_app_directories']:
+            raise ValueError('Application destination modifiée depuis le plan.')
+        if not stage.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, stage, symlinks=True)
+        regular_app_tree(stage)
+        if bundle(stage) != desired or fingerprint(app_directories(stage)) != value['new_app_directories']:
+            raise ValueError('Bundle changé pendant la copie.')
+        sync_app_tree(stage); harness._sync_directory(stage.parent)
+        owned = inventory(target)
+        directories = app_directories(target)
+        if fingerprint(owned) != value['before_app'] or fingerprint(directories) != value['before_app_directories']:
+            raise ValueError('Application modifiée pendant la préparation ; aucun remplacement.')
+        progress = {'phase': 'prepared', 'stage': str(stage), 'old_inventory': owned,
+                    'old_directories': directories}
+        receipt['app_replacement'] = progress
+        save(folder, receipt)  # Durable intent and verified stage precede the first unlink.
+    if (not isinstance(progress, dict) or progress.get('phase') not in ('prepared', 'removing', 'removed', 'published')
+            or progress.get('stage') != str(stage)
+            or fingerprint(progress.get('old_inventory')) != value['before_app']
+            or fingerprint(progress.get('old_directories')) != value['before_app_directories']):
+        raise ValueError('Reçu de remplacement altéré ; aucune suppression.')
+    if progress['old_inventory'] is None and target.exists():
+        raise ValueError('Destination réapparue après plan sans ancienne app ; aucune suppression.')
+    if progress['phase'] == 'removed' and target.exists():
+        raise ValueError('Destination réapparue après suppression ; aucun rejeu.')
+    if progress['phase'] == 'published':
+        raise ValueError('Application déjà publiée absente ou divergente ; aucun rejeu.')
+    if not stage.is_dir() or bundle(stage) != desired or fingerprint(app_directories(stage)) != value['new_app_directories']:
+        raise ValueError('Stage vérifié indisponible ; cible possiblement absente, aucun rollback.')
+    sync_app_tree(stage); harness._sync_directory(stage.parent)
+    if progress['phase'] == 'prepared' and fingerprint(inventory(target)) != value['before_app']:
+        raise ValueError('Destination modifiée avant suppression ; aucune adoption.')
+    _remaining_owned_app(target, progress['old_inventory'] or {}, progress['old_directories'])
+    if app_running():
+        raise ValueError('Reprise est ouvert : suppression/publication suspendue, aucun arrêt forcé.')
+    if progress['phase'] == 'prepared':
+        progress['phase'] = 'removing'; save(folder, receipt)
+    _remove_owned_app(target, progress['old_inventory'] or {}, progress['old_directories'])
+    progress['phase'] = 'removed'; save(folder, receipt)
+    if app_running():
+        raise ValueError('Reprise est ouvert : publication suspendue ; ancien bundle absent, aucun rollback.')
+    if target.exists():
+        raise ValueError('Destination réapparue ; aucune publication par écrasement.')
+    stage.rename(target)
+    harness._sync_directory(target.parent)
+    if bundle(target) != desired:
+        raise ValueError('Intégrité de l’application publiée non confirmée.')
+    sync_app_tree(target); harness._sync_directory(target.parent)
+    progress['phase'] = 'published'; save(folder, receipt)
+
+
 def bundle_if_valid(path):
     try:
         return bundle(path)
@@ -422,24 +638,36 @@ def component_complete(name, nested):
 
 def apply(value):
     validate(value)
+    if value.get('app_backup_policy') == 'none':
+        target = Path(value['destination']).resolve()
+        dependencies = [sys.executable, sys.prefix, sys.base_prefix, __file__, os.getcwd()]
+        dependencies += [str(path) for path in sys.path if path]
+        if any(Path(path).resolve().is_relative_to(target) for path in dependencies):
+            raise ValueError('Exécuter l’updater et son Python depuis un bundle/runtime indépendant de la cible supprimée.')
     folder = operation(value)
     folder.mkdir(parents=True, mode=0o700, exist_ok=True)
     with harness.locked(folder.parent):
         file = folder / 'receipt.json'
+        if value.get('app_backup_policy') == 'none': safe(file)
         if file.exists():
             receipt = json.loads(file.read_text())
+            if value.get('app_backup_policy') == 'none':
+                sync_update_receipt(folder)
+                if receipt.get('backups'):
+                    raise ValueError('Reçu sans sauvegarde incohérent.')
             if receipt['plan'] != value:
                 raise ValueError('Autre opération enregistrée ; ne pas remplacer le reçu.')
             if receipt['status'] == 'cleaned':
                 raise ValueError('Opération nettoyée ; préparer un nouveau plan.')
         else:
             current = plan(value['source'], value['destination'], value['home'], value['state'],
-                           value['components'], value['profiles'], value['activate'], value['relaunch'], value['id'], value.get('codex_entries', ()))
+                           value['components'], value['profiles'], value['activate'], value['relaunch'], value['id'], value.get('codex_entries', ()), no_app_backup=value.get('app_backup_policy') == 'none')
             if current != value:
                 raise ValueError('Plan périmé ; refaire la prévisualisation.')
             receipt = {'format': 1, 'plan': value, 'status': 'applying', 'steps': [], 'backups': [], 'started_at': time.time()}
             save(folder, receipt)
-        if bundle(value['source']) != value['bundle']:
+        staged_recovery = value.get('app_backup_policy') == 'none' and (receipt.get('app_replacement') is not None or 'app' in receipt['steps'])
+        if not staged_recovery and bundle(value['source']) != value['bundle']:
             raise ValueError('Bundle source changé ; aucune substitution.')
         helpers = Path(value['source']) / 'Contents/Resources/helpers'
         with settings(value['state']):
@@ -447,6 +675,10 @@ def apply(value):
                 if name in receipt['steps']:
                     if name == 'app' and bundle_if_valid(Path(value['destination'])) != value['bundle']:
                         raise ValueError('Application déjà publiée modifiée ; reprise suspendue.')
+                    if name == 'app' and value.get('app_backup_policy') == 'none':
+                        if fingerprint(app_directories(Path(value['destination']))) != value['new_app_directories']:
+                            raise ValueError('Répertoires de l’application déjà publiée modifiés ; reprise suspendue.')
+                        sync_app_tree(Path(value['destination'])); harness._sync_directory(Path(value['destination']).parent)
                     if name == 'codex' and not codex_verify(value['nested']['codex'], helpers, value['home'], value['state'])['ok']:
                         raise ValueError('Configuration Codex publiée modifiée ; reprise suspendue.')
                     if name != 'app':
@@ -458,7 +690,10 @@ def apply(value):
                                 raise ValueError('Scheduler déjà publié modifié ; reprise suspendue.')
                     continue
                 if name == 'app':
-                    install_app(value, folder, receipt)
+                    if value.get('app_backup_policy') == 'none':
+                        install_app_without_backup(value, folder, receipt)
+                    else:
+                        install_app(value, folder, receipt)
                 elif name == 'codex':
                     result = codex_apply(value['nested']['codex'], helpers, value['home'], value['state'])
                     receipt['codex_operation'] = result.get('operation')
@@ -525,6 +760,13 @@ def verify(file, _already_locked=False):
     with (nullcontext() if _already_locked else harness.locked(folder.parent)), settings(value['state']):
         # Re-read after acquiring the operation lock.
         receipt = json.loads(file.read_text())
+        if value.get('app_backup_policy') == 'none':
+            sync_update_receipt(folder)
+            if receipt.get('backups'):
+                raise ValueError('Reçu sans sauvegarde incohérent.')
+            if fingerprint(app_directories(Path(value['destination']))) != value['new_app_directories']:
+                raise ValueError('Répertoires de l’application publiée modifiés.')
+            sync_app_tree(Path(value['destination'])); harness._sync_directory(Path(value['destination']).parent)
         if receipt['plan'] != value:
             raise ValueError('Reçu modifié pendant vérification.')
         results = {};ok = True
@@ -633,6 +875,7 @@ def main(argv=None):
             p.add_argument('--codex-entry', action='append', default=[], choices=tuple(codex_config.ENTRIES))
             p.add_argument('--activate-scheduler', action='store_true')
             p.add_argument('--relaunch-app', action='store_true')
+            p.add_argument('--no-app-backup', action='store_true', help='App seule : suppression irréversible de l’ancien bundle, aucun rollback ; état absent/partiel possible après interruption')
     sub.add_parser('apply').add_argument('--plan', required=True)
     for name in ('verify', 'cleanup'):
         sub.add_parser(name).add_argument('--receipt', required=True)
@@ -642,7 +885,7 @@ def main(argv=None):
         if args.command in ('inspect','plan'):
             state = args.state or str(Path(args.home) / 'Library/Application Support/Reprise/state')
             result = inspect(args.app,args.home,state) if args.command == 'inspect' else {'plan': plan(
-                args.bundle,args.app,args.home,state,args.components.split(','),args.profile,args.activate_scheduler,args.relaunch_app, codex_entries=args.codex_entry)}
+                args.bundle,args.app,args.home,state,args.components.split(','),args.profile,args.activate_scheduler,args.relaunch_app, codex_entries=args.codex_entry, no_app_backup=args.no_app_backup)}
         elif args.command == 'apply':
             result = apply(json.loads(Path(args.plan).read_text())['plan'])
         else:
@@ -660,7 +903,26 @@ def main(argv=None):
                 status = 'indeterminate'
             except (OSError, ValueError, KeyError, TypeError):
                 pass
-        print(json.dumps({'status':status,'message':str(error),'recovery':'Conserver le reçu et les sauvegardes ; aucun arrêt forcé ni restauration aveugle.','client_loaded':'unknown'},ensure_ascii=False))
+        detail = {'status':status,'message':str(error),'recovery':'Conserver le reçu et les sauvegardes ; aucun arrêt forcé ni restauration aveugle.','client_loaded':'unknown'}
+        if args.command == 'apply':
+            try:
+                pending = json.loads(Path(args.plan).read_text())['plan']
+                validate(pending)
+                if pending.get('app_backup_policy') == 'none':
+                    detail.update(app_backup_policy='none', rollback_available=False,
+                        recovery='Conserver le reçu et le stage ; ancienne app possiblement absente ou partielle. Aucune sauvegarde ni rollback. Observer puis reprendre uniquement le même plan.')
+                    file = safe(operation(pending) / 'receipt.json')
+                    if file.is_file():
+                        recorded = json.loads(file.read_text())
+                        if recorded.get('plan') == pending:
+                            detail['receipt'] = str(file)
+                            detail['app_present'] = safe(pending['destination']).exists()
+                            detail['app_replacement_phase'] = (recorded.get('app_replacement') or {}).get('phase')
+                            if recorded.get('app_replacement'):
+                                detail['status'] = 'indeterminate' if recorded.get('launch_requested') else 'interrupted'
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        print(json.dumps(detail,ensure_ascii=False))
         return 1
 
 

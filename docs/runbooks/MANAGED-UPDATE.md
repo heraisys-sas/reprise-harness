@@ -78,3 +78,29 @@ hors de l’opération sont refusés au nettoyage. Les anciens releases, registr
 reçus, sauvegardes d’autres opérations et clones de développement ne sont jamais
 purgés par cette commande. Après `cleanup`, le retour arrière correspondant
 n’est plus disponible ; le reçu et les preuves de vérification sont conservés.
+
+
+## Variante app seule sans sauvegarde (irréversible)
+
+Lancer depuis un build/runtime indépendant de l’application cible. Pour les tests
+sur ce poste, employer le CPython embarqué choisi par l’opérateur avec `-B` ; pour
+remplacer ce même bundle, employer le runtime du build vérifié indépendant, car
+l’updater refuse de supprimer son propre runtime. Aucun Python système implicite.
+
+```sh
+/chemin/build/Reprise.app/Contents/Resources/runtime/bin/python3 -B \
+  /chemin/build/Reprise.app/Contents/Resources/helpers/managed_update.py plan \
+  --bundle /chemin/build/Reprise.app --app /Applications/Reprise.app \
+  --components app --no-app-backup > /chemin/prive/plan-app.json
+# Appliquer le plan relu par le même CLI indépendant : apply --plan /chemin/prive/plan-app.json
+# Vérifier ensuite par verify --receipt /chemin/affiché/receipt.json.
+```
+
+Cette variante n’a pas de rollback : un arrêt peut laisser l’app absente ou
+partiellement supprimée. Fermer normalement Reprise et arrêter les autres écrivains
+ou relanceurs avant application. Sans `--relaunch-app`, aucun lancement n’est demandé.
+Si l’opération s’interrompt, conserver reçu et stage et reprendre le même plan ; ne
+pas créer une nouvelle tentative pour contourner un refus. Le diagnostic distingue
+l’interruption et l’absence possible de cible. Stage perdu/altéré ou ancien bundle
+restant divergent : arrêt pour examen, aucune restauration supposée depuis le dépôt.
+Le dépôt reconstruit les composants gérés, pas des données personnelles ajoutées.
