@@ -32,6 +32,8 @@ class ApprovalDelegationTests(unittest.TestCase):
         self.state.mkdir(mode=0o700)
         self.private = self.root/'private'
         self.private.mkdir(mode=0o700)
+        self.shared = self.root/'shared'
+        self.shared.mkdir(mode=0o755)
         self.manager = ApprovalDelegations(self.project, self.state)
         self.addCleanup(self.manager.close)
 
@@ -90,7 +92,9 @@ class ApprovalDelegationTests(unittest.TestCase):
             {'max_decisions': 101},
             {'max_decisions': True},
             {'token_file': str(self.project/'token')},
-            {'token_file': str(self.root/'not-private')},
+            {'token_file': str(self.shared/'token')},
+            {'thread_id': None},
+            {'harness': None},
         )
         for i, change in enumerate(bad):
             with self.subTest(change=change), self.assertRaises((ValueError, OSError)):
@@ -106,9 +110,10 @@ class ApprovalDelegationTests(unittest.TestCase):
         self.assertEqual(self.manager.list_grants(), [])
 
     def test_database_failure_does_not_leave_credential_file(self):
-        with patch.object(self.manager.store.db, 'execute', side_effect=sqlite3.Error('injected')):
-            with self.assertRaises(sqlite3.Error):
-                self.grant()
+        self.manager.store.db.execute('''CREATE TRIGGER reject_delegation
+            BEFORE INSERT ON approval_delegations BEGIN SELECT RAISE(ABORT, 'injected'); END''')
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.grant()
         self.assertFalse((self.private/'one').exists())
 
     def test_no_mcp_entry_can_grant_or_respond(self):
