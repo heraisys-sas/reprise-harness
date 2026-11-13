@@ -21,6 +21,7 @@ class ManagedUpdateTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.base = Path(temporary.name).resolve()
+        self.addCleanup(integration._restore_directory_writes, self.base)
         self.home = self.base / 'home'
         self.home.mkdir()
         self.state = self.home / 'Library/Application Support/Reprise/state'

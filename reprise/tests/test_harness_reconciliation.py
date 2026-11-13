@@ -232,6 +232,7 @@ class HarnessReconciliationTests(unittest.TestCase):
         self.divergent()
         release = self.base / 'integration-releases'
         identity = next(release.iterdir())
+        integration._restore_directory_writes(identity)
         shutil.rmtree(identity)
         before = integration.tree_files(self.folder)
         with self.assertRaisesRegex(ValueError, "n'existe pas"):

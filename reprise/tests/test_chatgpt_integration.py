@@ -23,6 +23,7 @@ class ChatGPTIntegrationTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.base = Path(temporary.name).resolve()
+        self.addCleanup(harness_integration._restore_directory_writes, self.base)
         self.root = package_helpers.package(SOURCE, self.base / 'Reprise.app')
         runtime = self.root.parent / 'runtime'
         (runtime / 'bin').mkdir(parents=True)
@@ -69,7 +70,10 @@ class ChatGPTIntegrationTests(unittest.TestCase):
         actual = harness_integration.tree_files(release)
         actual.pop('release.json', None)
         evidence['files'] = actual
-        (release / 'release.json').write_text(json.dumps(evidence))
+        evidence_path = release / 'release.json'
+        evidence_path.chmod(0o600)
+        evidence_path.write_text(json.dumps(evidence))
+        harness_integration._seal_release(release)
         return release
 
     def fixture_config(self):
@@ -264,13 +268,16 @@ class ChatGPTIntegrationTests(unittest.TestCase):
         python3 = release / 'Contents/Resources/runtime/bin/python3'
         responses = self.bridge_response().stdout
         script = '#!/bin/sh\ncat > /dev/null\ncat <<\'FIXTURE\'\n%s\nFIXTURE\n' % responses
-        python3.write_text(script)
         python3.chmod(0o700)
+        python3.write_text(script)
         evidence = json.loads((release / 'release.json').read_text())
         actual = harness_integration.tree_files(release)
         actual.pop('release.json', None)
         evidence['files'] = actual
-        (release / 'release.json').write_text(json.dumps(evidence))
+        evidence_path = release / 'release.json'
+        evidence_path.chmod(0o600)
+        evidence_path.write_text(json.dumps(evidence))
+        harness_integration._seal_release(release)
         verified = integration.verify(self.root, self.home)
         self.assertEqual(verified['status'], 'verified')
         self.assertEqual(verified['bridge_version'], 'fixture')

@@ -51,6 +51,14 @@ Aucune application lancée, aucun service redémarré, aucune migration de donn�
 
 Le bundle dispose d’un parcours exclusif de création/import explicite des états, sans commande manuelle, fondé sur `state-status`, `state-plan` et `state-apply`. Il utilise ce runtime sans ouvrir de registre avant choix, plan et confirmation. Le paquet de helpers inclut `state_setup.py` ; `StateSetup.swift` est compilé dans Reprise. Les prérequis et refus du runtime restent visibles sur cet écran. Parcours compilé et backend testé, sans lancement GUI : voir [le contrat](../contracts/INSTALLATION-CONTRACT.md#quatrième-incrément-d1--préparation-graphique-des-états).
 
+## Releases MCP en lecture seule (issue #162)
+
+Lors d'une **nouvelle** publication Harness/scheduler/ChatGPT, `stage_release()` retire les bits POSIX d'écriture de tous les fichiers et répertoires du payload avant le renommage atomique. Le manifeste `release.json` de format 2 porte `immutability: posix-readonly-v1`; `release_check()` vérifie à la fois les empreintes strictes et l'absence de bits d'écriture. Le runtime, les helpers et les exécutables restent lisibles et exécutables. Les états, sockets, journaux et caches fonctionnels restent hors release.
+
+Les releases de format 1 déjà installées sont vérifiées par leurs empreintes historiques et **ne sont ni modifiées ni converties à chaud**. Pour appliquer cette protection à une release ancienne, préparer et activer une nouvelle publication avec un changement d'identité vérifié ; ne pas supprimer une release tenue par un processus actif. Les permissions POSIX réduisent les écritures accidentelles, mais ne constituent pas une barrière de sécurité contre leur propriétaire (qui peut refaire `chmod`). Une purge explicite doit réautoriser l'écriture sur les répertoires avant suppression ; aucun nettoyage automatique d'une release active n'est effectué.
+
+Le code de Reprise doit être inventorié depuis Git (`git ls-files`) plutôt que via `find` dans `Application Support/Reprise/integration-releases` : la stdlib distribuée n'appartient pas au corpus source de l'agent.
+
 ## Déploiement géré du pont Harness
 
 L’onglet Intégrations copie le payload et ce runtime dans un release versionné indépendant du bundle, au voisinage de l’état préparé. Le profil MCP vise ce release plutôt que le bundle mobile ; le retrait garde releases et données. Copie altérée refusée par empreintes, aucun téléchargement/installation Python supplémentaire. La validation directe du pont a fonctionné après déplacement puis suppression du bundle source sur fixtures ; elle ne vaut pas chargement du client. Voir [HARNESS-INTEGRATION.md](../integrations/harness/HARNESS-INTEGRATION.md).
