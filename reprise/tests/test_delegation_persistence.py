@@ -272,6 +272,40 @@ class DurableTests(unittest.TestCase):
         self.assertEqual(sum(result is None for result in results), 1)
         self.assertEqual(next(result for result in results if result)['status'], 'indeterminate')
 
+    def test_open_caller_transaction_cannot_commit_on_begin_or_claim(self):
+        # Both file and in-memory SQLite must preserve the caller's transaction.
+        for target in (':memory:', str(self.root / 'fresh-tx.sqlite')):
+            with self.subTest(target=target):
+                db = sqlite3.connect(target)
+                try:
+                    store = Store(db, 'project')
+                    db.execute('CREATE TABLE caller_state(note TEXT NOT NULL)')
+                    db.execute("INSERT INTO caller_state VALUES ('uncommitted')")
+                    self.assertTrue(db.in_transaction)
+                    with self.assertRaisesRegex(sqlite3.OperationalError, 'Active caller transaction'):
+                        store.begin('first', {'question': 'A'})
+                    self.assertTrue(db.in_transaction)
+                    self.assertEqual(store.lookup({'request_key': 'first'})['status'], 'not_found')
+                    db.rollback()
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM caller_state').fetchone()[0], 0)
+
+                    self.assertIsNone(store.begin('first', {'question': 'A'}))
+                    store.attach('first', {'phase': 'active', 'thread_id': ID, 'turn_id': 'turn-1'})
+                    db.execute("INSERT INTO caller_state VALUES ('second')")
+                    self.assertTrue(db.in_transaction)
+                    before = store.phase('first')['owner']
+                    with self.assertRaisesRegex(sqlite3.OperationalError, 'Active caller transaction'):
+                        store.claim('first', 'local:42')
+                    self.assertTrue(db.in_transaction)
+                    self.assertEqual(store.phase('first')['owner'], before)
+                    db.rollback()
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM caller_state').fetchone()[0], 0)
+
+                    self.assertEqual(store.claim('first', 'local:42'), 'owned')
+                    self.assertEqual(store.phase('first')['owner'], 'local:42')
+                finally:
+                    db.close()
+
     def test_scope_isolation(self):
         db = sqlite3.connect(self.root/'requests.sqlite')
         self.addCleanup(db.close)

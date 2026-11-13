@@ -378,10 +378,22 @@ class Store:
             values += [self.scope, key]
             self.db.execute('UPDATE delegation_turns SET ' + ', '.join(assignments) + ' WHERE scope=? AND request_key=?', values)
 
+    def _require_fresh_write_transaction(self):
+        """The caller must not own a transaction spanning a durable admission.
+
+        Python's Connection context manager commits on exit even when the
+        transaction was opened by another caller. Refuse before entering that
+        context: never implicitly commit/rollback someone else's work.
+        """
+        if self.db.in_transaction:
+            raise sqlite3.OperationalError(
+                'Active caller transaction prevents independent delegation write; no mutation recorded')
+
     def claim(self, key, owner, stale_after=120.0, alive=None):
         """Return owned, held or taken_over. A takeover is recorded, never redispatch."""
         alive = alive or owner_alive
         stamp = float(self.now())
+        self._require_fresh_write_transaction()
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
             row = self.db.execute('SELECT owner,updated_at,phase FROM delegation_turns WHERE scope=? AND request_key=?', (self.scope, key)).fetchone()
@@ -407,6 +419,7 @@ class Store:
         validate_key(key)
         if parent is not None:
             validate_key(parent)
+        self._require_fresh_write_transaction()
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
             result = self._begin_locked(key, payload, parent)
