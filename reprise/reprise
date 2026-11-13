@@ -85,7 +85,7 @@ if len(sys.argv) > 1 and sys.argv[1].startswith('scheduler-service-'):
     import scheduler_service
     sys.exit(scheduler_service.main(Path(__file__).resolve().parent, sys.argv[1:]))
 
-if len(sys.argv) > 1 and sys.argv[1] in ('harness-integration-inspect', 'harness-integration-plan', 'harness-integration-reconcile-plan', 'harness-integration-apply', 'harness-integration-verify'):
+if len(sys.argv) > 1 and sys.argv[1] in ('harness-integration-inspect', 'harness-integration-plan', 'harness-integration-reconcile-plan', 'harness-integration-apply', 'harness-integration-verify', 'harness-integration-release-diagnose'):
     import harness_integration
     sys.exit(harness_integration.main(Path(__file__).resolve().parent, sys.argv[1:]))
 

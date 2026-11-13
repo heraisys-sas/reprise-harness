@@ -274,6 +274,21 @@ class HarnessIntegrationTests(unittest.TestCase):
             self.assertEqual(integration.main(self.root, command), 2)
         self.assertEqual(json.loads(buffer.getvalue())['status'], 'drift')
 
+    def test_scoped_diagnosis_public_reprise_entrypoint_is_readonly(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        integration.stage_release(helpers, runtime, release)
+        before = integration.tree_files(release)
+        env = dict(os.environ, HOME=str(self.base), PYTHONDONTWRITEBYTECODE='1')
+        env.pop('AGENT_RESUME_STATE', None)
+        proc = subprocess.run(
+            [sys.executable, '-B', str(SOURCE / 'reprise'),
+             'harness-integration-release-diagnose', '--release', str(release)],
+            env=env, text=True, capture_output=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)['status'], 'clean')
+        self.assertEqual(integration.tree_files(release), before)
+
     def test_yaml_symlink_is_refused(self):
         yaml_file = self.root / 'vendor/yaml/reader.py'
         yaml_file.unlink()
