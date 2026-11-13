@@ -6,6 +6,8 @@ Copie de travail reportée sans conflit sur `eebb39d57d0415577b8ed921e0bf173bf17
 
 Sonde isolée App Intents sur macOS 27 : compilation, métadonnées et signature ad hoc vérifiées. Hors sandbox, l'inscription PlugInKit a retourné succès, mais la recherche ciblée n'a trouvé aucune extension et l'hôte de découverte a expiré ; le retrait a réussi et la recherche après retrait n'a rien trouvé. Ni invocation `perform()`, ni helper, ni Siri ne sont donc démontrés. Cette sonde n'a pas utilisé de Trousseau ou de contenu utilisateur.
 
+Une seconde sonde a d'abord inscrit l'hôte synthétique dans Launch Services, puis l'extension dans PlugInKit : la recherche ciblée de l'extension a alors retourné une correspondance. L'attente de l'hôte a expiré ; l'extension et l'hôte ont été retirés, puis la recherche PlugInKit a confirmé l'absence de correspondance. Cela prouve une inscription temporaire, pas la découverte par Siri ni l'exécution de `perform()`.
+
 Baseline `e0c2d0d` ; la branche isolée précède le lot UI `4f0735d` et devra être intégrée après revalidation de dev.
 
 Décisions : les demandes Siri ne lancent pas de modèle. Identité stable, refus d'une réutilisation avec texte différent, suppression logique sans résurrection ; stockage local privé chiffré par le coffre avec usage `siri-inbox-v1`, clé préexistante obligatoire, pas de repli en clair. Une erreur de synchronisation après remplacement conserve un état incertain ; seule une répétition de la même identité permet de réconcilier.
