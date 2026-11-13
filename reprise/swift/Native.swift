@@ -55,6 +55,10 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var claudeIntegrationPlan: [String: Any]?
     @Published var claudeIntegrationResult: [String: Any] = [:]
     @Published var claudeIntegrationAcknowledged = false
+    @Published var chatgptIntegrationProject = ""
+    @Published var chatgptIntegrationPlan: [String: Any]?
+    @Published var chatgptIntegrationResult: [String: Any] = [:]
+    @Published var chatgptIntegrationAcknowledged = false
     @Published var claudeReplaceProbe = false
     @Published var claudeAwaitChoice = "preserve"
     @Published var claudeInboxTasks: [[String: Any]] = []

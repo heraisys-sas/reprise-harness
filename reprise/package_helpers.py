@@ -13,6 +13,7 @@ ASSETS = ('apple_expert.py', 'apple_pilot.py', 'apple_pilot_service.py', 'apple_
 ASSETS += ('yaml_contract.py', 'codex_config_update.py',)
 ASSETS += ('siri_inbox_acl.py', 'siri_inbox_model.py', 'siri_inbox_store.py', 'siri_inbox_cli.py')
 ASSETS += ('mcp_transport.py', 'chatgpt_quick.py', 'chatgpt_mcp.py',)  # Issue #156: shared MCP transport + ChatGPT bridge.
+ASSETS += ('chatgpt_integration.py',)  # Issue #161: managed ChatGPT MCP server config.
 ASSETS += ('registry_marker.py', 'registry_adopt.py')
 ASSETS += ('memory_admin.py',)  # Memory administration packaging; independent of local execution.
 ASSETS += ('memory_integration.py', 'reprise_memory_adapter.py', 'reprise_memory_mcp.py', 'coordinator_jobs.py', 'coordinator_local.py', 'coordinator_candidate.py', 'coordinator_recall.py')
