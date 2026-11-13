@@ -131,6 +131,58 @@ class HarnessIntegrationTests(unittest.TestCase):
         integration.release_check(release)
         self.assertTrue(stat.S_IMODE(python.stat().st_mode) & stat.S_IWUSR)
 
+    def test_runtime_apfs_clone_success_fallback_and_fail_closed(self):
+        import ctypes
+        from types import SimpleNamespace
+
+        source = self.base / 'large.bin'
+        source.write_bytes(b'copy-on-write-fixture' * 8192)
+        tiny = self.base / 'tiny.bin'
+        tiny.write_bytes(b'fixture')
+        staging = self.base / 'destination'
+        staging.mkdir()
+        calls = []
+
+        class Clone:
+            argtypes = None
+            restype = None
+            behavior = 'clone'
+
+            def __call__(self, src, dst, flags):
+                calls.append((src, dst, flags))
+                if self.behavior == 'clone':
+                    Path(os.fsdecode(dst)).write_bytes(Path(os.fsdecode(src)).read_bytes())
+                    return 0
+                if self.behavior == 'partial':
+                    Path(os.fsdecode(dst)).write_bytes(b'incomplete')
+                ctypes.set_errno(13 if self.behavior == 'denied' else 18)
+                return -1
+
+        clone = Clone()
+        with patch.object(integration.sys, 'platform', 'darwin'), \
+             patch('ctypes.CDLL', return_value=SimpleNamespace(clonefile=clone)):
+            copy = integration._runtime_copy_function(self.base, staging)
+        small_out = staging / 'small'
+        copy(tiny, small_out)
+        self.assertEqual(small_out.read_bytes(), tiny.read_bytes())
+        self.assertEqual(calls, [])
+        cloned = staging / 'cloned'
+        copy(source, cloned)
+        self.assertEqual(cloned.read_bytes(), source.read_bytes())
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][2], 0)
+
+        clone.behavior = 'unsupported'
+        fallback = staging / 'fallback'
+        copy(source, fallback)
+        self.assertEqual(fallback.read_bytes(), source.read_bytes())
+        clone.behavior = 'partial'
+        with self.assertRaisesRegex(ValueError, 'incomplet'):
+            copy(source, staging / 'partial')
+        clone.behavior = 'denied'
+        with self.assertRaises(PermissionError):
+            copy(source, staging / 'denied')
+
     def test_staged_root_remains_writable_for_macos_rename(self):
         helpers, runtime, identity = integration.bundle_info(self.root)
         release = self.base / 'releases' / identity

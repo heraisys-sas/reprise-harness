@@ -59,6 +59,12 @@ Les releases de format 1 déjà installées sont vérifiées par leurs empreinte
 
 Le code de Reprise doit être inventorié depuis Git (`git ls-files`) plutôt que via `find` dans `Application Support/Reprise/integration-releases` : la stdlib distribuée n'appartient pas au corpus source de l'agent.
 
+## Copies CoW APFS des releases (issue #162)
+
+La copie de la bibliothèque Python effectuée dans `stage_release()` tente `clonefile(2)` uniquement sur macOS, pour les fichiers réguliers d'au moins 64 Kio et lorsque la source et le staging résident sur le même volume. Une plateforme non macOS, des volumes distincts ou un refus `ENOTSUP`/`EXDEV`/`ENOSYS` conservent `shutil.copy2`. Les autres refus (permissions, erreur d'E/S, destination existante) restent des échecs, jamais masqués. Les liens symboliques sont conservés par `copytree(symlinks=True)` et les manifestes vérifient toujours les octets livrés. Il n'y a **aucun hardlink entre releases**.
+
+Le clonage CoW partage des blocs de stockage mais produit des fichiers logiquement indépendants. Le gain de temps et d'espace physique doit être mesuré sur le volume APFS réel avant d'être revendiqué ; les tests de contrat ne valent pas benchmark.
+
 ## Déploiement géré du pont Harness
 
 L’onglet Intégrations copie le payload et ce runtime dans un release versionné indépendant du bundle, au voisinage de l’état préparé. Le profil MCP vise ce release plutôt que le bundle mobile ; le retrait garde releases et données. Copie altérée refusée par empreintes, aucun téléchargement/installation Python supplémentaire. La validation directe du pont a fonctionné après déplacement puis suppression du bundle source sur fixtures ; elle ne vaut pas chargement du client. Voir [HARNESS-INTEGRATION.md](../integrations/harness/HARNESS-INTEGRATION.md).

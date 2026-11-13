@@ -543,6 +543,33 @@ def _reconcile_atomic(path, text, metadata):
         temporary.unlink(missing_ok=True)
 
 
+def _runtime_copy_function(runtime, destination):
+    """APFS clones large runtime files; unsupported volumes use ordinary copies."""
+    if sys.platform != 'darwin' or runtime.stat().st_dev != destination.stat().st_dev:
+        return shutil.copy2
+    try:
+        import ctypes
+        clone = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True).clonefile
+        clone.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int)
+        clone.restype = ctypes.c_int
+    except (OSError, AttributeError):
+        return shutil.copy2
+
+    def copy(source, target):
+        if Path(source).stat().st_size < 65536:
+            return shutil.copy2(source, target)
+        if clone(os.fsencode(source), os.fsencode(target), 0) == 0:
+            return target
+        code = ctypes.get_errno()
+        if code not in (errno.ENOTSUP, errno.EOPNOTSUPP, errno.EXDEV, errno.ENOSYS):
+            raise OSError(code, os.strerror(code), os.fspath(target))
+        if os.path.lexists(target):
+            raise ValueError('Clonage APFS incomplet ; aucun remplacement implicite.')
+        return shutil.copy2(source, target)
+
+    return copy
+
+
 def stage_release(helpers, runtime, release):
     payload = json.loads((helpers / 'payload-manifest.json').read_text())
     validate_yaml(helpers, payload)
@@ -580,7 +607,8 @@ def stage_release(helpers, runtime, release):
         if json.loads((helper_target / 'payload-manifest.json').read_text()) != payload:
             raise ValueError('Manifeste modifié pendant la copie.')
         validate_yaml(helper_target, payload)
-        shutil.copytree(runtime, resources / 'runtime', symlinks=True)
+        shutil.copytree(runtime, resources / 'runtime', symlinks=True,
+                        copy_function=_runtime_copy_function(runtime, resources))
         if (helpers.parent / 'native-manifest.json').is_file():
             shutil.copyfile(helpers.parent / 'native-manifest.json', resources / 'native-manifest.json')
         native = helpers.parent.parent / 'MacOS'
