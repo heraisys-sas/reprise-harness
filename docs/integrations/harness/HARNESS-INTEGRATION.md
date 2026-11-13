@@ -8,7 +8,9 @@ Après préparation des états, l’onglet **Intégrations** permet de choisir e
 
 Le profil doit déjà posséder `profiles/PROFIL/cordis.patch.yml` ; Reprise n’installe pas Harness et ne crée pas son profil. Le projet doit être un dossier existant explicitement choisi. Aucun credential, réglage Codex ou service n’est modifié.
 
-Les commandes `reprise integration-inspect`, `integration-plan`, `integration-apply` et `integration-verify` réutilisent le même adaptateur que l’interface. Les trois premières préparent une configuration ; `integration-verify` sonde seulement le pont lui-même avec `initialize` et `tools/list`. Aucune commande ne démarre Harness ni un daemon. `integration-apply` reçoit le plan JSON sur stdin ; le plan ne réserve pas les destinations et est revalidé.
+Les commandes `reprise harness-integration-inspect`, `harness-integration-plan`, `harness-integration-apply` et `harness-integration-verify` réutilisent le même adaptateur que l’interface. Les trois premières préparent une configuration ; `harness-integration-verify` sonde seulement le pont lui-même avec `initialize` et `tools/list`. Aucune commande ne démarre Harness ni un daemon. `harness-integration-apply` reçoit le plan JSON sur stdin ; le plan ne réserve pas les destinations et est revalidé.
+
+Depuis #160, les anciens noms nus `integration-inspect`, `integration-plan`, `integration-reconcile-plan`, `integration-apply` et `integration-verify` restent acceptés comme alias dépréciés (avertissement sur stderr, comportement identique) ; `harness-integration-reconcile-plan` n’a jamais eu de nom nu et n’a donc pas d’alias.
 
 ## Éléments gérés et portées
 
@@ -57,7 +59,7 @@ Suite complète **379 tests OK, 1 ignoré**, avec copie temporaire du CPython em
 
 L’option d’intégration **Continuer après une limite de tokens de sortie** installe
 le plugin natif `harness-output-resume.cjs` dans le profil sélectionné. CLI :
-`integration-plan --home … --profile desktop --project … --action install --output-resume`
+`harness-integration-plan --home … --profile desktop --project … --action install --output-resume`
 (en conservant les autres options voulues), puis application du plan vérifié.
 Si la session utilise un clone différent du projet du pont, renseigner son chemin
 dans « Projet de continuation » (`--output-resume-project`) : les deux périmètres
@@ -94,7 +96,7 @@ le lecteur Reprise les parcourt toutes et refuse une trame corrompue ou tronqué
 
 L’option **Effort bas pour le mode asi1-orchestrator** ajoute une capacité
 optionnelle au même parcours. CLI :
-`integration-plan --home … --profile desktop --project … --action install --asi1-effort`
+`harness-integration-plan --home … --profile desktop --project … --action install --asi1-effort`
 puis application du plan vérifié. Elle exige une route `asi-cloud` avec le modèle
 `asi1` déjà déclarée et un preset `asi1-orchestrator` existant ; Reprise ne crée
 ni route, ni modèle, ni preset.
@@ -122,7 +124,7 @@ que son planner n'est pas implémenté.
 
 Comme pour la continuation, le plan et les empreintes prouvent la configuration
 écrite, pas son chargement par Harness. Le client doit recharger le profil pour
-charger une nouvelle version du plugin. `integration-verify` contrôle le bloc,
+charger une nouvelle version du plugin. `harness-integration-verify` contrôle le bloc,
 le fichier du plugin et les blocs marqués, puis rapporte
 `asi1_effort.configured` avec `client_loaded: unknown`. Aucun appel d’inférence
 n’est effectué.
@@ -130,7 +132,7 @@ n’est effectué.
 ## Mémoire de projet partagée, sélection explicite
 
 Le parcours géré accepte `--memory-access off|read|write`, `--memory-project-id UUID`
-et, facultativement, `--memory-scope-id UUID` dans `integration-plan`. Sans scope ID,
+et, facultativement, `--memory-scope-id UUID` dans `harness-integration-plan`. Sans scope ID,
 le mode projet historique reste inchangé. Avec un scope ID, le plan lie le MCP à un
 scope v2 préexistant (user, project ou work) au démarrage. Il ajoute une entrée distincte
 `reprise-memory` / `serverName: reprise_memory`, sans élargir les outils du pont
@@ -156,7 +158,7 @@ Exemple de première activation en lecture, après création/association explici
 du projet par le parcours de registre existant :
 
 ```sh
-reprise integration-plan --home DSH_HOME --profile desktop --project WORKSPACE \
+reprise harness-integration-plan --home DSH_HOME --profile desktop --project WORKSPACE \
   --action install --memory-access read --memory-project-id REGISTERED_UUID
 ```
 
@@ -167,7 +169,7 @@ v1 est préservée. Choisir l’UUID depuis `reprise memory-scope-list --state S
 et contrôler son champ `kind` avant de préparer le plan ; cette commande admin
 liste les métadonnées sans exposer le texte des faits.
 
-Appliquer le JSON obtenu avec `integration-apply` par le parcours existant. Pour
+Appliquer le JSON obtenu avec `harness-integration-apply` par le parcours existant. Pour
 accorder l’écriture au processus MCP, remplacer explicitement `read` par `write`
 dans un nouveau plan relu. Pour la désactiver, préparer un plan
 `--memory-access read` ou `off`. Le grant est transmis au lancement du processus
@@ -182,7 +184,7 @@ pas. L’API Python garde ses arguments explicites de contrôle ; les valeurs m�
 se retrouvent dans `plan.memory` et le manifeste. L’interface pourra utiliser ces
 mêmes champs et `inspect.memory`, sans autre chemin d’écriture de configuration.
 
-`integration-verify` contrôle la commande mémoire et son association, puis lance
+`harness-integration-verify` contrôle la commande mémoire et son association, puis lance
 `initialize`/`tools/list` directement depuis la release vérifiée, sans lire ni écrire
 un fait. `memory.evidence=direct_probe_tools_schema` ne prouve ni chargement DSH,
 ni découverte par le client, ni échange réel : ces états restent `unknown`.
@@ -209,7 +211,7 @@ projet de continuation existant explicitement choisi et un choix explicite de
 `--codex-workspace-write` ou `--no-codex-workspace-write`. La présence d’un droit
 write dans un bloc divergent ne constitue jamais à elle seule une autorisation.
 Le plan enregistre ces choix et les empreintes de configuration, manifeste,
-journal ordinaire et journal de réconciliation. `integration-apply` applique le
+journal ordinaire et journal de réconciliation. `harness-integration-apply` applique le
 plan retourné ; aucune commande de chargement du client n’est exécutée.
 
 Ce parcours exige une intégration gérée avec continuation déjà activée et des
@@ -218,7 +220,7 @@ du plugin de continuation depuis une release vérifiée, le projet de continuati
 et le droit write choisi ; toute autre différence sémantique bloque l’adoption.
 Les outils, autres permissions, réglages de plugins, mémoire et projet du pont
 ne sont pas adoptés depuis le bloc divergent. Les gardes de propriété de
-`integration-plan`, du retrait et de `integration-verify` ne sont pas affaiblies.
+`harness-integration-plan`, du retrait et de `harness-integration-verify` ne sont pas affaiblies.
 
 Le remplacement conserve les octets avant et après le bloc à leur position
 initiale, y compris commentaires et fins de ligne. Seul le bloc est régénéré sous

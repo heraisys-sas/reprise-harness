@@ -81,9 +81,15 @@ if len(sys.argv) > 1 and sys.argv[1].startswith('scheduler-service-'):
     import scheduler_service
     sys.exit(scheduler_service.main(Path(__file__).resolve().parent, sys.argv[1:]))
 
-if len(sys.argv) > 1 and sys.argv[1] in ('integration-inspect', 'integration-plan', 'integration-reconcile-plan', 'integration-apply', 'integration-verify'):
+if len(sys.argv) > 1 and sys.argv[1] in ('harness-integration-inspect', 'harness-integration-plan', 'harness-integration-reconcile-plan', 'harness-integration-apply', 'harness-integration-verify'):
     import harness_integration
     sys.exit(harness_integration.main(Path(__file__).resolve().parent, sys.argv[1:]))
+
+if len(sys.argv) > 1 and sys.argv[1] in ('integration-inspect', 'integration-plan', 'integration-reconcile-plan', 'integration-apply', 'integration-verify'):
+    # Alias déprécié (#160) : la famille harness suit désormais codex-integration-*/claude-integration-*.
+    print("Avertissement : '%s' est déprécié (#160), utiliser 'harness-%s'." % (sys.argv[1], sys.argv[1]), file=sys.stderr)
+    import harness_integration
+    sys.exit(harness_integration.main(Path(__file__).resolve().parent, ['harness-' + sys.argv[1], *sys.argv[2:]]))
 
 if len(sys.argv) > 1 and sys.argv[1] in ('state-status', 'state-plan', 'state-apply'):
     import state_setup

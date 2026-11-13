@@ -37,8 +37,8 @@ SQLite, aucune clé de requête ou phase pour débloquer la migration.
 L'updater général conserve l'ancien projet : une mise à jour réussie ne change
 donc pas les workspaces des clients.
 
-- Harness : préparer `integration-plan` avec le nouveau `--project`, puis
-  `integration-apply` et `integration-verify --project`. Reprendre les options
+- Harness : préparer `harness-integration-plan` avec le nouveau `--project`, puis
+  `harness-integration-apply` et `harness-integration-verify --project`. Reprendre les options
   du manifeste : rôle, délégation, droits d'écriture, continuation et ASI1.
   Conserver l'ancien `output_resume_project` si ses conversations sont actives ;
   il est distinct du périmètre d'expertise du nouveau connecteur.

@@ -31,8 +31,8 @@ from mcp_transport import StdioHandler
 from engines import Unavailable, executable, options
 
 
-WORKSPACE_WRITE_ENABLE = ('harness_integration integration-plan --action install --delegate '
-                          '--codex-workspace-write, puis integration-apply et redémarrage du pont')
+WORKSPACE_WRITE_ENABLE = ('harness_integration harness-integration-plan --action install --delegate '
+                          '--codex-workspace-write, puis harness-integration-apply et redémarrage du pont')
 
 
 class WorkspaceWriteNotAuthorized(ValueError):
