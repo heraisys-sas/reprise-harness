@@ -245,6 +245,69 @@ extension App {
         setupCommand(["claude-integration-verify", "--project", claudeIntegrationProject]) { self.claudeIntegrationResult = $0 }
     }
 
+    func inspectChatgptIntegration() {
+        guard stateReady, !setupBusy else { return }
+        setupCommand(["chatgpt-integration-inspect"]) { result in
+            self.chatgptIntegrationResult = result
+        }
+    }
+    func previewChatgptIntegration(_ action: String) {
+        guard stateReady, !setupBusy else { return }
+        guard !chatgptIntegrationProject.isEmpty else { return }
+        let args = ["chatgpt-integration-plan", "--project", chatgptIntegrationProject, "--action", action]
+        setupCommand(args) { result in
+            self.chatgptIntegrationResult = result
+            self.chatgptIntegrationPlan = result["plan"] as? [String: Any]
+            self.chatgptIntegrationAcknowledged = false
+        }
+    }
+    func applyChatgptIntegration() {
+        guard stateReady, !setupBusy, chatgptIntegrationAcknowledged, let plan = chatgptIntegrationPlan else { return }
+        guard plan["project"] as? String == chatgptIntegrationProject else { invalidateChatgptIntegrationPlan(); return }
+        setupCommand(["chatgpt-integration-apply"], input: ["plan": plan]) { result in
+            var displayedResult = result
+            displayedResult["action"] = plan["action"]
+            displayedResult["project"] = plan["project"]
+            self.chatgptIntegrationResult = displayedResult
+            self.chatgptIntegrationAcknowledged = false
+            if result["status"] as? String == "completed" {
+                self.chatgptIntegrationPlan = nil
+            }
+        }
+    }
+    func verifyChatgptIntegration() {
+        guard stateReady, !setupBusy else { return }
+        guard !chatgptIntegrationProject.isEmpty else {
+            chatgptIntegrationResult = ["status": "refused", "message": "Associez un projet avant la vérification du pont ChatGPT."]
+            return
+        }
+        setupCommand(["chatgpt-integration-verify", "--project", chatgptIntegrationProject]) { self.chatgptIntegrationResult = $0 }
+    }
+    func copyChatgptServerConfig() {
+        let content: String
+        if let config = chatgptIntegrationPlan?["server_config"] as? [String: Any],
+           let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]),
+           let text = String(data: data, encoding: .utf8) {
+            content = text
+        } else if let config = chatgptIntegrationResult["server_config"] as? [String: Any],
+                  let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]),
+                  let text = String(data: data, encoding: .utf8) {
+            content = text
+        } else {
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(content, forType: .string)
+    }
+    func invalidateChatgptIntegrationPlan() {
+        chatgptIntegrationPlan = nil
+        chatgptIntegrationAcknowledged = false
+        let status = chatgptIntegrationResult["status"] as? String
+        if !["completed", "verified", "inspected"].contains(status ?? "") {
+            chatgptIntegrationResult = [:]
+        }
+    }
+
     func invalidateClaudeInbox(clearTasks: Bool = true) {
         claudeInboxGeneration &+= 1
         if clearTasks {
@@ -568,16 +631,20 @@ extension App {
             projectRenameDraft = ""
             integrationProject = ""
             claudeIntegrationProject = ""
+            chatgptIntegrationProject = ""
             invalidateIntegrationPlan()
             invalidateClaudeIntegrationPlan()
+            invalidateChatgptIntegrationPlan()
             return
         }
         projectRenameDraft = project["name"] as? String ?? ""
         let workspaces = project["workspaces"] as? [String: String] ?? [:]
         integrationProject = workspaces["harness"] ?? ""
         claudeIntegrationProject = workspaces["claude"] ?? ""
+        chatgptIntegrationProject = workspaces["claude"] ?? ""
         invalidateIntegrationPlan()
         invalidateClaudeIntegrationPlan()
+        invalidateChatgptIntegrationPlan()
     }
 
     func chooseProjectDirectory(_ target: String) {
@@ -980,6 +1047,57 @@ struct Integrations: View {
                     }
                 }
             }.disabled(app.setupBusy)
+            SettingsCard(title: "Connecteur ChatGPT (pont MCP)",
+                         status: app.chatgptIntegrationResult["status"] as? String == "verified" ? "Release vérifiée" :
+                             app.chatgptIntegrationResult["status"] as? String == "completed" ?
+                                 ((app.chatgptIntegrationResult["action"] as? String == "remove") ? "Retrait appliqué" : "Plan appliqué") : "État inconnu",
+                         ok: ["completed", "verified"].contains(app.chatgptIntegrationResult["status"] as? String ?? "")) {
+                HStack {
+                    path("Projet du pont", app.chatgptIntegrationProject)
+                }
+                HStack(spacing: 10) {
+                    Button("Relire l’état") { app.inspectChatgptIntegration() }
+                    Button("Installer ou mettre à jour…") { app.previewChatgptIntegration("install") }.disabled(app.chatgptIntegrationProject.isEmpty)
+                    Button("Retirer…") { app.previewChatgptIntegration("remove") }.disabled(app.chatgptIntegrationProject.isEmpty)
+                    Button("Vérifier") { app.verifyChatgptIntegration() }.disabled(app.chatgptIntegrationProject.isEmpty)
+                }
+                SettingsHint(
+                    text: "Collez le contenu copié dans Réglages → Connecteurs → MCP servers (STDIO) de ChatGPT.",
+                    detail: "ChatGPT desktop n’a pas de configuration MCP locale inscriptible : Reprise génère un server-config.json que vous collez vous-même dans ChatGPT. Reprise ne modifie aucun fichier ChatGPT. La vérification exécute initialize/tools/list sur la release, sans inférence ; le chargement dans ChatGPT reste non observé.",
+                    detailLabel: "Consigne de collage et limites")
+                if let plan = app.chatgptIntegrationPlan {
+                    SettingsHint(text: "Un plan est prêt ; il attend votre accord.",
+                                 detail: planDetail(plan), detailLabel: "Plan exact du connecteur")
+                    Text("Empreinte du plan : " + (plan["fingerprint"] as? String ?? "indisponible")).font(.caption)
+                    Toggle("J’ai vérifié le projet et les changements du connecteur", isOn: $app.chatgptIntegrationAcknowledged)
+                    Button("Appliquer le plan") { app.applyChatgptIntegration() }.disabled(!app.chatgptIntegrationAcknowledged)
+                }
+                if app.chatgptIntegrationResult["status"] as? String == "completed" {
+                    let changed = app.chatgptIntegrationResult["changed"] as? Bool == true
+                    let action = app.chatgptIntegrationResult["action"] as? String ?? "install"
+                    SettingsHint(text: action == "remove"
+                                    ? (changed ? "Configuration gérée retirée." : "Le connecteur était déjà retiré.")
+                                    : (changed ? "server-config.json écrit ; collez-le dans ChatGPT." : "Configuration déjà conforme ; aucune écriture."),
+                                 detail: "Ce résultat concerne le dernier plan appliqué. Chargement par ChatGPT : non observé.",
+                                 detailLabel: "Dernier résultat")
+                } else if app.chatgptIntegrationResult["status"] as? String == "verified" {
+                    SettingsHint(text: "Vérification locale : les outils du pont répondent dans la release testée.",
+                                 detail: "La release a répondu à initialize/tools/list sans inférence. Chargement par ChatGPT : non observé ; collez la configuration et vérifiez les outils dans le client.",
+                                 detailLabel: "Dernière vérification")
+                } else if app.chatgptIntegrationResult["status"] as? String == "inspected" {
+                    SettingsHint(text: (app.chatgptIntegrationResult["managed"] as? Bool == true)
+                                    ? "Configuration gérée active et conforme."
+                                    : "Aucune configuration gérée active.",
+                                 detailLabel: "Dernière inspection")
+                }
+                if app.chatgptIntegrationPlan?["server_config"] != nil || app.chatgptIntegrationResult["server_config"] != nil {
+                    Button("Copier la configuration pour ChatGPT") { app.copyChatgptServerConfig() }
+                }
+                if !app.chatgptIntegrationResult.isEmpty {
+                    SettingsHint(text: app.chatgptIntegrationResult["message"] as? String ?? "Dernier résultat du pont ChatGPT.",
+                                 detail: planDetail(app.chatgptIntegrationResult), detailLabel: "Réponse complète")
+                }
+            }
             SettingsCard(title: "Reprise après quota Claude Desktop",
                          status: app.claudeQuotaState["enabled"] as? Bool == true ? "Active" : "En pause",
                          ok: true) {
@@ -1085,5 +1203,6 @@ struct Integrations: View {
         }
         .onChange(of: app.claudeAwaitChoice) { _, _ in app.invalidateClaudeIntegrationPlan() }
         .onChange(of: app.claudeReplaceProbe) { _, _ in app.invalidateClaudeIntegrationPlan() }
+        .onChange(of: app.chatgptIntegrationProject) { _, _ in app.invalidateChatgptIntegrationPlan() }
     }
 }
