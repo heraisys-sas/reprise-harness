@@ -428,6 +428,54 @@ def release_check(release):
         _check_release_readonly(release)
 
 
+def diagnose_release(release, max_examples=30):
+    """Read-only inventory diff for one explicitly selected integration release.
+
+    This is a filesystem snapshot, not proof of which process caused a drift.
+    Missing files during traversal are reported as unstable, never as clean.
+    """
+    release = Path(release).expanduser().absolute()
+    if release.is_symlink() or not release.is_dir():
+        raise ValueError('Répertoire de release explicite introuvable ou symbolique.')
+    evidence = json.loads((release / 'release.json').read_text())
+    if evidence.get('format') not in (1, 2) or not isinstance(evidence.get('files'), dict):
+        raise ValueError('Manifeste de release non supporté.')
+    expected = evidence['files']
+    try:
+        actual = tree_files(release)
+        actual.pop('release.json', None)
+        writable = []
+        if evidence['format'] == 2:
+            writable = [str(entry.relative_to(release))
+                        for entry, info in _release_plain_entries(release)
+                        if stat.S_IMODE(info.st_mode) & 0o222]
+    except FileNotFoundError:
+        return {'status': 'unstable', 'release': str(release),
+                'reason': 'entry_disappeared_during_inventory'}
+
+    added = sorted(actual.keys() - expected.keys())
+    missing = sorted(expected.keys() - actual.keys())
+    changed = sorted(name for name in actual.keys() & expected.keys()
+                     if actual[name] != expected[name])
+    runtime_cache = sorted(name for name in added
+                           if name.startswith('Contents/Resources/runtime/')
+                           and ('__pycache__' in Path(name).parts or name.endswith(('.pyc', '.pyo'))))
+    writable.sort()
+    executable = os.access(release / 'Contents/Resources/runtime/bin/python3', os.X_OK)
+    policy_ok = evidence['format'] == 1 or evidence.get('immutability') == 'posix-readonly-v1'
+    clean = not (added or missing or changed or writable) and executable and policy_ok
+
+    def summary(names):
+        return {'count': len(names), 'examples': names[:max_examples],
+                'truncated': len(names) > max_examples}
+
+    return {'status': 'clean' if clean else 'drift', 'release': str(release),
+            'manifest_format': evidence['format'], 'policy_ok': policy_ok,
+            'runtime_executable': executable, 'added': summary(added),
+            'missing': summary(missing), 'changed': summary(changed),
+            'writable': summary(writable), 'new_runtime_cache': summary(runtime_cache)}
+
+
 def _sync_file(path):
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
@@ -1638,11 +1686,16 @@ def main(root, argv=None):
     toggle = command.add_mutually_exclusive_group(required=True)
     toggle.add_argument('--codex-workspace-write', action='store_true', default=None)
     toggle.add_argument('--no-codex-workspace-write', dest='codex_workspace_write', action='store_false')
+    command = sub.add_parser('harness-integration-release-diagnose')
+    command.add_argument('--release', required=True,
+                         help='Chemin explicite d’une release MCP ; inventaire seul, sans exécution.')
     sub.add_parser('harness-integration-apply')
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
-        if args.command == 'harness-integration-inspect':
+        if args.command == 'harness-integration-release-diagnose':
+            result = diagnose_release(args.release)
+        elif args.command == 'harness-integration-inspect':
             result = inspect(args.home, args.profile)
         elif args.command == 'harness-integration-reconcile-plan':
             result = {'status': 'planned', 'plan': reconcile_plan(root, args.home, args.profile, args.project,
@@ -1686,4 +1739,6 @@ def main(root, argv=None):
         print(json.dumps(result, ensure_ascii=False))
         return 1
     print(json.dumps(result, ensure_ascii=False))
+    if args.command == 'harness-integration-release-diagnose':
+        return 0 if result['status'] == 'clean' else 2
     return 0

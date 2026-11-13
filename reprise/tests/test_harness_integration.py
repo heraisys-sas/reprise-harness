@@ -235,6 +235,45 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertFalse(release.exists())
         self.assertEqual(list(release.parent.glob('.release-*')), [])
 
+    def test_scoped_readonly_release_diagnosis_of_unexpected_pycache(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        integration.stage_release(helpers, runtime, release)
+        self.assertEqual(integration.diagnose_release(release)['status'], 'clean')
+
+        runtime_target = release / 'Contents/Resources/runtime'
+        runtime_target.chmod(0o700)  # Fault injection on a disposable release.
+        cache = runtime_target / '__pycache__/unexpected.pyc'
+        cache.parent.mkdir()
+        cache.write_bytes(b'not executable bytecode')
+        snapshot = integration.tree_files(release)
+        reported = integration.diagnose_release(release)
+        self.assertEqual(reported['status'], 'drift')
+        self.assertEqual(reported['new_runtime_cache']['count'], 1)
+        self.assertEqual(reported['new_runtime_cache']['examples'],
+                         ['Contents/Resources/runtime/__pycache__/unexpected.pyc'])
+        self.assertGreaterEqual(reported['writable']['count'], 1)
+        self.assertEqual(integration.tree_files(release), snapshot)
+
+        with patch.object(integration, 'tree_files', side_effect=FileNotFoundError('vanished')):
+            self.assertEqual(integration.diagnose_release(release)['status'], 'unstable')
+
+    def test_scoped_diagnosis_cli_exits_nonzero_on_drift(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        integration.stage_release(helpers, runtime, release)
+        buffer = io.StringIO()
+        command = ['harness-integration-release-diagnose', '--release', str(release)]
+        with patch.object(integration.os, 'umask'), redirect_stdout(buffer):
+            self.assertEqual(integration.main(self.root, command), 0)
+        self.assertEqual(json.loads(buffer.getvalue())['status'], 'clean')
+
+        release.chmod(0o700)  # Synthetic mode drift only.
+        buffer = io.StringIO()
+        with patch.object(integration.os, 'umask'), redirect_stdout(buffer):
+            self.assertEqual(integration.main(self.root, command), 2)
+        self.assertEqual(json.loads(buffer.getvalue())['status'], 'drift')
+
     def test_yaml_symlink_is_refused(self):
         yaml_file = self.root / 'vendor/yaml/reader.py'
         yaml_file.unlink()

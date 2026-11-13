@@ -59,6 +59,16 @@ Les releases de format 1 déjà installées sont vérifiées par leurs empreinte
 
 Le code de Reprise doit être inventorié depuis Git (`git ls-files`) plutôt que via `find` dans `Application Support/Reprise/integration-releases` : la stdlib distribuée n'appartient pas au corpus source de l'agent.
 
+## Diagnostic ciblé d'une release MCP (issue #162)
+
+La commande ci-dessous réalise **uniquement des lectures** sur une release explicitement nommée : elle compare le contenu à `release.json` (formats 1 et 2), relève les permissions inattendues en format 2 et distingue les fichiers nouvellement créés dans `__pycache__` sans parcourir les autres releases. Aucun `find` global, aucune suppression ni exécution du Python empaqueté. Les listes de chemins sont plafonnées à 30 exemples, les nombres exacts sont conservés.
+
+```sh
+python3 reprise/harness_integration.py harness-integration-release-diagnose --release "/chemin/autorisé/integration-releases/EMPREINTE"
+```
+
+Le code retour est 0 pour `clean`, 2 pour `drift` (y compris mode inscriptible), et 1 pour un refus de lecture. Un état `unstable` (entrée disparue en cours d'inventaire) renvoie 2 ; **il ne prouve pas** quel processus a créé ou supprimé le fichier. Les empreintes du manifeste restent une comparaison locale, non une signature indépendante. Le message externe `PRISTINE: False` n'est pas attribué à cette commande sans trace de son producteur.
+
 ## Copies CoW APFS des releases (issue #162)
 
 La copie de la bibliothèque Python effectuée dans `stage_release()` tente `clonefile(2)` uniquement sur macOS, pour les fichiers réguliers d'au moins 64 Kio et lorsque la source et le staging résident sur le même volume. Une plateforme non macOS, des volumes distincts ou un refus `ENOTSUP`/`EXDEV`/`ENOSYS` conservent `shutil.copy2`. Les autres refus (permissions, erreur d'E/S, destination existante) restent des échecs, jamais masqués. Les liens symboliques sont conservés par `copytree(symlinks=True)` et les manifestes vérifient toujours les octets livrés. Il n'y a **aucun hardlink entre releases**.
