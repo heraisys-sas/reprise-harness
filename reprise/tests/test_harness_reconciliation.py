@@ -275,7 +275,7 @@ class HarnessReconciliationTests(unittest.TestCase):
         import contextlib
         import io
         accepted = self.divergent()
-        args = ['integration-reconcile-plan', '--home', str(self.home), '--profile', 'desktop',
+        args = ['harness-integration-reconcile-plan', '--home', str(self.home), '--profile', 'desktop',
                 '--project', str(self.project), '--output-resume-project', str(self.project),
                 '--accept-block-sha256', accepted]
         before = integration.tree_files(self.folder)
