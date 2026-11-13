@@ -379,12 +379,51 @@ def bundle_info(root):
     return helpers, runtime, identity
 
 
+def _release_plain_entries(root):
+    # Do not follow symlinks: tree_files() checks their targets separately.
+    for entry in [root, *root.rglob('*')]:
+        if entry.is_symlink():
+            continue
+        info = entry.stat(follow_symlinks=False)
+        if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+            raise ValueError('Type de fichier non supporté dans la release.')
+        yield entry, info
+
+
+def _seal_release(root):
+    """Remove write bits only from a fully staged release, never from the source app."""
+    for entry, info in sorted(_release_plain_entries(root), key=lambda item: len(item[0].parts), reverse=True):
+        entry.chmod(stat.S_IMODE(info.st_mode) & ~0o222)
+
+
+def _restore_directory_writes(root):
+    """Allow cleanup of an unpublished staging tree (also used by disposable tests)."""
+    if not root.exists():
+        return
+    for entry in [root, *root.rglob('*')]:
+        if entry.is_dir() and not entry.is_symlink():
+            entry.chmod(stat.S_IMODE(entry.stat(follow_symlinks=False).st_mode) | stat.S_IWUSR)
+
+
+def _check_release_readonly(root):
+    for entry, info in _release_plain_entries(root):
+        if stat.S_IMODE(info.st_mode) & 0o222:
+            raise ValueError(f'Release publiée modifiable : {entry}')
+
+
 def release_check(release):
     evidence = json.loads((release / 'release.json').read_text())
+    if evidence.get('format') not in (1, 2):
+        raise ValueError('Format de manifeste de release inconnu.')
     actual = tree_files(release)
     actual.pop('release.json', None)
     if actual != evidence['files'] or not os.access(release / 'Contents/Resources/runtime/bin/python3', os.X_OK):
         raise ValueError('Copie installée altérée ; aucune exécution de ce release.')
+    # Format 1: preserve existing installations; never chmod a running release.
+    if evidence['format'] == 2:
+        if evidence.get('immutability') != 'posix-readonly-v1':
+            raise ValueError('Politique d’immuabilité de release inconnue.')
+        _check_release_readonly(release)
 
 
 def _sync_file(path):
@@ -547,9 +586,16 @@ def stage_release(helpers, runtime, release):
             shutil.copytree(native, stage / 'Contents/MacOS')
         if bundle_info(helper_target)[2] != release.name:
             raise ValueError('Identité du bundle différente du plan ; publication refusée.')
-        atomic(stage / 'release.json', encoded({'format': 1, 'files': tree_files(stage)}))
-        _sync_tree(stage)
-        stage.rename(release)
+        atomic(stage / 'release.json', encoded({'format': 2, 'immutability': 'posix-readonly-v1',
+                                                'files': tree_files(stage)}))
+        try:
+            _seal_release(stage)
+            _sync_tree(stage)
+            stage.rename(release)
+        finally:
+            # TemporaryDirectory must remain removable if publication failed after sealing.
+            if stage.exists():
+                _restore_directory_writes(stage)
         _sync_directory(release.parent)
     release_check(release)
 

@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import stat
 import sys
 import subprocess
 import tempfile
@@ -28,6 +29,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.base = Path(temporary.name).resolve()
+        self.addCleanup(integration._restore_directory_writes, self.base)
         self.app = self.base / 'Movable Reprise.app'
         self.root = package_helpers.package(SOURCE, self.app)
         runtime = self.root.parent / 'runtime'
@@ -91,6 +93,59 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertEqual(before, integration.tree_files(release))
         shutil.rmtree(helpers / 'vendor/yaml')
         integration.bundle_info(self.root)  # legacy payload without YAML remains valid
+
+    def test_published_release_is_readonly_and_reusable(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        integration.stage_release(helpers, runtime, release)
+        evidence = json.loads((release / 'release.json').read_text())
+        self.assertEqual(evidence['format'], 2)
+        self.assertEqual(evidence['immutability'], 'posix-readonly-v1')
+        for entry in [release, *release.rglob('*')]:
+            if not entry.is_symlink():
+                self.assertFalse(stat.S_IMODE(entry.stat().st_mode) & 0o222, str(entry))
+        integration.release_check(release)
+        integration.stage_release(helpers, runtime, release)
+        python = release / 'Contents/Resources/runtime/bin/python3'
+        previous = stat.S_IMODE(python.stat().st_mode)
+        python.chmod(previous | stat.S_IWUSR)
+        try:
+            with self.assertRaisesRegex(ValueError, 'modifiable'):
+                integration.release_check(release)
+        finally:
+            python.chmod(previous)
+        integration.release_check(release)
+
+    def test_legacy_release_format_remains_readable_without_chmod(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        integration.stage_release(helpers, runtime, release)
+        evidence_path = release / 'release.json'
+        evidence = json.loads(evidence_path.read_text())
+        evidence['format'] = 1
+        del evidence['immutability']
+        evidence_path.chmod(0o600)
+        evidence_path.write_text(json.dumps(evidence))
+        python = release / 'Contents/Resources/runtime/bin/python3'
+        python.chmod(0o700)
+        integration.release_check(release)
+        self.assertTrue(stat.S_IMODE(python.stat().st_mode) & stat.S_IWUSR)
+
+    def test_failed_publication_removes_sealed_staging_tree(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        original_rename = Path.rename
+
+        def fail_publish(path, target):
+            if target == release:
+                raise OSError('synthetic failure after sealing')
+            return original_rename(path, target)
+
+        with patch.object(Path, 'rename', fail_publish):
+            with self.assertRaisesRegex(OSError, 'after sealing'):
+                integration.stage_release(helpers, runtime, release)
+        self.assertFalse(release.exists())
+        self.assertEqual(list(release.parent.glob('.release-*')), [])
 
     def test_yaml_symlink_is_refused(self):
         yaml_file = self.root / 'vendor/yaml/reader.py'
