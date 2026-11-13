@@ -104,3 +104,42 @@ harness_integration integration-apply
 ```
 
 `--codex-workspace-write` exige `--delegate`. Le périmètre inscriptible est `implementation_scope` = le `project_root` du pont ; les approbations natives Codex restent requises. L'autorisation est lue au démarrage du pont : **redémarrer le pont** après `integration-apply`, puis vérifier `reprise_backends` (`workspace_write_authorized: true`, `implementation_scope` renseigné).
+
+## Pont MCP ChatGPT desktop (issue #156)
+
+Nouveau serveur MCP local `chatgpt_mcp.py` (CLI `--project-root`, `--state`, `--expert-state`) qui
+expose à ChatGPT desktop un canal d'expertise Reprise en boucle fermée, sur le transport partagé
+`mcp_transport.py` (extrait de `codex_expert_mcp.py`, consommé aussi par `claude_mcp.py` sans
+changement observable).
+
+**Outils exposés :**
+- INBOX (`get_task`, `submit_result`, `get_result`) : la même boucle SQLite que Claude Desktop
+  (`TaskStore`, états absent|completed|attempted|reserved, résultat immuable = preuve de complétion).
+- OUTBOUND (`reprise_backends`, `reprise_requests`, `reprise_quotas`, `reprise_delegate`,
+  `reprise_followup`, `codex_review`, `codex_followup`) : mêmes schémas que la facade Claude,
+  filtrés pour retirer le backend `chatgpt` (loopback refusé : `'ChatGPT loopback is disabled'`).
+
+**Politique v1 :**
+- backend `claude-desktop` reste sélectionnable en OUTBOUND depuis la facade ChatGPT ;
+- `claim_next`/`await_task` absents ; `register_session` non déclaré (hors INBOX_TOOLS) ;
+- aucun nouveau socket ChatGPT : le dispatch passe par `chatgpt_quick.review` (Endpoint + ledger),
+  et le retour par `get_task`/`submit_result` sur le TaskStore ;
+- pas de repli silencieux de VERSION : le fichier `VERSION` packagé est requis.
+
+**Projection dans le bridge (`reprise_delegate` backend `chatgpt`) :**
+- `wait_status`/`wait_for_result`/`_task_snapshot` acceptent `backend='chatgpt'` et lisent
+  l'état `chatgpt-state` ; `wait_result` du bridge route selon le backend de la requête
+  enregistrée (`requests.lookup`), défaut `claude-desktop` ;
+- tagging `admission_only: true` étendu à `chatgpt` (réponse `None` = admission seule, le
+  round-trip MCP complète la requête) ;
+- `reprise_requests`/replay projettent la source `chatgpt_tasks` (receipt avec `result_sha256`,
+  pagination, `delegation_receipt`) ; l'acquittement passe par `Endpoint.mark_acknowledged`
+  (one-way attempted→acknowledged, idempotent, seule écriture de delivery venant de l'Endpoint) ;
+- journal `routing_events` : `request_key` préservé (argument explicite, sinon `active_key`).
+
+**Sûreté d'admission (crash-safe) :** validation complète des arguments (12 000 caractères,
+`request_key` ≤ 128) AVANT toute écriture ; `admit()` du TaskStore précède l'INSERT du ledger —
+un crash entre les deux écritures est récupéré par projection au replay, sans ré-exécution.
+
+**Budgets transport :** la facade ChatGPT utilise `CLAUDE_MAX_LINE_BYTES` (8 MiB), compatible
+avec la limite `submit_result` de 2 000 000 caractères (test UTF-8 multioctet inclus).

@@ -10,6 +10,8 @@ import sqlite3
 import sys
 import threading
 import time
+import mcp_transport
+from mcp_transport import request_id_key
 
 from codex_expert_mcp import Bridge, TOOLS, error_payload, tool_content, bounded_content
 from desktop_task_store import TaskStore
@@ -36,14 +38,48 @@ INBOX_TOOLS = [
     {'name': 'get_result', 'description': 'Retrieve a durable result. Acknowledge explicitly only after safely retaining it.', 'inputSchema': schema({'request_key': TEXT, 'acknowledge': {'type': 'boolean', 'default': False}, 'view': {'type': 'string', 'enum': ['receipt','page','full'], 'default': 'receipt'}, **PAGE_PROPERTIES}, ['request_key'])},
 ]
 OUTBOUND = {'reprise_backends', 'reprise_requests', 'reprise_quotas', 'reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup'}
+# Backends removed from every façade schema enum, plus their known aliases.
+CLAUDE_REMOVED_BACKENDS = ('claude-desktop',)
+CHATGPT_REMOVED_BACKENDS = ('chatgpt',)
+BACKEND_ALIASES = {
+    'claude-desktop': ('claude_desktop', 'reprise-claude-desktop'),
+    'chatgpt': ('chat_gpt', 'gpt', 'reprise-chatgpt'),
+}
 
 
-def outbound_tools():
+def outbound_tools(removed=CLAUDE_REMOVED_BACKENDS):
+    """Façade tool schemas: drop backends not reachable from this connector.
+
+    List AND dict enum forms are filtered; aliases of a removed backend are
+    removed too, so a loopback cannot re-enter under another spelling.
+    """
+    blocked = set(removed)
+    for name in removed:
+        blocked.update(BACKEND_ALIASES.get(name, ()))
     tools = copy.deepcopy([item for item in TOOLS if item['name'] in OUTBOUND])
     for item in tools:
         backend = item['inputSchema'].get('properties', {}).get('backend')
-        if backend:
-            backend['enum'] = [value for value in backend['enum'] if value != 'claude-desktop']
+        if not backend:
+            continue
+        if 'enum' in backend:
+            backend['enum'] = [value for value in backend['enum'] if value not in blocked]
+        if 'oneOf' in backend:
+            variants = []
+            for variant in backend['oneOf']:
+                if 'enum' in variant:
+                    filtered = [value for value in variant['enum'] if value not in blocked]
+                    if filtered:
+                        variant = dict(variant, enum=filtered)
+                        variants.append(variant)
+                elif 'const' in variant:
+                    if variant['const'] not in blocked:
+                        variants.append(variant)
+                else:
+                    variants.append(variant)
+            if variants:
+                backend['oneOf'] = variants
+            else:
+                del backend['oneOf']
     return tools
 
 
@@ -205,13 +241,6 @@ class ClaudeMCP:
         return result
 
 
-def request_id_key(ident):
-    """Canonical key for the JSON-RPC IDs accepted by this stdio server."""
-    if ident is None or isinstance(ident, bool) or not isinstance(ident, (str, int, float)):
-        raise ValueError('JSON-RPC id must be a string or number')
-    return json.dumps(ident, ensure_ascii=False, separators=(',', ':'))
-
-
 class AwaitRequests:
     """Track bounded, cancellable await workers for one stdio connection."""
 
@@ -323,12 +352,11 @@ def main():
     bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.expert_state,
                     desktop_state=args.state, allowed_tools=OUTBOUND)
     facade = ClaudeMCP(tasks, bridge, max_wait=args.max_wait, progress_interval=args.progress_interval, enable_await=args.enable_await, enable_queue=args.enable_queue)
-    send_lock = threading.Lock()
     await_requests = AwaitRequests()
+    connection = mcp_transport.Connection(lambda text: print(text, end='', flush=True))
 
     def send(payload):
-        with send_lock:
-            print(json.dumps(payload, ensure_ascii=False), flush=True)
+        connection.send(payload)
 
     def wait_worker(ident, message, cancel):
         # Own connection: sqlite connections are not shared across threads.
@@ -353,14 +381,16 @@ def main():
 
     try:
         while True:
-            raw = sys.stdin.buffer.readline(8_000_001)
-            if not raw or len(raw) > 8_000_000:
+            try:
+                message = mcp_transport.read_message(
+                    sys.stdin.buffer, mcp_transport.CLAUDE_MAX_LINE_BYTES)
+            except (ValueError, TypeError, KeyError, OSError, sqlite3.Error) as exc:
+                send({'jsonrpc': '2.0', 'id': None, 'error': error_payload(exc)})
+                continue
+            if message is None:
                 break
             ident = None
             try:
-                message = json.loads(raw)
-                if not isinstance(message, dict):
-                    raise ValueError('Object required')
                 if 'id' not in message:
                     if message.get('method') == 'notifications/cancelled':
                         params = message.get('params')
@@ -414,6 +444,7 @@ def main():
         await_requests.shutdown()
         tasks.close()
         bridge.db.close()
+        connection.closed.set()
 
 
 if __name__ == '__main__':

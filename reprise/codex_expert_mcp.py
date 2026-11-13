@@ -20,11 +20,14 @@ from codex_expert import STOP_REASONS, positive, review, review_config
 from codex_rpc import Client
 from claude_expert import review as claude_review
 import claude_desktop
+import chatgpt_quick
 import apple_expert
 import ironclaw
 import reprise_logs
 import reprise_health
 import shutil
+import mcp_transport
+from mcp_transport import StdioHandler
 from engines import Unavailable, executable, options
 
 
@@ -91,6 +94,7 @@ BACKEND_MODELS = {
     'claude-code': ('sonnet', 'opus'),
     'ironclaw': (),
     'claude-desktop': (),
+    'chatgpt': (),
     'foundation-models': ('system',),
 }
 RETURN_MODES = {'type': 'string', 'enum': ['full', 'receipt'], 'default': 'full'}
@@ -140,7 +144,7 @@ TOOLS = [
          'kind': {'type': 'string', 'enum': ['expertise', 'review', 'batch']},
          'level': {'type': 'string', 'enum': ['standard', 'deep']},
          'model': MODEL_SCHEMA,
-         'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models']},
+         'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models', 'chatgpt']},
          'paths': {'type': 'array', 'maxItems': 30, 'items': {'type': 'string'}},
          'chatId': {'type': 'string'},
          'filePaths': {'type': 'array', 'maxItems': 10, 'items': {'type': 'string'}}},
@@ -154,7 +158,7 @@ TOOLS = [
     {'name': 'reprise_followup', 'description': 'Continue an owned project session and inherit its execution mode. Omitted model preserves the thread route; explicit model overrides it, preserving effort. No fallback.',
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | POLICY_PROPERTIES | {
          'model': MODEL_SCHEMA, 'mode': MODE_SCHEMA,
-         'thread_id': {'type': 'string'}, 'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models']}},
+         'thread_id': {'type': 'string'}, 'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models', 'chatgpt']}},
          'required': ['question', 'thread_id', 'backend', 'request_key']}},
     {'name': 'reprise_resume', 'description': 'List interrupted tasks reconstructed from local logs that can be retried (quota, guard or missing dispatch). Read-only; no automatic retry.',
      'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
@@ -228,10 +232,12 @@ MAX_RESULT_WAITS = 8
 MAX_RESULT_SECONDS = 600
 
 
-def _close_bridge_databases(desktop_tasks, db):
+def _close_bridge_databases(desktop_tasks, db, chatgpt_tasks=None):
     """Niveau module : référencé par weakref.finalize sans retenir self."""
     if desktop_tasks is not None:
         TaskStore._safe_close(desktop_tasks.db)
+    if chatgpt_tasks is not None:
+        TaskStore._safe_close(chatgpt_tasks.db)
     TaskStore._safe_close(db)
 
 
@@ -249,14 +255,14 @@ def wait_arguments(args):
     return args['request_key'], float(seconds)
 
 
-def wait_status(key, status, **fields):
-    return {'status': status, 'request_key': key, 'backend': 'claude-desktop',
+def wait_status(key, status, backend='claude-desktop', **fields):
+    return {'status': status, 'request_key': key, 'backend': backend,
             'completed': status == 'finished', 'idle': status != 'finished',
             'next_action': 'get_result' if status == 'finished' else 'reconcile',
             **fields}
 
 
-def wait_for_result(state, root, args, cancel=None):
+def wait_for_result(state, root, args, cancel=None, backend='claude-desktop'):
     key, seconds = wait_arguments(args)
     cancel = cancel if cancel is not None else threading.Event()
     started = time.monotonic()
@@ -270,14 +276,14 @@ def wait_for_result(state, root, args, cancel=None):
         while not cancel.is_set():
             snapshot = reader.observe_result(key)
             if snapshot is None:
-                return wait_status(key, 'not_found')
+                return wait_status(key, 'not_found', backend=backend)
             if snapshot['completed']:
                 manifest, _ = receipt_view(snapshot)
-                return wait_status(key, 'finished', state='recorded',
+                return wait_status(key, 'finished', backend=backend, state='recorded',
                                    result_sha256=manifest['result_sha256'])
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return wait_status(key, 'timeout', state='pending',
+                return wait_status(key, 'timeout', backend=backend, state='pending',
                                    waited_seconds=time.monotonic() - started)
             cancel.wait(min(delay, remaining))
             delay = min(1.0, delay * 2)
@@ -296,9 +302,15 @@ def wait_content(result, ident):
 
 
 class Bridge:
-    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, codex_workspace_write=False):
+    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, codex_workspace_write=False, chatgpt_socket=None, chatgpt_workspace_write=False):
         if type(codex_workspace_write) is not bool:
             raise ValueError('Explicit workspace-write grant required')
+        if type(chatgpt_workspace_write) is not bool:
+            raise ValueError('Explicit workspace-write grant required')
+        if chatgpt_socket is not None and (not isinstance(chatgpt_socket, str) or not Path(chatgpt_socket).is_absolute()):
+            raise ValueError('Absolute ChatGPT socket path required')
+        self.chatgpt_socket = chatgpt_socket
+        self.chatgpt_workspace_write = chatgpt_workspace_write
         self.codex_workspace_write = codex_workspace_write
         known_tools = {item['name'] for item in TOOLS}
         if allowed_tools is not None and (not allowed_tools or set(allowed_tools) - known_tools):
@@ -344,15 +356,27 @@ class Bridge:
             self.desktop_tasks = TaskStore(self.desktop_state, self.root)
         except (OSError, sqlite3.Error, ValueError):
             self.desktop_tasks = None
+        # ChatGPT roundtrip: same TaskStore contract over a dedicated state directory
+        # (channel independence), opened only when the local channel is configured.
+        self.chatgpt_state = state_location(self.root, 'chatgpt-state')
+        self.chatgpt_tasks = None
+        if self.chatgpt_socket:
+            try:
+                self.chatgpt_tasks = TaskStore(self.chatgpt_state, self.root)
+            except (OSError, sqlite3.Error, ValueError):
+                self.chatgpt_tasks = None
         # Fonction de niveau module + ressources capturées : une méthode
         # liée retiendrait self (le finalizer ne tournerait qu'à la sortie
         # du processus). _safe_close est idempotent (close après close
         # lève sqlite3.Error, avalé).
-        weakref.finalize(self, _close_bridge_databases, self.desktop_tasks, self.db)
+        weakref.finalize(self, _close_bridge_databases, self.desktop_tasks, self.db, self.chatgpt_tasks)
 
     def close(self):
         self.desktop_tasks, tasks = None, self.desktop_tasks
+        self.chatgpt_tasks, chatgpt = None, self.chatgpt_tasks
         _close_bridge_databases(tasks, self.db)
+        if chatgpt is not None:
+            chatgpt.close()
 
     def _ironclaw_configured(self):
         try:
@@ -390,6 +414,8 @@ class Bridge:
                 raise ValueError('Followup cannot change the original execution mode')
             mode = stored
         if mode == 'implementation':
+            if name in ('reprise_delegate', 'reprise_followup') and args.get('backend') == 'chatgpt':
+                raise ValueError('Backend chatgpt refused in v1: consultative expertise/review only, no implementation mode.')
             if name not in ('reprise_delegate', 'reprise_followup') or args.get('backend', 'codex') != 'codex':
                 raise ValueError('Implementation requires generic Codex delegation tools')
             if not self.codex_workspace_write:
@@ -464,8 +490,9 @@ class Bridge:
             existing = self.requests.begin(key, payload, parent)
             if existing:
                 pointer = existing.get('request_key', key)
-                completion = (self._desktop_completion(pointer)
-                              if existing.get('backend') == 'claude-desktop' and existing.get('admission_only') else None)
+                completion = (self._desktop_completion(pointer, existing.get('backend'))
+                              if existing.get('backend') in ('claude-desktop', 'chatgpt')
+                              and existing.get('admission_only') else None)
                 if return_mode == 'receipt':
                     manifest = self.requests.lookup({'request_key': pointer, 'view': 'receipt'})
                     if completion:
@@ -499,9 +526,9 @@ class Bridge:
                 result = dict(result, status='needs_review', original_status=result.get('status'),
                               original_reason=result.get('reason'),
                               reason='Input files changed during delegation; result requires reconciliation.', input_changed=True)
-            if clean.get('backend') == 'claude-desktop' and result.get('status') == 'finished' \
+            if clean.get('backend') in ('claude-desktop', 'chatgpt') and result.get('status') == 'finished' \
                     and result.get('response') is None:
-                # A claude-desktop submission is only admitted: the MCP round-trip (submit_result) completes it.
+                # A desktop submission is only admitted: the MCP round-trip (submit_result) completes it.
                 result = dict(result, admission_only=True)
             result = self.requests.finish(key, result)
             if return_mode == 'receipt':
@@ -511,12 +538,19 @@ class Bridge:
     def wait_result(self, args, cancel=None):
         if 'wait_result' not in self.allowed_tools:
             raise ValueError('Tool not enabled for this integration')
-        return wait_for_result(self.desktop_state, self.root, args, cancel)
+        key = args.get('request_key')
+        backend = None
+        if key is not None:
+            previous = (self.requests.lookup({'request_key': key}).get('result') or {}).get('backend')
+            backend = 'chatgpt' if previous == 'chatgpt' else 'claude-desktop'
+        state = self.chatgpt_state if backend == 'chatgpt' else self.desktop_state
+        return wait_for_result(state, self.root, args, cancel, backend=backend or 'claude-desktop')
 
-    def _desktop_snapshot(self, key):
+    def _task_snapshot(self, key, backend='claude-desktop'):
+        state = self.desktop_state if backend != 'chatgpt' else self.chatgpt_state
         reader = None
         try:
-            reader = TaskStore.open_reader(self.desktop_state, self.root)
+            reader = TaskStore.open_reader(state, self.root)
             return reader.observe_result(key)
         except (sqlite3.Error, OSError) as exc:
             raise DesktopRegistryUnavailable('Desktop registry unavailable') from exc
@@ -531,16 +565,18 @@ class Bridge:
             return self.requests.lookup(args)
         historic = self.requests.lookup({'request_key': key})
         previous = historic.get('result') or {}
-        if previous.get('backend') != 'claude-desktop' or not previous.get('admission_only'):
+        backend = previous.get('backend')
+        if backend not in ('claude-desktop', 'chatgpt') or not previous.get('admission_only'):
             return self.requests.lookup(args)
-        snapshot = self._desktop_snapshot(key)
+        snapshot = self._task_snapshot(key, backend)
         if snapshot is None or not snapshot['completed']:
             return self.requests.lookup(args)
         if args.get('acknowledge', False):
-            raise ValueError('Acknowledge the Desktop result with get_result on its connector')
+            raise ValueError('Acknowledge the result with get_result on its connector')
         manifest, text = receipt_view(snapshot)
         provenance, _ = receipt_view(historic)
-        extra = {'backend': 'claude-desktop', 'source': 'desktop_tasks',
+        source = 'desktop_tasks' if backend == 'claude-desktop' else 'chatgpt_tasks'
+        extra = {'backend': backend, 'source': source,
                  'delegation_receipt': provenance, 'completed': True,
                  'next_action': 'get_result'}
         if view == 'full':
@@ -568,9 +604,9 @@ class Bridge:
         manifest['status'] = result['status']
         return manifest
 
-    def _desktop_completion(self, pointer):
-        """Project a committed Desktop response without reserving its delivery."""
-        snapshot = self._desktop_snapshot(pointer)
+    def _desktop_completion(self, pointer, backend='claude-desktop'):
+        """Project a committed connector response without reserving its delivery."""
+        snapshot = self._task_snapshot(pointer, backend)
         if snapshot is None or not snapshot['completed']:
             return None
         manifest, _ = receipt_view(snapshot)
@@ -646,7 +682,12 @@ class Bridge:
                  'Configuration IronClaw requise (--ironclaw-config : host, port, user, key).',
                  'billing': 'Remote IronClaw runtime (paid) — moteur lu via ironclaw.engine()',
                  'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': False,
-                 'context': 'Experimental CLI retained for audit; use explicit durable ironclaw-submit/poll/result commands.'}],
+                 'context': 'Experimental CLI retained for audit; use explicit durable ironclaw-submit/poll/result commands.'},
+                *([{'id': 'chatgpt', 'configured': True, 'models': [],
+                    'billing': 'Compte ChatGPT (Pro/Work)',
+                    'kinds': ['expertise', 'review'], 'levels': ['standard', 'deep'],
+                    'writes': self.chatgpt_workspace_write,
+                    'context': 'admission durable + canal local indéterminé'}] if self.chatgpt_socket else [])],
                 'automatic_fallback': False}
         allowed = {'question', 'thread_id'} if name in ('codex_followup', 'reprise_followup') else {'question', 'paths'}
         if name == 'reprise_followup':
@@ -660,7 +701,7 @@ class Bridge:
         mode = self.execution_mode(name, args)
         routing = {}
         backend = args.get('backend', 'codex')
-        if backend not in ('codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models'):
+        if backend not in ('codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models', 'chatgpt'):
             raise ValueError('Unknown expertise backend')
         if 'model' in args:
             if not isinstance(args['model'], str) or args['model'] not in BACKEND_MODELS[backend]:
@@ -693,6 +734,8 @@ class Bridge:
             raise ValueError('Pas de session IronClaw suiveuse ; run -m est sans état.')
         if name == 'reprise_followup' and backend == 'claude-desktop':
             raise ValueError('Pas de session Quick Apply suiveuse ; la soumission est unidirectionnelle.')
+        if name == 'reprise_followup' and backend == 'chatgpt':
+            raise ValueError('Pas de session ChatGPT suiveuse ; admission unidirectionnelle + retour par get_task/submit_result.')
         if name == 'reprise_followup' and backend == 'claude-code':
             if not isinstance(ident, str):
                 raise ValueError('Owned Claude session required')
@@ -751,7 +794,14 @@ class Bridge:
         if backend == 'foundation-models' and not apple_expert.configured():
             return {'status': 'engine_unavailable', 'backend': backend,
                     'reason': 'Apple fm executable unavailable.', 'automatic_fallback': False}
-        if backend not in ('claude-desktop', 'foundation-models') and not (self.ironclaw_program if backend == 'ironclaw'
+        if backend == 'chatgpt' and not self.chatgpt_socket:
+            return {'status': 'engine_unavailable',
+                    'reason': '--chatgpt-socket non configuré'}
+        if backend == 'chatgpt' and self.chatgpt_tasks is None:
+            return {'status': 'return_channel_unavailable', 'backend': backend,
+                    'reason': 'Canal de retour MCP indisponible (TaskStore non initialisé) ; aucun aller-retour garanti.',
+                    'automatic_fallback': False}
+        if backend not in ('claude-desktop', 'foundation-models', 'chatgpt') and not (self.ironclaw_program if backend == 'ironclaw'
                                                 else (self.program if backend == 'codex' else self.claude_program)):
             return {'status': 'engine_unavailable', 'backend': backend, 'reason': 'Requested executable not configured', 'automatic_fallback': False}
         if backend == 'claude-code' and not self.claude_subscription_only:
@@ -783,7 +833,10 @@ class Bridge:
             served = dict(routing) if routing else served
         event_id = routing_events.record(self.db, journal_type, name, backend,
                                          requested=requested or None, served=served,
-                                         level=args.get('level'), request_key=args.get('request_key'),
+                                         level=args.get('level'),
+                                         request_key=(args.get('request_key')
+                                                      if args.get('request_key') is not None
+                                                      else self.requests.active_key),
                                          thread_id=ident,
                                          account_key=self._account_key(backend),
                                          admissibility='granted')
@@ -805,6 +858,12 @@ class Bridge:
                                           program=self.desktop_program, values=self.desktop_values,
                                           request_key=self.requests.active_key, tasks=self.desktop_tasks,
                                           max_wait=max_wait)
+            routing_events.finalize(self.db, event_id, str(result.get('status') or 'unknown'))
+            return result | {'backend': backend, 'automatic_fallback': False}
+        if backend == 'chatgpt':
+            result = chatgpt_quick.review(self.root, question, kind=args.get('kind', 'expertise'),
+                                          level=args.get('level', 'standard'), paths=args.get('paths'),
+                                          socket=self.chatgpt_socket, request_key=self.requests.active_key)
             routing_events.finalize(self.db, event_id, str(result.get('status') or 'unknown'))
             return result | {'backend': backend, 'automatic_fallback': False}
         if backend == 'claude-code':
@@ -952,130 +1011,136 @@ class Bridge:
         raise ValueError('Unsupported MCP method')
 
 
-def serve(bridge, source, output):
-    """Serve one connection; only wait_result runs on bounded reader workers."""
-    active = {}
-    workers = set()
-    active_lock = threading.Lock()
-    send_lock = threading.Lock()
-    closed = threading.Event()
+class CodexStdioHandler(StdioHandler):
+    """Request semantics of the codex expert stdio server (wait_result workers)."""
 
-    def send(payload):
-        with send_lock:
-            if not closed.is_set():
-                try:
-                    output.write(json.dumps(payload, ensure_ascii=False) + '\n')
-                    output.flush()
-                except OSError:
-                    closed.set()
-                    with active_lock:
-                        for cancel, _ in active.values():
-                            cancel.set()
-                    raise
+    ERRORS = (ValueError, TypeError, KeyError, OSError, sqlite3.Error, RuntimeError)
 
-    def worker(ident, key, arguments, cancel):
+    def __init__(self, bridge):
+        self.bridge = bridge
+        self.active = {}
+        self.workers = set()
+        self.active_lock = threading.Lock()
+
+    def _cancel_all(self):
+        with self.active_lock:
+            for cancel, _ in self.active.values():
+                cancel.set()
+
+    def notification(self, message, connection):
+        params = message.get('params')
+        if message.get('method') != 'notifications/cancelled' or not isinstance(params, dict):
+            return
+        target = params.get('requestId')
+        if isinstance(target, bool) or not isinstance(target, (str, int, float)):
+            return
         try:
-            result = bridge.wait_result(arguments, cancel)
+            key = json.dumps(target, ensure_ascii=False, allow_nan=False)
+        except ValueError:
+            return
+        with self.active_lock:
+            current = self.active.get(key)
+            if current is not None:
+                current[0].set()
+
+    def request(self, message, connection):
+        ident = message['id']
+        if isinstance(ident, bool) or not isinstance(ident, (str, int, float)):
+            ident = None
+            raise ValueError('String or numeric JSON-RPC id required')
+        try:
+            key = json.dumps(ident, ensure_ascii=False, allow_nan=False)
+        except ValueError:
+            ident = None
+            raise
+        with self.active_lock:
+            duplicate = key in self.active
+        if duplicate:
+            connection.send({'jsonrpc': '2.0', 'id': None,
+                             'error': {'code': -32600, 'message': 'Duplicate in-flight JSON-RPC id'}})
+            return
+        params = message.get('params') or {}
+        if not isinstance(params, dict):
+            raise ValueError('Object params required')
+        if message.get('method') == 'tools/call' and params.get('name') == 'wait_result':
+            if 'wait_result' not in self.bridge.allowed_tools:
+                raise ValueError('Tool not enabled for this integration')
+            arguments = params.get('arguments', {})
+            request_key, _ = wait_arguments(arguments)
+            if len(json.dumps(ident, ensure_ascii=False)) > 256:
+                raise ValueError('Compact calls require a bounded JSON-RPC id')
+            cancel = threading.Event()
+            thread = threading.Thread(target=self._worker,
+                args=(ident, key, arguments, cancel, connection), daemon=True)
+            with self.active_lock:
+                workers = {item for item in self.workers if item.is_alive()}
+                full = len(self.active) >= MAX_RESULT_WAITS
+                if not full:
+                    self.active[key] = (cancel, thread)
+                    workers.add(thread)
+                    self.workers = workers
+            if full:
+                connection.send({'jsonrpc': '2.0', 'id': ident, 'result': wait_content(
+                    wait_status(request_key, 'busy'), ident)})
+            else:
+                try:
+                    thread.start()
+                except RuntimeError:
+                    with self.active_lock:
+                        self.active.pop(key, None)
+                        self.workers.discard(thread)
+                    raise
+            return
+        connection.send({'jsonrpc': '2.0', 'id': ident, 'result': self.bridge.dispatch(message)})
+
+    def on_error(self, message, ident, exc, connection):
+        # Never echo an invalid JSON-RPC id back: null it like request() does.
+        if isinstance(ident, bool) or not isinstance(ident, (str, int, float)):
+            ident = None
+        else:
+            try:
+                if compact_call(message) and len(json.dumps(ident, ensure_ascii=False)) > 256:
+                    ident = None
+            except ValueError:
+                ident = None
+        connection.send({'jsonrpc': '2.0', 'id': ident, 'error': error_payload(exc)})
+
+    def _worker(self, ident, key, arguments, cancel, connection):
+        try:
+            result = self.bridge.wait_result(arguments, cancel)
             if result is not None and not cancel.is_set():
-                send({'jsonrpc': '2.0', 'id': ident,
-                      'result': wait_content(result, ident)})
+                connection.send({'jsonrpc': '2.0', 'id': ident,
+                                 'result': wait_content(result, ident)})
         except Exception as exc:
             if not cancel.is_set():
                 try:
-                    send({'jsonrpc': '2.0', 'id': ident, 'error': error_payload(exc)})
+                    connection.send({'jsonrpc': '2.0', 'id': ident, 'error': error_payload(exc)})
                 except OSError:
                     pass
         finally:
-            with active_lock:
-                if active.get(key, (None,))[0] is cancel:
-                    active.pop(key, None)
+            with self.active_lock:
+                if self.active.get(key, (None,))[0] is cancel:
+                    self.active.pop(key, None)
 
-    try:
-        while True:
-            raw = source.readline(1024 * 1024 + 1)
-            if not raw or len(raw) > 1024 * 1024:
-                break
-            ident = None
-            message = None
-            try:
-                message = json.loads(raw)
-                if not isinstance(message, dict):
-                    raise ValueError('Object required')
-                if 'id' not in message:
-                    params = message.get('params')
-                    if message.get('method') == 'notifications/cancelled' and isinstance(params, dict):
-                        target = params.get('requestId')
-                        if isinstance(target, bool) or not isinstance(target, (str, int, float)):
-                            continue
-                        try:
-                            key = json.dumps(target, ensure_ascii=False, allow_nan=False)
-                        except ValueError:
-                            continue
-                        with active_lock:
-                            current = active.get(key)
-                            if current is not None:
-                                current[0].set()
-                    continue
-                ident = message['id']
-                if isinstance(ident, bool) or not isinstance(ident, (str, int, float)):
-                    ident = None
-                    raise ValueError('String or numeric JSON-RPC id required')
-                try:
-                    key = json.dumps(ident, ensure_ascii=False, allow_nan=False)
-                except ValueError:
-                    ident = None
-                    raise
-                with active_lock:
-                    duplicate = key in active
-                if duplicate:
-                    send({'jsonrpc': '2.0', 'id': None,
-                          'error': {'code': -32600, 'message': 'Duplicate in-flight JSON-RPC id'}})
-                    continue
-                params = message.get('params') or {}
-                if not isinstance(params, dict):
-                    raise ValueError('Object params required')
-                if message.get('method') == 'tools/call' and params.get('name') == 'wait_result':
-                    if 'wait_result' not in bridge.allowed_tools:
-                        raise ValueError('Tool not enabled for this integration')
-                    arguments = params.get('arguments', {})
-                    request_key, _ = wait_arguments(arguments)
-                    if len(json.dumps(ident, ensure_ascii=False)) > 256:
-                        raise ValueError('Compact calls require a bounded JSON-RPC id')
-                    cancel = threading.Event()
-                    thread = threading.Thread(target=worker,
-                        args=(ident, key, arguments, cancel), daemon=True)
-                    with active_lock:
-                        workers = {item for item in workers if item.is_alive()}
-                        full = len(active) >= MAX_RESULT_WAITS
-                        if not full:
-                            active[key] = (cancel, thread)
-                            workers.add(thread)
-                    if full:
-                        send({'jsonrpc': '2.0', 'id': ident, 'result': wait_content(
-                            wait_status(request_key, 'busy'), ident)})
-                    else:
-                        try:
-                            thread.start()
-                        except RuntimeError:
-                            with active_lock:
-                                active.pop(key, None)
-                                workers.discard(thread)
-                            raise
-                    continue
-                send({'jsonrpc': '2.0', 'id': ident, 'result': bridge.dispatch(message)})
-            except (ValueError, TypeError, KeyError, OSError, sqlite3.Error, RuntimeError) as exc:
-                if isinstance(message, dict) and compact_call(message) and len(json.dumps(ident, ensure_ascii=False)) > 256:
-                    ident = None
-                send({'jsonrpc': '2.0', 'id': ident, 'error': error_payload(exc)})
-    finally:
-        closed.set()
-        with active_lock:
-            for cancel, _ in active.values():
-                cancel.set()
+    def shutdown(self, connection):
+        self._cancel_all()
         deadline = time.monotonic() + 1.0
-        for thread in workers:
+        for thread in self.workers:
             if thread.ident is not None:
                 thread.join(max(0.0, deadline - time.monotonic()))
+
+
+def serve(bridge, source, output):
+    """Serve one connection; framing lives in mcp_transport, semantics above."""
+
+    def write(text):
+        output.write(text)
+        output.flush()
+
+    handler = CodexStdioHandler(bridge)
+    connection = mcp_transport.Connection(write, on_failure=handler._cancel_all)
+    mcp_transport.run_stdio_loop(source, connection, handler,
+                                 max_line_bytes=mcp_transport.CODEX_MAX_LINE_BYTES)
 
 
 def main():
@@ -1090,6 +1155,8 @@ def main():
     parser.add_argument('--claude-included-quota-confirmed', action='store_true', help='Operator confirms paid usage credits disabled; CLI cannot verify this')
     parser.add_argument('--codex-workspace-write', action='store_true', help='Operator grant: implementation may write this project; native approvals remain required')
     parser.add_argument('--desktop-socket', help='Explicit absolute Quick Entry socket path; disabled by default')
+    parser.add_argument('--chatgpt-socket', help='Explicit absolute ChatGPT socket path; disabled by default')
+    parser.add_argument('--chatgpt-workspace-write', action='store_true', help='Operator grant: ChatGPT roundtrip may declare write capability')
     parser.add_argument('--ironclaw-config', help='JSON 0600: {host,port,user,key} du point d’acceptation IronClaw')
     args = parser.parse_args()
     ironclaw_values = {}
@@ -1101,7 +1168,8 @@ def main():
     bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.state or str(state_directory(Path(__file__).parent)), args.daily_limit,
                     claude_program=args.claude_program, claude_subscription_only=args.claude_included_quota_confirmed,
                     desktop_socket=args.desktop_socket, allowed_tools=args.tools.split(',') if args.tools is not None else None,
-                    ironclaw_values=ironclaw_values, codex_workspace_write=args.codex_workspace_write)
+                    ironclaw_values=ironclaw_values, codex_workspace_write=args.codex_workspace_write,
+                    chatgpt_socket=args.chatgpt_socket, chatgpt_workspace_write=args.chatgpt_workspace_write)
     def terminate(signum, frame):
         # Unwind active CLI cleanup before closing the DB and releasing the lock.
         raise SystemExit(128 + signum)
@@ -1112,6 +1180,8 @@ def main():
         bridge.db.close()
         if bridge.desktop_tasks is not None:
             bridge.desktop_tasks.close()
+        if bridge.chatgpt_tasks is not None:
+            bridge.chatgpt_tasks.close()
         signal.signal(signal.SIGTERM, previous_sigterm)
 
 
