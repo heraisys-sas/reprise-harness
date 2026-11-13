@@ -10,6 +10,32 @@ Un fait comporte un UUID, un texte, une révision, deux dates locales de stockag
 
 Un checkpoint immuable, associé à un projet et à un `work_id`, comporte un numéro de version, une copie des faits choisis et de leurs provenances à cet instant, des décisions, contraintes, prochaine action, effets incertains et provenance déclarée. Il ne réconcilie pas les reçus et ne vérifie aucun effet externe. Le prochain numéro exige le numéro précédent attendu, ou zéro pour la première version. La suppression d’un fait ne supprime pas sa copie dans un checkpoint antérieur : celle-ci est conservée pour la reprise. Aucun transcript brut n’est collecté automatiquement. Une prochaine couche devra définir comment sélectionner, vérifier et éventuellement supprimer des checkpoints.
 
+## Protection de l'initialisation des registres (#158)
+
+Une première écriture de mémoire crée et synchronise le marqueur privé vide
+`orchestrator-memory.noindex/initialized` **avant** de publier `memory.enc`.
+Le marqueur est lu sous le même verrou que le snapshot. Si le marqueur
+existe mais que `memory.enc` manque, la lecture et l'écriture refusent toute
+réinitialisation silencieuse. Un échec entre la publication du marqueur
+et la première publication du snapshot peut exiger une récupération
+manuelle : ne jamais supprimer le marqueur pour contourner ce refus.
+
+Un snapshot historique chiffré qui ne possède pas le marqueur reste
+lisible, mais les mutations sont bloquées jusqu'à son adoption
+**explicitement décidée par l'opérateur**. Après quiescence des clients,
+l'opérateur utilise `registry_adopt.py --state <état privé absolu>
+--registry memory --confirm-existing-registry`. La commande charge
+l'ancien snapshot, vérifie la version, les tables et l'intégrité SQLite,
+puis synchronise le marqueur sans réécrire ni migrer le chiffré. Une
+installation historique ne doit pas déployer ce changement sans prévoir
+cette étape avant ses nouvelles écritures. L'adoption est idempotente.
+
+Ce marqueur ne détecte pas la suppression simultanée de lui-même et du
+snapshot, le rejeu d'un ancien snapshot authentifié, ni un processus
+hostile du même utilisateur. La publication sur cette branche ne
+constitue ni test de durabilité en conditions réelles ni autorisation
+de déployer sans validation par l'agent local.
+
 ## Accès et cohérence
 
 - `Memory(state_directory)` exige un dossier d’état existant, privé, appartenant à l’utilisateur local, et un registre de projets existant. Elle crée le sous-dossier privé de stockage à la première construction.

@@ -441,7 +441,44 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(self.prepare(operation), recovered)
         self.assertEqual(len(self.store.list(self.p1)), 1)
 
+    def test_missing_jobs_ciphertext_with_marker_fails_closed(self):
+        row = self.prepare()
+        folder = self.state / 'coordinator-jobs.noindex'
+        self.assertEqual((folder / 'initialized').stat().st_size, 0)
+        (folder / 'jobs.enc').unlink()
+        with self.assertRaises(jobs.registry_marker.RegistryMissing):
+            self.store.get(self.p1, row['job_id'])
+        with self.assertRaises(jobs.registry_marker.RegistryMissing):
+            self.prepare()
+        self.assertFalse((folder / 'jobs.enc').exists())
+
+    def test_legacy_jobs_are_read_only_until_explicit_adoption(self):
+        row = self.prepare()
+        folder = self.state / 'coordinator-jobs.noindex'
+        before = (folder / 'jobs.enc').read_bytes()
+        (folder / 'initialized').unlink()
+        self.assertEqual(self.store.get(self.p1, row['job_id']), row)
+        with self.assertRaises(jobs.registry_marker.LegacyRegistry):
+            self.prepare()
+        self.assertEqual((folder / 'jobs.enc').read_bytes(), before)
+        self.assertEqual(self.store.adopt_legacy_registry(), {'status': 'adopted'})
+        self.assertEqual(self.store.adopt_legacy_registry(), {'status': 'adopted'})
+        self.assertEqual((folder / 'jobs.enc').read_bytes(), before)
+        self.prepare()
+        self.assertEqual(len(self.store.list(self.p1)), 2)
+
+    def test_first_jobs_write_marker_stranded_before_replace(self):
+        with patch.object(jobs.os, 'replace', side_effect=OSError('synthetic replace failure')):
+            with self.assertRaises(OSError):
+                self.prepare()
+        folder = self.state / 'coordinator-jobs.noindex'
+        self.assertTrue((folder / 'initialized').exists())
+        self.assertFalse((folder / 'jobs.enc').exists())
+        with self.assertRaises(jobs.registry_marker.RegistryMissing):
+            self.prepare()
+
     def test_crash_before_and_after_replace_recover_same_operation(self):
+        self.prepare()  # Ensure the first-write marker already has its snapshot.
         for when, code in (('before',70), ('after',71)):
             with self.subTest(when=when):
                 operation = uid()
