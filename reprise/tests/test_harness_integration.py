@@ -785,6 +785,20 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.root = moved / 'Contents/Resources/helpers'
         state_before = self.snapshot(self.state)
         proposed = self.install()
+        release = Path(proposed['release'])
+        before_probe = integration.tree_files(release)
+        interpreter = release / 'Contents/Resources/runtime/bin/python3'
+        # Probe direct sans -B ni PYTHONDONTWRITEBYTECODE : aucune écriture
+        # tolérée dans les encodings/stdlib d'une release déjà publiée.
+        probe_env = {key: value for key, value in os.environ.items()
+                     if not key.startswith(('PYTHON', 'DYLD_')) and key != 'AGENT_RESUME_STATE'}
+        probe_env['HOME'] = str(self.base)
+        probe = subprocess.run([str(interpreter), '-I', '-c',
+                                'import encodings,json,sqlite3,tomllib,pathlib,urllib.request; print("ok")'],
+                               env=probe_env, capture_output=True, text=True, timeout=30, check=True)
+        self.assertEqual(probe.stdout.strip(), 'ok')
+        integration.release_check(release)
+        self.assertEqual(integration.tree_files(release), before_probe)
         config = self.config.read_text()
         self.assertNotIn(str(SOURCE), config)
         self.assertNotIn(str(moved), config)
