@@ -283,22 +283,6 @@ extension App {
         }
         setupCommand(["chatgpt-integration-verify", "--project", chatgptIntegrationProject]) { self.chatgptIntegrationResult = $0 }
     }
-    func copyChatgptServerConfig() {
-        let content: String
-        if let config = chatgptIntegrationPlan?["server_config"] as? [String: Any],
-           let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]),
-           let text = String(data: data, encoding: .utf8) {
-            content = text
-        } else if let config = chatgptIntegrationResult["server_config"] as? [String: Any],
-                  let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]),
-                  let text = String(data: data, encoding: .utf8) {
-            content = text
-        } else {
-            return
-        }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(content, forType: .string)
-    }
     func invalidateChatgptIntegrationPlan() {
         chatgptIntegrationPlan = nil
         chatgptIntegrationAcknowledged = false
@@ -1062,9 +1046,9 @@ struct Integrations: View {
                     Button("Vérifier") { app.verifyChatgptIntegration() }.disabled(app.chatgptIntegrationProject.isEmpty)
                 }
                 SettingsHint(
-                    text: "Collez le contenu copié dans Réglages → Connecteurs → MCP servers (STDIO) de ChatGPT.",
-                    detail: "ChatGPT desktop n’a pas de configuration MCP locale inscriptible : Reprise génère un server-config.json que vous collez vous-même dans ChatGPT. Reprise ne modifie aucun fichier ChatGPT. La vérification exécute initialize/tools/list sur la release, sans inférence ; le chargement dans ChatGPT reste non observé.",
-                    detailLabel: "Consigne de collage et limites")
+                    text: "Reprise écrit la table [mcp_servers.reprise] dans ~/.codex/config.toml, partagée avec ChatGPT desktop.",
+                    detail: "ChatGPT desktop partage la configuration MCP de Codex : le même fichier ~/.codex/config.toml (tables [mcp_servers.<nom>]) lu par son sélecteur Réglages → MCP servers. Reprise ne modifie que la table gérée reprise et préserve le reste du fichier. Après application, redémarrez ChatGPT (Réglages → MCP servers → Restart) pour qu’il relise config.toml. La vérification exécute initialize/tools/list sur la release, sans inférence ; le chargement dans ChatGPT reste non observé.",
+                    detailLabel: "Consigne de redémarrage et limites")
                 if let plan = app.chatgptIntegrationPlan {
                     SettingsHint(text: "Un plan est prêt ; il attend votre accord.",
                                  detail: planDetail(plan), detailLabel: "Plan exact du connecteur")
@@ -1076,22 +1060,20 @@ struct Integrations: View {
                     let changed = app.chatgptIntegrationResult["changed"] as? Bool == true
                     let action = app.chatgptIntegrationResult["action"] as? String ?? "install"
                     SettingsHint(text: action == "remove"
-                                    ? (changed ? "Configuration gérée retirée." : "Le connecteur était déjà retiré.")
-                                    : (changed ? "server-config.json écrit ; collez-le dans ChatGPT." : "Configuration déjà conforme ; aucune écriture."),
+                                    ? (changed ? "Table gérée retirée de config.toml." : "Le connecteur était déjà retiré.")
+                                    : (changed ? "Table [mcp_servers.reprise] écrite dans config.toml ; redémarrez ChatGPT desktop (Réglages → MCP servers → Restart)."
+                                               : "Configuration déjà conforme ; aucune écriture."),
                                  detail: "Ce résultat concerne le dernier plan appliqué. Chargement par ChatGPT : non observé.",
                                  detailLabel: "Dernier résultat")
                 } else if app.chatgptIntegrationResult["status"] as? String == "verified" {
                     SettingsHint(text: "Vérification locale : les outils du pont répondent dans la release testée.",
-                                 detail: "La release a répondu à initialize/tools/list sans inférence. Chargement par ChatGPT : non observé ; collez la configuration et vérifiez les outils dans le client.",
+                                 detail: "La release a répondu à initialize/tools/list sans inférence. Chargement par ChatGPT : non observé ; redémarrez ChatGPT desktop (Réglages → MCP servers → Restart) puis vérifiez les outils dans le client.",
                                  detailLabel: "Dernière vérification")
                 } else if app.chatgptIntegrationResult["status"] as? String == "inspected" {
                     SettingsHint(text: (app.chatgptIntegrationResult["managed"] as? Bool == true)
                                     ? "Configuration gérée active et conforme."
                                     : "Aucune configuration gérée active.",
                                  detailLabel: "Dernière inspection")
-                }
-                if app.chatgptIntegrationPlan?["server_config"] != nil || app.chatgptIntegrationResult["server_config"] != nil {
-                    Button("Copier la configuration pour ChatGPT") { app.copyChatgptServerConfig() }
                 }
                 if !app.chatgptIntegrationResult.isEmpty {
                     SettingsHint(text: app.chatgptIntegrationResult["message"] as? String ?? "Dernier résultat du pont ChatGPT.",

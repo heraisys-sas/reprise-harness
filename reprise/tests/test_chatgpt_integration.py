@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -43,13 +44,17 @@ class ChatGPTIntegrationTests(unittest.TestCase):
         self.home.mkdir()
         self.project = self.base / 'project'
         self.project.mkdir()
-        _, self.managed = integration.paths(self.home)
+        self.home, self.config, self.managed = integration.paths(self.home)
 
     def plan(self, project=None, **kwargs):
         return integration.plan(self.root, self.home, project or self.project, **kwargs)
 
     def install(self):
         return integration.apply(self.root, self.plan())
+
+    def entry(self):
+        doc = tomllib.loads(self.config.read_text())
+        return doc['mcp_servers']['reprise']
 
     def bridge_response(self):
         names = ['get_task', 'get_result', 'submit_result', 'reprise_backends', 'reprise_delegate', 'reprise_followup']
@@ -67,6 +72,12 @@ class ChatGPTIntegrationTests(unittest.TestCase):
         (release / 'release.json').write_text(json.dumps(evidence))
         return release
 
+    def fixture_config(self):
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text(
+            '# préférences Codex\nmodel = "gpt-5.1"\n\n[mcp_servers.other]\ncommand = "/usr/bin/true"\nargs = []\n'
+            'env = {TOKEN = "secret"}\n\n[profiles.work]\nmodel = "gpt-5.1-mini"\n')
+
     def test_inspect_empty_is_read_only(self):
         before = harness_integration.tree_files(self.home)
         inspected = integration.inspect(self.root, self.home)
@@ -83,42 +94,62 @@ class ChatGPTIntegrationTests(unittest.TestCase):
         self.assertEqual(harness_integration.tree_files(self.home), before)
         self.assertNotIn(str(self.base.parent), json.dumps(preview).replace(str(self.base), ''))
 
-    def test_install_publishes_server_config_and_manifest(self):
+    def test_install_writes_config_toml_reprise_table(self):
         result = self.install()
         self.assertTrue(result['changed'])
-        config = json.loads((self.managed / 'server-config.json').read_text())
-        self.assertEqual(set(config), {'command', 'args'})
-        self.assertIn('/integration-releases/', config['command'])
-        self.assertEqual(config['args'][:3], ['-E', '-s', '-B'])
-        self.assertIn('chatgpt_mcp.py', config['args'][3])
-        self.assertIn('--project-root', config['args'])
-        self.assertEqual(config['args'][config['args'].index('--state') + 1], str(self.state / 'chatgpt-state'))
-        self.assertEqual(config['args'][config['args'].index('--expert-state') + 1], str(self.state))
-        self.assertIn(str(self.project), config['args'])
+        entry = self.entry()
+        self.assertEqual(set(entry), {'command', 'args', 'enabled'})
+        self.assertTrue(entry['enabled'])
+        self.assertIn('/integration-releases/', entry['command'])
+        self.assertEqual(entry['args'][:3], ['-E', '-s', '-B'])
+        self.assertIn('chatgpt_mcp.py', entry['args'][3])
+        self.assertIn('--project-root', entry['args'])
+        self.assertEqual(entry['args'][entry['args'].index('--state') + 1], str(self.state / 'chatgpt-state'))
+        self.assertEqual(entry['args'][entry['args'].index('--expert-state') + 1], str(self.state))
+        self.assertIn(str(self.project), entry['args'])
         manifest = json.loads((self.managed / 'managed.json').read_text())
         self.assertEqual(manifest['format'], 1)
         self.assertEqual(manifest['status'], 'installed')
-        self.assertEqual(manifest['entry_sha256'], integration.entry_hash(config))
+        self.assertEqual(manifest['entry_sha256'], integration.entry_hash(entry))
         self.assertTrue(integration.inspect(self.root, self.home)['managed'])
-        self.assertTrue((self.managed / 'server-config.json').stat().st_mode & 0o777 <= 0o644)
+        self.assertTrue(self.config.parent.stat().st_mode & 0o777 <= 0o755)
         for item in (self.managed / 'backups').rglob('*'):
             if item.is_file():
                 self.assertEqual(item.stat().st_mode & 0o777, 0o600)
+
+    def test_apply_preserves_unmanaged_fixture(self):
+        self.fixture_config()
+        self.install()
+        doc = tomllib.loads(self.config.read_text())
+        self.assertEqual(doc['model'], 'gpt-5.1')
+        self.assertEqual(doc['mcp_servers']['other'],
+                         {'command': '/usr/bin/true', 'args': [], 'env': {'TOKEN': 'secret'}})
+        self.assertEqual(doc['profiles']['work'], {'model': 'gpt-5.1-mini'})
+        self.assertIn('# préférences Codex', self.config.read_text())
+        self.assertEqual(integration.inspect(self.root, self.home)['managed'], True)
+
+    def test_install_refuses_unmanaged_reprise_entry(self):
+        self.fixture_config()
+        self.config.write_text(self.config.read_text()
+                               + '\n[mcp_servers.reprise]\ncommand = "/usr/bin/custom"\nargs = []\n')
+        with self.assertRaisesRegex(ValueError, 'non gérée'):
+            self.plan()
+        self.assertNotIn('[mcp_servers.reprise]', self.config.read_text().split('[profiles')[0])
 
     def test_idempotent_replan_yields_changed_false(self):
         self.install()
         again = self.install()
         self.assertFalse(again['changed'])
-        config = (self.managed / 'server-config.json').read_text()
+        config = self.config.read_text()
         self.assertEqual(integration.apply(self.root, self.plan())['changed'], False)
-        self.assertEqual((self.managed / 'server-config.json').read_text(), config)
+        self.assertEqual(self.config.read_text(), config)
 
     def test_tampered_plan_refused(self):
         proposed = self.plan()
         tampered = dict(proposed, project=str(self.home))
         with self.assertRaisesRegex(ValueError, 'Plan modifié'):
             integration.apply(self.root, tampered)
-        self.assertFalse((self.managed / 'server-config.json').exists())
+        self.assertFalse(self.config.exists())
 
     def test_install_refuses_unknown_facade(self):
         (self.root / 'chatgpt_mcp.py').unlink()
@@ -128,19 +159,22 @@ class ChatGPTIntegrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.plan()
 
-    def test_remove_deletes_server_config_keeps_manifest(self):
+    def test_remove_removes_table_keeps_manifest_and_rest(self):
+        self.fixture_config()
         self.install()
-        published = (self.managed / 'server-config.json').read_bytes()
+        published = self.config.read_bytes()
         result = integration.apply(self.root, self.plan(action='remove'))
         self.assertTrue(result['changed'])
-        self.assertFalse((self.managed / 'server-config.json').exists())
+        self.assertNotIn('[mcp_servers.reprise]', self.config.read_text())
+        doc = tomllib.loads(self.config.read_text())
+        self.assertEqual(doc['mcp_servers']['other'], {'command': '/usr/bin/true', 'args': [], 'env': {'TOKEN': 'secret'}})
         manifest = json.loads((self.managed / 'managed.json').read_text())
         self.assertEqual(manifest['status'], 'removed')
         self.assertIsNone(manifest['entry_sha256'])
         self.assertFalse(integration.inspect(self.root, self.home)['managed'])
         self.assertFalse(integration.apply(self.root, self.plan(action='remove'))['changed'])
         # The published blob stays recoverable in the timestamped backup.
-        self.assertIn(published, [item.read_bytes() for item in (self.managed / 'backups').rglob('server-config.json')])
+        self.assertIn(published, [item.read_bytes() for item in (self.managed / 'backups').rglob('config.toml')])
 
     def test_remove_without_install_refused(self):
         with self.assertRaises(ValueError):
@@ -154,20 +188,21 @@ class ChatGPTIntegrationTests(unittest.TestCase):
             self.plan(action='remove', project=other)
 
     def test_symlink_refused(self):
-        self.managed.mkdir(parents=True)
-        (self.managed / 'server-config.json').symlink_to(self.base / 'absent')
+        self.config.parent.mkdir(parents=True)
+        self.config.symlink_to(self.base / 'absent')
         with self.assertRaises(ValueError):
             self.plan()
 
     def test_concurrent_edit_refused(self):
         proposed = self.plan()
         self.install()
-        (self.managed / 'server-config.json').write_text('{"command": "tampered", "args": []}')
+        self.config.write_text(self.config.read_text().replace('enabled = true', 'enabled = false'))
         with self.assertRaises(ValueError):
             integration.apply(self.root, proposed)
 
     def test_manifest_failure_rolls_back_own_publication(self):
-        before = None
+        self.fixture_config()
+        before = integration.file_hash(self.config)
         proposed = self.plan()
         original = integration.atomic
         def fail(target, text):
@@ -176,19 +211,21 @@ class ChatGPTIntegrationTests(unittest.TestCase):
             return original(target, text)
         with patch.object(integration, 'atomic', side_effect=fail), self.assertRaises(OSError):
             integration.apply(self.root, proposed)
-        self.assertIsNone(integration.file_hash(self.managed / 'server-config.json'))
-        self.assertEqual(integration.file_hash(self.managed / 'managed.json'), before)
+        self.assertEqual(integration.file_hash(self.config), before)
+        self.assertNotIn('[mcp_servers.reprise]', self.config.read_text())
+        self.assertEqual(integration.file_hash(self.managed / 'managed.json'), None)
 
     def test_verify_with_subprocess_patch(self):
         self.install()
         with patch.object(integration.subprocess, 'run', return_value=self.bridge_response()) as run:
             verified = integration.verify(self.root, self.home)
         self.assertEqual(verified['status'], 'verified')
+        self.assertTrue(verified['config_written'])
         self.assertFalse(verified['inference_executed'])
         self.assertEqual(verified['client_loaded'], 'unknown')
         self.assertEqual(verified['bridge_version'], 'fixture')
-        self.assertIn('Réglages → Connecteurs → MCP servers (STDIO)', verified['message'])
-        self.assertIn('Réglages → Connecteurs → MCP servers (STDIO)', verified['next_step'])
+        self.assertIn('MCP servers → Restart', verified['message'])
+        self.assertIn('MCP servers → Restart', verified['next_step'])
         command = run.call_args.args[0]
         self.assertIn('--state', command)
         self.assertNotEqual(command[command.index('--state') + 1], str(self.state / 'chatgpt-state'))
@@ -201,6 +238,23 @@ class ChatGPTIntegrationTests(unittest.TestCase):
             {'id': 1, 'result': {'serverInfo': {'version': 'fixture'}}},
             {'id': 2, 'result': {'tools': [{'name': 'get_task'}]}}]), stderr='')
         with patch.object(integration.subprocess, 'run', return_value=partial), self.assertRaises(ValueError):
+            integration.verify(self.root, self.home)
+
+    def test_verify_refuses_missing_table(self):
+        self.fixture_config()
+        self.install()
+        text = self.config.read_text()
+        self.config.write_text(text[:text.index('[mcp_servers.reprise]')])
+        with patch.object(integration.subprocess, 'run', return_value=self.bridge_response()), \
+                self.assertRaisesRegex(ValueError, 'absente'):
+            integration.verify(self.root, self.home)
+
+    def test_verify_refuses_divergent_table(self):
+        self.install()
+        text = self.config.read_text()
+        self.config.write_text(text.replace('enabled = true', 'enabled = false'))
+        with patch.object(integration.subprocess, 'run', return_value=self.bridge_response()), \
+                self.assertRaisesRegex(ValueError, 'divergente'):
             integration.verify(self.root, self.home)
 
     def test_verify_real_handshake_with_fake_runtime(self):
@@ -261,12 +315,16 @@ class ChatGPTIntegrationTests(unittest.TestCase):
         self.assertEqual(payload['status'], 'refused')
         self.assertNotIn('secret-token', output.getvalue())
 
-    def test_config_content_is_pasteable_json(self):
+    def test_config_toml_matches_manifest_and_keeps_other_content(self):
+        self.fixture_config()
         self.install()
-        text = (self.managed / 'server-config.json').read_text()
-        value = json.loads(text)
-        self.assertEqual(integration.encoded(value), text)
-        self.assertEqual(integration.entry_hash(value), json.loads((self.managed / 'managed.json').read_text())['entry_sha256'])
+        entry = self.entry()
+        manifest = json.loads((self.managed / 'managed.json').read_text())
+        self.assertEqual(integration.entry_hash(entry), manifest['entry_sha256'])
+        lines = self.config.read_text().splitlines()
+        self.assertEqual(lines[lines.index('[mcp_servers.reprise]') + 1],
+                         'command = ' + integration.toml_str(entry['command']))
+        self.assertNotIn(str(self.base.parent), self.config.read_text().replace(str(self.base), ''))
 
 
 if __name__ == '__main__': unittest.main()

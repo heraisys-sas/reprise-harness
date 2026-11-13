@@ -1,8 +1,9 @@
 """Managed ChatGPT MCP configuration, without touching ChatGPT itself.
 
-ChatGPT desktop has no locally writable MCP configuration: the integration tool
-never modifies any ChatGPT file. It publishes a `server-config.json` — the exact
-JSON the operator pastes into « Réglages → Connecteurs → MCP servers (STDIO) ».
+ChatGPT desktop shares the Codex MCP configuration: the `[mcp_servers.<name>]`
+tables of `~/.codex/config.toml` (the same file read by Settings → MCP servers).
+The integration tool edits only the managed `mcp_servers.reprise` table,
+preserving every other byte of the file, and never reloads or restarts ChatGPT.
 """
 import argparse
 from contextlib import contextmanager
@@ -13,6 +14,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import tomllib
 import uuid
 
 from app_paths import state_location
@@ -21,8 +23,10 @@ from harness_integration import (atomic, bundle_info, digest, encoded, file_hash
 
 REQUIRED_BRIDGE_TOOLS = {'get_task', 'submit_result', 'get_result',
                          'reprise_backends', 'reprise_delegate', 'reprise_followup'}
-PASTE_NOTICE = ('Collez le contenu de server-config.json dans Réglages → Connecteurs → '
-                'MCP servers (STDIO) de ChatGPT ; Reprise ne peut pas le faire à votre place.')
+ENTRY_NAME = 'reprise'
+SECTION_HEADER = f'[mcp_servers.{ENTRY_NAME}]'
+RESTART_NOTICE = ('Redémarrez ChatGPT desktop (Réglages → MCP servers → Restart) pour qu’il relise '
+                  'config.toml ; Reprise ne redémarre pas ChatGPT à votre place.')
 
 
 def paths(home):
@@ -30,10 +34,11 @@ def paths(home):
     if home.is_symlink():
         raise ValueError('Dossier utilisateur symbolique refusé.')
     home = home.resolve(strict=True)
+    config = home / '.codex/config.toml'
     managed = home / 'Library/Application Support/Reprise/chatgpt-integration'
-    for target in (managed / 'server-config.json', managed / 'managed.json', managed / 'lock'):
+    for target in (config, managed / 'managed.json', managed / 'lock'):
         safe_path(target, home)
-    return home, managed
+    return home, config, managed
 
 
 def safe_path(target, home):
@@ -61,44 +66,95 @@ def entry_hash(entry):
     return digest(encoded(entry).encode())
 
 
-def read_server_config(managed):
-    target = managed / 'server-config.json'
-    file_hash(target)
-    if not target.exists():
-        return None
-    value = json.loads(target.read_text())
-    if not isinstance(value, dict) or set(value) != {'command', 'args'}:
-        raise ValueError('Configuration ChatGPT incompatible.')
+def read_config(config):
+    file_hash(config)
+    if not config.exists():
+        return {}
+    value = tomllib.loads(config.read_text())
+    if not isinstance(value, dict) or not isinstance(value.get('mcp_servers', {}), dict):
+        raise ValueError('Configuration Codex incompatible ; aucune réécriture.')
     return value
 
 
+def toml_str(value):
+    if not isinstance(value, str):
+        raise ValueError('Valeur TOML non textuelle.')
+    escaped = value.replace('\\', '\\\\').replace('"', '\\"')
+    escaped = escaped.replace('\t', '\\t').replace('\n', '\\n').replace('\r', '\\r')
+    for codepoint in escaped:
+        if ord(codepoint) < 0x20:
+            raise ValueError('Caractère de contrôle non sérialisable en TOML.')
+    return '"' + escaped + '"'
+
+
+def render(raw, entry):
+    """Rewrite only the managed table, byte-preserving every other line."""
+    text = '' if raw is None else raw.decode('utf-8')
+    doc = tomllib.loads(text)
+    lines, in_section = text.split('\n'), False
+    for index, line in enumerate(lines):
+        if line.startswith('['):
+            in_section = line == SECTION_HEADER
+        if in_section:
+            lines[index] = None
+    kept = [line for line in lines if line is not None]
+    if entry is not None:
+        section = [SECTION_HEADER,
+                   'command = ' + toml_str(entry['command']),
+                   'args = [' + ', '.join(toml_str(arg) for arg in entry['args']) + ']',
+                   'enabled = true']
+        while kept and kept[-1] == '':
+            kept.pop()
+        if kept:
+            kept.append('')
+        kept.extend(section)
+    result = '\n'.join(kept)
+    if result and not result.endswith('\n'):
+        result += '\n'
+    after = tomllib.loads(result)
+    if ({key: value for key, value in doc.items() if key != 'mcp_servers'}
+            != {key: value for key, value in after.items() if key != 'mcp_servers'}):
+        raise ValueError('Réécriture refusée : le reste de config.toml serait modifié.')
+    if entry is None:
+        if ENTRY_NAME in after.get('mcp_servers', {}):
+            raise ValueError('Table gérée non retirée ; structure non reconnue.')
+    elif after.get('mcp_servers', {}).get(ENTRY_NAME) != entry:
+        raise ValueError('Table gérée non reconnue dans config.toml ; aucune réécriture.')
+    return result
+
+
 def inspect(root, home=None):
-    home, managed = paths(home or Path.home())
-    config = read_server_config(managed)
+    home, config, managed = paths(home or Path.home())
+    doc = read_config(config)
     old = metadata(managed)
-    return {'status': 'inspected', 'home': str(home), 'config_exists': (managed / 'server-config.json').exists(),
-            'configuration_written': config is not None,
-            'managed': bool(old and old.get('status') == 'installed' and config is not None
-                            and old.get('entry_sha256') == entry_hash(config)),
+    entry = doc.get('mcp_servers', {}).get(ENTRY_NAME)
+    return {'status': 'inspected', 'home': str(home), 'config_exists': config.exists(),
+            'configuration_written': entry is not None,
+            'managed': bool(old and old.get('status') == 'installed' and entry is not None
+                            and old.get('entry_sha256') == entry_hash(entry)),
             'project': old.get('project') if old else None,
             'client_loaded': 'unknown', 'message': 'Inspection locale ; ChatGPT n’est ni modifié ni redémarré.'}
 
 
 def desired(root, home, project, action='install'):
-    home, managed = paths(home)
+    home, config, managed = paths(home)
     project = Path(project).expanduser().resolve(strict=True)
     if not project.is_dir():
         raise ValueError('Projet existant requis.')
     if action not in ('install', 'remove'):
         raise ValueError('Action invalide.')
     old = metadata(managed)
+    doc = read_config(config)
+    existing = doc.get('mcp_servers', {}).get(ENTRY_NAME)
+    if existing is not None and (not old or old.get('entry_sha256') != entry_hash(existing)):
+        raise ValueError('Entrée mcp_servers.reprise personnalisée ou non gérée ; aucun écrasement.')
     if action == 'remove':
         if not old or old.get('status') not in ('installed', 'removed'):
             raise ValueError('Aucune intégration ChatGPT gérée à retirer.')
         if old.get('project') != str(project):
             raise ValueError('Projet sélectionné différent du connecteur géré.')
         manifest = dict(old, status='removed', entry_sha256=None)
-        return home, managed, None, manifest, None, None
+        return home, config, managed, None, manifest, None, None
     helpers, runtime, identity = bundle_info(root)
     if not (helpers / 'chatgpt_mcp.py').is_file():
         raise ValueError('Facade ChatGPT absente du bundle ; reconstruire Reprise.')
@@ -108,28 +164,29 @@ def desired(root, home, project, action='install'):
     entry = {'command': str(release / 'Contents/Resources/runtime/bin/python3'),
              'args': ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/chatgpt_mcp.py'),
                       '--project-root', str(project), '--state', str(chatgpt_state),
-                      '--expert-state', str(main_state)]}
+                      '--expert-state', str(main_state)],
+             'enabled': True}
     manifest = {'format': 1, 'status': 'installed', 'project': str(project), 'state': str(main_state),
                 'chatgpt_state': str(chatgpt_state), 'entry_sha256': entry_hash(entry),
                 'release': str(release), 'release_identity': identity}
-    return home, managed, entry, manifest, helpers, runtime
+    return home, config, managed, entry, manifest, helpers, runtime
 
 
 def plan(root, home, project, action='install'):
-    home, managed, entry, manifest, _, _ = desired(root, home, project, action)
+    home, config, managed, entry, manifest, _, _ = desired(root, home, project, action)
+    raw = config.read_bytes() if config.exists() else None
+    rendered = render(raw, entry)
     changes = []
-    config_target = managed / 'server-config.json'
-    config_after = None if entry is None else encoded(entry)
-    before = file_hash(config_target)
-    after = digest(config_after.encode()) if config_after is not None else None
+    before, after = file_hash(config), digest(rendered.encode())
     if before != after:
-        changes.append({'path': str(config_target), 'before_sha256': before, 'after_sha256': after})
+        changes.append({'path': str(config), 'before_sha256': before, 'after_sha256': after})
     manifest_target = managed / 'managed.json'
     before, after = file_hash(manifest_target), digest(encoded(manifest).encode())
     if before != after:
         changes.append({'path': str(manifest_target), 'before_sha256': before, 'after_sha256': after})
     public = {'format': 1, 'action': action, 'home': str(home), 'project': manifest['project'],
-              'server_config': entry, 'config_sha256': file_hash(config_target),
+              'server_config': entry, 'config_path': str(config),
+              'config_sha256': file_hash(config),
               'manifest_sha256': file_hash(manifest_target), 'release': manifest['release'],
               'release_identity': manifest['release_identity'], 'changes': changes}
     public['fingerprint'] = digest(encoded(public).encode())
@@ -155,8 +212,7 @@ def apply(root, public):
     unsigned = {key: value for key, value in public.items() if key != 'fingerprint'}
     if digest(encoded(unsigned).encode()) != public.get('fingerprint'):
         raise ValueError('Plan modifié ; refaire la prévisualisation.')
-    home, managed = paths(public['home'])
-    config = managed / 'server-config.json'
+    home, config, managed = paths(public['home'])
     with locked(managed, home):
         if public.get('action') not in ('install', 'remove'):
             raise ValueError('Action invalide.')
@@ -164,7 +220,7 @@ def apply(root, public):
             raise ValueError('Configuration ou bundle modifié ; refaire le plan.')
         if not public['changes']:
             return {'status': 'completed', 'changed': False, 'client_loaded': 'unknown'}
-        _, _, entry, manifest, helpers, runtime = desired(root, home, public['project'], public['action'])
+        _, _, _, entry, manifest, helpers, runtime = desired(root, home, public['project'], public['action'])
         if public['action'] == 'install':
             stage_release(helpers, runtime, Path(public['release']))
             release_check(Path(public['release']))
@@ -172,15 +228,15 @@ def apply(root, public):
         safe_path(backup, home)
         backup.mkdir(parents=True, mode=0o700)
         before = {}
-        for name, target in (('server-config.json', config), ('managed.json', managed / 'managed.json')):
+        for name, target in (('config.toml', config), ('managed.json', managed / 'managed.json')):
             safe_path(target, home)
             before[target] = target.read_bytes() if target.exists() else None
             if before[target] is not None:
                 saved = backup / name
                 saved.write_bytes(before[target])
                 saved.chmod(0o600)
-        config_after = encoded(entry) if entry is not None else None
-        after_config = digest(config_after.encode()) if config_after is not None else None
+        rendered = render(before[config], entry)
+        after_config = digest(rendered.encode())
         after_manifest = digest(encoded(manifest).encode())
         wrote_config = False
         try:
@@ -188,10 +244,7 @@ def apply(root, public):
             if file_hash(config) != public['config_sha256'] or file_hash(managed / 'managed.json') != public['manifest_sha256']:
                 raise ValueError('Modification concurrente avant publication ; aucune réécriture.')
             wrote_config = True
-            if public['action'] == 'install':
-                atomic(config, config_after)
-            elif config.exists():
-                config.unlink()
+            atomic(config, rendered)
             if file_hash(config) != after_config or file_hash(managed / 'managed.json') != public['manifest_sha256']:
                 raise ValueError('Modification concurrente après publication ; réconcilier les sauvegardes.')
             atomic(managed / 'managed.json', encoded(manifest))
@@ -205,31 +258,27 @@ def apply(root, public):
                     target.unlink()
                 else:
                     atomic(target, before[target].decode('utf-8'))
-            if wrote_config:
-                if after_config is None:
-                    if config.exists() and file_hash(config) is None:
-                        config.unlink()
-                elif file_hash(config) == after_config:
-                    old_config = before[config]
-                    if old_config is None:
-                        config.unlink()
-                    else:
-                        atomic(config, old_config.decode('utf-8'))
+            if wrote_config and file_hash(config) == after_config:
+                old_config = before[config]
+                if old_config is None:
+                    config.unlink()
+                else:
+                    atomic(config, old_config.decode('utf-8'))
             raise
     return {'status': 'completed', 'changed': True, 'backup': str(backup), 'client_loaded': 'unknown',
-            'next_step': PASTE_NOTICE, 'message': 'Configuration ChatGPT prête. ' + PASTE_NOTICE}
+            'next_step': RESTART_NOTICE, 'message': 'Table ' + SECTION_HEADER + ' écrite dans config.toml. ' + RESTART_NOTICE}
 
 
 def verify(root, home=None, project=None):
-    home, managed = paths(home or Path.home())
+    home, config, managed = paths(home or Path.home())
     old = metadata(managed)
-    config = read_server_config(managed)
-    if not old or old.get('status') != 'installed' or config is None:
-        raise ValueError('Connecteur géré absent ou modifié.')
+    entry = read_config(config).get('mcp_servers', {}).get(ENTRY_NAME)
+    if not old or old.get('status') != 'installed' or entry is None:
+        raise ValueError('Table ' + SECTION_HEADER + ' absente du config.toml ; appliquer le plan d’abord.')
     if project is not None and str(Path(project).expanduser().resolve(strict=True)) != old.get('project'):
         raise ValueError('Le projet sélectionné ne correspond pas au connecteur installé.')
-    if entry_hash(config) != old.get('entry_sha256'):
-        raise ValueError('Connecteur géré absent ou modifié.')
+    if entry_hash(entry) != old.get('entry_sha256'):
+        raise ValueError('Table ' + SECTION_HEADER + ' divergente du manifeste ; refaire le plan.')
     selected_state = state_location(root).resolve()
     release = Path(old['release'])
     if (old.get('state') != str(selected_state) or release.parent.resolve() != (selected_state.parent / 'integration-releases').resolve()
@@ -254,11 +303,11 @@ def verify(root, home=None, project=None):
     names = sorted(tool['name'] for tool in tools)
     if not REQUIRED_BRIDGE_TOOLS.issubset(names):
         raise ValueError('Outils de la facade ChatGPT incomplets.')
-    return {'status': 'verified', 'bridge_tools': names, 'bridge_version': info['version'],
-            'client_loaded': 'unknown', 'inference_executed': False,
-            'next_step': PASTE_NOTICE,
-            'message': 'Facade vérifiée par initialize/tools/list ; le collage dans '
-                       'Réglages → Connecteurs → MCP servers (STDIO) reste à faire par l’opérateur.'}
+    return {'status': 'verified', 'config_written': True, 'bridge_tools': names,
+            'bridge_version': info['version'], 'client_loaded': 'unknown', 'inference_executed': False,
+            'next_step': RESTART_NOTICE,
+            'message': 'Table ' + SECTION_HEADER + ' conforme et facade vérifiée par initialize/tools/list ; '
+                       + RESTART_NOTICE}
 
 
 def main(root, argv=None):
