@@ -17,6 +17,7 @@ import time
 import uuid
 
 import vault
+import registry_marker
 
 PURPOSE = 'orchestrator-memory-v1'
 SCHEMA_VERSION = 1
@@ -197,7 +198,7 @@ class Memory:
             raise ValueError('Project registry validation failed') from exc
 
     @contextlib.contextmanager
-    def _store(self, *, write=False, durable_receipt=False):
+    def _store(self, *, write=False, durable_receipt=False, adopt_legacy=False):
         rootfd = os.open(self.state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         dirfd = None
         lockfd = None
@@ -264,6 +265,19 @@ class Memory:
                         PRIMARY KEY(project_id,id));
                     PRAGMA user_version=1;
                 ''')
+            registry_state = registry_marker.status(
+                dirfd, snapshot_exists=filefd is not None, check_file=_private_file)
+            if adopt_legacy:
+                if registry_state == 'new':
+                    raise ValueError('No existing legacy memory to adopt')
+                if registry_state == 'legacy':
+                    if db.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                        raise ValueError('Invalid legacy memory')
+                    for table in ('facts', 'checkpoints', 'operations'):
+                        db.execute('SELECT project_id FROM ' + table + ' LIMIT 0')
+                    registry_marker.mark(dirfd, check_file=_private_file)
+            elif write and registry_state == 'legacy':
+                raise registry_marker.LegacyRegistry('Explicit legacy memory adoption required')
             yield db
             if write and db.total_changes:
                 db.commit()
@@ -282,6 +296,8 @@ class Memory:
                         stream.write(sealed)
                         stream.flush()
                         os.fsync(stream.fileno())
+                    if registry_state == 'new':
+                        registry_marker.mark(dirfd, check_file=_private_file)
                     os.replace(tmpname, 'memory.enc', src_dir_fd=dirfd, dst_dir_fd=dirfd)
                     os.fsync(dirfd)
                 finally:
@@ -301,6 +317,11 @@ class Memory:
             if dirfd is not None:
                 os.close(dirfd)
             os.close(rootfd)
+
+    def adopt_legacy_registry(self):
+        """Operator-only adoption under lock; preserve ciphertext and operation IDs."""
+        with self._store(adopt_legacy=True):
+            return {'status': 'adopted'}
 
     def migrate_scopes_v2(self):
         """Explicit migration under the store lock; never invoked by normal access.

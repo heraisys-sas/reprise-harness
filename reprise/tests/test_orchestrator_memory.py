@@ -231,6 +231,41 @@ for line in sys.stdin:
                                text=True, capture_output=True, check=True, timeout=5)
         self.assertEqual(json.loads(probe.stdout), {'status': 'ok', 'temp_store': 2})
 
+    def test_missing_ciphertext_with_marker_refuses_all_operations(self):
+        fact = self.store.create_fact(self.p1, uid(), 'durable fact', SOURCE)
+        folder = self.store.directory
+        self.assertEqual((folder / 'initialized').stat().st_size, 0)
+        (folder / 'memory.enc').unlink()
+        with self.assertRaises(memory.registry_marker.RegistryMissing):
+            self.store.get_fact(self.p1, fact['id'])
+        with self.assertRaises(memory.registry_marker.RegistryMissing):
+            self.store.create_fact(self.p1, uid(), 'not recreated', SOURCE)
+        self.assertFalse((folder / 'memory.enc').exists())
+
+    def test_legacy_memory_requires_explicit_adoption_before_mutation(self):
+        fact = self.store.create_fact(self.p1, uid(), 'legacy fact', SOURCE)
+        folder = self.store.directory
+        before = (folder / 'memory.enc').read_bytes()
+        (folder / 'initialized').unlink()  # Simulate an old, unmarked snapshot.
+        self.assertEqual(self.store.get_fact(self.p1, fact['id'])['text'], 'legacy fact')
+        with self.assertRaises(memory.registry_marker.LegacyRegistry):
+            self.store.create_fact(self.p1, uid(), 'new fact', SOURCE)
+        self.assertEqual((folder / 'memory.enc').read_bytes(), before)
+        self.assertEqual(self.store.adopt_legacy_registry(), {'status': 'adopted'})
+        self.assertEqual(self.store.adopt_legacy_registry(), {'status': 'adopted'})
+        self.assertEqual((folder / 'memory.enc').read_bytes(), before)
+        self.store.create_fact(self.p1, uid(), 'new fact', SOURCE)
+        self.assertEqual(len(self.store.list_facts(self.p1)), 2)
+
+    def test_first_write_marker_stranded_before_replace_requires_recovery(self):
+        with patch.object(memory.os, 'replace', side_effect=OSError('synthetic replace failure')):
+            with self.assertRaises(OSError):
+                self.store.create_fact(self.p1, uid(), 'first', SOURCE)
+        self.assertTrue((self.store.directory / 'initialized').exists())
+        self.assertFalse((self.store.directory / 'memory.enc').exists())
+        with self.assertRaises(memory.registry_marker.RegistryMissing):
+            self.store.list_facts(self.p1)
+
     def test_crud_idempotence_conflict_and_reopen(self):
         operation = uid()
         created = self.store.create_fact(self.p1, operation, 'fait secret', SOURCE)

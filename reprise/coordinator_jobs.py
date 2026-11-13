@@ -14,6 +14,7 @@ import uuid
 
 import orchestrator_memory
 import vault
+import registry_marker
 
 PURPOSE = 'coordinator-jobs-v1'
 VERSION = 1
@@ -153,12 +154,17 @@ class Jobs:
         finally:
             os.close(root)
 
+    def adopt_legacy_registry(self):
+        """Operator-only adoption under lock; preserve ciphertext and receipts."""
+        with self._store(adopt_legacy=True):
+            return {'status': 'adopted'}
+
     def _project(self, project_id):
         # Same read-only project lookup as Memory; project ID alone is not a grant.
         return orchestrator_memory.Memory._project(self, project_id)
 
     @contextlib.contextmanager
-    def _store(self, *, write=False, durable=False, commit_guard=None):
+    def _store(self, *, write=False, durable=False, commit_guard=None, adopt_legacy=False):
         root = os.open(self.state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         folder = lock = None
         try:
@@ -209,6 +215,15 @@ class Jobs:
                 if (not isinstance(data, dict) or set(data) != {'version', 'jobs'} or data['version'] != VERSION
                         or not isinstance(data['jobs'], list) or len(data['jobs']) > MAX_JOBS):
                     raise ValueError('Unsupported or corrupt jobs store')
+            registry_state = registry_marker.status(
+                folder, snapshot_exists=fd is not None, check_file=_file)
+            if adopt_legacy:
+                if registry_state == 'new':
+                    raise ValueError('No existing legacy jobs to adopt')
+                if registry_state == 'legacy':
+                    registry_marker.mark(folder, check_file=_file)
+            elif write and registry_state == 'legacy':
+                raise registry_marker.LegacyRegistry('Explicit legacy jobs adoption required')
             before = _json(data)
             yield data
             if write and _json(data) != before:
@@ -225,6 +240,8 @@ class Jobs:
                         stream.write(encrypted); stream.flush(); os.fsync(stream.fileno())
                     # Source guard is entered only after crypto and temp-file sync.
                     with commit_guard() if commit_guard else contextlib.nullcontext():
+                        if registry_state == 'new':
+                            registry_marker.mark(folder, check_file=_file)
                         os.replace(name, 'jobs.enc', src_dir_fd=folder, dst_dir_fd=folder)
                         try:
                             os.fsync(folder)

@@ -49,6 +49,10 @@ class PackageHelpersTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'LICENSE'):
                     package(source, root / 'app')
 
+    def test_registry_durability_helpers_are_packaged(self):
+        for name in ('registry_marker.py', 'registry_adopt.py'):
+            self.assertIn(name, ASSETS)
+
     def test_desktop_apply_assets_preserve_current_packaging(self):
         for name in ('claude_desktop_apply.py',
                      'claude_quota_log.py', 'claude_quota_banner.py', 'claude_cdp_pipe.py', 'claude_inbox.py', 'websocket_transport.py', 'claude_session_store.py', 'claude_session_observer.py', 'managed_update.py',
