@@ -131,6 +131,42 @@ class HarnessIntegrationTests(unittest.TestCase):
         integration.release_check(release)
         self.assertTrue(stat.S_IMODE(python.stat().st_mode) & stat.S_IWUSR)
 
+    def test_staged_root_remains_writable_for_macos_rename(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        rename = Path.rename
+        visited = []
+
+        def verify_root(path, target):
+            if target == release:
+                visited.append(True)
+                self.assertTrue(stat.S_IMODE(path.stat().st_mode) & stat.S_IWUSR)
+                self.assertFalse(stat.S_IMODE((path / 'Contents/Resources/runtime').stat().st_mode) & 0o222)
+            return rename(path, target)
+
+        with patch.object(Path, 'rename', verify_root):
+            integration.stage_release(helpers, runtime, release)
+        self.assertEqual(visited, [True])
+        self.assertFalse(stat.S_IMODE(release.stat().st_mode) & 0o222)
+        integration.release_check(release)
+
+    def test_failed_final_seal_blocks_release_reuse(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        chmod = Path.chmod
+
+        def fail_final(path, mode):
+            if path == release:
+                raise OSError('synthetic final seal failure')
+            return chmod(path, mode)
+
+        with patch.object(Path, 'chmod', fail_final):
+            with self.assertRaisesRegex(OSError, 'final seal failure'):
+                integration.stage_release(helpers, runtime, release)
+        self.assertTrue(release.exists())
+        with self.assertRaisesRegex(ValueError, 'modifiable'):
+            integration.release_check(release)
+
     def test_failed_publication_removes_sealed_staging_tree(self):
         helpers, runtime, identity = integration.bundle_info(self.root)
         release = self.base / 'releases' / identity
