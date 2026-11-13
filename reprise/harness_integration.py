@@ -390,9 +390,11 @@ def _release_plain_entries(root):
         yield entry, info
 
 
-def _seal_release(root):
-    """Remove write bits only from a fully staged release, never from the source app."""
+def _seal_release(root, keep_root_writable=False):
+    """Seal payload before publish; macOS needs a writable root for rename."""
     for entry, info in sorted(_release_plain_entries(root), key=lambda item: len(item[0].parts), reverse=True):
+        if keep_root_writable and entry == root:
+            continue
         entry.chmod(stat.S_IMODE(info.st_mode) & ~0o222)
 
 
@@ -589,9 +591,13 @@ def stage_release(helpers, runtime, release):
         atomic(stage / 'release.json', encoded({'format': 2, 'immutability': 'posix-readonly-v1',
                                                 'files': tree_files(stage)}))
         try:
-            _seal_release(stage)
+            _seal_release(stage, keep_root_writable=True)
             _sync_tree(stage)
             stage.rename(release)
+            # macOS rejects renaming a read-only source directory. Seal the
+            # root after rename, before acknowledging successful publication.
+            release.chmod(stat.S_IMODE(release.stat().st_mode) & ~0o222)
+            _sync_directory(release)
         finally:
             # TemporaryDirectory must remain removable if publication failed after sealing.
             if stage.exists():
