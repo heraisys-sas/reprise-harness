@@ -7,8 +7,9 @@ Implémentation du 21 octobre 2026, sans appel fournisseur réel ni redémarrage
 L'interface MCP distingue les erreurs de validation/refus (`data.kind=refused`,
 code JSON-RPC `-32602`), indisponibilités de backend (`unavailable`,
 `-32000`), registre indisponible (`storage_error`) et pont déjà occupé
-(`busy` avec `reason_code=bridge_busy`). Les messages publics portent la
-raison au lieu de présenter ces situations comme équivalentes. L'absence
+(`busy` avec `reason_code=bridge_busy`). La chaîne de message JSON-RPC historique est conservée pour les clients
+existants ; la raison explicite figure dans `data.human_reason`, avec
+`data.kind` et `data.reason_code` pour les superviseurs. L'absence
 d'une clé dans `reprise_reconcile` renvoie `not_found` (code `-32004`) ;
 les lectures `reprise_requests` et `wait_result` exposent également
 `status=not_found`. Une réponse directe `status=busy` conserve le contrat

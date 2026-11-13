@@ -39,7 +39,7 @@ class WorkspaceWriteNotAuthorized(ValueError):
     """Implementation refused: the operator never granted project workspace writes (issue #104)."""
 
 
-class RequestNotFound(LookupError):
+class RequestNotFound(ValueError):
     """An exact request_key does not exist in this bridge scope."""
 
 
@@ -99,9 +99,11 @@ def error_payload(exc):
         'refused': 'Request refused or invalid; no automatic retry.',
         'storage_error': 'Bridge storage unavailable; no automatic retry.',
     }
-    return {'code': code, 'message': messages[kind],
+    # Preserve the original top-level message for existing MCP clients; structured
+    # consumers use data.kind / reason_code, humans may inspect human_reason.
+    return {'code': code, 'message': 'Request refused or unavailable; no automatic retry.',
             'data': {'kind': kind, 'reason_code': 'bridge_busy' if kind == 'busy' else kind,
-                     'error': detail}}
+                     'human_reason': messages[kind], 'error': detail}}
 
 BACKEND_MODELS = {
     'codex': ('gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'),

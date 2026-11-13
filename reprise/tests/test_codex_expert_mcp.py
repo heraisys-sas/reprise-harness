@@ -50,7 +50,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.assertEqual(payload['data']['kind'], 'workspace_write_not_authorized')
         self.assertIn('--codex-workspace-write', payload['data']['enable_with'])
         # Les autres refus gardent le message générique uniforme.
-        self.assertEqual(error_payload(ValueError('x'))['message'], 'Request refused or invalid; no automatic retry.')
+        self.assertEqual(error_payload(ValueError('x'))['message'], 'Request refused or unavailable; no automatic retry.')
 
     def test_backends_reports_how_to_enable_writes_and_reflects_grant_issue_104(self):
         codex = self.call('reprise_backends', {})['backends'][0]
@@ -238,7 +238,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         payload = error_payload(ValueError('chatId and filePaths are only valid with backend claude-desktop'))
         self.assertEqual(payload['code'], -32602)
         self.assertEqual(payload['data']['kind'], 'refused')
-        self.assertEqual(payload['message'], 'Request refused or invalid; no automatic retry.')
+        self.assertEqual(payload['message'], 'Request refused or unavailable; no automatic retry.')
         self.assertTrue(payload['data']['error'].startswith('ValueError: '))
         self.assertIn('claude-desktop', payload['data']['error'])
         self.assertLessEqual(len(error_payload(OSError('x' * 500))['data']['error']), 200)
@@ -249,11 +249,11 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.assertEqual(busy['code'], -32000)
         self.assertEqual(busy['data']['kind'], 'busy')
         self.assertEqual(busy['data']['reason_code'], 'bridge_busy')
-        self.assertIn('Bridge busy', busy['message'])
+        self.assertIn('Bridge busy', busy['data']['human_reason'])
         unavailable = error_payload(Unavailable('engine_unavailable', 'Exécutable Codex introuvable.'))
         self.assertEqual(unavailable['code'], -32000)
         self.assertEqual(unavailable['data']['kind'], 'unavailable')
-        self.assertIn('backend unavailable', unavailable['message'])
+        self.assertIn('backend unavailable', unavailable['data']['human_reason'])
         # A refused request keeps its own code: the three cases stay machine-distinguishable (#53).
         self.assertNotEqual(busy['code'], error_payload(ValueError('bad args'))['code'])
 
