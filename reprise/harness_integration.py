@@ -271,6 +271,38 @@ def _bridge_entries(release, state, tools, project, profile, managed, output_res
     return entries
 
 
+# Résidu legacy (#156 → #161) : l'ancienne génération écrivait --chatgpt-socket
+# (pont ChatGPT remplacé par la config MCP ~/.codex/config.toml) dans les args de
+# reprise-codex-expert. La migration autorisée est un retrait pur : le drapeau et
+# sa valeur éventuelle, aucune autre divergence.
+_LEGACY_FLAGS = ('--chatgpt-socket',)
+
+
+def _strip_legacy_args(entries):
+    cleaned = json.loads(json.dumps(entries))
+    removed = []
+    for entry in cleaned if isinstance(cleaned, list) else []:
+        if not isinstance(entry, dict) or entry.get('id') != 'reprise-codex-expert':
+            continue
+        args = (entry.get('config') or {}).get('args')
+        if not isinstance(args, list):
+            continue
+        kept, skip = [], False
+        for arg in args:
+            if skip:
+                skip = False
+                if isinstance(arg, str) and not arg.startswith('-'):
+                    removed.append(arg)
+                    continue
+            if arg in _LEGACY_FLAGS:
+                removed.append(arg)
+                skip = True
+                continue
+            kept.append(arg)
+        entry['config']['args'] = kept
+    return cleaned, removed
+
+
 def _validate_target_entries(entries):
     # Garde-fous contre les corruptions observées hors Reprise : interpréteur
     # absent, hash de release épissé dans un chemin, bloc plié (style yaml.dump).
@@ -854,6 +886,7 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
     files = {}
     reconciliation = None
     reconciled_from = None
+    legacy_removed = None
     release = None
     state = str(state_location(root).absolute())
     if not bundled(root) and Path(state).resolve().is_relative_to(Path(root).resolve()):
@@ -897,7 +930,12 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
             else:
                 expected = entries
             if parsed != expected:
-                raise ValueError(_BLOCK_REFUSAL)
+                cleaned, legacy_removed = _strip_legacy_args(parsed)
+                if not legacy_removed or cleaned != expected:
+                    raise ValueError(_BLOCK_REFUSAL)
+                # Migration legacy explicite : le live et l'attendu ne diffèrent
+                # que par les paramètres obsolètes ; réécriture canonique tracée.
+                reconciled_from = digest(block.encode())
             # Bloc reformatté équivalent : réécriture canonique tracée dans le manifeste.
             reconciled_from = digest(block.encode())
         new_block = START + '\n- insert: ' + json.dumps(entries, ensure_ascii=False) + '\n' + END + '\n'
@@ -948,6 +986,10 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         elif old and 'reconciled_from_sha256' in old:
             # Preuve conservée : le manifeste régénéré doit rester identique au manifeste en place.
             next_manifest['reconciled_from_sha256'] = old['reconciled_from_sha256']
+        if legacy_removed:
+            next_manifest['legacy_removed_params'] = legacy_removed
+        elif old and 'legacy_removed_params' in old:
+            next_manifest['legacy_removed_params'] = old['legacy_removed_params']
         if agent_role != 'standard':
             next_manifest['agent_role'] = agent_role
     else:
@@ -974,6 +1016,9 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         extra['memory'] = memory
     if reconciliation:
         extra['block_reconciled'] = reconciliation
+    if legacy_removed:
+        extra['legacy_migration'] = True
+        extra['removed_legacy_params'] = legacy_removed
     return files, extra, next_manifest
 
 

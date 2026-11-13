@@ -368,6 +368,60 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertIn('--codex-workspace-write', self.config.read_text())
         self.assertTrue(integration.inspect(self.home, 'desktop')['codex_workspace_write'])
 
+    def legacy_block(self, transform=lambda entries: entries):
+        text = self.config.read_text()
+        match = re.search(r'^- insert: (\[.*\])$', text, re.M)
+        entries = transform(json.loads(match.group(1)))
+        base = text[:text.index(integration.START)]
+        return base + integration.START + '\n- insert: ' + json.dumps(entries, ensure_ascii=False) + '\n' + integration.END + '\n'
+
+    def with_legacy_args(self, entries, extra=('--chatgpt-socket', 'chatgpt.sock')):
+        return [{**entry, 'config': {**entry['config'],
+                 'args': entry['config']['args'] + list(extra)}}
+                if entry.get('id') == 'reprise-codex-expert' else entry for entry in entries]
+
+    def test_legacy_chatgpt_socket_args_are_migrated_explicitly(self):
+        self.install()
+        self.config.write_text(self.legacy_block(lambda entries: self.with_legacy_args(entries)))
+        proposed = self.plan()
+        self.assertTrue(proposed['legacy_migration'])
+        self.assertEqual(proposed['removed_legacy_params'], ['--chatgpt-socket', 'chatgpt.sock'])
+        self.assertTrue(proposed['block_reconciled'])
+        integration.apply(self.root, proposed)
+        text = self.config.read_text()
+        self.assertNotIn('--chatgpt-socket', text)
+        self.assertNotIn('chatgpt.sock', text)
+        self.assertNotIn('- insert:\n', text)
+        manifest = json.loads((self.managed / 'managed.json').read_text())
+        self.assertEqual(manifest['legacy_removed_params'], proposed['removed_legacy_params'])
+        self.assertEqual(self.plan()['changes'], [])
+        probe = self.bridge_probe()
+        with patch.object(integration.subprocess, 'run', return_value=probe):
+            self.assertEqual(integration.verify(self.home, 'desktop', self.root)['status'], 'verified')
+
+    def test_legacy_migration_refused_with_additional_divergence(self):
+        self.install()
+        def transform(entries):
+            entries = self.with_legacy_args(entries)
+            for entry in entries:
+                if entry.get('id') == 'reprise-codex-expert':
+                    entry['config']['toolCallTimeoutMs'] = 630001
+            return entries
+        self.config.write_text(self.legacy_block(transform))
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, 'personnalisé'):
+            self.plan()
+        self.assertEqual(self.snapshot(), before)
+
+    def test_legacy_migration_backup_is_private(self):
+        self.install()
+        self.config.write_text(self.legacy_block(lambda entries: self.with_legacy_args(entries)))
+        result = integration.apply(self.root, self.plan())
+        backup = Path(result['backup']) / 'cordis.patch.yml'
+        self.assertTrue(backup.is_file())
+        self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+        self.assertIn('--chatgpt-socket', backup.read_text())
+
     def test_real_block_change_is_refused_not_reconciled(self):
         self.install()
         self.config.write_text(self.reformatted_config(lambda payload: payload.replace('630000', '630001')))
