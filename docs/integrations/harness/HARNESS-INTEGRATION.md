@@ -205,7 +205,7 @@ MCP déjà chargés ; leur rechargement reste une opération distincte.
 
 ## Réconciliation explicite d’un bloc divergent, sans sauvegarde
 
-`integration-reconcile-plan` est un parcours distinct de l’installation ordinaire.
+`harness-integration-reconcile-plan` est un parcours distinct de l’installation ordinaire.
 Il exige l’empreinte du bloc réellement observé, le projet inchangé du pont, un
 projet de continuation existant explicitement choisi et un choix explicite de
 `--codex-workspace-write` ou `--no-codex-workspace-write`. La présence d’un droit
