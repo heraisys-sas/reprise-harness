@@ -61,10 +61,10 @@ Le code de Reprise doit être inventorié depuis Git (`git ls-files`) plutôt qu
 
 ## Diagnostic ciblé d'une release MCP (issue #162)
 
-La commande ci-dessous réalise **uniquement des lectures** sur une release explicitement nommée : elle compare le contenu à `release.json` (formats 1 et 2), relève les permissions inattendues en format 2 et distingue les fichiers nouvellement créés dans `__pycache__` sans parcourir les autres releases. Aucun `find` global, aucune suppression ni exécution du Python empaqueté. Les listes de chemins sont plafonnées à 30 exemples, les nombres exacts sont conservés.
+La commande ci-dessous réalise **uniquement des lectures** sur une release explicitement nommée : elle compare le contenu à `release.json` (formats 1 et 2), relève les permissions inattendues en format 2 et distingue les fichiers et **répertoires vides** `__pycache__` nouvellement créés sans parcourir les autres releases. Les nouvelles releases de format 2 enregistrent les chemins des répertoires ; les anciennes restent lisibles sans cette information (champ `directory_inventory: false`). Aucun `find` global, aucune suppression ni exécution du Python empaqueté. Les listes de chemins sont plafonnées à 30 exemples, les nombres exacts sont conservés.
 
 ```sh
-python3 reprise/reprise harness-integration-release-diagnose --release "/chemin/autorisé/integration-releases/EMPREINTE"
+python3 -B reprise/reprise harness-integration-release-diagnose --release "/chemin/autorisé/integration-releases/EMPREINTE"
 ```
 
 Le code retour est 0 pour `clean`, 2 pour `drift` (y compris mode inscriptible), et 1 pour un refus de lecture. Un état `unstable` (entrée disparue en cours d'inventaire) renvoie 2 ; **il ne prouve pas** quel processus a créé ou supprimé le fichier. Les empreintes du manifeste restent une comparaison locale, non une signature indépendante. Le message externe `PRISTINE: False` n'est pas attribué à cette commande sans trace de son producteur.
