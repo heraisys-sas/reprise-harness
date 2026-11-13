@@ -51,7 +51,7 @@ class ShardPartitionTests(unittest.TestCase):
                  patch.object(package_runtime, 'safe_extract', side_effect=fake_extract):
                 first = ci_test.pinned_interpreter()
                 self.assertEqual(first[0], str(root / 'cache' / f'interp-{digest[:12]}' / 'python/bin/python3'))
-                self.assertEqual(first[1], {'REPRISE_TEST_RUNTIME_ARCHIVE': str(archive)})
+                self.assertEqual(first[1], {'REPRISE_TEST_RUNTIME_ARCHIVE': str(archive.resolve())})
                 self.assertEqual(ci_test.pinned_interpreter(), first)
                 self.assertEqual(calls, [archive])
                 archive.write_bytes(b'tampered')
