@@ -41,7 +41,7 @@ class ShardPartitionTests(unittest.TestCase):
                 calls.append(source)
                 binary = destination / 'python/bin/python3'
                 binary.parent.mkdir(parents=True)
-                binary.write_text('#!/bin/sh\\nexit 0\\n')
+                binary.write_text('#!/bin/sh\nexit 0\n')
                 binary.chmod(0o700)
 
             with patch.dict(os.environ, {'REPRISE_TEST_RUNTIME_ARCHIVE': str(archive)}), \
