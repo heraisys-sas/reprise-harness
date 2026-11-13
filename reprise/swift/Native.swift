@@ -164,6 +164,13 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     var refreshPending = false
     @Published var busy = false
     @Published var vaultBusy = false
+    @Published var vaultChecking = false
+    @Published var vaultAvailability: [String: Any] = [:]
+    @Published var vaultAvailabilityCheckedAt: Date?
+    var vaultAccessVerified: Bool {
+        vaultAvailability["status"] as? String == "verified"
+            && vaultAvailabilityCheckedAt.map { Date().timeIntervalSince($0) <= 120 } == true
+    }
     @Published var vaultNote = "Les accès automatiques au cache ne demandent aucune autorisation à l’écran."
     @Published var analysisBusy = false
     @Published var searching = false
@@ -622,13 +629,25 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         sharedStartup = enabled
         UserDefaults.standard.set(enabled, forKey: "SharedCodexStartup")
     }
+    func checkVaultAvailability() {
+        guard stateReady, !vaultChecking, !vaultBusy else { return }
+        vaultChecking = true
+        perform(["vault-check"]) { result in
+            self.vaultChecking = false
+            self.vaultAvailability = result ?? ["status": "error", "reason": "no_response"]
+            self.vaultAvailabilityCheckedAt = result == nil ? nil : Date()
+        }
+    }
     func authorizeVault() {
         guard stateReady, !vaultBusy else { return }
         vaultBusy = true
+        vaultAvailability = [:]
+        vaultAvailabilityCheckedAt = nil
         vaultNote = "Autorisation du cache demandée explicitement…"
         perform(["vault-authorize"]) { result in
             self.vaultBusy = false
             self.vaultNote = result?["message"] as? String ?? "Autorisation non confirmée. Réessayez uniquement depuis ce bouton."
+            self.checkVaultAvailability()
             self.refresh()
         }
     }
