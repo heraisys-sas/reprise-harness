@@ -29,8 +29,16 @@ RESTART_NOTICE = ('Redémarrez ChatGPT desktop (Réglages → MCP servers → Re
                   'config.toml ; Reprise ne redémarre pas ChatGPT à votre place.')
 
 
-def paths(home):
-    home = Path(home).expanduser().absolute()
+def paths(home=None):
+    # The bundle runs under sandboxed/redirected HOME values (ex. ~/.dsh); the
+    # ChatGPT desktop app always reads CODEX_HOME's default under the real user
+    # home, so default to the actual user home, never the process HOME.
+    if home is None:
+        home = Path.home()
+        if home.name == '.dsh' or str(home).endswith('/.dsh'):
+            home = home.parent
+    else:
+        home = Path(home).expanduser().absolute()
     if home.is_symlink():
         raise ValueError('Dossier utilisateur symbolique refusé.')
     home = home.resolve(strict=True)
@@ -124,7 +132,7 @@ def render(raw, entry):
 
 
 def inspect(root, home=None):
-    home, config, managed = paths(home or Path.home())
+    home, config, managed = paths(home)
     doc = read_config(config)
     old = metadata(managed)
     entry = doc.get('mcp_servers', {}).get(ENTRY_NAME)
@@ -270,7 +278,7 @@ def apply(root, public):
 
 
 def verify(root, home=None, project=None):
-    home, config, managed = paths(home or Path.home())
+    home, config, managed = paths(home)
     old = metadata(managed)
     entry = read_config(config).get('mcp_servers', {}).get(ENTRY_NAME)
     if not old or old.get('status') != 'installed' or entry is None:
@@ -315,7 +323,7 @@ def main(root, argv=None):
     sub = parser.add_subparsers(dest='command', required=True)
     for name in ('chatgpt-integration-inspect', 'chatgpt-integration-plan', 'chatgpt-integration-verify'):
         command = sub.add_parser(name)
-        command.add_argument('--home', default=str(Path.home()))
+        command.add_argument('--home')
         if name == 'chatgpt-integration-verify':
             command.add_argument('--project')
         if name == 'chatgpt-integration-plan':

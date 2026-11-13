@@ -78,6 +78,15 @@ class ChatGPTIntegrationTests(unittest.TestCase):
             '# préférences Codex\nmodel = "gpt-5.1"\n\n[mcp_servers.other]\ncommand = "/usr/bin/true"\nargs = []\n'
             'env = {TOKEN = "secret"}\n\n[profiles.work]\nmodel = "gpt-5.1-mini"\n')
 
+    def test_default_home_ignores_sandboxed_process_home(self):
+        # A deployment shell may run with HOME redirected (ex. ~/.dsh); the
+        # ChatGPT desktop app still reads the real user's ~/.codex/config.toml.
+        redirected = self.base / '.dsh'
+        with patch.dict(os.environ, {'HOME': str(redirected)}):
+            home, config, _ = integration.paths(None)
+        self.assertEqual(home, redirected.parent)
+        self.assertEqual(config, home / '.codex/config.toml')
+
     def test_inspect_empty_is_read_only(self):
         before = harness_integration.tree_files(self.home)
         inspected = integration.inspect(self.root, self.home)
