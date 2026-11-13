@@ -192,26 +192,33 @@ class ServiceTests(unittest.TestCase):
     def test_uncertain_write_reconciles_with_same_operation_id(self):
         operation = uid()
         fields = {'operation_id': operation, 'text': 'uncertain private content', 'source': SOURCE}
-        original = os.fsync
-        directory_syncs = 0
+        original_fsync, original_replace = os.fsync, os.replace
+        folder = self.state / 'orchestrator-memory.noindex'
+        replaced = [False]
+        def mark_replaced(src, dst, *args, **kwargs):
+            result = original_replace(src, dst, *args, **kwargs)
+            if str(dst).endswith('memory.enc'):
+                replaced[0] = True
+            return result
         def fail_after_replace(fd):
-            nonlocal directory_syncs
             info = os.fstat(fd)
-            path = self.state / 'orchestrator-memory.noindex'
-            if (info.st_dev, info.st_ino) == (path.stat().st_dev, path.stat().st_ino):
-                directory_syncs += 1
-                if directory_syncs == 2: raise OSError('private filesystem error')
-            return original(fd)
-        with patch.object(memory.os, 'fsync', side_effect=fail_after_replace):
+            # The first-write marker performs its own folder sync before
+            # replace; fail only the post-replace directory sync.
+            if replaced[0] and (info.st_dev, info.st_ino) == (folder.stat().st_dev, folder.stat().st_ino):
+                raise OSError('private filesystem error')
+            return original_fsync(fd)
+        with patch.object(memory.os, 'fsync', side_effect=fail_after_replace), \
+             patch.object(memory.os, 'replace', side_effect=mark_replaced):
             response = self.request('create_fact', **fields)
         self.assertEqual(response, {'status': 'memory_unavailable', 'effect': 'indeterminate'})
         self.assertNotIn('private', json.dumps(response))
         def fail_memory_dir(fd):
+            # Replay sees the replaced snapshot on disk; its folder sync must
+            # keep failing until a successful durable sync confirms it.
             info = os.fstat(fd)
-            directory = (self.state / 'orchestrator-memory.noindex').stat()
-            if (info.st_dev, info.st_ino) == (directory.st_dev, directory.st_ino):
+            if (info.st_dev, info.st_ino) == (folder.stat().st_dev, folder.stat().st_ino):
                 raise OSError('directory sync still failing')
-            return original(fd)
+            return original_fsync(fd)
         with patch.object(memory.os, 'fsync', side_effect=fail_memory_dir):
             self.assertEqual(self.request('create_fact', **fields),
                              {'status': 'memory_unavailable', 'effect': 'not_admitted'})
