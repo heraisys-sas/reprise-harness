@@ -99,11 +99,11 @@ Le refus a lieu **avant toute admission** (aucune ligne `delegation_requests`, a
 Activation (l'autorisation est une décision de l'opérateur, jamais déduite d'une demande) :
 
 ```
-harness_integration integration-plan --home … --profile … --project /absolute/project --action install --delegate --codex-workspace-write
-harness_integration integration-apply
+harness_integration harness-integration-plan --home … --profile … --project /absolute/project --action install --delegate --codex-workspace-write
+harness_integration harness-integration-apply
 ```
 
-`--codex-workspace-write` exige `--delegate`. Le périmètre inscriptible est `implementation_scope` = le `project_root` du pont ; les approbations natives Codex restent requises. L'autorisation est lue au démarrage du pont : **redémarrer le pont** après `integration-apply`, puis vérifier `reprise_backends` (`workspace_write_authorized: true`, `implementation_scope` renseigné).
+`--codex-workspace-write` exige `--delegate`. Le périmètre inscriptible est `implementation_scope` = le `project_root` du pont ; les approbations natives Codex restent requises. L'autorisation est lue au démarrage du pont : **redémarrer le pont** après `harness-integration-apply`, puis vérifier `reprise_backends` (`workspace_write_authorized: true`, `implementation_scope` renseigné).
 
 ## Pont MCP ChatGPT desktop (issue #156)
 

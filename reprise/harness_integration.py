@@ -1475,13 +1475,13 @@ def verify(home, profile, root=None, project=None):
 def main(root, argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
-    for name in ('integration-inspect', 'integration-plan', 'integration-verify'):
+    for name in ('harness-integration-inspect', 'harness-integration-plan', 'harness-integration-verify'):
         command = sub.add_parser(name)
         command.add_argument('--home', required=True)
-        command.add_argument('--profile', required=name != 'integration-inspect')
-        if name == 'integration-verify':
+        command.add_argument('--profile', required=name != 'harness-integration-inspect')
+        if name == 'harness-integration-verify':
             command.add_argument('--project')
-        if name == 'integration-plan':
+        if name == 'harness-integration-plan':
             command.add_argument('--project', required=True)
             command.add_argument('--action', choices=('install', 'remove'), required=True)
             toggle = command.add_mutually_exclusive_group()
@@ -1504,7 +1504,7 @@ def main(root, argv=None):
             command.add_argument('--memory-access', choices=('off', 'read', 'write'), default=None)
             command.add_argument('--memory-project-id')
             command.add_argument('--memory-scope-id', help='Scope v2 préexistant explicitement sélectionné')
-    command = sub.add_parser('integration-reconcile-plan')
+    command = sub.add_parser('harness-integration-reconcile-plan')
     command.add_argument('--home', default=str(Path.home() / '.dsh'))
     command.add_argument('--profile', required=True)
     command.add_argument('--project', required=True)
@@ -1513,17 +1513,17 @@ def main(root, argv=None):
     toggle = command.add_mutually_exclusive_group(required=True)
     toggle.add_argument('--codex-workspace-write', action='store_true', default=None)
     toggle.add_argument('--no-codex-workspace-write', dest='codex_workspace_write', action='store_false')
-    sub.add_parser('integration-apply')
+    sub.add_parser('harness-integration-apply')
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
-        if args.command == 'integration-inspect':
+        if args.command == 'harness-integration-inspect':
             result = inspect(args.home, args.profile)
-        elif args.command == 'integration-reconcile-plan':
+        elif args.command == 'harness-integration-reconcile-plan':
             result = {'status': 'planned', 'plan': reconcile_plan(root, args.home, args.profile, args.project,
                 args.output_resume_project, args.codex_workspace_write, args.accept_block_sha256),
                 'message': 'Plan explicite sans écriture ni sauvegarde ; aucune activation ni rollback.'}
-        elif args.command == 'integration-plan':
+        elif args.command == 'harness-integration-plan':
             old = manifest(context(args.home, args.profile)[2])
             installed = old if old and old.get('status') == 'installed' else {}
             changed_project = bool(installed and str(Path(args.project).resolve(strict=True)) != installed.get('project'))
@@ -1543,14 +1543,14 @@ def main(root, argv=None):
                 args.output_resume_project = installed.get('output_resume_project')
             result = {'status': 'planned', 'message': 'Plan sans écriture. L’installation n’autorise ni inférence ni activation automatique.',
                       'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role, args.output_resume, args.output_resume_project, args.codex_workspace_write, args.asi1_effort, args.disable_bash_sandbox, args.memory_access, args.memory_project_id, args.memory_scope_id)}
-        elif args.command == 'integration-apply':
+        elif args.command == 'harness-integration-apply':
             public = json.loads(sys.stdin.read(1024 * 1024))['plan']
             result = apply(root, public)
         else:
             result = verify(args.home, args.profile, root=root, project=args.project)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         result = {'status': 'refused', 'message': str(error), 'recovery': 'Aucune suppression automatique. Inspecter le profil pour retrouver un plan partiel ou les sauvegardes.'}
-        if args.command == 'integration-apply' and isinstance(locals().get('public'), dict):
+        if args.command == 'harness-integration-apply' and isinstance(locals().get('public'), dict):
             try:
                 evidence = inspect(public['home'], public['profile'])
                 for key in ('pending_plan', 'backup'):

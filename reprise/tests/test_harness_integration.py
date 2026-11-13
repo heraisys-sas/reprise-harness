@@ -203,12 +203,24 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertNotIn('--codex-workspace-write', self.config.read_text())
         self.assertFalse(integration.inspect(self.home, 'desktop')['codex_workspace_write'])
 
+    def test_deprecated_bare_names_are_routed_with_warning(self):
+        # Issue #160 : les anciens noms nus restent acceptés (avertissement stderr, comportement identique).
+        absent = self.base / 'never-initialized-state-alias'
+        environment = dict(os.environ, AGENT_RESUME_STATE=str(absent), PYTHONDONTWRITEBYTECODE='1')
+        command = [sys.executable, str(SOURCE / 'reprise'), 'integration-inspect', '--home', str(self.home)]
+        result = subprocess.run(command, capture_output=True, text=True, env=environment)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['profiles'], ['desktop', 'other'])
+        self.assertIn('déprécié', result.stderr)
+        self.assertIn('#160', result.stderr)
+        self.assertIn('harness-integration-inspect', result.stderr)
+
     def test_cli_reinstallation_without_workspace_write_flag_revokes_grant(self):
         self.install(delegate=True, codex_workspace_write=True)
         output = io.StringIO()
         with redirect_stdout(output):
             status = integration.main(self.root, [
-                'integration-plan', '--home', str(self.home), '--profile', 'desktop',
+                'harness-integration-plan', '--home', str(self.home), '--profile', 'desktop',
                 '--project', str(self.project), '--action', 'install', '--delegate'])
         self.assertEqual(status, 0, output.getvalue())
         result = json.loads(output.getvalue())
@@ -555,7 +567,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'journal modifié'):
             integration.apply(self.root, proposed)
         self.assertEqual(self.snapshot(), before)
-        response = subprocess.run([sys.executable, str(SOURCE / 'reprise'), 'integration-apply'],
+        response = subprocess.run([sys.executable, str(SOURCE / 'reprise'), 'harness-integration-apply'],
                                   input=json.dumps({'plan': proposed}), text=True, capture_output=True,
                                   env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'), timeout=30)
         self.assertNotEqual(response.returncode, 0)
@@ -578,7 +590,7 @@ class HarnessIntegrationTests(unittest.TestCase):
     def test_cli_inspect_does_not_initialize_state(self):
         absent = self.base / 'never-initialized-state'
         environment = dict(os.environ, AGENT_RESUME_STATE=str(absent), PYTHONDONTWRITEBYTECODE='1')
-        command = [sys.executable, str(SOURCE / 'reprise'), 'integration-inspect', '--home', str(self.home)]
+        command = [sys.executable, str(SOURCE / 'reprise'), 'harness-integration-inspect', '--home', str(self.home)]
         result = subprocess.run(command, capture_output=True, text=True, env=environment, check=True)
         self.assertEqual(json.loads(result.stdout)['profiles'], ['desktop', 'other'])
         self.assertFalse(absent.exists())

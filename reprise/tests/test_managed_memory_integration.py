@@ -207,7 +207,7 @@ class ManagedMemoryTests(unittest.TestCase):
         with self.with_scope_observation():
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                result_code = dsh.main(self.root, ['integration-plan', '--home', str(self.dsh_home),
+                result_code = dsh.main(self.root, ['harness-integration-plan', '--home', str(self.dsh_home),
                     '--profile', 'desktop', '--project', str(self.repo), '--action', 'install',
                     '--memory-access', 'read', '--memory-project-id', self.project_id,
                     '--memory-scope-id', scope])
@@ -313,7 +313,7 @@ class ManagedMemoryTests(unittest.TestCase):
                                         codex_workspace_write=True))
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            code = dsh.main(self.root, ['integration-plan', '--home', str(self.dsh_home), '--profile', 'desktop',
+            code = dsh.main(self.root, ['harness-integration-plan', '--home', str(self.dsh_home), '--profile', 'desktop',
                 '--project', str(self.repo), '--action', 'install', '--memory-access', 'read',
                 '--memory-project-id', self.project_id])
         self.assertEqual(code, 0)
@@ -337,7 +337,7 @@ class ManagedMemoryTests(unittest.TestCase):
             output_resume=True, asi1_effort=True, bash_sandbox_disabled=True, agent_role='coordinator'))
         before = self.dsh_config.read_bytes()
         output = io.StringIO()
-        arguments = ['integration-plan', '--home', str(self.dsh_home), '--profile', 'desktop',
+        arguments = ['harness-integration-plan', '--home', str(self.dsh_home), '--profile', 'desktop',
                      '--project', str(self.other), '--action', 'install']
         with contextlib.redirect_stdout(output):
             code = dsh.main(self.root, arguments)
@@ -349,7 +349,7 @@ class ManagedMemoryTests(unittest.TestCase):
         for project in (self.repo, self.other):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                code = dsh.main(self.root, ['integration-plan', '--home', str(self.dsh_home),
+                code = dsh.main(self.root, ['harness-integration-plan', '--home', str(self.dsh_home),
                     '--profile', 'desktop', '--project', str(project), '--action', 'install',
                     '--no-delegate', '--no-codex-workspace-write', '--no-output-resume',
                     '--no-asi1-effort', '--enable-bash-sandbox', '--agent-role', 'standard'])

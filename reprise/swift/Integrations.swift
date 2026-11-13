@@ -457,7 +457,7 @@ extension App {
     }
     func inspectIntegration() {
         guard stateReady, !setupBusy else { return }
-        var args = ["integration-inspect", "--home", integrationHome]
+        var args = ["harness-integration-inspect", "--home", integrationHome]
         if !integrationProfile.isEmpty { args += ["--profile", integrationProfile] }
         setupCommand(args) { result in
             self.integrationProfiles = result["profiles"] as? [String] ?? []
@@ -479,7 +479,7 @@ extension App {
     }
     func previewIntegration(action: String) {
         guard stateReady, !setupBusy else { return }
-        var args = ["integration-plan", "--home", integrationHome, "--profile", integrationProfile, "--project", integrationProject, "--action", action]
+        var args = ["harness-integration-plan", "--home", integrationHome, "--profile", integrationProfile, "--project", integrationProject, "--action", action]
         if integrationDelegate { args.append("--delegate") }
         if integrationDelegate && integrationCodexWorkspaceWrite { args.append("--codex-workspace-write") }
         if integrationOutputResume {
@@ -499,7 +499,7 @@ extension App {
     }
     func applyIntegration() {
         guard stateReady, !setupBusy, integrationAcknowledged, let plan = integrationPlan else { return }
-        setupCommand(["integration-apply"], input: ["plan": plan]) { result in
+        setupCommand(["harness-integration-apply"], input: ["plan": plan]) { result in
             self.integrationResult = result
             self.integrationAcknowledged = false
             self.integrationVerification = nil
@@ -514,7 +514,7 @@ extension App {
     }
     func verifyIntegration() {
         guard stateReady, !setupBusy else { return }
-        setupCommand(["integration-verify", "--home", integrationHome, "--profile", integrationProfile]) { result in
+        setupCommand(["harness-integration-verify", "--home", integrationHome, "--profile", integrationProfile]) { result in
             self.integrationVerification = result
             self.integrationMessage = result["message"] as? String ?? "Vérification non confirmée."
             if let diagnostic = result["diagnostic"] as? String { self.integrationMessage += "\n" + diagnostic }
