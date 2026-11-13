@@ -53,7 +53,7 @@ class ShardPartitionTests(unittest.TestCase):
                 self.assertEqual(first[0], str(root / 'cache' / f'interp-{digest[:12]}' / 'python/bin/python3'))
                 self.assertEqual(first[1], {'REPRISE_TEST_RUNTIME_ARCHIVE': str(archive.resolve())})
                 self.assertEqual(ci_test.pinned_interpreter(), first)
-                self.assertEqual(calls, [archive])
+                self.assertEqual(calls, [archive.resolve()])
                 archive.write_bytes(b'tampered')
                 with self.assertRaises(ValueError):
                     ci_test.pinned_interpreter()
