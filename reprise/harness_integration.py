@@ -390,6 +390,11 @@ def _release_plain_entries(root):
         yield entry, info
 
 
+def _release_directory_paths(root):
+    return sorted(str(entry.relative_to(root)) for entry, info in _release_plain_entries(root)
+                  if entry != root and stat.S_ISDIR(info.st_mode))
+
+
 def _seal_release(root, keep_root_writable=False):
     """Seal payload before publish; macOS needs a writable root for rename."""
     for entry, info in sorted(_release_plain_entries(root), key=lambda item: len(item[0].parts), reverse=True):
@@ -425,6 +430,8 @@ def release_check(release):
     if evidence['format'] == 2:
         if evidence.get('immutability') != 'posix-readonly-v1':
             raise ValueError('Politique d’immuabilité de release inconnue.')
+        if 'directories' in evidence and _release_directory_paths(release) != evidence['directories']:
+            raise ValueError('Arborescence de release altérée ; aucune exécution.')
         _check_release_readonly(release)
 
 
@@ -445,10 +452,13 @@ def diagnose_release(release, max_examples=30):
         actual = tree_files(release)
         actual.pop('release.json', None)
         writable = []
+        observed_directories = []
         if evidence['format'] == 2:
+            entries = list(_release_plain_entries(release))
             writable = [str(entry.relative_to(release))
-                        for entry, info in _release_plain_entries(release)
-                        if stat.S_IMODE(info.st_mode) & 0o222]
+                        for entry, info in entries if stat.S_IMODE(info.st_mode) & 0o222]
+            observed_directories = sorted(str(entry.relative_to(release)) for entry, info in entries
+                                          if entry != release and stat.S_ISDIR(info.st_mode))
     except FileNotFoundError:
         return {'status': 'unstable', 'release': str(release),
                 'reason': 'entry_disappeared_during_inventory'}
@@ -460,10 +470,18 @@ def diagnose_release(release, max_examples=30):
     runtime_cache = sorted(name for name in added
                            if name.startswith('Contents/Resources/runtime/')
                            and ('__pycache__' in Path(name).parts or name.endswith(('.pyc', '.pyo'))))
+    expected_directories = evidence.get('directories') if evidence['format'] == 2 else None
+    if expected_directories is not None and not isinstance(expected_directories, list):
+        raise ValueError('Inventaire des répertoires de release non supporté.')
+    extra_directories = sorted(set(observed_directories) - set(expected_directories)) if expected_directories is not None else []
+    lost_directories = sorted(set(expected_directories) - set(observed_directories)) if expected_directories is not None else []
+    runtime_cache_directories = [name for name in extra_directories
+                                 if name.startswith('Contents/Resources/runtime/')
+                                 and Path(name).name == '__pycache__']
     writable.sort()
     executable = os.access(release / 'Contents/Resources/runtime/bin/python3', os.X_OK)
     policy_ok = evidence['format'] == 1 or evidence.get('immutability') == 'posix-readonly-v1'
-    clean = not (added or missing or changed or writable) and executable and policy_ok
+    clean = not (added or missing or changed or writable or extra_directories or lost_directories) and executable and policy_ok
 
     def summary(names):
         return {'count': len(names), 'examples': names[:max_examples],
@@ -473,7 +491,11 @@ def diagnose_release(release, max_examples=30):
             'manifest_format': evidence['format'], 'policy_ok': policy_ok,
             'runtime_executable': executable, 'added': summary(added),
             'missing': summary(missing), 'changed': summary(changed),
-            'writable': summary(writable), 'new_runtime_cache': summary(runtime_cache)}
+            'writable': summary(writable), 'new_runtime_cache': summary(runtime_cache),
+            'directory_inventory': expected_directories is not None,
+            'added_directories': summary(extra_directories),
+            'missing_directories': summary(lost_directories),
+            'new_runtime_cache_dirs': summary(runtime_cache_directories)}
 
 
 def _sync_file(path):
@@ -665,6 +687,7 @@ def stage_release(helpers, runtime, release):
         if bundle_info(helper_target)[2] != release.name:
             raise ValueError('Identité du bundle différente du plan ; publication refusée.')
         atomic(stage / 'release.json', encoded({'format': 2, 'immutability': 'posix-readonly-v1',
+                                                'directories': _release_directory_paths(stage),
                                                 'files': tree_files(stage)}))
         try:
             _seal_release(stage, keep_root_writable=True)

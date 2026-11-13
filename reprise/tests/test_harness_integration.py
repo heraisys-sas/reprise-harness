@@ -101,6 +101,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         evidence = json.loads((release / 'release.json').read_text())
         self.assertEqual(evidence['format'], 2)
         self.assertEqual(evidence['immutability'], 'posix-readonly-v1')
+        self.assertIn('Contents/Resources/runtime', evidence['directories'])
         for entry in [release, *release.rglob('*')]:
             if not entry.is_symlink():
                 self.assertFalse(stat.S_IMODE(entry.stat().st_mode) & 0o222, str(entry))
@@ -242,14 +243,31 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertEqual(integration.diagnose_release(release)['status'], 'clean')
 
         runtime_target = release / 'Contents/Resources/runtime'
-        runtime_target.chmod(0o700)  # Fault injection on a disposable release.
-        cache = runtime_target / '__pycache__/unexpected.pyc'
-        cache.parent.mkdir()
+        previous_mode = stat.S_IMODE(runtime_target.stat().st_mode)
+        runtime_target.chmod(previous_mode | stat.S_IWUSR)
+        cache_directory = runtime_target / '__pycache__'
+        cache_directory.mkdir()
+        cache_directory.chmod(0o500)
+        runtime_target.chmod(previous_mode)
+        empty = integration.diagnose_release(release)
+        self.assertEqual(empty['status'], 'drift')
+        self.assertTrue(empty['directory_inventory'])
+        self.assertEqual(empty['new_runtime_cache_dirs']['examples'],
+                         ['Contents/Resources/runtime/__pycache__'])
+        self.assertEqual(empty['new_runtime_cache']['count'], 0)
+        self.assertEqual(empty['writable']['count'], 0)
+        with self.assertRaisesRegex(ValueError, 'Arborescence'):
+            integration.release_check(release)
+
+        runtime_target.chmod(previous_mode | stat.S_IWUSR)
+        cache_directory.chmod(0o700)
+        cache = cache_directory / 'unexpected.pyc'
         cache.write_bytes(b'not executable bytecode')
         snapshot = integration.tree_files(release)
         reported = integration.diagnose_release(release)
         self.assertEqual(reported['status'], 'drift')
         self.assertEqual(reported['new_runtime_cache']['count'], 1)
+        self.assertEqual(reported['new_runtime_cache_dirs']['count'], 1)
         self.assertEqual(reported['new_runtime_cache']['examples'],
                          ['Contents/Resources/runtime/__pycache__/unexpected.pyc'])
         self.assertGreaterEqual(reported['writable']['count'], 1)
