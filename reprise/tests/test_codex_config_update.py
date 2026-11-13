@@ -48,6 +48,10 @@ class CodexConfigUpdateTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
+        # Tests synthétiques : rétablir les droits des répertoires des releases
+        # publiées seulement lors du nettoyage de la fixture.
+        import harness_integration
+        self.addCleanup(harness_integration._restore_directory_writes, self.root)
         self.base = self.root / 'integration-releases'
         self.old = self.base / ('a' * 64)
         self.target = self.base / ('b' * 64)
@@ -390,7 +394,9 @@ class CodexConfigUpdateTests(unittest.TestCase):
         staged = self.base / identity
         harness_integration.stage_release(helpers, runtime, staged)
         self.assertEqual(update._release(staged, self.base), staged)
-        (staged / 'Contents/Resources/helpers/apple_expert.py').write_text('tampered')
+        tampered = staged / 'Contents/Resources/helpers/apple_expert.py'
+        tampered.chmod(tampered.stat().st_mode | 0o200)  # Fault injection, not a runtime write.
+        tampered.write_text('tampered')
         with self.assertRaises(ValueError):
             update._release(staged, self.base)
 
