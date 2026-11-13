@@ -50,7 +50,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.assertEqual(payload['data']['kind'], 'workspace_write_not_authorized')
         self.assertIn('--codex-workspace-write', payload['data']['enable_with'])
         # Les autres refus gardent le message générique uniforme.
-        self.assertEqual(error_payload(ValueError('x'))['message'], 'Request refused or unavailable; no automatic retry.')
+        self.assertEqual(error_payload(ValueError('x'))['message'], 'Request refused or invalid; no automatic retry.')
 
     def test_backends_reports_how_to_enable_writes_and_reflects_grant_issue_104(self):
         codex = self.call('reprise_backends', {})['backends'][0]
@@ -238,7 +238,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         payload = error_payload(ValueError('chatId and filePaths are only valid with backend claude-desktop'))
         self.assertEqual(payload['code'], -32602)
         self.assertEqual(payload['data']['kind'], 'refused')
-        self.assertEqual(payload['message'], 'Request refused or unavailable; no automatic retry.')
+        self.assertEqual(payload['message'], 'Request refused or invalid; no automatic retry.')
         self.assertTrue(payload['data']['error'].startswith('ValueError: '))
         self.assertIn('claude-desktop', payload['data']['error'])
         self.assertLessEqual(len(error_payload(OSError('x' * 500))['data']['error']), 200)
@@ -248,11 +248,34 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         busy = error_payload(BlockingIOError('lock held'))
         self.assertEqual(busy['code'], -32000)
         self.assertEqual(busy['data']['kind'], 'busy')
+        self.assertEqual(busy['data']['reason_code'], 'bridge_busy')
+        self.assertIn('Bridge busy', busy['message'])
         unavailable = error_payload(Unavailable('engine_unavailable', 'Exécutable Codex introuvable.'))
         self.assertEqual(unavailable['code'], -32000)
         self.assertEqual(unavailable['data']['kind'], 'unavailable')
+        self.assertIn('backend unavailable', unavailable['message'])
         # A refused request keeps its own code: the three cases stay machine-distinguishable (#53).
         self.assertNotEqual(busy['code'], error_payload(ValueError('bad args'))['code'])
+
+    def test_unknown_reconcile_request_is_not_found_not_generic_refusal(self):
+        import codex_expert_mcp
+        with self.assertRaises(codex_expert_mcp.RequestNotFound) as caught:
+            self.bridge.call('reprise_reconcile', {'request_key': 'unseen-key-for-reconcile'})
+        error = error_payload(caught.exception)
+        self.assertEqual(error['code'], -32004)
+        self.assertEqual(error['data']['kind'], 'not_found')
+        self.assertIn('not found', error['message'])
+
+    def test_busy_bridge_refuses_before_dispatch_with_reason_code(self):
+        import fcntl
+        with self.bridge.lock_path.open('a') as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch.object(self.bridge, '_call', side_effect=AssertionError('not dispatched')):
+                result = self.call('reprise_delegate', {'question': 'Review', 'kind': 'expertise'})
+        self.assertEqual(result['status'], 'busy')
+        self.assertEqual(result['reason_code'], 'bridge_busy')
+        self.assertFalse(result['dispatched'])
+        self.assertFalse(result['automatic_retry'])
 
     def test_padded_oversized_followup_rejected_before_budget(self):
         self.bridge.db.execute('INSERT INTO expert_threads VALUES (?,?)', (self.bridge.scope, ID))

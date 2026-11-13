@@ -2,6 +2,21 @@
 
 Implémentation du 21 octobre 2026, sans appel fournisseur réel ni redémarrage de service. Ce lot consolide les prototypes existants ; leur réunion en service logique commun et le branchement autonome dispatch QTi → tâche MCP restent à livrer.
 
+## Classification des refus et indisponibilités (#53)
+
+L'interface MCP distingue les erreurs de validation/refus (`data.kind=refused`,
+code JSON-RPC `-32602`), indisponibilités de backend (`unavailable`,
+`-32000`), registre indisponible (`storage_error`) et pont déjà occupé
+(`busy` avec `reason_code=bridge_busy`). Les messages publics portent la
+raison au lieu de présenter ces situations comme équivalentes. L'absence
+d'une clé dans `reprise_reconcile` renvoie `not_found` (code `-32004`) ;
+les lectures `reprise_requests` et `wait_result` exposent également
+`status=not_found`. Une réponse directe `status=busy` conserve le contrat
+préexistant et précise `automatic_retry=false` ; aucun `retry_at` n'est
+inventé. La seule sérialisation autorisée est **une expertise active à la
+fois par répertoire d'état**. Aucune file côté client, aucun réenvoi implicite,
+aucun changement de preuve d'admission ou de reçu métier.
+
 ## Contrat utilisable
 
 Avant chaque appel d’inférence (`reprise_delegate`, `reprise_followup`, `codex_review`, `codex_followup`), le demandeur doit **persister une `request_key` non vide, de 128 caractères maximum**. Même clé + mêmes arguments, parent et empreintes des fichiers = même reçu, sans nouvelle exécution. Même clé + contenu différent = refus. Les anciens clients sans clé doivent être adaptés ; aucune clé aléatoire créée côté serveur ne masque un accusé perdu.

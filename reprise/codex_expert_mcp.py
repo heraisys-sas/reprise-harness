@@ -39,6 +39,10 @@ class WorkspaceWriteNotAuthorized(ValueError):
     """Implementation refused: the operator never granted project workspace writes (issue #104)."""
 
 
+class RequestNotFound(LookupError):
+    """An exact request_key does not exist in this bridge scope."""
+
+
 class ThreadNotOwned(ValueError):
     """Followup refused: this bridge never created the requested thread (issue #100)."""
 
@@ -57,6 +61,9 @@ def error_payload(exc):
     if isinstance(exc, DesktopRegistryUnavailable):
         return {'code': -32000, 'message': 'Desktop registry unavailable; no task created.',
                 'data': {'kind': 'desktop_registry_unavailable'}}
+    if isinstance(exc, RequestNotFound):
+        return {'code': -32004, 'message': 'Request key not found in this bridge scope; no automatic retry.',
+                'data': {'kind': 'not_found', 'error': detail}}
     if isinstance(exc, ThreadNotOwned):
         # Issue #100: name the reason and the resume path instead of the generic refusal.
         return {'code': code,
@@ -86,8 +93,15 @@ def error_payload(exc):
     elif isinstance(exc, OSError):
         # I/O failure (disk, socket path); not a caller mistake.
         kind = 'storage_error'
-    return {'code': code, 'message': 'Request refused or unavailable; no automatic retry.',
-            'data': {'kind': kind, 'error': detail}}
+    messages = {
+        'busy': 'Bridge busy: one active request per state directory; no automatic retry.',
+        'unavailable': 'Requested backend unavailable; no automatic fallback or retry.',
+        'refused': 'Request refused or invalid; no automatic retry.',
+        'storage_error': 'Bridge storage unavailable; no automatic retry.',
+    }
+    return {'code': code, 'message': messages[kind],
+            'data': {'kind': kind, 'reason_code': 'bridge_busy' if kind == 'busy' else kind,
+                     'error': detail}}
 
 BACKEND_MODELS = {
     'codex': ('gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'),
@@ -456,7 +470,9 @@ class Bridge:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                return {'status': 'busy', 'reason': 'One active expertise per state directory; no automatic retry.'}
+                return {'status': 'busy', 'reason_code': 'bridge_busy',
+                        'automatic_retry': False, 'dispatched': False,
+                        'reason': 'Bridge busy: one active expertise per state directory; no automatic retry.'}
             clean = {k: v for k, v in args.items() if k not in ('request_key', 'parent_request_key', 'return_mode')}
             mode = self.execution_mode(name, clean)
             if clean.get('backend') == 'foundation-models':
@@ -958,10 +974,11 @@ class Bridge:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 return {'status': 'busy', 'request_key': key,
-                        'reason': 'An active client owns the state; no concurrent reconciliation.'}
+                        'reason_code': 'bridge_busy', 'automatic_retry': False,
+                        'reason': 'Bridge busy: one active client owns the state; no concurrent reconciliation.'}
             receipt = self.requests.lookup({'request_key': key})
             if receipt.get('status') == 'not_found':
-                raise ValueError('Unknown request_key')
+                raise RequestNotFound('Unknown request_key')
             native = self.requests.phase(key)
             previous = receipt.get('result') or {}
             if native is None and previous.get('thread_id') and previous.get('turn_id'):
@@ -979,6 +996,7 @@ class Bridge:
             claim = self.requests.claim(key, self.owner, stale_after=120.0)
             if claim == 'held':
                 return {'status': 'busy', 'request_key': key,
+                        'reason_code': 'bridge_busy', 'automatic_retry': False,
                         'reason': 'Another live owner holds this request; reconcile later without a new turn.'}
             try:
                 result = reconcile_turn(self.requests, self.root, key, action=action, reason=args.get('reason'),
