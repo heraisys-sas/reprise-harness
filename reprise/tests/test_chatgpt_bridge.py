@@ -77,14 +77,30 @@ class ChatgptProjectionTests(unittest.TestCase):
         self.assertEqual(waited['status'], 'finished')
 
     def test_request_key_preserved_in_routing_journal(self):
+        # Local ChatGPT admission has no inference or remote service dependency.
+        # An unconfigured Codex executable can refuse before routing is logged.
+        bridge = Bridge(self.root, {}, self.root / 'expert', daily_limit=2,
+                        desktop_state=self.root / 'desktop', chatgpt_socket=str(self.state))
+        self.addCleanup(bridge.close)
+        result = bridge.call('reprise_delegate', {'question': 'Revue', 'kind': 'expertise',
+                                                  'backend': 'chatgpt', 'request_key': 'jk'})
+        self.assertEqual(result['status'], 'finished')
+        self.assertTrue(result['admission_only'])
+        row = bridge.db.execute(
+            "SELECT request_key FROM routing_events WHERE tool='reprise_delegate' "
+            "AND channel='chatgpt' ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], 'jk')
+
+    def test_pre_admission_refusal_does_not_invent_routing_event(self):
         bridge = Bridge(self.root, {}, self.root / 'expert', daily_limit=2,
                         desktop_state=self.root / 'desktop')
-        self.addCleanup(bridge.db.close)
-        bridge.call('reprise_delegate', {'question': 'Revue', 'kind': 'expertise',
-                                         'request_key': 'jk'})
-        row = bridge.db.execute(
-            'SELECT request_key FROM routing_events ORDER BY rowid DESC LIMIT 1').fetchone()
-        self.assertEqual(row[0], 'jk')
+        self.addCleanup(bridge.close)
+        result = bridge.call('reprise_delegate', {'question': 'Revue', 'kind': 'expertise',
+                                                  'backend': 'chatgpt', 'request_key': 'denied'})
+        self.assertEqual(result['status'], 'engine_unavailable')
+        self.assertIsNone(bridge.db.execute(
+            'SELECT id FROM routing_events ORDER BY id DESC LIMIT 1').fetchone())
 
 
 if __name__ == '__main__':
