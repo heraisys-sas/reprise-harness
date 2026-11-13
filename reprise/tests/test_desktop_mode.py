@@ -193,3 +193,175 @@ class QuickApplyDaemonTests(unittest.TestCase):
                 result = dm.daemon_start(socket=str(socket_path), state=str(other_state))
         self.assertEqual(result['status'], 'startup_busy')
         popen.assert_not_called()
+
+class QuickApplyShutdownTests(unittest.TestCase):
+    """Socket-local protocol tests; never open or stop the user's daemon."""
+
+    def setUp(self):
+        import tempfile
+        self._temp = tempfile.TemporaryDirectory(prefix='reprise-qa-', dir='/tmp')
+        self.addCleanup(self._temp.cleanup)
+        self.state = Path(self._temp.name)
+        self.socket_path = self.state / 'quick.sock'
+        self.token = 'ab' * 32
+        (self.state / 'quick-apply-shutdown.token').write_text(self.token)
+        setting = patch.object(dm, 'DEFAULT_SOCKET', self.socket_path)
+        setting.start()
+        self.addCleanup(setting.stop)
+
+    def _serve_once(self, reply):
+        import json
+        import os
+        import socket
+        import threading
+
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(self.socket_path))
+        os.chmod(self.socket_path, 0o600)  # engines.socket_path enforces owner-only sockets
+        listener.listen(2)
+        messages, errors = [], []
+
+        def worker():
+            try:
+                conn, _ = listener.accept()
+                with conn:
+                    conn.settimeout(3)
+                    conn.sendall(b'{"hello":true}\n')
+                    raw = bytearray()
+                    while b'\n' not in raw:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            raise ValueError('Client disconnected before shutdown')
+                        raw.extend(chunk)
+                    message = json.loads(raw.split(b'\n', 1)[0])
+                    messages.append(message)
+                    if reply is not None:
+                        conn.sendall((json.dumps({'jsonrpc': '2.0', 'id': message['id'],
+                                                  'result': reply}) + '\n').encode())
+            except Exception as error:
+                errors.append(error)
+            finally:
+                listener.close()
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (listener.close(), thread.join(timeout=3)))
+        return messages, errors, thread
+
+    def test_authenticated_shutdown_waits_for_socket_closure(self):
+        messages, errors, thread = self._serve_once({'ok': True})
+        result = dm.daemon_stop(self.state)
+        thread.join(timeout=3)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(result['status'], 'stopped')
+        self.assertTrue(result['stopped'])
+        self.assertTrue(result['ok'])
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]['method'], 'shutdown')
+        self.assertEqual(messages[0]['params'], {'token': self.token})
+        self.assertNotIn(self.token, str(result))
+
+    def test_shutdown_rejected_by_daemon_never_reports_stopped(self):
+        messages, errors, thread = self._serve_once({'ok': False, 'status': 'unauthenticated'})
+        result = dm.daemon_stop(self.state)
+        thread.join(timeout=3)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(result['status'], 'unauthenticated')
+        self.assertFalse(result['stopped'])
+        self.assertNotIn(self.token, str(result))
+
+    def test_shutdown_lost_reply_is_indeterminate_and_not_retried(self):
+        messages, errors, thread = self._serve_once(None)
+        result = dm.daemon_stop(self.state)
+        thread.join(timeout=3)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(result['status'], 'indeterminate')
+        self.assertFalse(result['ok'])
+        self.assertFalse(result['stopped'])
+        self.assertNotIn(self.token, str(result))
+
+    def test_orphan_socket_does_not_claim_shutdown(self):
+        import os
+        import socket
+
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(self.socket_path))
+        os.chmod(self.socket_path, 0o600)
+        listener.close()
+        result = dm.daemon_stop(self.state)
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertFalse(result['stopped'])
+        self.assertFalse(result['ok'])
+
+    def test_invalid_local_token_does_not_contact_daemon(self):
+        (self.state / 'quick-apply-shutdown.token').write_text('invalid-token')
+        with patch('claude_desktop_rpc.Client') as client:
+            result = dm.daemon_stop(self.state)
+        self.assertEqual(result['status'], 'unauthenticated')
+        self.assertFalse(result['stopped'])
+        client.assert_not_called()
+
+    def test_shutdown_ack_without_socket_closure_is_indeterminate(self):
+        with patch('claude_desktop_rpc.Client') as client, \
+             patch.object(dm, 'socket_state', return_value='running'), \
+             patch('time.monotonic', side_effect=[0.0, 10.0]):
+            client.return_value.call.return_value = {'ok': True}
+            result = dm.daemon_stop(self.state)
+        client.assert_called_once_with(
+            'claude-desktop', {'socket': str(self.socket_path)}, timeout=3)
+        self.assertEqual(result['status'], 'indeterminate')
+        self.assertFalse(result['stopped'])
+        self.assertFalse(result['ok'])
+
+    def test_status_queries_real_private_socket_with_correct_client_signature(self):
+        messages, errors, thread = self._serve_once({'running': False, 'targets': {}})
+        with patch.object(dm, 'socket_state', return_value='running'), \
+             patch.object(dm, 'app_running', return_value=False), \
+             patch.object(dm, 'app_version', return_value=None):
+            result = dm.daemon_status(self.state)
+        thread.join(timeout=3)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]['method'], 'cdp/status')
+        self.assertEqual(result['cdp'], {'running': False, 'targets': {}})
+
+    def test_reprise_cli_shutdown_on_isolated_home(self):
+        import json
+        import os
+        import subprocess
+
+        home = self.state / 'home'
+        home.mkdir()
+        socket_dir = home / '.claude-desktop'
+        socket_dir.mkdir(mode=0o700)
+        state = self.state / 'cli-state'
+        (state / 'quick-state').mkdir(parents=True)
+        (state / 'quick-state' / 'quick-apply-shutdown.token').write_text(self.token)
+        self.socket_path = socket_dir / 'quick-entry.sock'
+        messages, errors, thread = self._serve_once({'ok': True})
+        env = os.environ.copy()
+        env.update({'HOME': str(home), 'AGENT_RESUME_STATE': str(state),
+                    'PYTHONDONTWRITEBYTECODE': '1'})
+        result = subprocess.run(
+            [sys.executable, '-B', str(Path(__file__).parents[1] / 'reprise'),
+             'quick-apply-daemon-stop'],
+            capture_output=True, text=True, timeout=15, env=env)
+        thread.join(timeout=3)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['status'], 'stopped')
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]['method'], 'shutdown')
+
+    def test_connections_stop_wrapper_uses_authenticated_path(self):
+        result = {'ok': True, 'stopped': True, 'status': 'stopped'}
+        with patch.object(dm, 'daemon_stop', return_value=result) as stop:
+            self.assertEqual(dm.stop(), result)
+        stop.assert_called_once_with()
