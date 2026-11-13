@@ -294,6 +294,11 @@ class DurableTests(unittest.TestCase):
                     db.execute("INSERT INTO caller_state VALUES ('second')")
                     self.assertTrue(db.in_transaction)
                     before = store.phase('first')['owner']
+                    # Pure reads, including paginated receipt views, cannot commit.
+                    self.assertEqual(store.lookup({'request_key': 'first'})['state'], 'running')
+                    self.assertEqual(store.lookup({'request_key': 'first', 'view': 'receipt'})['state'], 'running')
+                    with self.assertRaisesRegex(sqlite3.OperationalError, 'Active caller transaction'):
+                        store.lookup({'request_key': 'first', 'acknowledge': True})
                     with self.assertRaisesRegex(sqlite3.OperationalError, 'Active caller transaction'):
                         store.claim('first', 'local:42')
                     self.assertTrue(db.in_transaction)
