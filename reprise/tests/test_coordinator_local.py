@@ -411,13 +411,54 @@ finally: connection.close()
         self.assertEqual(result['status'],'interrupted'); self.assertEqual(result['stop_reason'],'user_stop')
         self.assertTrue(result['process_reaped']); self.assertFalse(result['work_completed'])
 
-    def test_deadline_and_invalid_output_are_terminal_without_fallback(self):
+    def test_deadline_after_admission_records_terminal_receipt(self):
+        # The admission/deadline contract is being tested, not the static
+        # preflight process startup. Under CI load the latter can exceed its
+        # independent 2-second limit before any execution was admitted.
         self.script('import time\ntime.sleep(20)\n')
-        run, _, _ = self.reserve(seconds=1)
-        self.local.run(self.project,self.operation,run,Control())
-        result=self.local.recover(self.project,self.operation)['local_execution']['receipt']
-        self.assertEqual(result['stop_reason'],'execution_deadline')
-        self.assertTrue(result['process_reaped'])
+        with patch('coordinator_local._probe', return_value=None), \
+             patch('coordinator_local._spawn', wraps=__import__('coordinator_local')._spawn) as spawn:
+            run, _, _ = self.reserve(seconds=1)
+            self.local.run(self.project, self.operation, run, Control())
+        self.assertEqual(spawn.call_count, 1, 'execution helper must be launched after admission')
+        row = self.local.recover(self.project, self.operation)
+        self.assertEqual(row['status'], 'local_recorded')
+        receipt = row['local_execution']['receipt']
+        self.assertIsNotNone(receipt, 'terminal result should be durable after admission')
+        self.assertEqual(receipt['status'], 'interrupted')
+        self.assertEqual(receipt['stop_reason'], 'execution_deadline')
+        self.assertTrue(receipt['process_started'])
+        self.assertTrue(receipt['process_reaped'])
+        self.assertFalse(receipt['work_completed'])
+        self.assertNotIn('response', receipt)
+
+    def test_invalid_helper_output_after_admission_is_terminal_not_success(self):
+        self.script('print("not-json")\n')
+        with patch('coordinator_local._probe', return_value=None):
+            run, _, _ = self.reserve()
+            self.local.run(self.project, self.operation, run, Control())
+        row = self.local.recover(self.project, self.operation)
+        self.assertEqual(row['status'], 'local_recorded')
+        receipt = row['local_execution']['receipt']
+        self.assertEqual(receipt['status'], 'apple_process_failed')
+        self.assertEqual(receipt['reason'], 'local_generation_unavailable_or_invalid')
+        self.assertTrue(receipt['process_started'])
+        self.assertTrue(receipt['process_reaped'])
+        self.assertFalse(receipt['work_completed'])
+        self.assertNotIn('response', receipt)
+
+    def test_failed_capability_preflight_never_invents_terminal_receipt(self):
+        # A probe timeout or refusal happens before guarded_handoff. There is
+        # no terminal evidence; recovery must remain indeterminate.
+        with patch('coordinator_local._probe', return_value=None):
+            run, _, _ = self.reserve()
+        with patch('coordinator_local._probe', side_effect=ValueError('synthetic preflight failure')), \
+             patch('coordinator_local._spawn', side_effect=AssertionError('must not spawn')) as spawn:
+            self.local.run(self.project, self.operation, run, Control())
+        spawn.assert_not_called()
+        row = self.local.recover(self.project, self.operation)
+        self.assertEqual(row['status'], 'local_indeterminate')
+        self.assertIsNone(row['local_execution']['receipt'])
 
     def test_changed_helper_and_lost_intent_are_not_retried(self):
         run, _, _=self.reserve(); self.script('raise SystemExit(1)\n')
