@@ -98,11 +98,15 @@ class LocalGitPolicyTests(unittest.TestCase):
         self.assertEqual(at_21.status, 'eligible_for_review')
         self.assertEqual(at_20.fingerprint, at_21.fingerprint)
         expired_observation = evaluate(self.request, self.authorization, self.observation, now=25)
-        self.assertEqual(expired_observation.status, 'blocked')
+        # Observation freshness is missing evidence, unlike an expired grant.
+        self.assertEqual(expired_observation.status, 'needs_evidence')
         self.assertIn('observation_outside_validity', expired_observation.reasons)
+        self.assertFalse(expired_observation.execution_enabled)
         self.assertNotEqual(at_20.fingerprint, expired_observation.fingerprint)
         expired_authorization = evaluate(self.request, self.authorization, self.observation, now=30)
+        self.assertEqual(expired_authorization.status, 'blocked')
         self.assertIn('authorization_outside_validity', expired_authorization.reasons)
+        self.assertFalse(expired_authorization.execution_enabled)
         self.assertNotEqual(expired_observation.fingerprint, expired_authorization.fingerprint)
 
     def test_vote_field_is_not_part_of_contract(self):
