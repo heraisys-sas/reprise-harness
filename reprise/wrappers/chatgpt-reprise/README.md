@@ -65,7 +65,10 @@ profil n'est **jamais adoptée** ; un lock orphelin entraîne un refus explicite
 Le probe cherche une cible unique `app://-/index.html` et examine seulement
 l'existence du composeur, sans lire de messages ni envoyer de prompt.
 
-**Compatibilité réelle non prouvée :** le fork Electron de ChatGPT Desktop peut
+**Compatibilité et coexistence réelles non prouvées :** même avec un profil dédié,
+un mécanisme singleton Electron pourrait activer la fenêtre opérateur. Le probe
+indique donc `operator_isolation_verified: false`, jusqu'à un test réel. Le
+fork Electron de ChatGPT Desktop peut
 ne pas honorer `--remote-debugging-pipe`, contrairement à son mode TCP
 déjà sondé. Un échec `pipe_unavailable` ne doit pas entraîner de
 reprise implicite sur le port ni sur le moteur Codex. Il faut également

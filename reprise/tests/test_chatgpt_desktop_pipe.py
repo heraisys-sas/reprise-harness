@@ -93,6 +93,7 @@ class TestOwnedProfile(unittest.TestCase):
     def test_probe_only_owns_spawned_process_and_cleans_lock(self):
         transport = mock.MagicMock()
         process = mock.Mock(pid=123456)
+        process.poll.return_value = None
         response = {'status': 'ready', 'transport': 'cdp-pipe', 'ready': True}
         with mock.patch.object(adapter, 'launch_cdp_process', return_value=(transport, process)) as launch, \
              mock.patch.object(adapter, 'census', return_value=response), \
@@ -100,7 +101,7 @@ class TestOwnedProfile(unittest.TestCase):
             result = adapter.probe(self.binary, self.root, 'dedicated')
         self.assertEqual(result['status'], 'ready')
         self.assertTrue(result['launch_attempted'])
-        self.assertFalse(result['operator_app_touched'])
+        self.assertFalse(result['operator_isolation_verified'])
         self.assertTrue(self.root.joinpath('dedicated').is_dir())
         self.assertFalse(self.root.joinpath('.dedicated.cdp-pipe.lock').exists())
         self.assertEqual(stat.S_IMODE((self.root / 'dedicated').stat().st_mode), 0o700)
@@ -110,6 +111,32 @@ class TestOwnedProfile(unittest.TestCase):
         terminate.assert_called_once_with(process, timeout=3)
         transport._reader.close.assert_called_once()
         transport._writer.close.assert_called_once()
+
+    def test_launch_failure_is_bounded_and_does_not_leave_lock(self):
+        with mock.patch.object(adapter, 'launch_cdp_process',
+                               side_effect=RuntimeError('cannot spawn')):
+            result = adapter.probe(self.binary, self.root, 'dedicated')
+        self.assertEqual(result['status'], 'launch_failed')
+        self.assertEqual(result['reason'], 'RuntimeError')
+        self.assertFalse(self.root.joinpath('.dedicated.cdp-pipe.lock').exists())
+        self.assertFalse(result['operator_isolation_verified'])
+
+    def test_missing_target_is_retried_without_a_second_launch(self):
+        process = mock.Mock(pid=123457)
+        process.poll.return_value = None
+        transport = mock.MagicMock()
+        with mock.patch.object(adapter, 'launch_cdp_process',
+                               return_value=(transport, process)) as launch, \
+             mock.patch.object(adapter, 'census',
+                               side_effect=[{'status': 'target_missing', 'ready': False},
+                                            {'status': 'ready', 'ready': True}]) as census, \
+             mock.patch.object(adapter.time, 'sleep') as sleeper, \
+             mock.patch.object(adapter, 'terminate_chrome'):
+            result = adapter.probe(self.binary, self.root, 'dedicated')
+        self.assertEqual(result['status'], 'ready')
+        self.assertEqual(census.call_count, 2)
+        self.assertEqual(launch.call_count, 1)
+        sleeper.assert_called_once_with(0.25)
 
     def test_existing_profile_lock_refuses_launch_without_adopting(self):
         self.root.mkdir(mode=0o700)

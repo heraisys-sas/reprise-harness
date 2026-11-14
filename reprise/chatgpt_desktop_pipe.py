@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import stat
 import sys
+import time
 
 from claude_cdp_pipe import launch_cdp_process, terminate_chrome
 
@@ -127,11 +128,11 @@ def inspect(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT, name='defa
 
 
 def probe(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT, name='default'):
-    """Launch and stop *our own child only*, no app singleton takeover.
+    """Launch and stop our own child, never adopt or signal the operator app.
 
-    A second instance may refuse to spawn because of app-specific singleton
-    behavior. This is reported as pipe_unavailable, never a request to close the
-    operator's ChatGPT instance.
+    A second-instance event in Electron could still affect the operator UI;
+    this cannot be established from the process launch alone. Coexistence must
+    be validated on a real Mac before claiming operator isolation.
     """
     profile = profile_path(profile_root, name)
     binary = Path(binary).expanduser().absolute()
@@ -142,15 +143,32 @@ def probe(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT, name='defaul
     lock, fd = _claim_lock(profile.parent, name)
     transport = proc = None
     try:
-        transport, proc = launch_cdp_process(binary, build_args(profile), label='ChatGPT Desktop')
+        try:
+            transport, proc = launch_cdp_process(binary, build_args(profile), label='ChatGPT Desktop')
+        except (OSError, RuntimeError) as exc:
+            return {'status': 'launch_failed', 'ready': False,
+                    'launch_attempted': True, 'operator_isolation_verified': False,
+                    'reason': type(exc).__name__}
         os.write(fd, str(proc.pid).encode('ascii'))
         os.fsync(fd)
         try:
-            return census(transport) | {'launch_attempted': True,
-                                        'operator_app_touched': False}
+            # The dedicated Electron renderer is not necessarily present at
+            # the first Target.getTargets: poll only the missing-target state.
+            outcome = {'status': 'target_missing', 'ready': False}
+            for attempt in range(20):
+                if proc.poll() is not None:
+                    outcome = {'status': 'instance_exited', 'ready': False}
+                    break
+                outcome = census(transport)
+                if outcome['status'] != 'target_missing':
+                    break
+                if attempt != 19:
+                    time.sleep(0.25)
+            return outcome | {'launch_attempted': True,
+                              'operator_isolation_verified': False}
         except (TimeoutError, EOFError, RuntimeError, OSError, ValueError) as exc:
             return {'status': 'pipe_unavailable', 'ready': False,
-                    'launch_attempted': True, 'operator_app_touched': False,
+                    'launch_attempted': True, 'operator_isolation_verified': False,
                     'reason': type(exc).__name__}
     finally:
         if proc is not None:
@@ -178,7 +196,7 @@ def main(argv=None):
     try:
         values = dict(binary=args.binary, profile_root=args.profile_root, name=args.profile)
         outcome = inspect(**values) if args.action == 'inspect' else probe(**values)
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, RuntimeError) as exc:
         outcome = {'status': 'refused', 'ready': False, 'reason': type(exc).__name__}
     print(json.dumps(outcome, sort_keys=True, ensure_ascii=False))
     return 0 if args.action == 'inspect' or outcome.get('status') == 'ready' else 2
