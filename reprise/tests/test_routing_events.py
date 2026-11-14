@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import weakref
 import sys
@@ -65,6 +66,96 @@ class RoutingEventsTests(unittest.TestCase):
         self.assertEqual(db.execute(
             'SELECT admissibility FROM routing_events WHERE reason=?', ('before upgrade',)).fetchone()[0],
             'not_required')
+
+    def test_legacy_opaque_identity_scrub_preserves_receipts_and_existing_valid_keys(self):
+        db = memory_db(self)
+        self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],
+                         max(routing_events.VERSION, external_rankings.VERSION))
+        # Simulate a pre-scrub database already marked with the newest schema.
+        db.execute('DELETE FROM routing_meta WHERE key=?',
+                   (routing_events.LEGACY_IDENTITY_SCRUB_KEY,))
+        events = [
+            (101, 'legacy-account-identifier', 'finished'),
+            (102, 'A' * 64, 'blocked'),
+            (103, 'f' * 64, 'finished'),
+            (104, None, 'dispatched'),
+        ]
+        for ident, account, state in events:
+            db.execute(
+                'INSERT INTO routing_events(id,ts,type,tool,channel,terminal_state,'
+                'request_key,thread_hash,account_key) VALUES (?,?,?,?,?,?,?,?,?)',
+                (ident, float(ident), 'explicit', 'reprise_delegate', 'codex',
+                 state, f'request-{ident}', 'thread-pseudonym', account))
+        rows = [
+            ('codex', 'legacy-plain-account', 'f' * 64, 'included', 'known', 100.0),
+            ('custom', 'e' * 64, 'legacy-plain-pool', 'included', 'known', 101.0),
+            ('verified', 'a' * 64, 'b' * 64, 'included', 'known', 102.0),
+            ('local', None, None, 'free', 'known', 103.0),
+        ]
+        db.executemany('INSERT INTO route_admissibility VALUES (?,?,?,?,?,?)', rows)
+        db.commit()
+
+        routing_events.setup(db)
+        result = db.execute(
+            'SELECT id,ts,terminal_state,request_key,thread_hash,account_key '
+            'FROM routing_events ORDER BY id').fetchall()
+        self.assertEqual(result, [
+            (101, 101.0, 'finished', 'request-101', 'thread-pseudonym', None),
+            (102, 102.0, 'blocked', 'request-102', 'thread-pseudonym', None),
+            (103, 103.0, 'finished', 'request-103', 'thread-pseudonym', 'f' * 64),
+            (104, 104.0, 'dispatched', 'request-104', 'thread-pseudonym', None),
+        ])
+        self.assertEqual(db.execute(
+            'SELECT channel,account_key,pool_key,billing_class,identity_status,updated_at '
+            'FROM route_admissibility ORDER BY channel').fetchall(), [
+            ('codex', None, None, 'unknown', 'unknown', 100.0),
+            ('custom', None, None, 'unknown', 'unknown', 101.0),
+            ('local', None, None, 'free', 'known', 103.0),
+            ('verified', 'a' * 64, 'b' * 64, 'included', 'known', 102.0),
+        ])
+        self.assertEqual(routing_events.admissible(db, 'codex', automatic=True),
+                         (False, 'unknown'))
+        marker = db.execute('SELECT value FROM routing_meta WHERE key=?',
+                            (routing_events.LEGACY_IDENTITY_SCRUB_KEY,)).fetchone()[0]
+        self.assertEqual(json.loads(marker),
+                         {'events_redacted': 2, 'admissibility_revoked': 2})
+        self.assertNotIn('legacy', marker)
+        routing_events.setup(db)
+        self.assertEqual(db.execute('SELECT value FROM routing_meta WHERE key=?',
+                                    (routing_events.LEGACY_IDENTITY_SCRUB_KEY,)).fetchone()[0],
+                         marker)
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM routing_events').fetchone()[0], 4)
+
+    def test_legacy_identity_scrub_rolls_back_all_redactions_on_error(self):
+        db = memory_db(self)
+        db.execute('DELETE FROM routing_meta WHERE key=?',
+                   (routing_events.LEGACY_IDENTITY_SCRUB_KEY,))
+        db.execute(
+            "INSERT INTO routing_events(ts,type,tool,channel,terminal_state,account_key) "
+            "VALUES (1,'explicit','t','codex','finished','legacy-account')")
+        db.execute("INSERT INTO route_admissibility VALUES "
+                   "('codex','legacy-account',NULL,'included','known',100)")
+        db.execute('''CREATE TRIGGER refuse_scrub BEFORE UPDATE ON route_admissibility
+                      BEGIN SELECT RAISE(ABORT, 'synthetic scrub failure'); END''')
+        db.commit()
+        with self.assertRaisesRegex(sqlite3.IntegrityError, 'synthetic scrub failure'):
+            routing_events.setup(db)
+        # The update to routing_events happened first but cannot survive failure.
+        self.assertEqual(db.execute(
+            'SELECT account_key FROM routing_events').fetchone()[0], 'legacy-account')
+        self.assertEqual(db.execute(
+            'SELECT billing_class FROM route_admissibility').fetchone()[0], 'included')
+        self.assertIsNone(db.execute('SELECT value FROM routing_meta WHERE key=?',
+                                    (routing_events.LEGACY_IDENTITY_SCRUB_KEY,)).fetchone())
+        db.execute('DROP TRIGGER refuse_scrub')
+        db.commit()
+        routing_events.setup(db)
+        self.assertIsNone(db.execute('SELECT account_key FROM routing_events').fetchone()[0])
+        self.assertEqual(db.execute(
+            'SELECT account_key,pool_key,billing_class,identity_status '
+            'FROM route_admissibility').fetchone(), (None, None, 'unknown', 'unknown'))
+        self.assertIsNotNone(db.execute('SELECT value FROM routing_meta WHERE key=?',
+                                       (routing_events.LEGACY_IDENTITY_SCRUB_KEY,)).fetchone())
 
     def test_admissibility_matrix(self):
         db = memory_db(self)
