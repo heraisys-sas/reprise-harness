@@ -136,30 +136,49 @@ class TestOwnedProfile(unittest.TestCase):
 
 class TestGenericPipeLauncher(unittest.TestCase):
     def test_real_fd_3_4_echo(self):
-        """Exercise the shared launcher without Chrome/Electron using Python child."""
-        script = r'''
-import os,json
+        """Run intrusive fd3/4 wiring in a bounded *separate* test process.
+
+        A native descriptor or signal bug must not terminate the unittest
+        runner, so CI can still report the exact failure/stderr.
+        """
+        inner = r'''
+import json
+import os
+import sys
+import claude_cdp_pipe
+
+child_script = r"""
+import json
+import os
 frame = bytearray()
 while True:
-    byte = os.read(3, 1)
-    if not byte:
+    char = os.read(3, 1)
+    if not char:
         break
-    if byte != b'\0':
-        frame.extend(byte)
+    if char != b'\0':
+        frame.extend(char)
         continue
     message = json.loads(frame)
-    result = {'id': message['id'], 'result': {'echo': message['method']}}
-    os.write(4, json.dumps(result).encode() + b'\0')
+    os.write(4, json.dumps({'id': message['id'],
+                            'result': {'echo': message['method']}}).encode() + b'\0')
     frame.clear()
+"""
+transport, process = claude_cdp_pipe.launch_cdp_process(
+    sys.executable, ['-u', '-c', child_script], label='synthetic')
+try:
+    assert transport.call('Browser.getVersion') == {'echo': 'Browser.getVersion'}
+finally:
+    claude_cdp_pipe.terminate_chrome(process, timeout=1)
+    transport._reader.close()
+    transport._writer.close()
+print('CDP-PIPE-OK', flush=True)
 '''
-        transport, process = claude_cdp_pipe.launch_cdp_process(
-            sys.executable, ['-u', '-c', script], label='synthetic')
-        try:
-            self.assertEqual(transport.call('Browser.getVersion'), {'echo': 'Browser.getVersion'})
-        finally:
-            claude_cdp_pipe.terminate_chrome(process, timeout=1)
-            transport._reader.close()
-            transport._writer.close()
+        proc = subprocess.run(
+            [sys.executable, '-B', '-c', inner],
+            capture_output=True, text=True, timeout=25, cwd=Path(__file__).parents[1])
+        self.assertEqual(proc.returncode, 0,
+                         f'inner launch rc={proc.returncode}; stdout={proc.stdout!r}; stderr={proc.stderr!r}')
+        self.assertIn('CDP-PIPE-OK', proc.stdout)
 
 
 if __name__ == '__main__':
