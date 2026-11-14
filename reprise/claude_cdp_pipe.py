@@ -270,39 +270,25 @@ def build_chrome_args(profile, origin="https://claude.ai"):
     ]
 
 
-def launch_chrome(profile=None, origin=None):
-    """Spawn Chrome in --remote-debugging-pipe mode; return (PipeTransport, proc).
+def launch_cdp_process(program, arguments, *, label='CDP'):
+    """Spawn one explicitly chosen binary with private CDP fd 3/4.
 
-    Chrome reads commands from its fd 3 and writes responses to its fd 4
-    (devtools_pipe_handler.cc, chromium main). Parent side:
-      - create pipe A (rA/wA: parent writes wA, Chrome reads rA on fd 3) and
-        pipe B (rB/wB: Chrome writes wB on fd 4, parent reads rB);
-      - save any existing parent fds 3/4 (F_DUPFD above 4, sockets in the
-        daemon), dup2 rA→3 and wB→4, then Popen with pass_fds=(3, 4) and
-        stdin/stdout/stderr on DEVNULL;
-      - RESTORE the parent's original fds 3/4 right after the spawn, never
-        closing them for good; a pipe end that replaced an absent fd is closed.
-    The transport then reads rB and writes wA through constructor parameters.
-    Singleton via PID lock (DÉCISION 6): sweep before spawn, write on success.
+    Reuses the existing Chrome pipe framing and timeout implementation. The
+    caller owns the profile, admission lock, process lifecycle and permissions.
+    This function never attaches to or terminates any pre-existing app.
     """
-    if profile is None:
-        profile = _profile_dir()
-    lock_path, _ = _hostname_pid_lock(profile)
-    sweep_dead_lock(lock_path)
+    program = str(program)
+    if not Path(program).is_file() or not os.access(program, os.X_OK):
+        raise RuntimeError(f'Binaire {label} introuvable ou non exécutable : {program}')
+    if not isinstance(arguments, (list, tuple)) or not all(isinstance(x, str) for x in arguments):
+        raise ValueError('Arguments CDP invalides')
 
-    chrome_bin = _chrome_bin()
-    if not Path(chrome_bin).exists():
-        raise RuntimeError(f"Binaire Chrome introuvable: {chrome_bin}")
-
-    rA, wA = os.pipe()  # commands: parent writes wA, Chrome reads rA on fd 3
-    rB, wB = os.pipe()  # responses: Chrome writes wB on fd 4, parent reads rB
-
+    rA, wA = os.pipe()
+    rB, wB = os.pipe()
     env = dict(os.environ)
     env.pop('DISPLAY', None)
     env.pop('WAYLAND_DISPLAY', None)
 
-    # Save the parent's fds 3/4 above the pipe range so the dup2 below can
-    # never clobber a saved handle.
     saved = []
     for fd in (3, 4):
         try:
@@ -326,23 +312,20 @@ def launch_chrome(profile=None, origin=None):
 
     proc = None
     try:
-        os.dup2(rA, 3)  # child fd 3: read end of the command pipe
-        os.dup2(wB, 4)  # child fd 4: write end of the response pipe
-        # The originals rA/wB now live only at the child's fds 3/4.
+        os.dup2(rA, 3)
+        os.dup2(wB, 4)
         os.close(rA)
         os.close(wB)
         try:
             proc = subprocess.Popen(
-                [chrome_bin] + build_chrome_args(profile, origin or "https://claude.ai"),
+                [program, *arguments],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                start_new_session=True,
-                close_fds=True,
-                pass_fds=(3, 4),
-                env=env,
+                start_new_session=True, close_fds=True,
+                pass_fds=(3, 4), env=env,
             )
         except OSError as exc:
-            raise RuntimeError(f"Impossible de lancer Chrome: {exc}") from exc
+            raise RuntimeError(f'Impossible de lancer {label} : {exc}') from exc
     finally:
         restore()
         if proc is None:
@@ -358,11 +341,21 @@ def launch_chrome(profile=None, origin=None):
                 os.close(fd)
             except OSError:
                 pass
-        raise RuntimeError(f"Chrome exited immediately with code {proc.returncode}")
-
-    write_lock(lock_path, proc.pid)
+        raise RuntimeError(f'{label} exited immediately with code {proc.returncode}')
     return PipeTransport(proc, rB, wA), proc
 
+
+def launch_chrome(profile=None, origin=None):
+    """Preserve the historical Chrome API and lock policy on shared CDP pipe."""
+    if profile is None:
+        profile = _profile_dir()
+    lock_path, _ = _hostname_pid_lock(profile)
+    sweep_dead_lock(lock_path)
+    transport, proc = launch_cdp_process(
+        _chrome_bin(), build_chrome_args(profile, origin or 'https://claude.ai'),
+        label='Chrome')
+    write_lock(lock_path, proc.pid)
+    return transport, proc
 
 def terminate_chrome(proc, timeout=10.0):
     """SIGTERM → wait bounded → SIGKILL."""
