@@ -216,6 +216,8 @@ class ChatGptRepriseWrapperTests(unittest.TestCase):
         self.assertIn('com.openai.codex', text)
         self.assertIn('signal_main TERM', text)
         self.assertIn('signal_main KILL', text)
+        self.assertIn('owned_listener', text)
+        self.assertIn('lsof', text)
         self.assertNotIn('killall ', text)
         self.assertNotIn('pkill ', text)
         # le bundle officiel n'est jamais modifié : aucune écriture dans /Applications

@@ -31,6 +31,19 @@ main_pids() {
   # Match only the official main executable, never a generic app name.
   /usr/bin/pgrep -f '^/Applications/ChatGPT[.]app/Contents/MacOS/ChatGPT([[:space:]]|$)' || true
 }
+owned_listener() {
+  # A URL alone can be spoofed; also require the TCP listener to belong to
+  # the official ChatGPT.app bundle, not an unrelated local DevTools server.
+  local pid command
+  for pid in $(/usr/sbin/lsof -nP -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true); do
+    command="$(/bin/ps -p "$pid" -o command= 2>/dev/null || true)"
+    if [[ "$command" == "$EXEC" || "$command" == "$EXEC "* ||
+          "$command" == "$APP/Contents/Frameworks/"* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
 signal_main() {
   local signal="$1" pid command
   for pid in $(main_pids); do
@@ -43,7 +56,7 @@ signal_main() {
 
 # Do not attach to a foreign debugging server, and do not stop its process.
 if port_listening; then
-  if ! cdp_target; then
+  if ! owned_listener || ! cdp_target; then
     echo "Foreign or unverified listener on port $PORT; refusing"
     exit 69
   fi
@@ -82,14 +95,15 @@ fi
 /usr/bin/open -na "$APP" --args \
   "--remote-debugging-address=127.0.0.1" "--remote-debugging-port=$PORT"
 for i in {1..60}; do
-  if cdp_target; then
+  if port_listening && ! owned_listener; then
+    echo "Port $PORT occupied by another process; refusing"
+    exit 69
+  fi
+  if owned_listener && cdp_target; then
     echo "ChatGPT target available on port $PORT"
     exit 0
   fi
-  if port_listening; then
-    echo "Port $PORT occupied by unknown listener; refusing"
-    exit 69
-  fi
+  # ChatGPT may open its listener before creating the first renderer target.
   /bin/sleep 0.5
 done
 echo "ChatGPT debug target did not appear within 30s"
