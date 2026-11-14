@@ -3,17 +3,21 @@
 Tests hors ligne : aucune attache CDP, aucun lancement d'app. La preuve de bout en bout
 (dispatch + capture de réponse sur session réelle) est documentée dans l'issue #161.
 """
+import importlib.util
+import json
 import os
 import plistlib
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 REPRISE = Path(__file__).resolve().parents[1]
 SCRIPT = REPRISE / "chatgpt_cdp.mjs"
-WRAPPER = REPRISE / "wrappers" / "chatgpt-reprise" / "ChatGPT Reprise.app"
+WRAPPER_SOURCES = REPRISE / "wrappers" / "chatgpt-reprise"
+BUILDER = WRAPPER_SOURCES / "build_wrapper.py"
 
 NODE_CANDIDATES = [
     os.environ.get("CHATGPT_CDP_TEST_NODE"),
@@ -58,21 +62,70 @@ class ChatGptCdpScriptTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 64)
 
 
+    @unittest.skipIf(_node() is None, "node indisponible")
+    def test_send_rejects_foreign_devtools_target_before_websocket(self):
+        fixture = r'''
+import {pathToFileURL} from "node:url";
+const script = process.argv[1];
+process.argv = [process.execPath, script, "send", "synthetic test prompt"];
+globalThis.fetch = async (url) => ({
+  ok: true,
+  json: async () => String(url).endsWith("/json/version")
+    ? {Browser: "Chrome/157"} : [{
+      type: "page", url: "https://foreign.invalid/",
+      webSocketDebuggerUrl: "ws://127.0.0.1:9333/devtools/page/foreign"
+    }]
+});
+globalThis.WebSocket = class {
+  constructor() { throw new Error("foreign target must never be connected"); }
+};
+await import(pathToFileURL(script).href);
+'''
+        result = subprocess.run(
+            [_node(), "--input-type=module", "-e", fixture, str(SCRIPT)],
+            capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        receipt = json.loads(result.stdout)
+        self.assertEqual(receipt["status"], "refused")
+        self.assertFalse(receipt["dispatch_attempted"])
+        self.assertFalse(receipt["dispatch_confirmed"])
+        self.assertNotIn("foreign target must never", result.stderr)
+
+
 class ChatGptRepriseWrapperTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("build_chatgpt_wrapper", BUILDER)
+        generator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(generator)
+        cls.generator = generator
+        cls.temporary = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.temporary.cleanup)
+        cls.wrapper = generator.build(cls.temporary.name)
+
+    def test_build_rejects_existing_wrapper_without_overwrite(self):
+        with self.assertRaises(FileExistsError):
+            self.generator.build(self.temporary.name)
+
     def test_plist(self):
-        data = plistlib.loads((WRAPPER / "Contents" / "Info.plist").read_bytes())
+        data = plistlib.loads((self.wrapper / "Contents" / "Info.plist").read_bytes())
         self.assertEqual(data["CFBundleExecutable"], "ChatGPT Reprise")
         self.assertEqual(data["CFBundleIdentifier"], "sas.heraisys.reprise.chatgpt-launcher")
         self.assertTrue(data["LSUIElement"])
         self.assertEqual(data["CFBundleShortVersionString"], "1.0")
 
     def test_launcher_content(self):
-        exe = WRAPPER / "Contents" / "MacOS" / "ChatGPT Reprise"
+        exe = self.wrapper / "Contents" / "MacOS" / "ChatGPT Reprise"
         text = exe.read_text(encoding="utf-8")
         self.assertTrue(text.startswith("#!/bin/bash"))
         self.assertIn("CHATGPT_CDP_PORT", text)
         self.assertIn("--remote-debugging-port", text)
         self.assertIn("9333", text)
+        self.assertIn('com.openai.codex', text)
+        self.assertIn('signal_main TERM', text)
+        self.assertIn('signal_main KILL', text)
+        self.assertNotIn('killall ', text)
+        self.assertNotIn('pkill ', text)
         # le bundle officiel n'est jamais modifié : aucune écriture dans /Applications
         self.assertNotIn("rm -rf /Applications", text)
         if sys.platform == "darwin":
@@ -81,7 +134,7 @@ class ChatGptRepriseWrapperTests(unittest.TestCase):
     def test_launcher_bash_syntax(self):
         if shutil.which("bash") is None:
             self.skipTest("bash indisponible")
-        exe = WRAPPER / "Contents" / "MacOS" / "ChatGPT Reprise"
+        exe = self.wrapper / "Contents" / "MacOS" / "ChatGPT Reprise"
         proc = subprocess.run(["bash", "-n", str(exe)], capture_output=True, text=True, timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
