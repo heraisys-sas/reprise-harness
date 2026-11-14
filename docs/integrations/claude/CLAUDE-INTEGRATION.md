@@ -47,7 +47,7 @@ La [cible multi-harness](../../contracts/HARNESS-SUPERVISION-ARCHITECTURE.md) re
 Depuis 0.1.6, l’option **Continuer le chat après le reset gratuit** dans
 Intégrations autorise la reprise automatique ; elle est activée par défaut et
 reste subordonnée à la pause globale. CLI équivalente :
-`resume claude-quota-config --enabled true` ; inspection :
+`reprise/reprise claude-quota-config --enabled true` ; inspection :
 `reprise/reprise claude-quota-status`. Le scheduler installé doit pointer vers cette
 release.
 

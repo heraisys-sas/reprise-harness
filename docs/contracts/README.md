@@ -31,4 +31,4 @@ Procédure pour les agents disposant de droits locaux : [QUOTA-LOCAL-ACCEPTANCE]
 
 Autres familles de documentation : [intégrations par canal](../integrations/),
 [runbooks d'opération](../runbooks/), [gabarits](../templates/),
-[maquette interface](../design/interface-structure/).
+[maquette interface : suivi #118](https://github.com/heraisys-sas/reprise-harness/issues/118).
