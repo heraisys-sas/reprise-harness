@@ -92,6 +92,98 @@ await import(pathToFileURL(script).href);
         self.assertNotIn("foreign target must never", result.stderr)
 
 
+    @unittest.skipIf(_node() is None, "node indisponible")
+    def test_send_one_click_with_correlated_synthetic_turn(self):
+        fixture = r'''
+import {pathToFileURL} from "node:url";
+import vm from "node:vm";
+const script = process.argv[1];
+process.argv = [process.execPath, script, "send", "synthetic test prompt"];
+let draft = "", clicks = 0;
+const users = [], assistants = [];
+const editor = {
+  tagName: "TEXTAREA", value: "", id: "", className: "",
+  isContentEditable: false, offsetParent: {},
+  disabled: false, readOnly: false,
+  getBoundingClientRect: () => ({width: 300, height: 40}),
+  getAttribute: () => "",
+  focus() { document.activeElement = this; }
+};
+const send = {
+  disabled: false, readOnly: false, innerText: "Send",
+  getBoundingClientRect: () => ({width: 40, height: 25}),
+  getAttribute: (name) => name === "aria-label" ? "Send" : "",
+  click() {
+    clicks++;
+    if (clicks > 1) throw new Error("duplicate dispatch");
+    users.push({innerText: draft});
+    assistants.push({innerText: "synthetic assistant answer"});
+  }
+};
+const document = {
+  body: {innerText: "ChatGPT"}, title: "ChatGPT", readyState: "complete",
+  activeElement: null,
+  querySelectorAll(sel) {
+    if (sel.startsWith("textarea")) return [editor];
+    if (sel.startsWith("button")) return [send];
+    if (sel.includes('data-message-author-role="user"')) return users;
+    if (sel.includes('data-message-author-role="assistant"')) return assistants;
+    return [];
+  }
+};
+const location = {protocol: "app:", hostname: "-", pathname: "/index.html",
+                  href: "app://-/index.html"};
+globalThis.fetch = async (url) => ({
+  ok: true,
+  json: async () => String(url).endsWith("/json/version")
+    ? {Browser: "Chrome/157"} : [{
+      type: "page", url: location.href,
+      webSocketDebuggerUrl: "ws://127.0.0.1:9333/devtools/page/main"
+    }]
+});
+globalThis.WebSocket = class {
+  constructor() {
+    this.readyState = 1;
+    queueMicrotask(() => this.onopen?.());
+  }
+  send(raw) {
+    const msg = JSON.parse(raw);
+    let result = {};
+    if (msg.method === "Input.insertText") {
+      draft = msg.params.text; editor.value = draft;
+    } else if (msg.method === "Runtime.evaluate") {
+      try {
+        const value = vm.runInNewContext(msg.params.expression, {
+          document, location, getComputedStyle: () => ({visibility: "visible", display: "block"})
+        });
+        result = {result: {value}};
+      } catch (error) {
+        result = {exceptionDetails: {text: error.message}};
+      }
+    } else if (msg.method !== "Runtime.enable") {
+      throw new Error("Unexpected CDP command: " + msg.method);
+    }
+    queueMicrotask(() => this.onmessage?.({
+      data: JSON.stringify({id: msg.id, result})
+    }));
+  }
+  close() { this.readyState = 3; this.onclose?.(); }
+};
+await import(pathToFileURL(script).href);
+'''
+        result = subprocess.run(
+            [_node(), "--input-type=module", "-e", fixture, str(SCRIPT)],
+            capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads(result.stdout)
+        self.assertEqual(receipt["status"], "sent_confirmed")
+        self.assertTrue(receipt["dispatch_attempted"])
+        self.assertTrue(receipt["dispatch_confirmed"])
+        self.assertTrue(receipt["response_observed"])
+        self.assertFalse(receipt["response_complete"])
+        self.assertIn("synthetic assistant answer", receipt["assistant_excerpt"])
+
+
 class ChatGptRepriseWrapperTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

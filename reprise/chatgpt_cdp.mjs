@@ -106,8 +106,11 @@ class Cdp {
 }
 
 async function pageTargets() {
-  const list = await (await fetch(`${BASE}/json/list`)).json();
-  return list.filter((t) => t.type === 'page');
+  const response = await fetch(BASE + '/json/list', { signal: AbortSignal.timeout(2000) });
+  if (!response.ok) throw new Error('CDP target listing HTTP ' + response.status);
+  const list = await response.json();
+  if (!Array.isArray(list)) throw new Error('CDP target listing invalid');
+  return list.filter((t) => t && t.type === 'page');
 }
 
 const DISCOVERY = `(() => {
@@ -116,7 +119,7 @@ const DISCOVERY = `(() => {
       tag: e.tagName, id: e.id || '', cls: String(e.className).slice(0, 100),
       ce: e.isContentEditable, visible: e.offsetParent !== null || e.isContentEditable,
       ph: (e.getAttribute('placeholder') || e.getAttribute('data-placeholder') || e.getAttribute('aria-label') || '').slice(0, 60),
-      text: (e.value || e.textContent || '').slice(0, 40),
+      textLength: (e.value || e.textContent || '').length,
     }));
   const btns = [...document.querySelectorAll('button, [role="button"], a')]
     .map((e) => (e.getAttribute('aria-label') || e.innerText || '').trim().slice(0, 50))
@@ -167,7 +170,9 @@ async function attach() {
 }
 
 async function evaluate(c, fn, ...args) {
-  const expression = '(' + fn.toString() + ')(' + args.map((arg) => JSON.stringify(arg)).join(',') + ')';
+  // Runtime.evaluate runs in another JS context: explicitly serialize helpers.
+  const expression = '(() => { const composerStatus = (' + composerStatus.toString() +
+    '); return (' + fn.toString() + ')(' + args.map((arg) => JSON.stringify(arg)).join(',') + '); })()';
   const result = await c.send('Runtime.evaluate', { expression, returnByValue: true });
   if (result.exceptionDetails || !result.result || !Object.hasOwn(result.result, 'value'))
     throw new Error('CDP Runtime.evaluate failed');
@@ -257,15 +262,24 @@ async function cmdDiscover() {
 async function cmdNewChat() {
   await waitPort();
   const { c } = await attach();
-  const expr = `(() => {
-    const el = [...document.querySelectorAll('button, [role="button"], a')]
-      .find((e) => /nouvelle discussion|nouveau chat|new chat|nouvelle conversation/i.test(e.getAttribute('aria-label') || e.innerText || ''));
-    if (!el) return false;
-    el.click(); return true;
-  })()`;
-  const r = await c.send('Runtime.evaluate', { expression: expr, returnByValue: true });
-  console.log(r.result.value ? 'nouvelle discussion cliquée' : 'bouton « nouvelle discussion » introuvable');
-  c.close();
+  try {
+    const expr = `(() => {
+      if (location.protocol !== 'app:' || location.hostname !== '-' || location.pathname !== '/index.html')
+        return { clicked: false, status: 'target_changed' };
+      const matches = [...document.querySelectorAll('button, [role="button"], a')]
+        .filter((e) => /nouvelle discussion|nouveau chat|new chat|nouvelle conversation/i
+          .test((e.getAttribute('aria-label') || e.innerText || '').trim()))
+        .filter((e) => e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().height > 0);
+      if (matches.length !== 1) return { clicked: false, status: 'target_ambiguous' };
+      matches[0].click();
+      return { clicked: true, status: 'clicked' };
+    })()`;
+    const result = await c.send('Runtime.evaluate', { expression: expr, returnByValue: true });
+    const outcome = result.result?.value;
+    console.log(JSON.stringify(outcome && typeof outcome === 'object' ? outcome :
+      { clicked: false, status: 'selectors_stale' }));
+    if (!outcome?.clicked) process.exitCode = 2;
+  } finally { c.close(); }
 }
 
 async function cmdSend(prompt) {
