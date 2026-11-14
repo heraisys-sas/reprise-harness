@@ -37,6 +37,14 @@ codex app-server proxy --sock /absolute/private/path/codex.sock
 
 Launching a listener creates a new server; it does not attach a socket to an already-running Desktop owner. Existing threads held by another server remain protected by writer ownership. A socket must be opened by the owning server or clients must initially share the same daemon. Desktop attachment must be verified separately. Do not delete locks or restart another application's server to obtain ownership.
 
+### ChatGPT Desktop : stdio et fausse preuve du socket (observation #170, correctif #172)
+
+L'opérateur a **toujours lancé Desktop depuis Reprise** pendant les essais de rattachement : ce n'est pas un incident causé par un Desktop ouvert hors Reprise. Sur cette installation, Desktop conserve/reprend son app-server Codex privé en **stdio** malgré `CODEX_APP_SERVER_WS_URL` passé au lanceur. Le socket `codexd` reste indépendant. `thread/read` réussi, UUID présent dans `~/.codex/state_5.sqlite` ou existence d'un socket ne prouvent **ni** quel serveur détient le writer, **ni** que Desktop utilise ce socket. Un seul index a été observé sur le Mac de test, sans démontrer l'unicité générale des profils.
+
+**État de livraison :** `dev@194ad1e9` contient encore un `shared_mode.check()` susceptible d'enregistrer une vérification trompeuse via `connected && thread_loaded`. Le correctif sur `codex/172-desktop-stdio-failclosed` (CI complète verte, **non fusionné**) neutralise cette route et son ancien `startup_eligible`, sans modifier `codexd` ni le stdio natif. L'inventaire passif `codex/170-codex-session-owners` est également sur une branche distincte, CI verte, et n'attribue aucun droit d'écriture. À chaque intégration future, vérifier le statut Git réel avant de changer cette section.
+
+Ne pas contourner les verrous d'une session Codex Desktop privée. Sa continuation native doit atteindre son **véritable propriétaire** ou un canal Desktop expressément démontré. Une interruption par quota demeure à conserver même si le writer reste inconnu : [contrat transverse](../../contracts/QUOTA-CONTINUATION-CONTRACT.md). Le porteur CDP ChatGPT dédié `chatgptd` est un **nom cible de conception**, pas un daemon déclaré livré.
+
 Use owner-only socket directories, retain approval/sandbox policies, and verify thread identity, project path and idle status before submitting a turn. A parent conversation is a useful coordinator only if its own agent tools still control the child; the server owner and the conversational parent are distinct concepts.
 
 The old `codex mcp-server` recipe is obsolete: [OpenAI documents its removal](https://learn.chatgpt.com/docs/mcp-server). A new integration must speak app-server JSON-RPC or explicitly translate a narrow MCP tool contract. App-server remains experimental.

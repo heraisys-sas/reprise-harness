@@ -48,8 +48,10 @@ Depuis 0.1.6, l’option **Continuer le chat après le reset gratuit** dans
 Intégrations autorise la reprise automatique ; elle est activée par défaut et
 reste subordonnée à la pause globale. CLI équivalente :
 `resume claude-quota-config --enabled true` ; inspection :
-`resume claude-quota-status`. Le scheduler installé doit pointer vers cette
+`reprise/reprise claude-quota-status`. Le scheduler installé doit pointer vers cette
 release.
+
+**Source et destination :** un événement `rate_limit` / `exceeded_limit` du journal renderer ReClaude peut être reconnu alors que la disponibilité `current_quota_status` reste `unknown` (compte/pool non attribuables, source périmée ou aucun contrôle courant). Ce sont deux dimensions distinctes. Un message de quota affiché dans **un autre Desktop** n'est pas une mesure de la conversation ciblée. Reprise doit conserver l'interruption correctement attribuée et chercher une continuation native **dans le même chat** à l'échéance ; il ne doit pas attendre indéfiniment qu'un compteur global devienne connu. La livraison réelle bout-en-bout de cette politique reste à valider dans #132 ; voir [contrat quota](../../contracts/QUOTA-CONTINUATION-CONTRACT.md) et [protocole local](../../runbooks/QUOTA-LOCAL-ACCEPTANCE.md).
 
 ## Canaux de reprise — fin de la voie Accessibilité (issue #96)
 

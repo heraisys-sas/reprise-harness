@@ -64,6 +64,8 @@ Validation finale : **297 tests, OK, 1 skipped**, suite complète hors sandbox (
 
 L'échéance lue dans un journal est une donnée d'événement, pas la preuve d'un état courant : l'interface affiche sa provenance, l'heure de lecture et l'incertitude de fraîcheur. La lecture du journal ne déclenche ni reprise, ni inférence, ni modification du registre.
 
+**Distinction normative (#10, #173) :** `current_quota_status: unknown` signifie que la disponibilité **actuelle** n'est pas établie ; ce n'est pas une contre-preuve d'une interruption explicitement classée `rate_limit` / `exceeded_limit` dans un journal natif. Le nouvel événement doit être rattaché au bon Desktop, chat, compte/pool lorsqu'ils sont établis. L'interruption admissible peut être inscrite en attente puis tentée à l'échéance annoncée sans lecture supplémentaire de quota. Voir [QUOTA-CONTINUATION-CONTRACT](QUOTA-CONTINUATION-CONTRACT.md). Une mesure d'une autre instance Desktop ne doit jamais autoriser ou interdire silencieusement la reprise de ce chat.
+
 ## Classes de facturation proposées (à confirmer par l'opérateur)
 
 Recherche croisée consolidée ; une classe non étayée par au moins deux sources cohérentes reste `unknown`. Aucun repli payant automatique n'en découle.
