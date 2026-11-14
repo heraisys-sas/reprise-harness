@@ -110,7 +110,7 @@ const editor = {
   focus() { document.activeElement = this; }
 };
 const send = {
-  disabled: false, readOnly: false, innerText: "Send",
+  disabled: true, readOnly: false, innerText: "Send",
   getBoundingClientRect: () => ({width: 40, height: 25}),
   getAttribute: (name) => name === "aria-label" ? "Send" : "",
   click() {
@@ -150,7 +150,7 @@ globalThis.WebSocket = class {
     const msg = JSON.parse(raw);
     let result = {};
     if (msg.method === "Input.insertText") {
-      draft = msg.params.text; editor.value = draft;
+      draft = msg.params.text; editor.value = draft; send.disabled = false;
     } else if (msg.method === "Runtime.evaluate") {
       try {
         const value = vm.runInNewContext(msg.params.expression, {

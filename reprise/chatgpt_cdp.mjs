@@ -186,10 +186,10 @@ function composerStatus(expected) {
     const box = e.getBoundingClientRect();
     const style = getComputedStyle(e);
     return box.width >= 80 && box.height >= 12 && style.visibility !== 'hidden' &&
-           style.display !== 'none' && !e.disabled && !e.readOnly;
+           style.display !== 'none' && !e.readOnly;
   };
   const editors = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')]
-    .filter(visible);
+    .filter((e) => visible(e) && !e.disabled);
   if (editors.length !== 1) return { status: 'selectors_stale', composer_count: editors.length };
   const editor = editors[0];
   const text = editor.tagName === 'TEXTAREA' ? editor.value : editor.innerText;
@@ -200,6 +200,8 @@ function composerStatus(expected) {
     return { status: 'selectors_stale', send_button_count: sendButtons.length };
   if (expected === null && text.length) return { status: 'draft_conflict' };
   if (expected !== null && text !== expected) return { status: 'draft_mismatch' };
+  // A disabled Send button is normal while the draft is empty.
+  if (expected !== null && sendButtons[0].disabled) return { status: 'send_disabled' };
   const userTurns = [...document.querySelectorAll('[data-message-author-role="user"], [data-testid="user-turn"]')];
   const assistantTurns = [...document.querySelectorAll('[data-message-author-role="assistant"], [data-testid="assistant-turn"]')];
   return { status: 'ready', users: userTurns.length, assistants: assistantTurns.length };
@@ -295,7 +297,12 @@ async function cmdSend(prompt) {
     if (before.status !== 'ready') { receipt.status = before.status; return 2; }
     if (!await evaluate(c, focusUniqueComposer)) { receipt.status = 'focus_failed'; return 2; }
     await c.send('Input.insertText', { text: prompt });
-    const staged = await evaluate(c, composerStatus, prompt);
+    let staged;
+    for (let check = 0; check < 15; check++) {
+      staged = await evaluate(c, composerStatus, prompt);
+      if (staged.status !== 'send_disabled') break;
+      await sleep(150);
+    }
     if (staged.status !== 'ready') { receipt.status = staged.status; return 2; }
     // From here, transport loss can leave the dispatch outcome uncertain.
     receipt.dispatch_attempted = true;
