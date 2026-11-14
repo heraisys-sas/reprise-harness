@@ -11,46 +11,98 @@
 //
 // Port : --port N | env CHATGPT_CDP_PORT | 9333 par défaut.
 
-const PORT = (() => {
-  const i = process.argv.indexOf('--port');
-  return i >= 0 ? Number(process.argv[i + 1]) : Number(process.env.CHATGPT_CDP_PORT || 9333);
-})();
-const BASE = `http://127.0.0.1:${PORT}`;
-const mode = process.argv[2] || 'discover';
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const argv = process.argv.slice(2);
+const pi = argv.indexOf('--port');
+if (pi >= 0 && pi + 1 >= argv.length) throw new Error('--port nécessite un nombre');
+const portValue = pi >= 0 ? argv[pi + 1] : (process.env.CHATGPT_CDP_PORT || '9333');
+if (!/^[0-9]+$/.test(String(portValue))) throw new Error('port CDP invalide');
+const PORT = Number(portValue);
+if (!Number.isSafeInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error('port CDP hors plage');
+const positional = pi >= 0 ? argv.filter((_, i) => i !== pi && i !== pi + 1) : argv;
+const mode = positional[0] || 'discover';
+const promptText = positional.slice(1).join(' ').trim();
+const BASE = 'http://127.0.0.1:' + PORT;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const REQUEST_TIMEOUT_MS = 10000;
 
-async function waitPort(ms = 30000) {
-  const t0 = Date.now();
-  while (Date.now() - t0 < ms) {
-    try { return await (await fetch(`${BASE}/json/version`)).json(); } catch {}
-    await sleep(500);
+async function waitPort(ms = 10000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    try {
+      const reply = await fetch(BASE + '/json/version', { signal: AbortSignal.timeout(1200) });
+      if (!reply.ok) throw new Error('CDP HTTP ' + reply.status);
+      const version = await reply.json();
+      if (!version || typeof version.Browser !== 'string') throw new Error('réponse DevTools invalide');
+      return version;
+    } catch {}
+    await sleep(300);
   }
-  throw new Error(`port ${PORT} injoignable après ${ms} ms`);
+  throw new Error('port ' + PORT + ' injoignable ou non-CDP');
 }
 
 class Cdp {
-  constructor(ws) { this.ws = ws; this.id = 0; this.pending = new Map(); }
+  constructor(ws) {
+    this.ws = ws;
+    this.id = 0;
+    this.pending = new Map();
+    this.closed = false;
+  }
+  failAll(error) {
+    if (this.closed) return;
+    this.closed = true;
+    for (const [id, item] of this.pending) {
+      clearTimeout(item.timer);
+      item.reject(error);
+      this.pending.delete(id);
+    }
+  }
   static async connect(url) {
     const ws = new WebSocket(url);
     const c = new Cdp(ws);
-    await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error('ws error')); });
-    ws.onmessage = (ev) => {
-      const m = JSON.parse(ev.data);
-      if (m.id && c.pending.has(m.id)) {
-        const p = c.pending.get(m.id); c.pending.delete(m.id);
-        m.error ? p.rej(new Error(m.error.message)) : p.res(m.result);
-      }
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        c.failAll(new Error('CDP WebSocket connection timeout'));
+        try { ws.close(); } catch {}
+        reject(new Error('CDP WebSocket connection timeout'));
+      }, REQUEST_TIMEOUT_MS);
+      ws.onopen = () => { clearTimeout(timer); resolve(); };
+      ws.onerror = () => { clearTimeout(timer); reject(new Error('CDP WebSocket connection failed')); };
+    });
+    ws.onclose = () => c.failAll(new Error('CDP WebSocket closed'));
+    ws.onerror = () => c.failAll(new Error('CDP WebSocket error'));
+    ws.onmessage = (event) => {
+      let message;
+      try { message = JSON.parse(event.data); }
+      catch { c.close(); return; }
+      if (message.id === undefined || !c.pending.has(message.id)) return;
+      const item = c.pending.get(message.id);
+      c.pending.delete(message.id);
+      clearTimeout(item.timer);
+      message.error ? item.reject(new Error(message.error.message || 'CDP error')) : item.resolve(message.result);
     };
     return c;
   }
   send(method, params = {}) {
-    return new Promise((res, rej) => {
-      const i = ++this.id;
-      this.pending.set(i, { res, rej });
-      this.ws.send(JSON.stringify({ id: i, method, params }));
+    if (this.closed || this.ws.readyState !== 1) return Promise.reject(new Error('CDP WebSocket unavailable'));
+    return new Promise((resolve, reject) => {
+      const id = ++this.id;
+      const timer = setTimeout(() => {
+        this.failAll(new Error('CDP command timeout: ' + method));
+        try { this.ws.close(); } catch {}
+      }, REQUEST_TIMEOUT_MS);
+      this.pending.set(id, { resolve, reject, timer });
+      try { this.ws.send(JSON.stringify({ id, method, params })); }
+      catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
-  close() { try { this.ws.close(); } catch {} }
+  close() {
+    this.failAll(new Error('CDP connection closed'));
+    try { this.ws.close(); } catch {}
+  }
 }
 
 async function pageTargets() {
@@ -75,32 +127,116 @@ const DISCOVERY = `(() => {
   });
 })()`;
 
-async function attach() {
-  let pages = await pageTargets();
-  if (!pages.length) throw new Error('aucune cible page (app lancée avec le flag ?)');
-  // fenêtre principale d'abord : app://-/index.html sans route secondaire (avatar-overlay, detached-window)
-  pages.sort((a, b) => Number(b.url.endsWith('/index.html')) - Number(a.url.endsWith('/index.html')));
-  let first = null;
-  for (const p of pages) {
-    let c;
-    try { c = await Cdp.connect(p.webSocketDebuggerUrl); } catch { continue; }
-    try {
-      await c.send('Runtime.enable');
-      const r = await c.send('Runtime.evaluate', { expression: DISCOVERY, returnByValue: true });
-      const d = JSON.parse(r.result.value);
-      if (!first) first = { c, d, url: p.url };
-      if (d.boxes.some((b) => b.visible)) return { c, d, url: p.url };
-    } catch { /* cible suivante */ }
-  }
-  if (first) return first;
-  throw new Error('aucune cible app:// joignable');
+function isMainChatTarget(target) {
+  if (!target || target.type !== 'page') return false;
+  try {
+    const url = new URL(target.url);
+    return url.protocol === 'app:' && url.hostname === '-' && url.pathname === '/index.html';
+  } catch { return false; }
 }
 
-async function findComposer(c) {
-  const expr = `(() => [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')]
-    .find((e) => e.offsetParent !== null || e.isContentEditable) || null)()`;
-  const r = await c.send('Runtime.evaluate', { expression: `!!(${expr})`, returnByValue: true });
-  return r.result.value;
+function verifiedDebuggerUrl(raw) {
+  const url = new URL(raw);
+  const loopback = ['127.0.0.1', 'localhost', '[::1]'];
+  if (url.protocol !== 'ws:' || !loopback.includes(url.hostname) ||
+      Number(url.port) !== PORT || !url.pathname.startsWith('/devtools/page/') ||
+      url.username || url.password) {
+    throw new Error('endpoint CDP étranger au port local sélectionné');
+  }
+  return raw;
+}
+
+async function attach() {
+  const matches = (await pageTargets()).filter(isMainChatTarget);
+  if (matches.length !== 1) throw new Error('target_ambiguous: cible principale app://-/index.html non unique ou absente');
+  const target = matches[0];
+  const c = await Cdp.connect(verifiedDebuggerUrl(target.webSocketDebuggerUrl));
+  try {
+    await c.send('Runtime.enable');
+    const r = await c.send('Runtime.evaluate', { expression: DISCOVERY, returnByValue: true });
+    if (r.exceptionDetails || !r.result || typeof r.result.value !== 'string')
+      throw new Error('selectors_stale: sonde DOM invalide');
+    const discovery = JSON.parse(r.result.value);
+    if (!isMainChatTarget({ type: 'page', url: discovery.url }))
+      throw new Error('target_changed: navigation depuis la cible ChatGPT');
+    return { c, d: discovery, url: target.url };
+  } catch (error) {
+    c.close();
+    throw error;
+  }
+}
+
+async function evaluate(c, fn, ...args) {
+  const expression = '(' + fn.toString() + ')(' + args.map((arg) => JSON.stringify(arg)).join(',') + ')';
+  const result = await c.send('Runtime.evaluate', { expression, returnByValue: true });
+  if (result.exceptionDetails || !result.result || !Object.hasOwn(result.result, 'value'))
+    throw new Error('CDP Runtime.evaluate failed');
+  return result.result.value;
+}
+
+function composerStatus(expected) {
+  if (location.protocol !== 'app:' || location.hostname !== '-' || location.pathname !== '/index.html')
+    return { status: 'target_changed' };
+  const visible = (e) => {
+    const box = e.getBoundingClientRect();
+    const style = getComputedStyle(e);
+    return box.width >= 80 && box.height >= 12 && style.visibility !== 'hidden' &&
+           style.display !== 'none' && !e.disabled && !e.readOnly;
+  };
+  const editors = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')]
+    .filter(visible);
+  if (editors.length !== 1) return { status: 'selectors_stale', composer_count: editors.length };
+  const editor = editors[0];
+  const text = editor.tagName === 'TEXTAREA' ? editor.value : editor.innerText;
+  const sendButtons = [...document.querySelectorAll('button')]
+    .filter(visible).filter((e) => /^(send|envoyer)(\s+(message|le message))?$/i
+      .test((e.getAttribute('aria-label') || e.getAttribute('title') || '').trim()));
+  if (sendButtons.length !== 1)
+    return { status: 'selectors_stale', send_button_count: sendButtons.length };
+  if (expected === null && text.length) return { status: 'draft_conflict' };
+  if (expected !== null && text !== expected) return { status: 'draft_mismatch' };
+  const userTurns = [...document.querySelectorAll('[data-message-author-role="user"], [data-testid="user-turn"]')];
+  const assistantTurns = [...document.querySelectorAll('[data-message-author-role="assistant"], [data-testid="assistant-turn"]')];
+  return { status: 'ready', users: userTurns.length, assistants: assistantTurns.length };
+}
+
+function focusUniqueComposer() {
+  const editors = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')]
+    .filter((e) => {
+      const r = e.getBoundingClientRect();
+      return r.width >= 80 && r.height >= 12 && !e.disabled && !e.readOnly;
+    });
+  if (editors.length !== 1) return false;
+  editors[0].focus();
+  return document.activeElement === editors[0];
+}
+
+function clickUniqueSend(expected) {
+  const status = composerStatus(expected);
+  if (status.status !== 'ready') return { clicked: false, status: status.status };
+  const buttons = [...document.querySelectorAll('button')]
+    .filter((e) => {
+      const r = e.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && !e.disabled && !e.readOnly &&
+        /^(send|envoyer)(\s+(message|le message))?$/i
+          .test((e.getAttribute('aria-label') || e.getAttribute('title') || '').trim());
+    });
+  if (buttons.length !== 1) return { clicked: false, status: 'selectors_stale' };
+  buttons[0].click();
+  return { clicked: true, status: 'clicked' };
+}
+
+function observeTurns(expected, usersBefore, assistantsBefore) {
+  if (location.protocol !== 'app:' || location.hostname !== '-' || location.pathname !== '/index.html')
+    return { status: 'target_changed' };
+  const users = [...document.querySelectorAll('[data-message-author-role="user"], [data-testid="user-turn"]')];
+  const assistants = [...document.querySelectorAll('[data-message-author-role="assistant"], [data-testid="assistant-turn"]')];
+  const latest = users.at(-1);
+  const userConfirmed = users.length > usersBefore && latest && latest.innerText.trim() === expected.trim();
+  const newAssistant = assistants.length > assistantsBefore ? assistants.at(-1) : null;
+  return { status: 'observed', user_confirmed: !!userConfirmed,
+           assistant_observed: !!(userConfirmed && newAssistant && newAssistant.innerText.trim()),
+           assistant_text: userConfirmed && newAssistant ? newAssistant.innerText.slice(-1500) : '' };
 }
 
 async function cmdTargets() {
@@ -133,50 +269,54 @@ async function cmdNewChat() {
 }
 
 async function cmdSend(prompt) {
-  await waitPort();
-  const { c, d } = await attach();
-  if (!d.boxes.length) {
-    console.error('composer introuvable, état :', JSON.stringify(d, null, 2));
-    c.close(); process.exit(2);
+  // A click is a dispatch attempt, not business success. Never auto-retry.
+  const receipt = { status: 'refused', dispatch_attempted: false, dispatch_confirmed: false,
+                    response_observed: false, response_complete: false };
+  let c;
+  try {
+    if (prompt.length > 20000) { receipt.status = 'prompt_too_large'; return 2; }
+    await waitPort();
+    ({ c } = await attach());
+    const before = await evaluate(c, composerStatus, null);
+    if (before.status !== 'ready') { receipt.status = before.status; return 2; }
+    if (!await evaluate(c, focusUniqueComposer)) { receipt.status = 'focus_failed'; return 2; }
+    await c.send('Input.insertText', { text: prompt });
+    const staged = await evaluate(c, composerStatus, prompt);
+    if (staged.status !== 'ready') { receipt.status = staged.status; return 2; }
+    // From here, transport loss can leave the dispatch outcome uncertain.
+    receipt.dispatch_attempted = true;
+    const click = await evaluate(c, clickUniqueSend, prompt);
+    if (!click.clicked) {
+      receipt.dispatch_attempted = false;
+      receipt.status = click.status;
+      return 2;
+    }
+    receipt.status = 'uncertain';
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await sleep(1000);
+      const turn = await evaluate(c, observeTurns, prompt, before.users, before.assistants);
+      if (turn.status === 'target_changed') break;
+      if (turn.user_confirmed) {
+        receipt.dispatch_confirmed = true;
+        receipt.status = 'sent_confirmed';
+        if (turn.assistant_observed) {
+          receipt.response_observed = true;
+          receipt.assistant_excerpt = turn.assistant_text;
+          // A visible assistant message is not proof that generation ended.
+          receipt.response_complete = false;
+          break;
+        }
+      }
+    }
+    return receipt.dispatch_confirmed ? 0 : 2;
+  } catch (error) {
+    receipt.status = receipt.dispatch_attempted ? 'uncertain' : 'refused';
+    receipt.reason = String(error.message).slice(0, 200);
+    return 2;
+  } finally {
+    if (c) c.close();
+    console.log(JSON.stringify(receipt));
   }
-  const before = d.bodyChars;
-  await c.send('Runtime.evaluate', {
-    expression: `(() => { const el = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')]
-      .find((e) => e.offsetParent !== null || e.isContentEditable); if (!el) return false; el.focus(); return true; })()`,
-    returnByValue: true,
-  });
-  // Cmd+A puis remplacement par le prompt (le typage remplace la sélection)
-  const key = (type, k, vk) => c.send('Input.dispatchKeyEvent', {
-    type, modifiers: 4, key: k, code: 'KeyA', windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk,
-  });
-  await key('keyDown', 'a', 65); await key('keyUp', 'a', 65);
-  await c.send('Input.insertText', { text: prompt });
-  await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: '\r' });
-  await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
-  console.log('dispatch ok — capture de la réponse…');
-
-  // filet de sécurité : clic sur un bouton d'envoi si rien ne part
-  await sleep(2500);
-  let len = (await c.send('Runtime.evaluate', { expression: 'document.body.innerText.length', returnByValue: true })).result.value;
-  if (!(len > before)) {
-    await c.send('Runtime.evaluate', {
-      expression: `(() => { const el = [...document.querySelectorAll('button, [role="button"]')]
-        .find((e) => /envoyer|send/i.test(e.getAttribute('aria-label') || '')); if (!el) return false; el.click(); return true; })()`,
-      returnByValue: true,
-    });
-  }
-
-  let stable = 0, last = -1;
-  for (let i = 0; i < 30; i++) {
-    await sleep(2000);
-    len = (await c.send('Runtime.evaluate', { expression: 'document.body.innerText.length', returnByValue: true })).result.value;
-    if (len === last && len > before) { stable++; if (stable >= 2) break; } else stable = 0;
-    last = len;
-  }
-  const tail = (await c.send('Runtime.evaluate', { expression: 'document.body.innerText.slice(-1500)', returnByValue: true })).result.value;
-  console.log('--- fin de conversation (1500 derniers caractères) ---');
-  console.log(tail);
-  c.close();
 }
 
 (async () => {
@@ -185,16 +325,11 @@ async function cmdSend(prompt) {
     else if (mode === 'discover') await cmdDiscover();
     else if (mode === 'newchat') await cmdNewChat();
     else if (mode === 'send') {
-      const args = process.argv.slice(3);
-      const pi = args.indexOf('--port');
-      let prompt = args;
-      if (pi >= 0) prompt = args.slice(0, pi).concat(args.slice(pi + 2));
-      prompt = prompt.join(' ').trim();
-      if (!prompt) { console.error('usage: chatgpt_cdp.mjs send "<prompt>"'); process.exit(64); }
-      await cmdSend(prompt);
-    } else { console.error('modes: targets | discover | newchat | send "<prompt>"'); process.exit(64); }
-  } catch (e) {
-    console.error('ERREUR:', e.message);
-    process.exit(1);
+      if (!promptText) { console.error('usage: chatgpt_cdp.mjs send "<prompt>"'); process.exitCode = 64; }
+      else process.exitCode = await cmdSend(promptText);
+    } else { console.error('modes: targets | discover | newchat | send "<prompt>"'); process.exitCode = 64; }
+  } catch (error) {
+    console.error('ERREUR:', error.message);
+    process.exitCode = 1;
   }
 })();
