@@ -174,7 +174,7 @@ await import(pathToFileURL(script).href);
         result = subprocess.run(
             [_node(), "--input-type=module", "-e", fixture, str(SCRIPT)],
             capture_output=True, text=True, timeout=20)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 0, f'stdout={result.stdout!r}, stderr={result.stderr!r}')
         receipt = json.loads(result.stdout)
         self.assertEqual(receipt["status"], "sent_confirmed")
         self.assertTrue(receipt["dispatch_attempted"])
