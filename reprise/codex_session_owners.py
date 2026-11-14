@@ -6,6 +6,7 @@ permission to write. This module never connects to an RPC endpoint, launches
 a daemon, reads a rollout, or mutates a thread.
 """
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -54,7 +55,7 @@ def _store(home, limit):
         # mode=ro forbids SQL writes. A live WAL database may still cause
         # SQLite-managed shared-memory side effects; never claim byte-for-byte
         # filesystem immutability for an active index.
-        with sqlite3.connect(index.as_uri() + '?mode=ro', uri=True, timeout=2) as connection:
+        with closing(sqlite3.connect(index.as_uri() + '?mode=ro', uri=True, timeout=2)) as connection:
             connection.execute('PRAGMA query_only=ON')
             rows = connection.execute(
                 'SELECT id,cwd,updated_at FROM threads WHERE archived=0 '
