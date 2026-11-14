@@ -45,3 +45,30 @@ reste `false`. Pas de lien automatique à `submit_result` dans ce prototype.
 
 **Sécurité :** le port CDP localhost reste un accès privilégié pour les autres
 processus locaux. Ne jamais l'exposer sur le réseau.
+
+## Architecture commune expérimentale : CDP pipe (issue #161)
+
+Le lanceur TCP ci-dessus reste une solution de compatibilité. Une nouvelle
+voie **sans wrapper ni port TCP** réutilise le transport Python de Reprise
+`claude_cdp_pipe.PipeTransport` et son lanceur générique :
+
+```sh
+python3 -B reprise/chatgpt_desktop_pipe.py inspect
+# Probe explicite : démarre/arrête uniquement son processus dédié.
+python3 -B reprise/chatgpt_desktop_pipe.py probe --profile dedicated
+```
+
+L'action `inspect` est passive ; `probe` crée un profil persistant
+`~/Library/Application Support/Reprise/chatgpt-cdp-profiles/dedicated`,
+privé (0700), avec lock exclusif (0600). Une instance déjà propriétaire du
+profil n'est **jamais adoptée** ; un lock orphelin entraîne un refus explicite.
+Le probe cherche une cible unique `app://-/index.html` et examine seulement
+l'existence du composeur, sans lire de messages ni envoyer de prompt.
+
+**Compatibilité réelle non prouvée :** le fork Electron de ChatGPT Desktop peut
+ne pas honorer `--remote-debugging-pipe`, contrairement à son mode TCP
+déjà sondé. Un échec `pipe_unavailable` ne doit pas entraîner de
+reprise implicite sur le port ni sur le moteur Codex. Il faut également
+démontrer la coexistence indépendante avec l'instance de l'opérateur sur
+un Mac réel. Les profils sont conservés après probe ; aucune session utilisateur
+n'est effacée automatiquement.
