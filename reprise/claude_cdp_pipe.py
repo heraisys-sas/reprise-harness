@@ -271,11 +271,12 @@ def build_chrome_args(profile, origin="https://claude.ai"):
 
 
 def launch_cdp_process(program, arguments, *, label='CDP'):
-    """Spawn one explicitly chosen binary with private CDP fd 3/4.
+    """Spawn an owned process with private CDP fd 3/4.
 
-    Reuses the existing Chrome pipe framing and timeout implementation. The
-    caller owns the profile, admission lock, process lifecycle and permissions.
-    This function never attaches to or terminates any pre-existing app.
+    The launcher preserves the parent's original descriptors 3/4 *before*
+    creating any new pipe. It duplicates all pipe ends above fd 19 before
+    wiring child descriptors; otherwise os.pipe may itself allocate 3/4 and
+    an accidental close() would invalidate pass_fds or the transport.
     """
     program = str(program)
     if not Path(program).is_file() or not os.access(program, os.X_OK):
@@ -283,16 +284,10 @@ def launch_cdp_process(program, arguments, *, label='CDP'):
     if not isinstance(arguments, (list, tuple)) or not all(isinstance(x, str) for x in arguments):
         raise ValueError('Arguments CDP invalides')
 
-    rA, wA = os.pipe()
-    rB, wB = os.pipe()
-    env = dict(os.environ)
-    env.pop('DISPLAY', None)
-    env.pop('WAYLAND_DISPLAY', None)
-
     saved = []
     for fd in (3, 4):
         try:
-            saved.append((fd, fcntl.fcntl(fd, fcntl.F_DUPFD, 5)))
+            saved.append((fd, fcntl.fcntl(fd, fcntl.F_DUPFD, 9)))
         except OSError:
             saved.append((fd, None))
 
@@ -301,21 +296,34 @@ def launch_cdp_process(program, arguments, *, label='CDP'):
             if dup is not None:
                 try:
                     os.dup2(dup, fd)
+                finally:
                     os.close(dup)
-                except OSError:
-                    pass
             else:
                 try:
                     os.close(fd)
                 except OSError:
                     pass
 
+    originals, elevated = [], []
     proc = None
+    wiring = False
     try:
+        for _ in range(2):
+            pair = os.pipe()
+            originals.extend(pair)
+        # Every endpoint, including parent-side wA/rB, must survive dup2(3/4).
+        for fd in originals:
+            elevated.append(fcntl.fcntl(fd, fcntl.F_DUPFD, 20))
+        for fd in originals:
+            os.close(fd)
+        originals = []
+        rA, wA, rB, wB = elevated
+        env = dict(os.environ)
+        env.pop('DISPLAY', None)
+        env.pop('WAYLAND_DISPLAY', None)
+        wiring = True
         os.dup2(rA, 3)
         os.dup2(wB, 4)
-        os.close(rA)
-        os.close(wB)
         try:
             proc = subprocess.Popen(
                 [program, *arguments],
@@ -327,23 +335,39 @@ def launch_cdp_process(program, arguments, *, label='CDP'):
         except OSError as exc:
             raise RuntimeError(f'Impossible de lancer {label} : {exc}') from exc
     finally:
-        restore()
-        if proc is None:
-            for fd in (rB, wA):
+        if wiring:
+            restore()
+        else:
+            # No process was spawned, but saved parent descriptors must close.
+            for _, dup in saved:
+                if dup is not None:
+                    os.close(dup)
+        for fd in originals:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        # The child ends are not owned by the parent after Popen.
+        for fd in (elevated[0:1] + elevated[3:4]) if len(elevated) == 4 else elevated:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if proc is None and len(elevated) == 4:
+            for fd in (elevated[1], elevated[2]):
                 try:
                     os.close(fd)
                 except OSError:
                     pass
 
     if proc.poll() is not None:
-        for fd in (rB, wA):
+        for fd in (wA, rB):
             try:
                 os.close(fd)
             except OSError:
                 pass
         raise RuntimeError(f'{label} exited immediately with code {proc.returncode}')
     return PipeTransport(proc, rB, wA), proc
-
 
 def launch_chrome(profile=None, origin=None):
     """Preserve the historical Chrome API and lock policy on shared CDP pipe."""
