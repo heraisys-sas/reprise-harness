@@ -185,11 +185,11 @@ function composerStatus(expected) {
   const visible = (e) => {
     const box = e.getBoundingClientRect();
     const style = getComputedStyle(e);
-    return box.width >= 80 && box.height >= 12 && style.visibility !== 'hidden' &&
+    return box.width > 0 && box.height >= 12 && style.visibility !== 'hidden' &&
            style.display !== 'none' && !e.readOnly;
   };
   const editors = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')]
-    .filter((e) => visible(e) && !e.disabled);
+    .filter((e) => visible(e) && e.getBoundingClientRect().width >= 80 && !e.disabled);
   if (editors.length !== 1) return { status: 'selectors_stale', composer_count: editors.length };
   const editor = editors[0];
   const text = editor.tagName === 'TEXTAREA' ? editor.value : editor.innerText;
