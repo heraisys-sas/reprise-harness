@@ -1,30 +1,47 @@
-# ChatGPT Reprise.app — wrapper de lancement
+# ChatGPT Reprise.app — lanceur optionnel
 
-Lance **ChatGPT Desktop** (`/Applications/ChatGPT.app`, bundle `com.openai.codex`) avec le
-port DevTools Chromium ouvert, sans jamais modifier le bundle. Le backend Reprise s'y attache
-en CDP pour piloter le chat (quota ChatGPT) ; le moteur Codex et codexd ne sont pas sollicités.
+Ce bundle est uniquement un **wrapper** de `/Applications/ChatGPT.app` (`com.openai.codex`).
+Il ne modifie pas l'application officielle et n'invoque pas le moteur Codex.
 
-## Usage
+## Construction reproductible
 
-- Installer depuis le dépôt : `cp -R reprise/wrappers/chatgpt-reprise/"ChatGPT Reprise.app" ~/Applications/`
-  puis lancer **ChatGPT Reprise** à la place de ChatGPT.
-- Port : `9333` par défaut, surchargeable par `CHATGPT_CDP_PORT`.
-- Journal : `~/Library/Logs/chatgpt-reprise-launcher.log`.
+Le bundle `.app` est un artefact généré, ignoré par `.gitignore`. Les fichiers
+`build_wrapper.py` et `launch.sh` sont versionnés et contrôlés en CI.
 
-## Comportement
-
-1. Port déjà actif → active simplement l'app (voie rapide, idempotent).
-2. App lancée sans le port → quit propre (AppleScript, arrêt forcé en secours) puis relance avec `--remote-debugging-port`.
-3. App fermée → lancement direct avec le flag, puis attente du port (30 s max).
-
-## Vérification
-
-```bash
-curl -s http://127.0.0.1:9333/json/version   # doit répondre Chrome/157…
-node reprise/chatgpt_cdp.mjs discover        # sondes DOM de la fenêtre principale
-node reprise/chatgpt_cdp.mjs send "ping"     # dispatch + capture de réponse
+```sh
+python3 reprise/wrappers/chatgpt-reprise/build_wrapper.py --output "$HOME/Applications"
+open "$HOME/Applications/ChatGPT Reprise.app"
 ```
 
-Pont CDP : `reprise/chatgpt_cdp.mjs` (targets / discover / newchat / send).
-Sécurité : le port n'écoute que sur 127.0.0.1 ; usage mono-utilisateur local, même modèle de
-confiance que les sockets 0600 de Reprise. Ne pas exposer hors de la machine.
+Le constructeur refuse d'écraser un wrapper existant : le remplacement doit
+être explicite et hors exécution. Port 9333 par défaut, variable `CHATGPT_CDP_PORT`.
+
+## Comportement préservé
+
+1. Si le port dispose déjà de la cible `app://-/index.html`, activer ChatGPT.
+   Un port occupé par un service étranger provoque un refus, sans interruption.
+2. Si ChatGPT tourne sans CDP, demander sa fermeture normale par AppleScript.
+   Au besoin, envoyer TERM puis KILL en **dernier recours** au seul processus
+   principal authentifié par son chemin exécutable absolu.
+3. Sinon, lancer l'app officielle avec `--remote-debugging-port` lié à
+   `127.0.0.1`, puis attendre au maximum 30 secondes la cible ChatGPT.
+
+Journal : `~/Library/Logs/chatgpt-reprise-launcher.log`.
+
+**Attention :** la fermeture de ChatGPT peut interrompre une réponse ou un
+brouillon en cours. Utiliser le wrapper uniquement avec autorisation.
+
+## Commandes
+
+```sh
+node reprise/chatgpt_cdp.mjs discover
+node reprise/chatgpt_cdp.mjs send "ping"
+```
+
+`send` n'effectue qu'un seul clic et renvoie un reçu JSON séparant tentative,
+confirmation d'un tour utilisateur et observation d'une réponse. L'observation
+du texte de réponse ne prouve pas la fin du travail métier : `response_complete`
+reste `false`. Pas de lien automatique à `submit_result` dans ce prototype.
+
+**Sécurité :** le port CDP localhost reste un accès privilégié pour les autres
+processus locaux. Ne jamais l'exposer sur le réseau.
