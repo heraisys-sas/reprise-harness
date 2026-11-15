@@ -65,6 +65,8 @@ monitoring and a separate operator authorization. A readable thread, socket
 liveness or application launch receipt is not sufficient.
 
 
+**Observation opérateur :** les essais du mode socket ont été effectués alors que ChatGPT Desktop était toujours lancé **depuis Reprise**. La préférence stdio natif ne s'explique donc pas par un Desktop démarré hors Reprise. Le retrait #172 du mode socket partagé est **intégré à dev** ; le transport CDP #161 est intégré comme prototype sans daemon actif. Un événement de quota ne doit pas disparaître lorsque la propriété native reste inconnue : voir [le contrat de continuation](../../contracts/QUOTA-CONTINUATION-CONTRACT.md).
+
 Use owner-only socket directories, retain approval/sandbox policies, and verify thread identity, project path and idle status before submitting a turn. A parent conversation is a useful coordinator only if its own agent tools still control the child; the server owner and the conversational parent are distinct concepts.
 
 The old `codex mcp-server` recipe is obsolete: [OpenAI documents its removal](https://learn.chatgpt.com/docs/mcp-server). A new integration must speak app-server JSON-RPC or explicitly translate a narrow MCP tool contract. App-server remains experimental.

@@ -93,11 +93,13 @@ Cette matrice décrit le code inspecté, pas une certification des fournisseurs.
 
 1. Enregistrer l'interruption avec sa portée : session, fournisseur ou compte selon preuve ; ne pas confondre quota, budget local et contexte saturé.
 2. Figer un checkpoint sans nouvel appel modèle obligatoire. Ne pas reconstituer une autorisation à partir d'un texte généré.
-3. Attendre une disponibilité confirmée ou proposer une action manuelle ; une échéance passée ne suffit pas seule.
+3. À l'échéance annoncée, **tenter** une continuation native autorisée sans imposer une mesure de quota préalable. L'échéance n'est pas une preuve de disponibilité ni de réussite ; si la route n'est pas utilisable, conserver l'intention en attente. En absence d'échéance, choisir une vérification/tentative bornée plutôt qu'une boucle rapide.
 4. Revalider identité, propriétaire, statut, route, enfants et effets externes ; ne pas reprendre un enfant isolément si son parent est requis.
 5. Persister l'intention d'action et sa clé de déduplication AVANT envoi ; associer le reçu natif lorsqu'il existe.
 6. Envoyer au plus une fois dans une situation ambiguë, puis réconcilier. Un timeout conduit à « réception incertaine », pas à une relance automatique.
 7. Confirmer la reprise par observation native. Distinguer reprise demandée, démarrée, tour terminé et résultat vérifié.
+
+**Contrat détaillé faisant foi : [QUOTA-CONTINUATION-CONTRACT](QUOTA-CONTINUATION-CONTRACT.md).** Une erreur native de quota attribuée et la disponibilité courante `unknown` sont deux informations compatibles : conserver l'événement, ne pas transformer « état courant indéterminé » en « interruption absente ». Les signaux d'une autre application Desktop ne valent pas mesure pour le chat ciblé. L'idempotence doit rester légère mais durable : un doublon peut déclencher des outils et n'est pas toujours une simple réponse « déjà au travail ».
 
 Le scheduler Codex existant reste en place pendant la migration. Généraliser après tests de conformité, sans réduire ses protections ni autoriser implicitement les autres moteurs. Les journaux goal-mode sont reconnus par la détection depuis #109 : la reprise à l'échéance s'applique aux sessions goal comme aux sessions cli/vscode/exec.
 
@@ -212,7 +214,7 @@ Aucune nouvelle fonctionnalité de contrôle implémentée par cette décision. 
 
 ## Ordre de travail quotas actualisé
 
-Décision actualisée du 24/10 : enregistrer l’échéance lors du refus puis tenter la reprise à cette échéance, sans mesure de quota préalable obligatoire ; diagnostiquer/mesurer après un nouvel échec si utile. Les contrôles de propriété, concurrence, permissions et actions incertaines restent requis. Voir [le contrat de rôles et continuité](HARNESS-ROLES-CONTRACT.md#reprise-après-quota). Les quotas par compte/pool restent des observations utiles, pas un préalable universel.
+Décision confirmée le 14/11 : enregistrer toute interruption par quota reconnue, **y compris si l'état actuel du quota ou le propriétaire RPC reste inconnu** ; tenter sa continuation dès la première échéance sur la même session et la route native admissible. Une incertitude de destination bloque l'envoi, pas la conservation du travail ; diagnostiquer/mesurer après un nouvel échec si utile. Les contrôles de propriété, concurrence, permissions et actions incertaines restent requis. Voir [le contrat de rôles et continuité](HARNESS-ROLES-CONTRACT.md#reprise-après-quota). Les quotas par compte/pool restent des observations utiles, pas un préalable universel.
 
 Retirés : plus aucun plafond quotidien local (compteurs legacy inertes — [CACHE-POLICY](CACHE-POLICY.md)) ; la déduplication et les protections contre les boucles précèdent toute nouvelle politique de reprise.
 

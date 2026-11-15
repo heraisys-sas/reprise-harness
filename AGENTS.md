@@ -26,7 +26,7 @@ Une application macOS de **supervision** (SwiftUI/AppKit + helpers Python) qui s
 
 Le clone `source/` racine est le seul qui alimente le déploiement opérateur ; les `workspaces/<agent>/source/` sont des clones de travail par agent, coordonnés uniquement via `origin`. Les workspaces sans `source/` (`claude/`, `autoclaw/`) servent de runtime aux connecteurs, pas de clone Git. Convention de nommage : le dossier clone s'appelle toujours `source`, au singulier, quel que soit l'agent.
 - **Worktrees temporaires** : pour un merge, une revalidation ou toute manipulation hors branche de workspace, créer un worktree dédié sous `<workspace>/tmp/<sujet>/` (ex. `workspaces/harness/tmp/merge-99`), jamais dans un autre worktree d'agent ni dans `/private/tmp` (purgé au reboot). Le clone `source/` étant dans le workspace, ces worktrees restent dans le périmètre inscriptible. Supprimer le worktree après usage (`git worktree remove`).
-- Tests : `python3 -m unittest discover -s reprise/tests -q` (suite fusionnée : 1144 OK, 6 skipped — le chiffre évolue, ne pas le figer).
+- Tests : `python3 -m unittest discover -s reprise/tests -q` ; ne pas figer le nombre de tests, documenter les résultats exacts de la branche.
 - CLI : l'entrée utilisateur est `reprise/reprise` ; `reprise/resume` n'est qu'un wrapper déprécié qui l'exécute (#99).
 - Compile Swift (sans relancer l'app) : `sh native-install` ; `--open` pour lancer l'app.
 - Check syntaxe Swift : `swiftc -parse -module-cache-path /private/tmp/agent-resume-swift-cache Native.swift Dashboard.swift` (dans `reprise/`).
@@ -89,6 +89,8 @@ Un **seul connecteur actif côté Claude** depuis #124 : le dispatch natif QTi p
 - **Pas de repli implicite Reprise → Flash** : un refus de quota remonte au coordinateur. Revues de code/architecture et diagnostics ambigus ne se dégradent pas silencieusement vers Flash (même angle mort sur un second avis identique) — changer d'expert, pas de modèle léger. Restent au coordinateur : merges/push, décisions, arbitrage entre issues ; à l'opérateur : écritures hors sandbox.
 
 ## État et suivi
+
+Pour les observations de quotas, les essais sur le Mac opérateur et les commits réalisés par un agent disposant de droits locaux, suivre [le runbook d'acceptation](docs/runbooks/QUOTA-LOCAL-ACCEPTANCE.md). Le contrat métier est [QUOTA-CONTINUATION-CONTRACT](docs/contracts/QUOTA-CONTINUATION-CONTRACT.md) : événement de quota reconnu ≠ disponibilité actuelle connue ; conserver le travail même lorsque sa route native de continuation reste inconnue. Les essais actifs, les changements de service et les fusions nécessitent une autorisation séparée.
 L'état courant des issues se lit sur GitHub (labels `agent:*` et commentaires). Les réserves de conception consolidées vivent dans `docs/contracts/HARNESS-SUPERVISION-ARCHITECTURE.md` ; les contrats font foi, les documents de session datés ne sont plus dans l'arbre (historique Git).
 
 ## Points de vigilance
