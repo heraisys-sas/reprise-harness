@@ -244,28 +244,34 @@ class Store:
             rows = self.db.execute('SELECT request_key,state,parent,acknowledged FROM delegation_requests WHERE scope=? ORDER BY rowid DESC LIMIT 100', (self.scope,)).fetchall()
             return {'status': 'finished', 'requests': [dict(zip(('request_key', 'state', 'parent_request_key', 'acknowledged'), row)) for row in rows], 'limit': 100}
         validate_key(key)
-        with self.db:
-            row = self.db.execute('SELECT state,result,attempt,acknowledged FROM delegation_requests WHERE scope=? AND request_key=?', (self.scope, key)).fetchone()
-            if not row:
-                return {'status': 'not_found', 'request_key': key}
-            if args.get('acknowledge'):
-                if row[0] == 'awaiting_human':
-                    # Acknowledgement is the documented reconciliation act for a human-pending
-                    # attempt; the caller attests the observed native state. No other
-                    # non-recorded state is ever acknowledged.
-                    self.db.execute("UPDATE delegation_requests SET state='recorded', acknowledged=1 WHERE scope=? AND request_key=?", (self.scope, key))
-                    state = 'recorded'
-                elif row[0] != 'recorded':
-                    raise ValueError('Only a recorded receipt can be acknowledged')
-                else:
-                    self.db.execute('UPDATE delegation_requests SET acknowledged=1 WHERE scope=? AND request_key=?', (self.scope, key))
-                    state = row[0]
+        if args.get('acknowledge'):
+            # Mutating a receipt is an explicit write, not a read-only lookup.
+            # Never commit the caller's transaction as a side effect of ack.
+            self._require_fresh_write_transaction()
+            with self.db:
+                return self._lookup_key(key, acknowledge=True)
+        # A read does not own a transaction and must not commit/rollback one.
+        return self._lookup_key(key, acknowledge=False)
+
+    def _lookup_key(self, key, *, acknowledge):
+        row = self.db.execute('SELECT state,result,attempt,acknowledged FROM delegation_requests WHERE scope=? AND request_key=?', (self.scope, key)).fetchone()
+        if not row:
+            return {'status': 'not_found', 'request_key': key}
+        if acknowledge:
+            if row[0] == 'awaiting_human':
+                # Only the documented human-pending state can be reconciled.
+                self.db.execute("UPDATE delegation_requests SET state='recorded', acknowledged=1 WHERE scope=? AND request_key=?", (self.scope, key))
+                state = 'recorded'
+            elif row[0] != 'recorded':
+                raise ValueError('Only a recorded receipt can be acknowledged')
             else:
+                self.db.execute('UPDATE delegation_requests SET acknowledged=1 WHERE scope=? AND request_key=?', (self.scope, key))
                 state = row[0]
-        receipt = {'status': 'finished', 'request_key': key, 'state': state, 'attempt_id': row[2],
-                   'acknowledged': bool(row[3] or args.get('acknowledge')),
-                   'result': json.loads(row[1]) if row[1] else None}
-        return receipt
+        else:
+            state = row[0]
+        return {'status': 'finished', 'request_key': key, 'state': state, 'attempt_id': row[2],
+                'acknowledged': bool(row[3] or acknowledge),
+                'result': json.loads(row[1]) if row[1] else None}
 
     def _enrich(self, receipt):
         """Add the reconciliation fields to compact views only; full receipts stay unchanged."""
@@ -378,10 +384,22 @@ class Store:
             values += [self.scope, key]
             self.db.execute('UPDATE delegation_turns SET ' + ', '.join(assignments) + ' WHERE scope=? AND request_key=?', values)
 
+    def _require_fresh_write_transaction(self):
+        """The caller must not own a transaction spanning a durable admission.
+
+        Python's Connection context manager commits on exit even when the
+        transaction was opened by another caller. Refuse before entering that
+        context: never implicitly commit/rollback someone else's work.
+        """
+        if self.db.in_transaction:
+            raise sqlite3.OperationalError(
+                'Active caller transaction prevents independent delegation write; no mutation recorded')
+
     def claim(self, key, owner, stale_after=120.0, alive=None):
         """Return owned, held or taken_over. A takeover is recorded, never redispatch."""
         alive = alive or owner_alive
         stamp = float(self.now())
+        self._require_fresh_write_transaction()
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
             row = self.db.execute('SELECT owner,updated_at,phase FROM delegation_turns WHERE scope=? AND request_key=?', (self.scope, key)).fetchone()
@@ -407,6 +425,7 @@ class Store:
         validate_key(key)
         if parent is not None:
             validate_key(parent)
+        self._require_fresh_write_transaction()
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
             result = self._begin_locked(key, payload, parent)
