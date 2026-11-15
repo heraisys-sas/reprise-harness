@@ -106,6 +106,35 @@ class ChatgptQuickTests(unittest.TestCase):
             'SELECT delivery FROM chatgpt_submissions WHERE request_key=?',
             (key,)).fetchone(), ('admitted',))
 
+    def test_concurrent_same_key_different_questions_cannot_both_succeed(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        key = str(uuid.uuid4())
+        gate = threading.Barrier(2)
+
+        def submit(question):
+            endpoint = Endpoint(self.state, self.project)
+            try:
+                gate.wait(timeout=10)
+                try:
+                    return ('ok', question, endpoint.submit(
+                        {'question': question, 'request_key': key})['delivery'])
+                except ValueError as error:
+                    return ('conflict', question, str(error))
+            finally:
+                endpoint.close()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            result = list(executor.map(submit, ('first question', 'second question')))
+        self.assertEqual(sorted(item[0] for item in result), ['conflict', 'ok'])
+        self.assertIn('Request identity conflict', next(
+            item[2] for item in result if item[0] == 'conflict'))
+        winning_question = next(item[1] for item in result if item[0] == 'ok')
+        self.assertTrue(self.endpoint.tasks._row(key)[0].endswith(winning_question))
+        self.assertEqual(self.endpoint.db.execute(
+            'SELECT COUNT(*) FROM chatgpt_submissions WHERE request_key=?',
+            (key,)).fetchone()[0], 1)
+
     def test_file_evidence_changed_marks_needs_review(self):
         key = str(uuid.uuid4())
         before = file_evidence(self.project, ['note.py'])
