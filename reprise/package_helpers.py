@@ -14,6 +14,7 @@ ASSETS += ('yaml_contract.py', 'codex_config_update.py',)
 ASSETS += ('siri_inbox_acl.py', 'siri_inbox_model.py', 'siri_inbox_store.py', 'siri_inbox_cli.py')
 ASSETS += ('mcp_transport.py', 'chatgpt_quick.py', 'chatgpt_mcp.py',)  # Issue #156: shared MCP transport + ChatGPT bridge.
 ASSETS += ('chatgpt_integration.py',)  # Issue #161: managed ChatGPT MCP server config.
+ASSETS += ('codex_session_owners.py',)  # Issue #170: read-only multi-CODEX_HOME ownership census.
 ASSETS += ('registry_marker.py', 'registry_adopt.py')
 ASSETS += ('vault_status.py',)  # Noninteractive existing-key verification for the privacy UI.
 ASSETS += ('memory_admin.py',)  # Memory administration packaging; independent of local execution.
