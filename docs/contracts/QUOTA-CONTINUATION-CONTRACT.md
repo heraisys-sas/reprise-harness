@@ -47,6 +47,19 @@ d'attribution de bureau, compte ou canal doit devenir `source_mismatch`
 ou `source_unknown`, jamais un état quota global fabriqué.
 L'intention peut rester visible en attente, sans envoi à un mauvais destinataire.
 
+### États visibles et vocabulaire des preuves
+
+Le suivi ne doit pas réduire une anomalie de quota historiquement reconnue
+à « indéterminé » lorsque seul le quota *courant* est inconnu. Afficher
+séparément l'état de preuve de l'interruption, la source Desktop/profil/chat,
+la date de prochaine tentative et la disponibilité du canal natif.
+
+La séquence conceptuelle `quota_observed → intent_recorded → due →
+route_ready → dispatch_attempted → turn_observed → work_verified` sert à
+l'acceptation et à la traçabilité. **Ce ne sont pas des valeurs de statut
+déjà livrées dans le code.** Une requête acceptée, une fin de tour et un
+travail métier achevé restent distincts.
+
 ## Machine d'états cible
 
 1. **Observation** : classifier `quota_confirmed` lorsqu'un refus natif

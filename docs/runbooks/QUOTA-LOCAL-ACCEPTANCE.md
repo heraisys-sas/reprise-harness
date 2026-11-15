@@ -1,8 +1,13 @@
 # Acceptation locale — continuation après quota et propriété des sessions
 
-**Destinataires :** agents chargés d'exécuter des vérifications sur le Mac de
-l'opérateur, parfois avec une capacité d'analyse limitée. **Ne pas improviser.**
-Ce document est la checklist reproductible et la forme attendue du rapport.
+**Destinataires :** agents techniquement compétents, autorisés à sélectionner les
+outils de diagnostic et à proposer des correctifs dans le périmètre d'une issue.
+La conduite technique du test leur appartient ; **les décisions architecturales,
+les accès à une session réelle et les changements de route propriétaire exigent
+une preuve explicite et, lorsqu'indiqué, le go opérateur**.
+Ce document fixe les invariants, la checklist reproductible et la forme du rapport.
+Une hypothèse contradictoire doit être notée comme `NOT_VERIFIED`, jamais résolue
+par intuition ou par substitution implicite de route.
 Contrat métier : [QUOTA-CONTINUATION-CONTRACT](../contracts/QUOTA-CONTINUATION-CONTRACT.md).
 
 ## Ce que l'agent doit livrer
