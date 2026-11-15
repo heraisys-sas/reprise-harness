@@ -72,6 +72,38 @@ class Endpoint:
             tasks.close()
         self.db.close()
 
+    def _replay_admission(self, request_key, prompt):
+        """Return an immutable prior receipt without redispatching a prompt.
+
+        Historical 'admitted' ledger rows represent a crash between two local
+        projection writes, not proof that a model was ever invoked.
+        """
+        row = self.db.execute('''SELECT delivery, needs_review, prompt
+            FROM chatgpt_submissions WHERE scope=? AND request_key=?''',
+            (self.scope, request_key)).fetchone()
+        if row is None:
+            raise ValueError('Missing ChatGPT admission ledger')
+        if row[2] != prompt:
+            raise ValueError('Request identity conflict')
+        task = self.tasks._row(request_key)
+        if task is None or task[0] != prompt:
+            raise ValueError('Admission ledger conflicts with TaskStore')
+        if row[0] == 'admitted':
+            # Repair a pre-v2 split write. This is a local projection only: no
+            # prompt is delivered, no new attempt is made, no result is erased.
+            with self.db:
+                self.db.execute('''UPDATE chatgpt_submissions SET delivery='attempted',
+                    dispatch_receipt=COALESCE(dispatch_receipt, ?)
+                    WHERE scope=? AND request_key=? AND delivery='admitted' ''',
+                    (json.dumps({'stage': 'admitted', 'channel': 'indeterminate'}),
+                     self.scope, request_key))
+            row = self.db.execute('''SELECT delivery,needs_review,prompt
+                FROM chatgpt_submissions WHERE scope=? AND request_key=?''',
+                (self.scope, request_key)).fetchone()
+        return {'status': 'finished', 'request_key': request_key,
+                'delivery': row[0] or 'admitted', 'resent': False,
+                'admission_only': True, 'needs_review': bool(row[1])}
+
     def submit(self, args):
         if not isinstance(args, dict) or args.keys() - ALLOWED_SUBMISSION_KEYS:
             raise ValueError('Invalid ChatGPT submission arguments')
@@ -83,32 +115,33 @@ class Endpoint:
         kind = args.get('kind', 'expertise')
         level = args.get('level', 'standard')
         paths = args.get('paths')
-        row = self.db.execute('SELECT delivery, needs_review FROM chatgpt_submissions WHERE scope=? AND request_key=?',
+        prompt = CHATGPT_TASK_INSTRUCTION.format(key=json.dumps(request_key)) + '\n\n' + question
+        row = self.db.execute('SELECT 1 FROM chatgpt_submissions WHERE scope=? AND request_key=?',
                               (self.scope, request_key)).fetchone()
         if row:
-            # Idempotence: an already-admitted request is never rewritten or resent.
-            return {'status': 'finished', 'request_key': request_key,
-                    'delivery': row[0] or 'admitted', 'resent': False, 'admission_only': True,
-                    'needs_review': bool(row[1])}
+            return self._replay_admission(request_key, prompt)
         before = args.get('before_evidence')
         if before is None:
             before = file_evidence(self.root, paths)
-        prompt = CHATGPT_TASK_INSTRUCTION.format(key=json.dumps(request_key)) + '\n\n' + question
         # Crash-safe admission: validate EVERYTHING against the roundtrip store
         # BEFORE the first durable write. A failure after the INSERT below would
         # leave an admitted row with no TaskStore entry; recovery would then rely
         # on replay alone instead of a clean retry. admit() is idempotent on the
         # same (request_key, prompt); a DIFFERENT prompt is a real conflict.
         self.tasks.admit(request_key, prompt)
+        # Both admission and its "attempted" projection are one SQLite write:
+        # there is no crash window leaving a new row stuck in "admitted".
+        # Attempted means durable local admission, NOT transport delivery.
         with self.db:
-            self.db.execute('''INSERT INTO chatgpt_submissions VALUES (?,?,?,?,?,?,?,0,?)''',
-                            (self.scope, request_key, prompt, 'admitted', None,
-                             json.dumps(before), None, time.time()))
-        # Delivery attempt is recorded, never proven; the channel is indeterminate in v1.
-        with self.db:
-            self.db.execute('''UPDATE chatgpt_submissions SET delivery='attempted',
-                dispatch_receipt=? WHERE scope=? AND request_key=?''',
-                (json.dumps({'stage': 'admitted', 'channel': 'indeterminate'}), self.scope, request_key))
+            inserted = self.db.execute(
+                '''INSERT OR IGNORE INTO chatgpt_submissions VALUES (?,?,?,?,?,?,?,0,?)''',
+                (self.scope, request_key, prompt, 'attempted',
+                 json.dumps({'stage': 'admitted', 'channel': 'indeterminate'}),
+                 json.dumps(before), None, time.time())).rowcount
+        if not inserted:
+            # A second process may have won the insertion after our SELECT.
+            # Its prompt is immutable; never report success for a different one.
+            return self._replay_admission(request_key, prompt)
         after = file_evidence(self.root, paths)
         needs_review = after != before
         if needs_review:
@@ -156,7 +189,7 @@ class Endpoint:
         with self.db:
             cursor = self.db.execute(
                 '''UPDATE chatgpt_submissions SET delivery='acknowledged', dispatch_receipt=?
-                WHERE scope=? AND request_key=? AND delivery='attempted' ''',
+                WHERE scope=? AND request_key=? AND delivery IN ('admitted','attempted') ''',
                 (json.dumps({'stage': 'acknowledged', 'attempt_id': attempt_id,
                              'answer_sha256': answer_sha256}), self.scope, request_key))
         if cursor.rowcount:
@@ -167,7 +200,9 @@ class Endpoint:
 def review(root, question, *, kind='expertise', level='standard', paths=None,
            socket=None, request_key=None, before_evidence=None):
     """Admit one consultative ChatGPT delegation; returns the durable admission receipt."""
-    state = _state_location(root)
+    # In this integration "socket" is an explicitly configured state directory,
+    # not a network transport. Bridge and Endpoint must share its TaskStore.
+    state = Path(socket).resolve() if socket is not None else _state_location(root)
     endpoint = Endpoint(state, root)
     try:
         return endpoint.submit({'question': question, 'kind': kind, 'level': level,
