@@ -107,6 +107,66 @@ class TaskStoreTests(unittest.TestCase):
             self.assertTrue(all(set(item) == {'request_key','state','result_available','acknowledged'} for item in page['tasks']))
             store.close()
 
+    def test_claim_next_is_busy_until_result_and_does_not_replace_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = TaskStore(tmp, tmp)
+            second = TaskStore(tmp, tmp)
+            try:
+                first.admit('one', 'first prompt')
+                first.admit('two', 'second prompt')
+                receipt = first.claim_next('stable')
+                self.assertEqual(receipt['request_key'], 'one')
+                replay = second.claim_next('stable')
+                self.assertEqual(replay['state'], 'busy')
+                self.assertEqual((replay['request_key'], replay['attempt_id']),
+                                 ('one', receipt['attempt_id']))
+                self.assertNotIn('prompt', replay)
+                self.assertEqual(second.db.execute(
+                    'SELECT request_key FROM desktop_claims WHERE scope=? AND claim_key=?',
+                    (first.scope, 'stable')).fetchone(), ('one',))
+                other = second.claim_next('another')
+                self.assertEqual(other['request_key'], 'two')
+                first.submit('one', receipt['attempt_id'], 'done')
+                self.assertEqual(first.claim_next('stable')['state'], 'empty')
+                second.submit('two', other['attempt_id'], 'done')
+            finally:
+                second.close()
+                first.close()
+
+    def test_claim_next_skips_migrated_legacy_unknown_and_started_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root/'project'
+            project.mkdir()
+            scope = str(project.resolve())
+            db = sqlite3.connect(root/'quick.sqlite')
+            db.execute('''CREATE TABLE desktop_tasks(
+                scope TEXT NOT NULL,request_key TEXT NOT NULL,prompt TEXT NOT NULL,
+                chat_id TEXT,claim_key TEXT,attempt_id TEXT,answer TEXT,
+                acknowledged INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(scope,request_key))''')
+            db.execute('INSERT INTO desktop_tasks VALUES(?,?,?,?,?,?,?,?)',
+                       (scope, 'legacy', 'possibly dispatched', None, None, None, None, 0))
+            db.commit()
+            db.close()
+            store = TaskStore(root, project)
+            try:
+                store.admit('review', 'review in progress')
+                store.admit('socket', 'socket in progress')
+                store.admit('fresh', 'safe delivery')
+                self.assertTrue(store.reserve_review_dispatch('review'))
+                self.assertEqual(store.reserve_socket_dispatch('socket')['state'], 'reserved')
+                claimed = store.claim_next('stable')
+                self.assertEqual(claimed['request_key'], 'fresh')
+                self.assertEqual(store.claim_next('other')['state'], 'empty')
+                self.assertIsNone(store._row('legacy')[2])
+                self.assertIsNone(store._row('review')[2])
+                self.assertIsNone(store._row('socket')[2])
+                self.assertEqual(store.db.execute(
+                    'SELECT legacy_unknown FROM desktop_dispatch_guard '
+                    'WHERE scope=? AND request_key=?', (scope, 'legacy')).fetchone(), (1,))
+            finally:
+                store.close()
+
     def test_listing_does_not_fetch_large_answers(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = TaskStore(tmp, tmp)
