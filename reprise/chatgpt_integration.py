@@ -10,6 +10,7 @@ from contextlib import contextmanager
 import fcntl
 import json
 import os
+import pwd
 from pathlib import Path
 import subprocess
 import sys
@@ -29,8 +30,19 @@ RESTART_NOTICE = ('Redémarrez ChatGPT desktop (Réglages → MCP servers → Re
                   'config.toml ; Reprise ne redémarre pas ChatGPT à votre place.')
 
 
-def paths(home):
-    home = Path(home).expanduser().absolute()
+def _native_account_home():
+    """Use the native account record, not a harness-redirected process HOME."""
+    try:
+        directory = pwd.getpwuid(os.getuid()).pw_dir
+    except (KeyError, OSError) as exc:
+        raise ValueError('Compte utilisateur non identifié : fournir --home.') from exc
+    if not isinstance(directory, str) or not Path(directory).is_absolute():
+        raise ValueError('Dossier du compte non absolu : fournir --home.')
+    return Path(directory)
+
+
+def paths(home=None):
+    home = Path(_native_account_home() if home is None else home).expanduser().absolute()
     if home.is_symlink():
         raise ValueError('Dossier utilisateur symbolique refusé.')
     home = home.resolve(strict=True)
@@ -124,7 +136,7 @@ def render(raw, entry):
 
 
 def inspect(root, home=None):
-    home, config, managed = paths(home or Path.home())
+    home, config, managed = paths(home)
     doc = read_config(config)
     old = metadata(managed)
     entry = doc.get('mcp_servers', {}).get(ENTRY_NAME)
@@ -270,7 +282,7 @@ def apply(root, public):
 
 
 def verify(root, home=None, project=None):
-    home, config, managed = paths(home or Path.home())
+    home, config, managed = paths(home)
     old = metadata(managed)
     entry = read_config(config).get('mcp_servers', {}).get(ENTRY_NAME)
     if not old or old.get('status') != 'installed' or entry is None:
@@ -315,7 +327,7 @@ def main(root, argv=None):
     sub = parser.add_subparsers(dest='command', required=True)
     for name in ('chatgpt-integration-inspect', 'chatgpt-integration-plan', 'chatgpt-integration-verify'):
         command = sub.add_parser(name)
-        command.add_argument('--home', default=str(Path.home()))
+        command.add_argument('--home', default=None)
         if name == 'chatgpt-integration-verify':
             command.add_argument('--project')
         if name == 'chatgpt-integration-plan':

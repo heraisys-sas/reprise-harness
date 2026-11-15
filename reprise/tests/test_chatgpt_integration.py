@@ -78,6 +78,29 @@ class ChatGPTIntegrationTests(unittest.TestCase):
             '# préférences Codex\nmodel = "gpt-5.1"\n\n[mcp_servers.other]\ncommand = "/usr/bin/true"\nargs = []\n'
             'env = {TOKEN = "secret"}\n\n[profiles.work]\nmodel = "gpt-5.1-mini"\n')
 
+    def test_default_home_from_native_account_not_redirected_process(self):
+        from types import SimpleNamespace
+        redirected = self.base / 'sandboxed' / '.dsh'
+        redirected.mkdir(parents=True)
+        with patch.dict(os.environ, {'HOME': str(redirected)}), \
+             patch.object(integration.pwd, 'getpwuid',
+                          return_value=SimpleNamespace(pw_dir=str(self.home))) as lookup:
+            home, config, managed = integration.paths(None)
+            self.assertEqual(home, self.home)
+            self.assertEqual(config, self.home / '.codex/config.toml')
+            self.assertTrue(managed.is_relative_to(self.home))
+            self.assertNotEqual(home, redirected)
+            lookup.assert_called_once_with(os.getuid())
+
+    def test_missing_native_account_refuses_without_guessing(self):
+        redirected = self.base / 'redirected'
+        redirected.mkdir()
+        with patch.dict(os.environ, {'HOME': str(redirected)}), \
+             patch.object(integration.pwd, 'getpwuid', side_effect=KeyError('missing')):
+            with self.assertRaisesRegex(ValueError, 'fournir --home'):
+                integration.paths(None)
+            self.assertEqual(integration.paths(self.home)[0], self.home)
+
     def test_inspect_empty_is_read_only(self):
         before = harness_integration.tree_files(self.home)
         inspected = integration.inspect(self.root, self.home)
