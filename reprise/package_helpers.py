@@ -15,6 +15,7 @@ ASSETS += ('siri_inbox_acl.py', 'siri_inbox_model.py', 'siri_inbox_store.py', 's
 ASSETS += ('mcp_transport.py', 'chatgpt_quick.py', 'chatgpt_mcp.py',)  # Issue #156: shared MCP transport + ChatGPT bridge.
 ASSETS += ('chatgpt_integration.py',)  # Issue #161: managed ChatGPT MCP server config.
 ASSETS += ('codex_session_owners.py',)  # Issue #170: read-only multi-CODEX_HOME ownership census.
+ASSETS += ('chatgpt_desktop_pipe.py',)  # #161: isolated explicit CDP pipe probe; not a daemon.
 ASSETS += ('registry_marker.py', 'registry_adopt.py')
 ASSETS += ('approval_delegation.py',)  # #117: inert, operator-only scoped grant registry.
 ASSETS += ('vault_status.py',)  # Noninteractive existing-key verification for the privacy UI.
