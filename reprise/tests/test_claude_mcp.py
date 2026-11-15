@@ -66,8 +66,16 @@ class ClaudeMCPTests(unittest.TestCase):
             def call():
                 r = facade.dispatch({'method':'tools/call','params':{'name':'claim_next','arguments':{'claim_key':'ck'}}})
                 return json.loads(r['content'][0]['text'])
-            self.assertEqual(call()['request_key'], 't-first')
-            self.assertEqual(call()['request_key'], 't-second')
+            first = call()
+            self.assertEqual(first['request_key'], 't-first')
+            held = call()
+            self.assertEqual((held['state'], held['request_key'], held['attempt_id']),
+                             ('busy', 't-first', first['attempt_id']))
+            self.assertNotIn('prompt', held)
+            tasks.submit('t-first', first['attempt_id'], 'réponse 1')
+            second = call()
+            self.assertEqual(second['request_key'], 't-second')
+            tasks.submit('t-second', second['attempt_id'], 'réponse 2')
             self.assertEqual(call()['state'], 'empty')
             tasks.close()
 
