@@ -214,6 +214,12 @@ def admit_queue_continuation(db, root, quick_state, project_root, now=None, snap
         return {'status': 'waiting', 'resets_at': min(due for _, _, due in rows)}
 
     legacy_deadline = scheduler.get(db, 'claude_queue_admitted_for')
+    try:
+        # Earlier versions wrote str(resets) where resets could be an int from
+        # an observation or a float from SQLite (e.g. "5000" vs "5000.0").
+        legacy_due = float(legacy_deadline) if legacy_deadline is not None else None
+    except (ValueError, TypeError, OverflowError):
+        legacy_due = None
     from desktop_task_store import TaskStore
     store = TaskStore(quick_state, project_root)
     admitted = []
@@ -224,7 +230,7 @@ def admit_queue_continuation(db, root, quick_state, project_root, now=None, snap
             # Older versions admitted a generic task keyed only by the reset
             # timestamp. We cannot assign it to one of several chats; preserve
             # that uncertainty rather than silently duplicating the work.
-            if legacy_deadline == str(due):
+            if legacy_due is not None and legacy_due == due:
                 legacy_uncertain.append(event_key)
                 continue
             key = f'claude-continuation-{event_key}'
