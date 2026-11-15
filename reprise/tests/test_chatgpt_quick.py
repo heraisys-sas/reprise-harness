@@ -142,6 +142,21 @@ class ChatgptCrashSafetyTests(unittest.TestCase):
         self.assertEqual(again['delivery'], 'acknowledged')
         self.assertEqual(hashlib.sha256('réponse'.encode()).hexdigest(), sha)
 
+    def test_mark_acknowledged_rejects_uncommitted_result_and_forged_hash(self):
+        import hashlib
+        key = str(uuid.uuid4())
+        self.endpoint.submit({'question': 'Analyse', 'request_key': key})
+        claimed = self.endpoint.tasks.claim(key, 'chatgpt-claim-' + str(uuid.uuid4()))
+        fake = hashlib.sha256(b'forged').hexdigest()
+        with self.assertRaisesRegex(ValueError, 'not recorded'):
+            self.endpoint.mark_acknowledged(key, claimed['attempt_id'], fake)
+        self.endpoint.tasks.submit(key, claimed['attempt_id'], 'réponse')
+        with self.assertRaisesRegex(ValueError, 'does not match'):
+            self.endpoint.mark_acknowledged(key, claimed['attempt_id'], fake)
+        self.assertEqual(self.endpoint.db.execute(
+            'SELECT delivery FROM chatgpt_submissions WHERE request_key=?',
+            (key,)).fetchone()[0], 'attempted')
+
     def test_mark_acknowledged_rejects_bad_inputs_and_states(self):
         key = str(uuid.uuid4())
         self.endpoint.submit({'question': 'Analyse', 'request_key': key})
