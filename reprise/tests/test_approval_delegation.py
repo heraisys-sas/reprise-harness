@@ -56,7 +56,11 @@ class ApprovalDelegationTests(unittest.TestCase):
             (self.manager.store.scope,)).fetchone()
         self.assertEqual(row[0], hashlib.sha256(token.encode()).hexdigest())
         self.assertNotEqual(row[0], token)
-        self.assertEqual(row[1:], (THREAD, str(self.workspace), 3, 0))
+        self.assertEqual(row[1], THREAD)
+        # macOS temp roots may alias /var and /private/var. Compare inode
+        # identity through canonical paths; retain the strict scope assertions.
+        self.assertEqual(Path(row[2]).resolve(strict=True), self.workspace.resolve(strict=True))
+        self.assertEqual(row[3:], (3, 0))
         self.assertNotIn(token, json.dumps(self.manager.list_grants(now=101)))
         self.assertNotIn('token_sha256', json.dumps(self.manager.list_grants(now=101)))
 
