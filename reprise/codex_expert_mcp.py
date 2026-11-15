@@ -374,7 +374,11 @@ class Bridge:
             self.desktop_tasks = None
         # ChatGPT roundtrip: same TaskStore contract over a dedicated state directory
         # (channel independence), opened only when the local channel is configured.
-        self.chatgpt_state = state_location(self.root, 'chatgpt-state')
+        # The ChatGPT MCP "socket" parameter is a local *state directory*.
+        # Admission and the return-channel TaskStore must use that exact path,
+        # including isolated integration-verification and nondefault installs.
+        self.chatgpt_state = (Path(self.chatgpt_socket).resolve() if self.chatgpt_socket
+                              else state_location(self.root, 'chatgpt-state'))
         self.chatgpt_tasks = None
         if self.chatgpt_socket:
             try:
