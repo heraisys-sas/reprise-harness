@@ -61,8 +61,8 @@ class ChatGPTMCP:
     register_session (v1 policy) and with the ChatGPT loopback removed.
     """
 
-    def __init__(self, tasks, bridge):
-        self.tasks, self.bridge = tasks, bridge
+    def __init__(self, tasks, bridge, endpoint=None):
+        self.tasks, self.bridge, self.endpoint = tasks, bridge, endpoint
         self.tools_list = inbox_tools() + outbound_tools(CHATGPT_REMOVED_BACKENDS)
         self.definitions = {item['name']: item for item in inbox_tools()}
 
@@ -98,6 +98,13 @@ class ChatGPTMCP:
                 result = self.tasks.claim(**args)
             elif name == 'submit_result':
                 result = self.tasks.submit(**args)
+                if self.endpoint is not None:
+                    # The answer is committed in TaskStore first. The separate
+                    # admission ledger is a projection, not completion proof.
+                    # A retry of the same submit_result repairs a crash between
+                    # these two SQLite writes without executing the task again.
+                    self.endpoint.mark_acknowledged(args['request_key'],
+                                                     args['attempt_id'], result['sha256'])
             else:
                 result = self.tasks.result(**args)
             if name == 'get_result' and args.get('view', 'receipt') != 'full':
@@ -150,7 +157,7 @@ def main():
     tasks = endpoint.tasks
     bridge = Bridge(args.project_root, {}, args.expert_state,
                     desktop_state=state, allowed_tools=OUTBOUND, chatgpt_socket=str(state))
-    facade = ChatGPTMCP(tasks, bridge)
+    facade = ChatGPTMCP(tasks, bridge, endpoint=endpoint)
     handler = ChatGPTStdioHandler(facade)
 
     def write(text):
