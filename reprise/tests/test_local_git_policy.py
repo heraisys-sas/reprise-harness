@@ -91,6 +91,24 @@ class LocalGitPolicyTests(unittest.TestCase):
         self.assertNotEqual(self.plan().fingerprint,
                             self.plan(index_clean=False).fingerprint)
 
+    def test_fingerprint_is_stable_between_checks_but_changes_at_expiry(self):
+        at_20 = evaluate(self.request, self.authorization, self.observation, now=20)
+        at_21 = evaluate(self.request, self.authorization, self.observation, now=21)
+        self.assertEqual(at_20.status, 'eligible_for_review')
+        self.assertEqual(at_21.status, 'eligible_for_review')
+        self.assertEqual(at_20.fingerprint, at_21.fingerprint)
+        expired_observation = evaluate(self.request, self.authorization, self.observation, now=25)
+        # Observation freshness is missing evidence, unlike an expired grant.
+        self.assertEqual(expired_observation.status, 'needs_evidence')
+        self.assertIn('observation_outside_validity', expired_observation.reasons)
+        self.assertFalse(expired_observation.execution_enabled)
+        self.assertNotEqual(at_20.fingerprint, expired_observation.fingerprint)
+        expired_authorization = evaluate(self.request, self.authorization, self.observation, now=30)
+        self.assertEqual(expired_authorization.status, 'blocked')
+        self.assertIn('authorization_outside_validity', expired_authorization.reasons)
+        self.assertFalse(expired_authorization.execution_enabled)
+        self.assertNotEqual(expired_observation.fingerprint, expired_authorization.fingerprint)
+
     def test_vote_field_is_not_part_of_contract(self):
         with self.assertRaises(TypeError):
             replace(self.observation, votes=3)
@@ -101,7 +119,9 @@ class LocalGitPolicyTests(unittest.TestCase):
     def test_invalid_refs_are_blocked(self):
         for ref in ('dev', 'refs/heads/a..b', 'refs/heads/a.lock',
                     'refs/heads/.hidden', 'refs/heads/a b', 'refs/heads/a@{b',
-                    'refs/heads/a\x7fb'):
+                    'refs/heads/a\x7fb', 'refs/heads/@', 'refs/heads/-danger',
+                    'refs/heads/safe/-danger', 'refs/heads/safe./next',
+                    'refs/heads/a//b', 'refs/heads/a/'):
             with self.subTest(ref=ref):
                 request = replace(self.request, destination_ref=ref)
                 plan = evaluate(request, self.authorization, self.observation, now=20)
@@ -119,8 +139,9 @@ class LocalGitPolicyTests(unittest.TestCase):
         self.assertIn('same_repository_identity', plan.reasons)
 
     def test_nonfinite_inputs_fail_closed(self):
-        with self.assertRaises(ValueError):
-            evaluate(self.request, self.authorization, self.observation, now=float('nan'))
+        for value in (float('nan'), float('inf'), float('-inf')):
+            with self.subTest(now=value), self.assertRaises(ValueError):
+                evaluate(self.request, self.authorization, self.observation, now=value)
         with self.assertRaises(ValueError):
             evaluate(self.request, replace(self.authorization, valid_until=float('inf')),
                      self.observation, now=20)

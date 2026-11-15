@@ -84,7 +84,7 @@ def _require_well_typed(request, authorization, observation, now):
     if not (isinstance(request, Request) and isinstance(authorization, Authorization)
             and isinstance(observation, Observation)):
         raise ValueError('malformed input: Request, Authorization and Observation required')
-    if not _number(now):
+    if not _number(now) or not math.isfinite(now):
         problems.append('now')
     for name in (field.name for field in fields(Request)):
         if not isinstance(getattr(request, name), str):
@@ -121,9 +121,6 @@ def evaluate(request: Request, authorization: Authorization,
     _require_well_typed(request, authorization, observation, now)
     blocked, missing = [], []
     request_hash = fingerprint(request)
-    digest = fingerprint({'request': asdict(request),
-                          'authorization': asdict(authorization),
-                          'observation': asdict(observation), 'now': now})
     if request.operation != 'git.fast_forward':
         blocked.append('unsupported_operation')
     if any(not value or value.strip() != value for value in
@@ -133,10 +130,14 @@ def evaluate(request: Request, authorization: Authorization,
     if request.source_repository == request.destination_repository:
         blocked.append('same_repository_identity')
     ref = request.destination_ref
-    if (not ref.startswith('refs/heads/') or ref.endswith(('/', '.')) or
+    prefix = 'refs/heads/'
+    branch = ref[len(prefix):] if ref.startswith(prefix) else ''
+    components = branch.split('/')
+    if (not branch or ref.endswith(('/', '.')) or
             any(part in ref for part in ('..', '@{', '//')) or
             any(c.isspace() or ord(c) < 32 or ord(c) == 127 or c in '~^:?*[\\' for c in ref) or
-            any(part.startswith('.') or part.endswith('.lock') for part in ref.split('/'))):
+            any(not part or part == '@' or part.startswith(('.', '-'))
+                or part.endswith(('.', '.lock')) for part in components)):
         blocked.append('unsupported_ref')
     if not all(re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', oid)
                for oid in (request.expected_oid, request.target_oid)):
@@ -193,4 +194,12 @@ def evaluate(request: Request, authorization: Authorization,
               'eligible_for_review')
     refs = tuple(sorted({ref for ref in
                          (authorization.evidence_ref, observation.evidence_ref) if ref}))
-    return Plan(status, tuple(sorted(set(blocked + missing))), refs, digest)
+    reasons = tuple(sorted(set(blocked + missing)))
+    # A plan's identity is the evidence and verdict, not wall-clock sampling.
+    # When validity expires the verdict/reasons change, so the digest changes too.
+    digest = fingerprint({'request': asdict(request),
+                          'authorization': asdict(authorization),
+                          'observation': asdict(observation),
+                          'verdict': {'status': status, 'reasons': reasons,
+                                      'evidence_refs': refs}})
+    return Plan(status, reasons, refs, digest)
