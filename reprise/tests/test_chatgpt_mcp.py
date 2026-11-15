@@ -115,6 +115,45 @@ class ChatgptMcpRoundtripTests(unittest.TestCase):
             self.assertEqual(again['answer'], 'reponse 156')
             tasks.close()
 
+    def test_submit_result_acknowledges_durable_endpoint_and_retry_repairs_projection(self):
+        from chatgpt_quick import Endpoint
+        with tempfile.TemporaryDirectory() as tmp:
+            endpoint = Endpoint(tmp, tmp)
+            try:
+                facade = ChatGPTMCP(endpoint.tasks, Mock(), endpoint=endpoint)
+                endpoint.submit({'question': 'Analyse', 'request_key': 'key-ack'})
+                claimed = call_tool(facade, 'get_task',
+                                    {'request_key': 'key-ack', 'claim_key': 'stable-claim'})
+                # Simulate crash after TaskStore result commit, before projection.
+                endpoint.tasks.submit('key-ack', claimed['attempt_id'], 'réponse')
+                before = endpoint.db.execute(
+                    'SELECT delivery FROM chatgpt_submissions WHERE scope=? AND request_key=?',
+                    (endpoint.scope, 'key-ack')).fetchone()
+                self.assertEqual(before[0], 'attempted')
+                call_tool(facade, 'submit_result', {'request_key': 'key-ack',
+                                                    'attempt_id': claimed['attempt_id'],
+                                                    'answer': 'réponse'})
+                projected = endpoint.db.execute(
+                    'SELECT delivery,dispatch_receipt FROM chatgpt_submissions '
+                    'WHERE scope=? AND request_key=?',
+                    (endpoint.scope, 'key-ack')).fetchone()
+                self.assertEqual(projected[0], 'acknowledged')
+                self.assertEqual(json.loads(projected[1])['attempt_id'], claimed['attempt_id'])
+                # Repeated submission does not change the acknowledged receipt.
+                call_tool(facade, 'submit_result', {'request_key': 'key-ack',
+                                                    'attempt_id': claimed['attempt_id'],
+                                                    'answer': 'réponse'})
+                self.assertEqual(endpoint.db.execute(
+                    'SELECT dispatch_receipt FROM chatgpt_submissions '
+                    'WHERE scope=? AND request_key=?',
+                    (endpoint.scope, 'key-ack')).fetchone()[0], projected[1])
+                with self.assertRaises(ValueError):
+                    call_tool(facade, 'submit_result', {'request_key': 'key-ack',
+                                                        'attempt_id': claimed['attempt_id'],
+                                                        'answer': 'different'})
+            finally:
+                endpoint.close()
+
     def test_exact_arguments_enforced(self):
         with tempfile.TemporaryDirectory() as tmp:
             tasks = TaskStore(tmp, tmp)
