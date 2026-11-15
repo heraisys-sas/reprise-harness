@@ -180,6 +180,15 @@ class ChatgptCrashSafetyTests(unittest.TestCase):
         self.assertIsNone(row)
         self.assertFalse(self.endpoint.tasks.observe_result(key))
 
+    def test_nonserializable_before_evidence_cannot_leave_a_ghost_task(self):
+        key = str(uuid.uuid4())
+        with self.assertRaises(TypeError):
+            self.endpoint.submit({'question': 'Analyse', 'request_key': key,
+                                  'before_evidence': {'cannot-json-encode'}})
+        self.assertIsNone(self.endpoint.db.execute(
+            'SELECT 1 FROM chatgpt_submissions WHERE request_key=?', (key,)).fetchone())
+        self.assertIsNone(self.endpoint.tasks._row(key))
+
     def test_admission_rolls_forward_when_first_write_interrupted(self):
         # Crash between tasks.admit and the ledger INSERT: the SAME question
         # regenerates the SAME prompt, so admit() is a no-op and the replay
