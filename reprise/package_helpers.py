@@ -16,6 +16,7 @@ ASSETS += ('mcp_transport.py', 'chatgpt_quick.py', 'chatgpt_mcp.py',)  # Issue #
 ASSETS += ('chatgpt_integration.py',)  # Issue #161: managed ChatGPT MCP server config.
 ASSETS += ('codex_session_owners.py',)  # Issue #170: read-only multi-CODEX_HOME ownership census.
 ASSETS += ('registry_marker.py', 'registry_adopt.py')
+ASSETS += ('approval_delegation.py',)  # #117: inert, operator-only scoped grant registry.
 ASSETS += ('vault_status.py',)  # Noninteractive existing-key verification for the privacy UI.
 ASSETS += ('memory_admin.py',)  # Memory administration packaging; independent of local execution.
 ASSETS += ('memory_integration.py', 'reprise_memory_adapter.py', 'reprise_memory_mcp.py', 'coordinator_jobs.py', 'coordinator_local.py', 'coordinator_candidate.py', 'coordinator_recall.py')
@@ -26,6 +27,7 @@ DOCS = (
     'docs/runbooks/SCHEDULER-SERVICE.md',
     'docs/templates/REPRISE-AGENTS.template.md',
     'docs/contracts/CODEX-EXECUTION-CONTRACT.md',
+    'docs/contracts/APPROVALS-CONTRACT.md',
     'docs/templates/ASI1-ORCHESTRATOR.template.md',
     'docs/contracts/ASI1-ORCHESTRATION-CONTRACT.md',
     'docs/contracts/HANDOFF-CONTRACT.md',
