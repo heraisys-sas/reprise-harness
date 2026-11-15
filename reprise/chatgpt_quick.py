@@ -123,6 +123,9 @@ class Endpoint:
         before = args.get('before_evidence')
         if before is None:
             before = file_evidence(self.root, paths)
+        # Validate the ledger's JSON payload before the TaskStore commit.
+        # Otherwise a serialization failure leaves a ghost admitted task.
+        before_json = json.dumps(before)
         # The TaskStore commits first and is idempotent on (request_key,prompt).
         # A crash before the ledger insert can be retried without redispatch;
         # a reused key with a different prompt is a hard identity conflict.
@@ -135,7 +138,7 @@ class Endpoint:
                 '''INSERT OR IGNORE INTO chatgpt_submissions VALUES (?,?,?,?,?,?,?,0,?)''',
                 (self.scope, request_key, prompt, 'attempted',
                  json.dumps({'stage': 'admitted', 'channel': 'indeterminate'}),
-                 json.dumps(before), None, time.time())).rowcount
+                 before_json, None, time.time())).rowcount
         if not inserted:
             # A second process may have won the insertion after our SELECT.
             # Its prompt is immutable; never report success for a different one.
