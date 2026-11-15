@@ -104,7 +104,7 @@ class QueueAdmissionTests(unittest.TestCase):
 
     def test_legacy_deadline_admission_stays_uncertain(self):
         self.seeded(auto_enabled=True, claude_queue_channel=True,
-                    claude_queue_admitted_for='5000.0')
+                    claude_queue_admitted_for='5000')
         self.seed_event('ev-one', 'chat-one', 5000)
         self.seed_event('ev-two', 'chat-two', 5100)
         result = self.run_admission(now=6000, snapshot={'resets_at': 5100})
