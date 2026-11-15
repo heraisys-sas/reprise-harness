@@ -34,6 +34,10 @@ class ApprovalDelegationTests(unittest.TestCase):
         self.private.mkdir(mode=0o700)
         self.shared = self.root/'shared'
         self.shared.mkdir(mode=0o755)
+        # A runner umask of 077 would otherwise make this directory 0700.
+        # Test the effective non-private mode, not the requested mkdir mode.
+        self.shared.chmod(0o755)
+        self.assertNotEqual(stat.S_IMODE(self.shared.stat().st_mode) & 0o077, 0)
         self.manager = ApprovalDelegations(self.project, self.state)
         self.addCleanup(self.manager.close)
 
