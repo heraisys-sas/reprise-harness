@@ -43,6 +43,46 @@ The old `codex mcp-server` recipe is obsolete: [OpenAI documents its removal](ht
 
 ## Genuine inference through ChatGPT plan usage
 
+## ChatGPT Desktop, stdio et socket : état de preuve (#161, #170, #172)
+
+Observation rapportée par l'opérateur : ChatGPT Desktop a été **lancé
+depuis Reprise** en mode partagé, avec l'environnement censé le relier
+au socket de `codexd`. Desktop a néanmoins rapidement utilisé son propre
+Codex embarqué en **stdio**, mode qui semblait stable ; la liaison socket
+ne l'était pas. Ne pas reformuler cela comme un Desktop lancé hors Reprise.
+
+Dans le code de `dev@194ad1e9`, `shared_mode.check()` interprétait
+`connection.probe(...).connected` plus `thread_loaded`, dérivé de
+`thread/read`, comme preuve d'un rattachement Desktop→`codexd`.
+Il pouvait stocker `verified_session` et rétablir l'automatisation.
+C'est un **faux positif possible** : lire un thread depuis un serveur
+ne prouve pas que Desktop lui confie ses futurs tours.
+
+La correction **#172 (branche non fusionnée)** retire ce parcours trompeur
+par refus explicite, sans modifier `codexd`, ses délégations RPC
+indépendantes, ni le stdio natif Desktop. La branche **#170 (non fusionnée)**
+livre un inventaire passif multi-`CODEX_HOME`, mais non une attribution
+de propriété. Le test local sur les emplacements explorés n'a trouvé
+qu'un index `~/.codex/state_5.sqlite` ; il était tronqué à 100 entrées.
+Cela **n'exclut pas plusieurs propriétaires RPC sur le même index**.
+
+Le daemon de transport ChatGPT indépendant est nommé **`chatgptd`**
+dans la cible d'architecture ; son existence en production n'est pas
+démontrée. #161 porte les essais CDP pipe et le cycle de vie isolé.
+La continuité des threads Codex exige d'identifier le vrai propriétaire,
+pas de faire de `codexd` le parent de ChatGPT Desktop.
+
+Le schéma du codex-cli embarqué examiné dans #169 ne démontrait aucune
+API RPC documentée pour manipuler le chat ChatGPT ordinaire. Ce résultat
+borné à la version étudiée ne doit pas être généralisé en impossibilité
+éternelle. Aucune substitution automatique de RPC Codex à CDP n'est autorisée.
+
+La politique générale de reprise après quota est décrite dans
+[HARNESS-SUPERVISION-ARCHITECTURE](../../contracts/HARNESS-SUPERVISION-ARCHITECTURE.md).
+
+
+## Genuine inference through ChatGPT plan usage
+
 There is now a separate official route: [Sign in with ChatGPT](https://developers.openai.com/siwc/quickstart). Eligible Plus/Pro users can authorize participating applications to use their plan through the public Responses API. Availability includes open-source clients and selected private clients; this private repository's eligibility has not been established. Documentation mentioning locally run personal projects does not prove admission for this installation.
 
 The [registration contract](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) needs no client secret or partner API key. It requires a dedicated user-consented OAuth flow, PKCE, state/nonce checks, verified ID-token signatures, a stable installation host ID and the issued client ID. Granted scopes must include `chatgpt.tokens.use.direct`. Existing Codex/Desktop credentials must not be copied or repurposed.

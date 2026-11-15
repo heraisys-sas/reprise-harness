@@ -30,6 +30,64 @@ La lecture et l'action sont séparées. Un parseur ne déclenche jamais de comma
 
 ## Point d'entrée Reprise commun et bidirectionnel
 
+## Priorité métier du 15/11/2026 — observation, intention, continuation
+
+**Cible du produit, pas état d'implémentation :** Reprise poursuit tout travail
+interrompu par un quota dès qu'une continuation par son canal natif est
+raisonnablement possible, sans attendre une certitude sur le compteur de
+quota. L'événement historique et le quota *actuel* sont deux preuves
+distinctes : un journal peut établir « quota refusé à T » tout en rapportant
+`current_quota_status=unknown` à T+N. Ne pas afficher « cause inconnue »
+lorsque le refus historique est reconnu ; afficher « quota constaté ;
+disponibilité actuelle inconnue ».
+
+1. **Observer sans perdre le travail.** Attribuer le signal au bon harness,
+   au bon Desktop/profil et à la session native, en conservant source,
+   échéance, identité et fraîcheur. Une bannière, un journal ou un index
+   provenant d'un autre Desktop ne justifie aucune commande sur le Desktop
+   actif ; un signal non attribuable reste visible comme *indice de quota*.
+2. **Admettre durablement.** Une interruption suffisamment étayée crée une
+   intention unique de reprise, y compris si le propriétaire RPC ou le canal
+   d'action est inconnu. Un filtre d'éligibilité à l'*envoi* ne doit jamais
+   éliminer l'intention de la file d'observation.
+3. **Tenter au bon moment.** Utiliser l'échéance annoncée pour une première
+   tentative **sans sonde de quota préalable obligatoire**, après contrôle
+   minimal de la session, de la route, des permissions et d'une exécution
+   concurrente. Sans échéance fiable, planifier des réévaluations bornées,
+   visibles et sans boucle rapide ; ne pas inventer une date.
+4. **Continuer sur le propriétaire natif.** Le socket joignable, le
+   `thread/read` réussi ou le stockage partagé ne prouvent pas que Desktop
+   utilise `codexd`. Un propriétaire réel non joignable suspend l'action,
+   pas le travail.
+5. **Réconcilier les effets.** La tolérance éventuelle à deux messages
+   conversationnels n'autorise jamais le rejeu aveugle d'actions d'agents
+   susceptibles de modifier des fichiers, lancer des outils ou agir à
+   distance. Réservation avant dispatch, absence de second auteur actif,
+   état incertain explicite, et vérification des résultats restent requis.
+
+Les étapes et preuves doivent rester visibles séparément :
+`quota_observed` → `intent_recorded` → `due` →
+`route_ready` → `dispatch_attempted` → `turn_observed` →
+`work_verified`. Ces termes sont une **taxonomie contractuelle**, pas des
+nouvelles valeurs d'enum déjà présentes dans le code. L'état inconnu
+d'un compteur ne doit pas bloquer l'observation ; la mauvaise identité
+de session ou une commande de destinataire non authentifiée peut bloquer
+l'action. Aucun changement de compte, fournisseur, modèle ou facturation
+n'est implicite.
+
+**Écart vérifié sur `dev@194ad1e9` :** `scheduler.snapshot()` lit
+`detect.scan()` depuis `~/.codex` ; `detect.scan()` sélectionne
+au maximum 100 threads des 30 derniers jours ;
+`scheduler.confirmed()` exige une source automatiquement reprenable,
+hors sous-agent, et une interruption de moins de 24 h. Il reste donc
+des interruptions visibles mais non admises automatiquement. #10 et #14
+portent la généralisation ; #132 traite la route Claude native.
+Le présent contrat ne prétend pas les avoir livrées.
+
+Voir [la procédure d'essais et de passation](../runbooks/QUOTA-RECOVERY-VALIDATION.md).
+
+## Point d'entrée Reprise commun et bidirectionnel
+
 Décision utilisateur du 20/10 : chaque harness connecté doit pouvoir, via le même service Reprise, **recevoir une tâche, rendre son résultat et solliciter un autre harness**. La façade de référence est un serveur MCP Reprise regroupant ces outils ; un connecteur ou une interface native peut exposer le même contrat si nécessaire. Un seul service logique et registre durable, sans imposer un seul processus stdio à tous les clients. Les connexions clientes peuvent être séparées et partagent le service au travers d'un mécanisme local explicite, sans supposer que leurs mémoires de processus sont communes.
 
 Séparer les rôles et leurs autorisations : demandeur, exécutant, destinataire du résultat, opérateur. Une connexion n'obtient pas automatiquement accès à tous les projets ou à toutes les fonctions. Le périmètre est lié au client/projet autorisé, pas à un champ déclaré librement par le modèle.

@@ -37,6 +37,29 @@ La connaissance des quotas (#16, #20, #54) reste utile à l’affichage et au di
 
 ## Nouvelle session et limites de requêtes
 
+### Clarification opérationnelle du 15/11/2026
+
+La priorité est de **tenter une continuation**, et non d'exiger une mesure
+parfaite de quota. Si une erreur native a explicitement signalé le quota,
+la disponibilité ultérieure peut rester `unknown` sans invalider cette
+preuve. À l'échéance annoncée, une voie native autorisée et la même session
+peuvent être essayées une fois, puis l'échec réel devient la nouvelle
+source de décision.
+
+L'absence de route contrôlable ne doit pas effacer l'intention persistée.
+En revanche, ne pas envoyer à un autre Desktop, à un autre propriétaire
+Codex ou à un compte différent parce que l'écran présente une erreur
+similaire. Un second message « Continue » est parfois bénin, mais ses
+effets agentiques peuvent ne pas l'être (outils, commits, actions externes).
+Il faut **alléger les barrières de quota purement épistémiques**, pas
+supprimer les garde-fous d'identité, de permission et d'envoi incertain.
+
+Statut : décision cible (#10), pas comportement uniformément livré.
+Les routes Codex, ReClaude, Harness et ChatGPT Desktop ont des capacités
+distinctes ; leurs preuves ne se substituent pas.
+
+## Nouvelle session et limites de requêtes
+
 L’utilisateur observe que sa route Morph Flash 1017 peut poursuivre dans une nouvelle session après épuisement des requêtes de l’ancienne. Conserver cette observation avec sa source/portée ; ne pas en déduire un compteur, une fenêtre, un quota compte illimité ou une propriété de tous les fournisseurs. Modèle observé : morph-dsv41flash-1017 ; vérifier la route à l’usage, sans supposer l’inférence locale ou la compatibilité d’un paramètre reasoning_effort.
 
 Autoriser une session de remplacement lorsque c’est le parcours adapté, avec checkpoint borné et rattachement au même travail ; enregistrer la nouvelle tentative et la provenance. Ne jamais rejouer une action distante incertaine. Après progrès utile confirmé, une nouvelle limite peut justifier une autre session : pas de plafond arbitraire de sessions.

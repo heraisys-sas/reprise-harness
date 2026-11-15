@@ -8,6 +8,10 @@ Au lancement de Reprise, la préférence versionnée peut appeler `scheduler-ser
 
 ## Configuration et preuves
 
+La reprise quota multi-harness relève de [la procédure de vérification terrain](QUOTA-RECOVERY-VALIDATION.md). Un `tick` réussi n'atteste ni la disponibilité du quota, ni le bon propriétaire Desktop, ni l'achèvement métier. Les limites actuelles sont documentées dans [HARNESS-SUPERVISION-ARCHITECTURE](../contracts/HARNESS-SUPERVISION-ARCHITECTURE.md), section « Priorité métier du 15/11/2026 ».
+
+## Configuration et preuves
+
 Le LaunchAgent `~/Library/LaunchAgents/local.agent-resume.plist` référence le CPython embarqué avec `-E -s -B`, le helper `reprise tick` et le registre préparé explicitement. Runtime/helpers sont copiés via le mécanisme commun `stage_release`, dans `state.parent/integration-releases/EMPREINTE`, indépendamment du clone et du bundle mobile. Le plan expose les arguments exacts, l’intervalle, l’environnement PATH, le registre, les empreintes et les effets. Aucun nouveau registre métier n’est créé.
 
 L’inspection distingue fichier présent, chargement observé par `launchctl print`, intégrité du release configuré, release attendu/configuré/effectif, pause, dernier tick, dernière erreur du planificateur, dernière sortie launchd et travaux en attente. Un service chargé n’est pas une preuve de tick réussi ni de reprise autorisée. Un release effectif non identifiable reste inconnu. Les métadonnées SQLite sont lues dans une copie temporaire DB/WAL dont la stabilité des fichiers sources est contrôlée ; aucune ouverture SQLite du registre source, aucun nouveau sidecar ni répertoire utilisateur pendant l’inspection.
