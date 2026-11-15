@@ -120,6 +120,15 @@ class QueueAdmissionTests(unittest.TestCase):
         finally:
             store.close()
 
+    def test_durable_due_event_does_not_require_observer_availability(self):
+        self.seeded(auto_enabled=True, claude_queue_channel=True)
+        self.seed_event('ev-observer-down', 'chat-observer-down', 5000)
+        def unavailable():
+            raise OSError('native observer not available')
+        result = self.run_admission(now=5000, observe=unavailable)
+        self.assertEqual(result['status'], 'admitted')
+        self.assertEqual(result['request_key'], 'claude-continuation-ev-observer-down')
+
     def test_snapshot_without_deadline_reports_no_deadline(self):
         self.seeded(auto_enabled=True, claude_queue_channel=True)
         result = self.run_admission(observe=lambda: {'notice': None})
