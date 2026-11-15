@@ -83,18 +83,72 @@ class RoutingEventsTests(unittest.TestCase):
 
     def test_populate_from_quota_requires_known_identity_and_allowed(self):
         db = memory_db(self)
-        routing_events.populate_from_quota(db, {'identity_status': 'known', 'account_key': 'hmac-1',
+        account, pool = 'a' * 64, 'b' * 64
+        routing_events.populate_from_quota(db, {'identity_status': 'known', 'account_key': account,
                                                 'ordinary_usage_allowed_observed': True,
-                                                'pools': [{'quota_pool_key': 'pool-1'}]})
+                                                'pools': [{'quota_pool_key': pool}]})
         row = db.execute("SELECT billing_class,account_key,pool_key FROM route_admissibility WHERE channel='codex'").fetchone()
-        self.assertEqual(row, ('included', 'hmac-1', 'pool-1'))
-        routing_events.populate_from_quota(db, {'identity_status': 'known', 'account_key': 'hmac-1',
+        self.assertEqual(row, ('included', account, pool))
+        routing_events.populate_from_quota(db, {'identity_status': 'known', 'account_key': account,
                                                 'ordinary_usage_allowed_observed': False, 'pools': []})
         row = db.execute("SELECT billing_class FROM route_admissibility WHERE channel='codex'").fetchone()
         self.assertEqual(row[0], 'unknown')
         routing_events.populate_from_quota(db, {'identity_status': 'unknown', 'account_key': None})
-        row = db.execute("SELECT billing_class FROM route_admissibility WHERE channel='codex'").fetchone()
-        self.assertEqual(row[0], 'unknown')
+        row = db.execute("SELECT billing_class,account_key,pool_key,identity_status FROM route_admissibility WHERE channel='codex'").fetchone()
+        self.assertEqual(row, ('unknown', None, None, 'unknown'))
+
+    def test_raw_account_identifiers_never_enter_routing_or_admissibility(self):
+        db = memory_db(self)
+        for invalid in ('a-user-email@example.invalid', 'A' * 64,
+                        'f' * 63, 'x' * 64, 12345678901234567890):
+            with self.subTest(invalid=invalid):
+                routing_events.record(db, 'explicit', 'reprise_delegate', 'codex',
+                                      account_key=invalid)
+                self.assertIsNone(routing_events.recent(db)[0]['account_key'])
+                with self.assertRaisesRegex(ValueError, 'opaque SHA-256'):
+                    routing_events.declare(db, 'codex', 'included', account_key=invalid)
+        self.assertIsNone(db.execute(
+            "SELECT 1 FROM route_admissibility WHERE channel='codex'").fetchone())
+        valid = 'f' * 64
+        routing_events.record(db, 'explicit', 'reprise_delegate', 'codex',
+                              account_key=valid)
+        self.assertEqual(routing_events.recent(db)[0]['account_key'], valid)
+        with self.assertRaisesRegex(ValueError, 'opaque SHA-256'):
+            routing_events.declare(db, 'codex', 'included', account_key=valid,
+                                   pool_key='pool-token')
+        routing_events.declare(db, 'codex', 'included', account_key=valid,
+                               pool_key='e' * 64)
+        self.assertEqual(db.execute(
+            "SELECT account_key,pool_key FROM route_admissibility WHERE channel='codex'"
+        ).fetchone(), (valid, 'e' * 64))
+
+    def test_unknown_or_untrusted_quota_revokes_stale_included(self):
+        db = memory_db(self)
+        good = {'identity_status': 'known', 'account_key': 'a' * 64,
+                'ordinary_usage_allowed_observed': True, 'pools': [{'quota_pool_key': 'b' * 64}]}
+        for unproven in ({'identity_status': 'unknown', 'account_key': None},
+                         {'identity_status': 'known', 'account_key': 'raw account identifier'},
+                         None):
+            with self.subTest(unproven=unproven):
+                routing_events.populate_from_quota(db, good)
+                self.assertEqual(routing_events.admissible(db, 'codex', automatic=True),
+                                 (True, 'included'))
+                routing_events.populate_from_quota(db, unproven)
+                self.assertEqual(routing_events.admissible(db, 'codex', automatic=True),
+                                 (False, 'unknown'))
+                self.assertEqual(db.execute(
+                    "SELECT account_key,pool_key,identity_status FROM route_admissibility"
+                    " WHERE channel='codex'").fetchone(), (None, None, 'unknown'))
+
+    def test_invalid_pool_is_not_stored_even_if_account_is_verified(self):
+        db = memory_db(self)
+        routing_events.populate_from_quota(db, {
+            'identity_status': 'known', 'account_key': 'a' * 64,
+            'ordinary_usage_allowed_observed': True,
+            'pools': [{'quota_pool_key': 'not-a-hmac'}, None]})
+        self.assertEqual(db.execute(
+            "SELECT account_key,pool_key FROM route_admissibility WHERE channel='codex'"
+        ).fetchone(), ('a' * 64, None))
 
     def test_seed_local_declares_free_channels_once(self):
         db = memory_db(self)

@@ -96,10 +96,19 @@ def setup(db):
     return version
 
 
+def _opaque_sha256(value):
+    """Format from quota_knowledge.Registry.opaque; does not authenticate origin."""
+    return (isinstance(value, str) and len(value) == 64
+            and all(char in '0123456789abcdef' for char in value))
+
+
 def declare(db, channel, billing_class, account_key=None, pool_key=None, identity_status='known'):
     """Déclaration opérateur ou peuplement d'admissibilité pour un canal."""
     if billing_class not in BILLING_CLASSES or identity_status not in ('known', 'unknown'):
         raise ValueError('Invalid billing class or identity status')
+    if (account_key is not None and not _opaque_sha256(account_key)
+            or pool_key is not None and not _opaque_sha256(pool_key)):
+        raise ValueError('Only opaque SHA-256 account/pool keys may be stored')
     with db:
         db.execute('INSERT OR REPLACE INTO route_admissibility VALUES (?,?,?,?,?,?)',
                    (channel, account_key, pool_key, billing_class, identity_status, time.time()))
@@ -122,20 +131,23 @@ def admissible(db, channel, automatic):
 
 
 def populate_from_quota(db, quota_status):
-    """Peuplement codex=included depuis une observation quota_knowledge conforme :
-    identity_status known ET ordinary_usage_allowed observé. Sinon unknown."""
-    if not isinstance(quota_status, dict):
+    """Admit included only for a known opaque account with observed usage.
+
+    A newer unknown identity must replace stale included evidence; it cannot
+    retain previous account/pool identifiers or silently inherit eligibility.
+    """
+    status = quota_status if isinstance(quota_status, dict) else {}
+    account = status.get('account_key')
+    if status.get('identity_status') != 'known' or not _opaque_sha256(account):
+        declare(db, 'codex', 'unknown', identity_status='unknown')
         return
-    if quota_status.get('identity_status') == 'known' and quota_status.get('account_key'):
-        pools = quota_status.get('pools') or []
-        allowed = quota_status.get('ordinary_usage_allowed_observed')
-        pool_key = next((p['quota_pool_key'] for p in pools if p.get('quota_pool_key')), None)
-        if allowed is True:
-            declare(db, 'codex', 'included', account_key=quota_status['account_key'],
-                    pool_key=pool_key, identity_status='known')
-        else:
-            declare(db, 'codex', 'unknown', account_key=quota_status['account_key'],
-                    pool_key=pool_key, identity_status='known')
+    pools = status.get('pools')
+    pools = pools if isinstance(pools, list) else []
+    pool_key = next((pool['quota_pool_key'] for pool in pools
+                     if isinstance(pool, dict) and _opaque_sha256(pool.get('quota_pool_key'))), None)
+    billing = 'included' if status.get('ordinary_usage_allowed_observed') is True else 'unknown'
+    declare(db, 'codex', billing, account_key=account,
+            pool_key=pool_key, identity_status='known')
 
 
 def seed_local(db):
@@ -170,11 +182,12 @@ def pseudonymize(db, ident):
 
 
 def account_hash(db, account_key):
-    """Passe-through du HMAC quota_knowledge (déjà haché, sal partagé) ;
-    refuse toute valeur qui ne ressemble pas à un HMAC hexadécimal."""
-    if not isinstance(account_key, str) or len(account_key) < 16:
-        return None
-    return account_key
+    """Pass through only a quota_knowledge-style HMAC-SHA-256 hex digest.
+
+    Reject possible raw account identifiers; shape alone cannot prove HMAC
+    provenance, so callers must continue to use quota_knowledge.
+    """
+    return account_key if _opaque_sha256(account_key) else None
 
 
 def _route(value):
