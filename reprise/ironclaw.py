@@ -78,11 +78,29 @@ def _run(command, timeout, input_text=None):
     return subprocess.run(command, input=input_text, capture_output=True, text=True, timeout=timeout)
 
 
+# Only *unindented*, timestamped runtime records are removed. Bare INFO/WARN
+# tokens can legitimately appear in an answer, Markdown quote or code block.
+_RUNTIME_LOG = re.compile(
+    r'^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?'
+    r'(?:Z|[+-]\d{2}:?\d{2})?\s+(?:INFO|WARN)\b'
+)
+MAX_ANSWER_CHARS = 2_000_000
+
+
 def _clean_answer(stdout):
-    """Last non-empty, non-runtime-log line of stdout, or None."""
-    lines = [line.strip() for line in stdout.splitlines()
-             if line.strip() and ' INFO ' not in line and ' WARN ' not in line]
-    return lines[-1] if lines else None
+    """Return the full bounded multiline stdout body, not its last line.
+
+    Runtime log detection is intentionally strict until a real framed output
+    format is verified. Never truncate a substantive answer into a success.
+    """
+    if not isinstance(stdout, str) or len(stdout) > MAX_ANSWER_CHARS:
+        return None
+    lines = [line for line in stdout.splitlines() if not _RUNTIME_LOG.match(line)]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return '\n'.join(lines) if lines else None
 
 
 def submit(program, values, question, *, timeout=180):
