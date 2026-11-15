@@ -1200,26 +1200,47 @@ struct Dashboard: View {
         }
     }
     var privacy: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            SettingsCard(title: "Chiffrement local",
-                         status: "Chiffré", ok: true) {
+        let keyStatus = app.vaultAvailability["status"] as? String ?? "not_verified"
+        let keyLabel = app.vaultAccessVerified ? "Clé accessible"
+            : keyStatus == "unavailable" ? "Clé indisponible"
+            : keyStatus == "error" ? "Contrôle impossible"
+            : keyStatus == "verified" ? "Contrôle périmé" : "Non vérifié"
+        return VStack(alignment: .leading, spacing: 18) {
+            SettingsCard(title: "Chiffrement local · mécanisme et preuve",
+                         status: keyLabel, ok: app.vaultAccessVerified) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Label("AES-256-GCM (CryptoKit), clé dans le Trousseau macOS", systemImage: "lock.shield")
-                    Label("Aucune publication dans Spotlight", systemImage: "eye.slash")
-                    Label("Traitement Apple Intelligence sur l’appareil", systemImage: "desktopcomputer")
-                    Label("Purge quotidienne après sept jours", systemImage: "calendar")
+                    Label("AES-256-GCM (CryptoKit) : mécanisme prévu pour les caches locaux", systemImage: "lock.shield")
+                    Label("Clé conservée dans le Trousseau macOS : disponibilité vérifiée séparément", systemImage: "key")
+                    Label("Aucune publication dans Spotlight par Reprise", systemImage: "eye.slash")
+                    Label("Traitement Apple sur l’appareil lorsqu’une route locale est sélectionnée", systemImage: "desktopcomputer")
+                    Label("Purge du cache prévue après sept jours", systemImage: "calendar")
+                    HStack {
+                        Button("Vérifier la clé sans autorisation") { app.checkVaultAvailability() }
+                            .disabled(app.vaultChecking || app.vaultBusy)
+                        if app.vaultChecking { ProgressView().controlSize(.small) }
+                    }
+                    if let checkedAt = app.vaultAvailabilityCheckedAt {
+                        Text("Source : contrôle non interactif de la clé existante · " + localDateTime(checkedAt))
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("Aucun contrôle récent de disponibilité de la clé.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    SettingsHint(
+                        text: "Clé accessible ne signifie pas index vérifié.",
+                        detail: "Ce contrôle ne crée pas de clé, ne déchiffre pas l’index et ne vérifie ni le contenu des caches, ni l’effacement, ni les fichiers des applications tierces.")
                 }.font(.callout)
             }
             SettingsCard(title: "Cache de recherche",
-                         status: app.searching ? "En cours" : "Prêt", ok: true) {
+                         status: app.searching ? "Opération en cours" : "État non vérifié", ok: false) {
                 HStack(spacing: 10) {
                     Button("Vider l’index") { app.clearIndex() }.disabled(app.searching)
                     if app.searching { ProgressView().controlSize(.small) }
                 }
                 if app.searchNote.contains("Index vidé") { InlineStatus(busy: false, message: app.searchNote) }
                 SettingsHint(
-                    text: "La recherche suivante reconstruit les éléments récents.",
-                    detail: "Le cache ne contient que des données dérivées : les sessions, leurs journaux et les fichiers des autres applications ne sont pas modifiés par cette action.")
+                    text: "L’existence et le contenu de l’index ne sont pas vérifiés ici.",
+                    detail: "La recherche suivante peut reconstruire les éléments récents. Les sessions, journaux et fichiers des autres applications ne sont pas modifiés par la purge de ce cache.")
             }
             SettingsCard(title: "Accès au Trousseau",
                          status: app.vaultBusy ? "Autorisation…" : "À la demande", ok: true) {
@@ -1232,8 +1253,9 @@ struct Dashboard: View {
             }
             SettingsHint(
                 text: "Le chiffrement ne couvre ni les journaux du planificateur ni ses archives.",
-                detail: "Le chiffrement concerne l’index de recherche et le cache d’analyse. Les instructions du planificateur, ses journaux et ses archives ZIP ne sont pas chiffrés par ce mécanisme. Les sources des autres applications restent inchangées.")
+                detail: "Les caches de recherche et d’analyse utilisent le mécanisme AES-GCM. La disponibilité d’une clé ne prouve pas qu’un cache particulier soit actuellement chiffré. Les instructions du planificateur, ses journaux et ses archives ZIP ne sont pas couverts ; les sources des applications tierces restent inchangées.")
         }
+        .onAppear { app.checkVaultAvailability() }
     }
     func empty(_ title: String, icon: String, detail: String) -> some View {
         VStack(spacing: 12) { Image(systemName: icon).font(.system(size: 36, weight: .light)).foregroundStyle(.secondary); Text(title).font(.title3.weight(.semibold)); Text(detail).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 380) }.frame(maxWidth: .infinity).padding(.vertical, 44)
