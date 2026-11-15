@@ -41,8 +41,6 @@ Use owner-only socket directories, retain approval/sandbox policies, and verify 
 
 The old `codex mcp-server` recipe is obsolete: [OpenAI documents its removal](https://learn.chatgpt.com/docs/mcp-server). A new integration must speak app-server JSON-RPC or explicitly translate a narrow MCP tool contract. App-server remains experimental.
 
-## Genuine inference through ChatGPT plan usage
-
 ## ChatGPT Desktop, stdio et socket : état de preuve (#161, #170, #172)
 
 Observation rapportée par l'opérateur : ChatGPT Desktop a été **lancé

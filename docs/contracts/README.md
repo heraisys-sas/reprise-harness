@@ -8,10 +8,7 @@ réelles ou simulées avec preuve), **partiel** (une partie livrée, le reste tr
 
 | Contrat | Rôle | Statut |
 | --- | --- | --- |
-| [HARNESS-SUPERVISION-ARCHITECTURE](HARNESS-SUPERVISION-ARCHITECTURE.md) | Architecture cible multi-harness : matrice, chaîne de reprise, registre, livraison progressive | Révisé (audit #119) — matrice à tenir à jour |
-
-**Décision quota du 15/11/2026** : le contrat de supervision distingue un refus historique confirmé d'un quota actuel inconnu et privilégie une continuation native à l'échéance, sans perdre le travail en l'absence de route. Cible #10, non livrée universellement. [Protocole de validation pour agents locaux](../runbooks/QUOTA-RECOVERY-VALIDATION.md).
-| [DELEGATION-PERSISTENCE](DELEGATION-PERSISTENCE.md) | Reçus durables, barrières de dispatch, résultats et incertitude | Référence courante |
+| [HARNESS-SUPERVISION-ARCHITECTURE](HARNESS-SUPERVISION-ARCHITECTURE.md) | Architecture cible multi-harness : matrice, chaîne de reprise, registre, livraison progressive | Révisé (audit #119) — matrice à tenir à jour || [DELEGATION-PERSISTENCE](DELEGATION-PERSISTENCE.md) | Reçus durables, barrières de dispatch, résultats et incertitude | Référence courante |
 | [HARNESS-ROLES-CONTRACT](HARNESS-ROLES-CONTRACT.md) | Rôles, reprise après quota, archivage, routage | Contrat courant ; implémentations partielles |
 | [QUOTA-KNOWLEDGE](QUOTA-KNOWLEDGE.md) | Sémantique quota/échéance, classes de facturation | Référence courante |
 | [CACHE-POLICY](CACHE-POLICY.md) | Cache de préfixe, plafonds retirés, réserve fournisseur | Référence courante |
@@ -27,6 +24,8 @@ réelles ou simulées avec preuve), **partiel** (une partie livrée, le reste tr
 | [LOCAL-EXECUTION-CONTRACT](LOCAL-EXECUTION-CONTRACT.md) | Courtier Git/GitHub | Cible (évaluateur prototype) |
 | [PROCESS-SUPERVISION-DESIGN](PROCESS-SUPERVISION-DESIGN.md) | Supervision des processus (registre PID, relance) | Cible non implémentée (issues #25-#28) |
 | [QUICK-ENTRY-CONTRACT](QUICK-ENTRY-CONTRACT.md) | Contrat Quick Entry natif (QTi) — déclenchement Desktop patché | Livré (patch #124) |
+
+**Décision quota du 15/11/2026** : le contrat de supervision distingue un refus historique confirmé d'un quota actuel inconnu et privilégie une continuation native à l'échéance, sans perdre le travail en l'absence de route. Cible #10, non livrée universellement. [Protocole de validation pour agents locaux](../runbooks/QUOTA-RECOVERY-VALIDATION.md).
 
 Autres familles de documentation : [intégrations par canal](../integrations/),
 [runbooks d'opération](../runbooks/), [gabarits](../templates/),

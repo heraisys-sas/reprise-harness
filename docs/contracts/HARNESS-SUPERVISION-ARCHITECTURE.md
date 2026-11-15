@@ -28,8 +28,6 @@ Réconciliation avec preuves natives + état réel des livrables
 
 La lecture et l'action sont séparées. Un parseur ne déclenche jamais de commande. Le moteur de règles ne dépend pas des chemins ou du protocole d'un fournisseur. Aucun agent génératif permanent n'est nécessaire pour surveiller.
 
-## Point d'entrée Reprise commun et bidirectionnel
-
 ## Priorité métier du 15/11/2026 — observation, intention, continuation
 
 **Cible du produit, pas état d'implémentation :** Reprise poursuit tout travail

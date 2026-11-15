@@ -6,8 +6,6 @@ Le helper `scheduler_service.py` propose `scheduler-service-inspect`, `scheduler
 
 Au lancement de Reprise, la préférence versionnée peut appeler `scheduler-service-startup`. Cette opération applique une fois l’activation explicitement demandée (`auto_enabled` et `claude_desktop_auto_enabled`), puis préserve les changements ultérieurs. Elle n’initialise jamais un registre absent et n’écrit ni tâche ni fournisseur. Elle peut installer/activer le planificateur seulement pour un état préparé ; un service existant doit avoir manifeste Reprise, plist intact, release courant et registre concordant. Les opérations pendantes, workers actifs, services non gérés ou configurations divergentes sont rapportés sans réparation automatique. Un tick peut traiter les tâches déjà autorisées et dues lorsque les réglages automatiques sont actifs ; les états incertains ne sont jamais rejoués.
 
-## Configuration et preuves
-
 La reprise quota multi-harness relève de [la procédure de vérification terrain](QUOTA-RECOVERY-VALIDATION.md). Un `tick` réussi n'atteste ni la disponibilité du quota, ni le bon propriétaire Desktop, ni l'achèvement métier. Les limites actuelles sont documentées dans [HARNESS-SUPERVISION-ARCHITECTURE](../contracts/HARNESS-SUPERVISION-ARCHITECTURE.md), section « Priorité métier du 15/11/2026 ».
 
 ## Configuration et preuves

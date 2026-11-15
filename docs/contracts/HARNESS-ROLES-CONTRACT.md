@@ -35,8 +35,6 @@ Cette décision remplace l’ancienne exigence générale « mesurer/confirmer l
 
 La connaissance des quotas (#16, #20, #54) reste utile à l’affichage et au diagnostic, sans être un préalable universel à la reprise. Les refus réels du fournisseur, les budgets autorisés et la pause globale restent respectés. Les gardes préalables encore dans le code doivent être adaptées et testées dans le chantier de reprise ; ce contrat ne les désactive pas. Pour le scheduler Codex, #64 l’applique déjà aux échéances annoncées (une seule tentative à l’échéance, sans lecture obligatoire du quota) ; restent à adapter les autres moteurs (#10) et le cas sans échéance, qui mesure encore. Les sondes d’admission de nouvelles expertises décrites dans CACHE-POLICY.md sont un comportement existant distinct, pas la politique cible d’une continuation programmée.
 
-## Nouvelle session et limites de requêtes
-
 ### Clarification opérationnelle du 15/11/2026
 
 La priorité est de **tenter une continuation**, et non d'exiger une mesure
