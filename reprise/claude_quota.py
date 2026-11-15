@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import subprocess
@@ -220,23 +221,46 @@ def admit_queue_continuation(db, root, quick_state, project_root, now=None, snap
         return {'status': 'waiting', 'resets_at': min(due for _, _, due in rows)}
 
     legacy_deadline = scheduler.get(db, 'claude_queue_admitted_for')
+    # Earlier releases used MAX(snapshot_deadline, MAX(waiting_due)) as the
+    # identity of ONE generic queue item. It could implicitly encompass
+    # multiple earlier events, so exact equality is not a safe replay guard.
+    invalid_legacy_marker = False
     try:
-        # Earlier versions wrote str(resets) where resets could be an int from
-        # an observation or a float from SQLite (e.g. "5000" vs "5000.0").
         legacy_due = float(legacy_deadline) if legacy_deadline is not None else None
+        if legacy_due is not None and not math.isfinite(legacy_due):
+            invalid_legacy_marker = True
     except (ValueError, TypeError, OverflowError):
         legacy_due = None
+        invalid_legacy_marker = legacy_deadline is not None
     from desktop_task_store import TaskStore
     store = TaskStore(quick_state, project_root)
     admitted = []
     already = []
     legacy_uncertain = []
     try:
+        # The prior release wrote the TaskStore admission FIRST, then the
+        # scheduler marker. A crash between those writes leaves a generic
+        # task with no marker. Discover it read-only by its legacy prompt AND
+        # integer-timestamp key. The integer key truncates fractional due
+        # times, hence include the following second conservatively.
+        legacy_rows = store.db.execute('''SELECT request_key FROM desktop_tasks
+            WHERE scope=? AND prompt LIKE ?''',
+            (store.scope,
+             'Continuation après quota (file opt-in #122) : la pause 5h du chat Desktop est levée %')).fetchall()
+        legacy_cutoffs = [legacy_due] if legacy_due is not None and not invalid_legacy_marker else []
+        prefix = 'claude-continuation-'
+        for (old_key,) in legacy_rows:
+            if old_key.startswith(prefix):
+                tail = old_key[len(prefix):]
+                if tail.isascii() and tail.isdigit() and len(tail) <= 16:
+                    legacy_cutoffs.append(int(tail) + 1)
+        legacy_cutoff = max(legacy_cutoffs, default=None)
         for event_key, chat_id, due in due_rows:
-            # Older versions admitted a generic task keyed only by the reset
-            # timestamp. We cannot assign it to one of several chats; preserve
-            # that uncertainty rather than silently duplicating the work.
-            if legacy_due is not None and legacy_due == due:
+            # An unreadable historical marker is an explicit uncertainty:
+            # fail closed for all due events until the operator reconciles it.
+            # A generic legacy task may have covered ANY earlier waiting
+            # session, regardless of whether it shares the exact due date.
+            if invalid_legacy_marker or (legacy_cutoff is not None and due <= legacy_cutoff):
                 legacy_uncertain.append(event_key)
                 continue
             key = f'claude-continuation-{event_key}'
