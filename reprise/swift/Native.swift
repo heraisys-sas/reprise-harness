@@ -78,6 +78,9 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var integrationAcknowledged = false
     @Published var integrationProfiles: [String] = []
     @Published var integrationPlan: [String: Any]? = nil
+    var integrationPlanGeneration: UInt64 = 0
+    var integrationPlanContext: [String]? = nil
+    var integrationPlanRecovered = false
     @Published var integrationResult: [String: Any]? = nil
     @Published var integrationVerification: [String: Any]? = nil
     @Published var integrationMessage = "Inspectez le dossier Harness choisi avant de préparer une modification."

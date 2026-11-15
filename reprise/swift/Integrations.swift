@@ -477,8 +477,45 @@ extension App {
         }
     }
 
+    // Bind one preview to both its selected project and its exact draft options.
+    // The generation also rejects selection A -> B -> A while a command is running.
+    var harnessPlanContext: [String] {
+        [selectedProjectID, integrationHome, integrationProfile, integrationProject,
+         integrationDelegate ? "1" : "0", integrationCodexWorkspaceWrite ? "1" : "0",
+         integrationOutputResume ? "1" : "0", integrationOutputResumeProject,
+         integrationAsi1Effort ? "1" : "0", integrationAgentRole]
+    }
+    func harnessPlanMatchesDestination(_ plan: [String: Any]) -> Bool {
+        guard let home = plan["home"] as? String, let project = plan["project"] as? String,
+              let profile = plan["profile"] as? String, !profile.isEmpty else { return false }
+        func canonical(_ path: String) -> String {
+            URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+        }
+        return canonical(home) == canonical(integrationHome)
+            && canonical(project) == canonical(integrationProject)
+            && profile == integrationProfile
+    }
+    func harnessPlanMatchesOptions(_ plan: [String: Any]) -> Bool {
+        guard let action = plan["action"] as? String, ["install", "remove"].contains(action),
+              plan["delegate"] as? Bool == integrationDelegate else { return false }
+        let resume = plan["output_resume"] as? Bool == true
+        let resumeProject = integrationOutputResumeProject.isEmpty ? integrationProject : integrationOutputResumeProject
+        return (plan["codex_workspace_write"] as? Bool == true) == (integrationDelegate && integrationCodexWorkspaceWrite)
+            && (plan["agent_role"] as? String ?? "standard") == integrationAgentRole
+            && resume == integrationOutputResume
+            && (!resume || URL(fileURLWithPath: plan["output_resume_project"] as? String ?? "").resolvingSymlinksInPath().standardizedFileURL.path
+                == URL(fileURLWithPath: resumeProject).resolvingSymlinksInPath().standardizedFileURL.path)
+            && (action == "remove" || (plan["asi1_effort"] as? Bool == true) == integrationAsi1Effort)
+    }
+    var harnessPlanReady: Bool {
+        guard let plan = integrationPlan, integrationPlanContext == harnessPlanContext else { return false }
+        return harnessPlanMatchesDestination(plan) && (integrationPlanRecovered || harnessPlanMatchesOptions(plan))
+    }
     func invalidateIntegrationPlan() {
+        integrationPlanGeneration &+= 1
         integrationPlan = nil
+        integrationPlanContext = nil
+        integrationPlanRecovered = false
         integrationAcknowledged = false
         integrationResult = nil
         integrationVerification = nil
@@ -504,28 +541,47 @@ extension App {
     }
     func inspectIntegration() {
         guard stateReady, !setupBusy else { return }
+        invalidateIntegrationPlan()
+        let generation = integrationPlanGeneration, selection = harnessPlanContext
         var args = ["harness-integration-inspect", "--home", integrationHome]
         if !integrationProfile.isEmpty { args += ["--profile", integrationProfile] }
         setupCommand(args) { result in
+            guard generation == self.integrationPlanGeneration,
+                  selection == self.harnessPlanContext else { return }
             self.integrationProfiles = result["profiles"] as? [String] ?? []
-            if let project = result["output_resume_project"] as? String { self.integrationOutputResumeProject = project }
-            if let enabled = result["output_resume"] as? Bool { self.integrationOutputResume = enabled }
-            self.integrationAsi1Effort = result["asi1_effort"] as? Bool ?? false
-            if let enabled = result["delegate"] as? Bool { self.integrationDelegate = enabled }
+            let pending = result["pending_plan"] as? [String: Any]
+            // A durable, interrupted plan must be inspected deliberately and
+            // explicitly re-acknowledged. Never silently grant its old options.
+            if pending == nil {
+                if let project = result["output_resume_project"] as? String { self.integrationOutputResumeProject = project }
+                if let enabled = result["output_resume"] as? Bool { self.integrationOutputResume = enabled }
+                self.integrationAsi1Effort = result["asi1_effort"] as? Bool ?? false
+                if let enabled = result["delegate"] as? Bool { self.integrationDelegate = enabled }
+                self.integrationCodexWorkspaceWrite = false
+                if let role = result["agent_role"] as? String { self.integrationAgentRole = role }
+                if self.integrationProject.isEmpty, let project = result["project"] as? String { self.integrationProject = project }
+            }
             self.integrationCodexWorkspaceWriteInstalled = result["codex_workspace_write"] as? Bool ?? false
-            // A new plan must not silently carry an earlier workspace-write grant.
-            self.integrationCodexWorkspaceWrite = false
-            if let role = result["agent_role"] as? String { self.integrationAgentRole = role }
-            if self.integrationProject.isEmpty, let project = result["project"] as? String { self.integrationProject = project }
             self.integrationResult = result
-            self.integrationPlan = result["pending_plan"] as? [String: Any]
-            self.integrationAcknowledged = false
             self.integrationMessage = result["message"] as? String ?? "Inspection non confirmée."
+            if let pending {
+                if self.harnessPlanMatchesDestination(pending) {
+                    self.integrationPlan = pending
+                    self.integrationPlanContext = self.harnessPlanContext
+                    self.integrationPlanRecovered = true
+                    self.integrationAcknowledged = false
+                    self.integrationMessage += "\nPlan interrompu retrouvé : relisez ses changements avant toute nouvelle autorisation."
+                } else {
+                    self.integrationMessage += "\nPlan interrompu pour une autre destination ; aucune application autorisée."
+                }
+            }
             if let diagnostic = result["diagnostic"] as? String { self.integrationMessage += "\n" + diagnostic }
         }
     }
     func previewIntegration(action: String) {
-        guard stateReady, !setupBusy else { return }
+        guard stateReady, !setupBusy, !integrationProfile.isEmpty, !integrationProject.isEmpty else { return }
+        invalidateIntegrationPlan()
+        let generation = integrationPlanGeneration, selection = harnessPlanContext
         var args = ["harness-integration-plan", "--home", integrationHome, "--profile", integrationProfile, "--project", integrationProject, "--action", action]
         if integrationDelegate { args.append("--delegate") }
         if integrationDelegate && integrationCodexWorkspaceWrite { args.append("--codex-workspace-write") }
@@ -536,32 +592,55 @@ extension App {
         if integrationAsi1Effort { args.append("--asi1-effort") }
         args += ["--agent-role", integrationAgentRole]
         setupCommand(args) { result in
-            self.integrationPlan = result["plan"] as? [String: Any]
-            self.integrationAcknowledged = false
+            guard generation == self.integrationPlanGeneration,
+                  selection == self.harnessPlanContext else { return }
             self.integrationResult = result
             self.integrationVerification = nil
             self.integrationMessage = result["message"] as? String ?? "Plan indisponible."
+            if let plan = result["plan"] as? [String: Any],
+               self.harnessPlanMatchesDestination(plan), self.harnessPlanMatchesOptions(plan) {
+                self.integrationPlan = plan
+                self.integrationPlanContext = selection
+                self.integrationPlanRecovered = false
+                self.integrationAcknowledged = false
+            } else if result["plan"] != nil {
+                self.integrationMessage += "\nPlan refusé : sélection ou options modifiées."
+            }
             if let diagnostic = result["diagnostic"] as? String { self.integrationMessage += "\n" + diagnostic }
         }
     }
     func applyIntegration() {
-        guard stateReady, !setupBusy, integrationAcknowledged, let plan = integrationPlan else { return }
+        guard stateReady, !setupBusy, integrationAcknowledged, harnessPlanReady,
+              let plan = integrationPlan else { return }
+        let selection = harnessPlanContext
+        // Consume before dispatch: timeout or lost reply cannot repeat this plan.
+        invalidateIntegrationPlan()
+        let generation = integrationPlanGeneration
         setupCommand(["harness-integration-apply"], input: ["plan": plan]) { result in
+            guard generation == self.integrationPlanGeneration,
+                  selection == self.harnessPlanContext else { return }
             self.integrationResult = result
-            self.integrationAcknowledged = false
             self.integrationVerification = nil
             if result["status"] as? String == "completed" {
-                self.integrationCodexWorkspaceWriteInstalled = self.integrationCodexWorkspaceWrite
+                self.integrationCodexWorkspaceWriteInstalled = plan["codex_workspace_write"] as? Bool == true
             }
-            if let pending = result["pending_plan"] as? [String: Any] { self.integrationPlan = pending }
-            else if result["status"] as? String == "completed" { self.integrationPlan = nil }
+            if let pending = result["pending_plan"] as? [String: Any],
+               self.harnessPlanMatchesDestination(pending) {
+                self.integrationPlan = pending
+                self.integrationPlanContext = selection
+                self.integrationPlanRecovered = true
+            }
+            self.integrationAcknowledged = false
             self.integrationMessage = result["message"] as? String ?? "Application non confirmée."
             if let diagnostic = result["diagnostic"] as? String { self.integrationMessage += "\n" + diagnostic }
         }
     }
     func verifyIntegration() {
         guard stateReady, !setupBusy else { return }
+        let generation = integrationPlanGeneration, selection = harnessPlanContext
         setupCommand(["harness-integration-verify", "--home", integrationHome, "--profile", integrationProfile]) { result in
+            guard generation == self.integrationPlanGeneration,
+                  selection == self.harnessPlanContext else { return }
             self.integrationVerification = result
             self.integrationMessage = result["message"] as? String ?? "Vérification non confirmée."
             if let diagnostic = result["diagnostic"] as? String { self.integrationMessage += "\n" + diagnostic }
@@ -1122,11 +1201,17 @@ struct Integrations: View {
                     Button("Prévisualiser le retrait…") { app.previewIntegration(action: "remove") }
                     Spacer()
                 }.disabled(!hasProfile || app.integrationProject.isEmpty)
-                if let plan = app.integrationPlan {
+                if let plan = app.integrationPlan, app.harnessPlanReady {
                     Divider()
                     HStack(spacing: 24) {
                         path("Action", plan["action"] as? String ?? "")
                         path("Profil", plan["profile"] as? String ?? "")
+                    }
+                    path("Projet du plan", plan["project"] as? String ?? "inconnu")
+                    path("Dossier de configuration", plan["home"] as? String ?? "inconnu")
+                    if app.integrationPlanRecovered {
+                        Text("Plan durable retrouvé après interruption : examinez chaque modification et autorisez de nouveau son application.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     Text("Rôle : " + ((plan["agent_role"] as? String == "coordinator") ? "Coordinateur" : "Standard"))
                     SettingsHint(
@@ -1142,7 +1227,7 @@ struct Integrations: View {
                     }
                     Text("Empreinte du plan : " + (plan["fingerprint"] as? String ?? "indisponible")).font(.caption)
                     Toggle("J’autorise les modifications de ce plan sur le profil affiché.", isOn: $app.integrationAcknowledged)
-                    Button("Appliquer ce plan") { app.applyIntegration() }.disabled(!app.integrationAcknowledged)
+                    Button("Appliquer ce plan") { app.applyIntegration() }.disabled(!app.integrationAcknowledged || !app.harnessPlanReady)
                 }
                 if let result = app.integrationResult {
                     if let backup = result["backup"] as? String { path("Sauvegarde", backup) }
@@ -1168,7 +1253,10 @@ struct Integrations: View {
         }
         .disabled(app.setupBusy || !app.stateReady)
         .onChange(of: app.codexIntegrationHarness) { _, _ in app.invalidateCodexIntegrationPlan() }
+        .onChange(of: app.integrationHome) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.integrationProject) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationProfile) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.integrationAsi1Effort) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationOutputResumeProject) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationOutputResume) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationAgentRole) { _, _ in app.invalidateIntegrationPlan() }
