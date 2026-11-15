@@ -17,6 +17,8 @@ import os
 import time
 
 VERSION = 4
+# Independent of PRAGMA user_version: external_rankings owns later versions.
+LEGACY_IDENTITY_SCRUB_KEY = 'legacy_opaque_identity_scrub_v1'
 TYPES = ('routed', 'explicit', 'routing_substituted')
 DEFAULT_RETENTION_DAYS = 180
 # Classes de facturation : free (local), included (abonnement confirmé),
@@ -52,6 +54,37 @@ ADMISSIBILITY_SCHEMA = (
 def _meta_value(db, key):
     row = db.execute('SELECT value FROM routing_meta WHERE key=?', (key,)).fetchone()
     return row[0] if row else None
+
+
+def _invalid_opaque_sql(column):
+    """Static SQL predicate for malformed legacy HMAC-shaped values."""
+    if column not in ('account_key', 'pool_key'):
+        raise ValueError('Unexpected routing identity column')
+    return (f"{column} IS NOT NULL AND (typeof({column}) != 'text' "
+            f"OR length({column}) != 64 OR {column} GLOB '*[^0-9a-f]*')")
+
+
+def _scrub_legacy_identities(db):
+    """One-time, transactional redaction. Report counts, never raw identities.
+
+    Must run inside setup's write transaction after both routing tables exist.
+    This only removes logically visible values, not copies in WAL/backups.
+    """
+    if _meta_value(db, LEGACY_IDENTITY_SCRUB_KEY) is not None:
+        return
+    redacted = db.execute(
+        'UPDATE routing_events SET account_key=NULL WHERE '
+        + _invalid_opaque_sql('account_key')).rowcount
+    unsafe = ('(' + _invalid_opaque_sql('account_key') + ') OR ('
+              + _invalid_opaque_sql('pool_key') + ')')
+    revoked = db.execute(
+        "UPDATE route_admissibility SET account_key=NULL, pool_key=NULL, "
+        "billing_class='unknown', identity_status='unknown' WHERE "
+        + unsafe).rowcount
+    counts = json.dumps({'events_redacted': redacted, 'admissibility_revoked': revoked},
+                        sort_keys=True, separators=(',', ':'))
+    db.execute('INSERT INTO routing_meta(key,value) VALUES (?,?)',
+               (LEGACY_IDENTITY_SCRUB_KEY, counts))
 
 
 def setup(db):
@@ -90,6 +123,9 @@ def setup(db):
         db.execute("INSERT OR IGNORE INTO routing_meta VALUES ('retention_days',?)", (str(DEFAULT_RETENTION_DAYS),))
         # v4 : cache externe (tables additives IF NOT EXISTS, données préservées).
         external_rankings.setup(db)
+        # A version current on entry does not prove historical identity redaction.
+        # Updates + audit marker commit as one unit; failure retains original rows.
+        _scrub_legacy_identities(db)
         # user_version reflète le schéma le plus récent (le cache peut être en
         # avance sur le journal) : la valeur la plus élevée fait foi.
         db.execute(f'PRAGMA user_version = {max(VERSION, external_rankings.VERSION)}')
