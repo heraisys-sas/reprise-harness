@@ -133,6 +133,40 @@ class TaskStoreTests(unittest.TestCase):
                 second.close()
                 first.close()
 
+    def test_concurrent_claim_next_on_same_key_hands_out_one_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            seed = TaskStore(tmp, tmp)
+            seed.admit('one', 'first')
+            seed.admit('two', 'second')
+            seed.close()
+            barrier = threading.Barrier(2)
+            def claim():
+                store = TaskStore(tmp, tmp)
+                try:
+                    barrier.wait(timeout=10)
+                    return store.claim_next('shared-claim')
+                finally:
+                    store.close()
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(lambda _: claim(), range(2)))
+            handed = [result for result in results if result.get('delivery') == 'handed_over']
+            held = [result for result in results if result.get('state') == 'busy']
+            self.assertEqual(len(handed), 1)
+            self.assertEqual(len(held), 1)
+            self.assertEqual(held[0]['request_key'], handed[0]['request_key'])
+            self.assertEqual(held[0]['attempt_id'], handed[0]['attempt_id'])
+            self.assertNotIn('prompt', held[0])
+            store = TaskStore(tmp, tmp)
+            try:
+                self.assertEqual(store.db.execute(
+                    'SELECT COUNT(*) FROM desktop_claims WHERE scope=? AND claim_key=?',
+                    (store.scope, 'shared-claim')).fetchone()[0], 1)
+                self.assertEqual(store.db.execute(
+                    "SELECT COUNT(*) FROM desktop_tasks WHERE scope=? AND delivery='attempted'",
+                    (store.scope,)).fetchone()[0], 1)
+            finally:
+                store.close()
+
     def test_claim_next_skips_migrated_legacy_unknown_and_started_dispatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
