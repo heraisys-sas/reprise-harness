@@ -1,8 +1,9 @@
 """Private SQLite registry for named projects and explicit harness workspaces.
 
 The registry records existing directories only. It never creates, removes, or
-mutates Git repositories/worktrees. Workspaces must share the source
-repository's Git common directory. Names are unique without regard to case;
+mutates Git repositories/worktrees. Workspaces either share the source
+repository's Git common directory or explicitly declare the same nonempty
+origin URL in local Git config. Names are unique without regard to case;
 UUIDs remain stable when a project is renamed.
 
 Example::
@@ -55,13 +56,33 @@ def _git_info(path, label):
         raise ValueError(f'{label} Git metadata is unavailable') from exc
 
 
+def _git_origin(path, label):
+    """Read only the local origin URL; never fetch or trust ambient Git overrides.
+
+    Exact URL equality is an operator-assisted association guard, not proof
+    that two independent repositories have identical content or history.
+    """
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith('GIT_')}
+    try:
+        result = subprocess.run(
+            ['git', '-C', path, 'config', '--local', '--get', 'remote.origin.url'],
+            capture_output=True, text=True, timeout=10, env=environment)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(f'{label} Git origin is unavailable') from exc
+    if result.returncode not in (0, 1):
+        raise ValueError(f'{label} Git origin is unavailable')
+    return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
+
+
 class ProjectRegistry:
     """Manage named project records and explicit existing workspace paths.
 
     ``root`` is the user-selected project location and may be a subdirectory
     of the source repository. ``source_repository`` must be its Git worktree
     root. Workspaces are assigned per project and harness, and must themselves
-    be Git worktree roots sharing the source's Git common-dir. Assigning the
+    be Git worktree roots sharing the source's Git common-dir or carrying the
+    same explicitly configured local origin URL. Assigning the
     source repository itself is supported for harnesses without an isolated
     worktree. Reassigning an occupied harness slot is deliberately refused.
     """
@@ -223,7 +244,7 @@ class ProjectRegistry:
         return self.get(project_id)
 
     def associate_workspace(self, project_id, harness, workspace):
-        """Record an existing shared-common-dir worktree for one harness.
+        """Record an existing linked worktree or independently cloned workspace.
 
         Repeating the identical assignment is idempotent. A different path for
         the same harness slot, or a path already owned by another project, is
@@ -243,7 +264,13 @@ class ProjectRegistry:
             if project is None:
                 raise ValueError('Unknown project')
             if common != project['source_common_dir']:
-                raise ValueError('Workspace and source repository do not share a Git common-dir')
+                # Distinct clones have distinct common directories. An explicit
+                # operator assignment is allowed only when both local repositories
+                # name exactly the same configured origin (no network or fetch).
+                source_origin = _git_origin(project['source_repository'], 'Source repository')
+                workspace_origin = _git_origin(workspace_path, 'Workspace')
+                if not source_origin or source_origin != workspace_origin:
+                    raise ValueError('Workspace and source repository differ in Git common-dir and origin')
             existing = self.db.execute('SELECT path,common_dir FROM project_workspaces WHERE project_id=? AND harness=?',
                                         (str(project_id), harness)).fetchone()
             if existing:

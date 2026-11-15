@@ -146,6 +146,39 @@ class ProjectRegistryTests(unittest.TestCase):
         self.assertEqual(result['workspaces'], {'codex': str(workspace.resolve())})
         self.assertEqual(self.registry.associate_workspace(project['id'], 'codex', workspace), result)
 
+    def test_independent_clone_with_identical_explicit_origin_is_associable(self):
+        project = self.registry.create('Atlas', self.repo, self.repo)
+        independent = self.base / 'independent' / 'source'
+        independent.parent.mkdir()
+        subprocess.run(['git', 'clone', '-q', '--no-hardlinks', str(self.repo),
+                        str(independent)], check=True, capture_output=True)
+        source_common = git(self.repo, 'rev-parse', '--git-common-dir')
+        clone_common = git(independent, 'rev-parse', '--git-common-dir')
+        self.assertNotEqual(str((self.repo / source_common).resolve()),
+                            str((independent / clone_common).resolve()))
+        # Same configured upstream, no implicit network operation.
+        upstream = 'https://github.com/example/atlas.git'
+        git(self.repo, 'remote', 'add', 'origin', upstream)
+        git(independent, 'remote', 'set-url', 'origin', upstream)
+        associated = self.registry.associate_workspace(project['id'], 'codex', independent)
+        self.assertEqual(associated['workspaces']['codex'], str(independent.resolve()))
+        self.assertEqual(self.registry.associate_workspace(project['id'], 'codex', independent),
+                         associated)
+
+    def test_independent_clone_without_matching_origin_is_rejected(self):
+        project = self.registry.create('Atlas', self.repo, self.repo)
+        clone = self.base / 'other-clone'
+        subprocess.run(['git', 'clone', '-q', '--no-hardlinks', str(self.repo),
+                        str(clone)], check=True, capture_output=True)
+        with self.assertRaisesRegex(ValueError, 'common-dir and origin'):
+            self.registry.associate_workspace(project['id'], 'codex', clone)
+        git(self.repo, 'remote', 'add', 'origin', 'https://github.com/example/atlas.git')
+        with self.assertRaisesRegex(ValueError, 'common-dir and origin'):
+            self.registry.associate_workspace(project['id'], 'codex', clone)
+        git(clone, 'remote', 'set-url', 'origin', 'https://github.com/example/foreign.git')
+        with self.assertRaisesRegex(ValueError, 'common-dir and origin'):
+            self.registry.associate_workspace(project['id'], 'codex', clone)
+
     def test_workspace_rejects_non_git_unrelated_git_and_nested_path(self):
         project = self.registry.create('Atlas', self.repo, self.repo)
         with self.assertRaisesRegex(ValueError, 'existing Git worktree'):
@@ -153,7 +186,7 @@ class ProjectRegistryTests(unittest.TestCase):
         unrelated = self.base / 'unrelated'
         unrelated.mkdir()
         git(unrelated, 'init', '-q')
-        with self.assertRaisesRegex(ValueError, 'common-dir'):
+        with self.assertRaisesRegex(ValueError, 'common-dir and origin'):
             self.registry.associate_workspace(project['id'], 'codex', unrelated)
         nested = self.repo / 'nested'
         nested.mkdir()
@@ -167,7 +200,7 @@ class ProjectRegistryTests(unittest.TestCase):
         git(unrelated, 'init', '-q')
         for variable in ('GIT_DIR', 'GIT_COMMON_DIR'):
             with self.subTest(variable=variable), patch.dict(os.environ, {variable: str(self.repo / '.git')}):
-                with self.assertRaisesRegex(ValueError, 'common-dir'):
+                with self.assertRaisesRegex(ValueError, 'common-dir and origin'):
                     self.registry.associate_workspace(project['id'], 'codex', unrelated)
 
     def test_workspace_path_and_harness_conflicts_are_refused(self):
