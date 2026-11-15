@@ -123,11 +123,9 @@ class Endpoint:
         before = args.get('before_evidence')
         if before is None:
             before = file_evidence(self.root, paths)
-        # Crash-safe admission: validate EVERYTHING against the roundtrip store
-        # BEFORE the first durable write. A failure after the INSERT below would
-        # leave an admitted row with no TaskStore entry; recovery would then rely
-        # on replay alone instead of a clean retry. admit() is idempotent on the
-        # same (request_key, prompt); a DIFFERENT prompt is a real conflict.
+        # The TaskStore commits first and is idempotent on (request_key,prompt).
+        # A crash before the ledger insert can be retried without redispatch;
+        # a reused key with a different prompt is a hard identity conflict.
         self.tasks.admit(request_key, prompt)
         # Both admission and its "attempted" projection are one SQLite write:
         # there is no crash window leaving a new row stuck in "admitted".
