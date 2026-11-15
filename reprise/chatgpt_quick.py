@@ -13,6 +13,7 @@ through desktop_task_store.TaskStore. A submission already attempted is never
 resent: idempotence is absolute, recovery goes through reprise_requests or an
 explicit operator reconciliation.
 """
+import hashlib
 import json
 import sqlite3
 import time
@@ -139,6 +140,10 @@ class Endpoint:
         task = self.tasks._row(request_key)
         if task is None or task[3] != attempt_id:
             raise ValueError('Attempt does not own project task')
+        if task[4] is None:
+            raise ValueError('Task result is not recorded')
+        if hashlib.sha256(task[4].encode()).hexdigest() != answer_sha256:
+            raise ValueError('Answer sha256 does not match recorded task result')
         # Idempotence check BEFORE any write: identical acknowledged receipt is a
         # no-op; a DIFFERENT attempt on an acknowledged delivery is refused.
         row = self.db.execute('SELECT delivery, dispatch_receipt FROM chatgpt_submissions WHERE scope=? AND request_key=?',
