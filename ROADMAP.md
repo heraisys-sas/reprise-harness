@@ -7,7 +7,7 @@ L'audit d'écart courant : [#119](https://github.com/heraisys-sas/reprise-harnes
 ## Livré
 
 - **Aller-retour Claude Desktop gratuit** : Quick Apply → `get_task` → `submit_result`, `await_task` borné, boîte de réception des résultats (0.1.17/0.1.18) — [contrat](docs/contracts/DELEGATION-PERSISTENCE.md).
-- **Reprise Codex après quota à l'échéance**, sessions goal incluses (#109) ; délégation Codex avec reçus durables — [rôles](docs/contracts/HARNESS-ROLES-CONTRACT.md).
+- **Reprise Codex après quota à l'échéance**, sessions goal incluses (#109) **dans le périmètre du moteur actuellement admissible** ; délégation Codex avec reçus durables — [rôles](docs/contracts/HARNESS-ROLES-CONTRACT.md). Cela ne garantit pas les threads du Desktop privé stdio ni les autres harness.
 - **Installation/maintenance** `inspect/plan/apply/verify/remove` des composants Reprise (app, scheduler, profils Harness, connecteur), déploiements réels 0.1.13→0.1.18 — [contrat](docs/contracts/INSTALLATION-CONTRACT.md).
 - Registre projets (UUID ↔ workspaces), mémoire scoping par projet/work, checkpoints chiffrés.
 - Connecteur Claude Desktop unifié, Quick Apply CDP direct (applyd supprimé), barrières de dispatch séparées.
@@ -15,6 +15,9 @@ L'audit d'écart courant : [#119](https://github.com/heraisys-sas/reprise-harnes
 - Suppression des plafonds quotidiens locaux, tous backends — [CACHE-POLICY](docs/contracts/CACHE-POLICY.md).
 
 ## En cours
+
+- **Reprise après quota de tout travail interrompu** : reconnaître le signal sur le bon Desktop, conserver la session, tenter la continuation native à l'échéance sans imposer de nouvelle mesure de quota ; #10, [contrat](docs/contracts/QUOTA-CONTINUATION-CONTRACT.md), [tests locaux](docs/runbooks/QUOTA-LOCAL-ACCEPTANCE.md). La généralisation reste **non livrée**.
+- **ChatGPT Desktop / Codex stdio** : CDP pipe #161 intégré en mode expérimental non activé ; index passif #170 intégré (un seul CODEX_HOME sur le Mac testé), écriture par propriétaire non prouvée ; mode partagé socket retiré sur dev par #172 (CLI/RPC Codex indépendant préservé), `codexd` inchangé. `chatgptd` est une cible, pas un service déjà livré.
 
 - Unification des surfaces MCP : mémoire partagée par projet livrée ; attente bornée des résultats Claude (#111, branche) ; réunion des délégations restante.
 - Session goal « Siri 27.2 » : pilot Apple Intelligence, clarification locale, guided generation (#111 et voisins).
