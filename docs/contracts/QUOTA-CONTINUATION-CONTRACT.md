@@ -153,6 +153,30 @@ fusionnée tant que `dev` ne l'atteste.**
   « événement historique de quota reconnu », en particulier dans
   `claude_quota_log.source_observation()`.
 
+### File Claude Desktop opt-in : correction locale #208
+
+`claude_quota.admit_queue_continuation` ne crée plus une tâche globale par date
+de reset. Chaque ligne `claude_quota_resumes` attestée `status='waiting'`
+est traitée séparément à son échéance ; sa `request_key` intègre l'`event_key`
+stable, son `chat_id` figure dans la tâche et dans la consigne. Plusieurs
+conversations bloquées jusqu'au même instant donnent des admissions
+indépendantes. Une date découverte dans un snapshot sans ligne d'événement
+attribuable ne crée aucune tâche (`no_verified_session`).
+
+Le marqueur historique `claude_queue_admitted_for`, utilisé par les versions
+antérieures pour une unique tâche à clé de date, demeure un **signal de
+livraison potentiellement incertaine** : les événements de cette échéance ne
+sont pas remis à nouveau automatiquement (`legacy_uncertain`), tandis que
+les autres événements progressent. `already_admitted` indique le rejeu
+idempotent d'une clé d'événement déjà enregistrée.
+
+La file demeure **consultative** : elle ne reprend ni ne possède la session
+native d'origine. La présence d'un identifiant de chat dans la tâche ne
+prouve pas l'accès à son historique ni l'aptitude à reprendre son tour. Sans
+route prouvée, l'exécutant répond `needs_review`. Aucune action Desktop
+ou inférence supplémentaire n'est autorisée par la seule admission. La
+politique universelle quota-first #10 reste non implémentée.
+
 La généralisation est **à livrer dans #10**, pas implicitement obtenue
 par la mise à jour de ce document.
 
