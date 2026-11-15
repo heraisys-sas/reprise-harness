@@ -379,12 +379,123 @@ def bundle_info(root):
     return helpers, runtime, identity
 
 
+def _release_plain_entries(root):
+    # Do not follow symlinks: tree_files() checks their targets separately.
+    for entry in [root, *root.rglob('*')]:
+        if entry.is_symlink():
+            continue
+        info = entry.stat(follow_symlinks=False)
+        if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+            raise ValueError('Type de fichier non supporté dans la release.')
+        yield entry, info
+
+
+def _release_directory_paths(root):
+    return sorted(str(entry.relative_to(root)) for entry, info in _release_plain_entries(root)
+                  if entry != root and stat.S_ISDIR(info.st_mode))
+
+
+def _seal_release(root, keep_root_writable=False):
+    """Seal payload before publish; macOS needs a writable root for rename."""
+    for entry, info in sorted(_release_plain_entries(root), key=lambda item: len(item[0].parts), reverse=True):
+        if keep_root_writable and entry == root:
+            continue
+        entry.chmod(stat.S_IMODE(info.st_mode) & ~0o222)
+
+
+def _restore_directory_writes(root):
+    """Allow cleanup of an unpublished staging tree (also used by disposable tests)."""
+    if not root.exists():
+        return
+    for entry in [root, *root.rglob('*')]:
+        if entry.is_dir() and not entry.is_symlink():
+            entry.chmod(stat.S_IMODE(entry.stat(follow_symlinks=False).st_mode) | stat.S_IWUSR)
+
+
+def _check_release_readonly(root):
+    for entry, info in _release_plain_entries(root):
+        if stat.S_IMODE(info.st_mode) & 0o222:
+            raise ValueError(f'Release publiée modifiable : {entry}')
+
+
 def release_check(release):
     evidence = json.loads((release / 'release.json').read_text())
+    if evidence.get('format') not in (1, 2):
+        raise ValueError('Format de manifeste de release inconnu.')
     actual = tree_files(release)
     actual.pop('release.json', None)
     if actual != evidence['files'] or not os.access(release / 'Contents/Resources/runtime/bin/python3', os.X_OK):
         raise ValueError('Copie installée altérée ; aucune exécution de ce release.')
+    # Format 1: preserve existing installations; never chmod a running release.
+    if evidence['format'] == 2:
+        if evidence.get('immutability') != 'posix-readonly-v1':
+            raise ValueError('Politique d’immuabilité de release inconnue.')
+        if 'directories' in evidence and _release_directory_paths(release) != evidence['directories']:
+            raise ValueError('Arborescence de release altérée ; aucune exécution.')
+        _check_release_readonly(release)
+
+
+def diagnose_release(release, max_examples=30):
+    """Read-only inventory diff for one explicitly selected integration release.
+
+    This is a filesystem snapshot, not proof of which process caused a drift.
+    Missing files during traversal are reported as unstable, never as clean.
+    """
+    release = Path(release).expanduser().absolute()
+    if release.is_symlink() or not release.is_dir():
+        raise ValueError('Répertoire de release explicite introuvable ou symbolique.')
+    evidence = json.loads((release / 'release.json').read_text())
+    if evidence.get('format') not in (1, 2) or not isinstance(evidence.get('files'), dict):
+        raise ValueError('Manifeste de release non supporté.')
+    expected = evidence['files']
+    try:
+        actual = tree_files(release)
+        actual.pop('release.json', None)
+        writable = []
+        observed_directories = []
+        if evidence['format'] == 2:
+            entries = list(_release_plain_entries(release))
+            writable = [str(entry.relative_to(release))
+                        for entry, info in entries if stat.S_IMODE(info.st_mode) & 0o222]
+            observed_directories = sorted(str(entry.relative_to(release)) for entry, info in entries
+                                          if entry != release and stat.S_ISDIR(info.st_mode))
+    except FileNotFoundError:
+        return {'status': 'unstable', 'release': str(release),
+                'reason': 'entry_disappeared_during_inventory'}
+
+    added = sorted(actual.keys() - expected.keys())
+    missing = sorted(expected.keys() - actual.keys())
+    changed = sorted(name for name in actual.keys() & expected.keys()
+                     if actual[name] != expected[name])
+    runtime_cache = sorted(name for name in added
+                           if name.startswith('Contents/Resources/runtime/')
+                           and ('__pycache__' in Path(name).parts or name.endswith(('.pyc', '.pyo'))))
+    expected_directories = evidence.get('directories') if evidence['format'] == 2 else None
+    if expected_directories is not None and not isinstance(expected_directories, list):
+        raise ValueError('Inventaire des répertoires de release non supporté.')
+    extra_directories = sorted(set(observed_directories) - set(expected_directories)) if expected_directories is not None else []
+    lost_directories = sorted(set(expected_directories) - set(observed_directories)) if expected_directories is not None else []
+    runtime_cache_directories = [name for name in extra_directories
+                                 if name.startswith('Contents/Resources/runtime/')
+                                 and Path(name).name == '__pycache__']
+    writable.sort()
+    executable = os.access(release / 'Contents/Resources/runtime/bin/python3', os.X_OK)
+    policy_ok = evidence['format'] == 1 or evidence.get('immutability') == 'posix-readonly-v1'
+    clean = not (added or missing or changed or writable or extra_directories or lost_directories) and executable and policy_ok
+
+    def summary(names):
+        return {'count': len(names), 'examples': names[:max_examples],
+                'truncated': len(names) > max_examples}
+
+    return {'status': 'clean' if clean else 'drift', 'release': str(release),
+            'manifest_format': evidence['format'], 'policy_ok': policy_ok,
+            'runtime_executable': executable, 'added': summary(added),
+            'missing': summary(missing), 'changed': summary(changed),
+            'writable': summary(writable), 'new_runtime_cache': summary(runtime_cache),
+            'directory_inventory': expected_directories is not None,
+            'added_directories': summary(extra_directories),
+            'missing_directories': summary(lost_directories),
+            'new_runtime_cache_dirs': summary(runtime_cache_directories)}
 
 
 def _sync_file(path):
@@ -502,6 +613,33 @@ def _reconcile_atomic(path, text, metadata):
         temporary.unlink(missing_ok=True)
 
 
+def _runtime_copy_function(runtime, destination):
+    """APFS clones large runtime files; unsupported volumes use ordinary copies."""
+    if sys.platform != 'darwin' or runtime.stat().st_dev != destination.stat().st_dev:
+        return shutil.copy2
+    try:
+        import ctypes
+        clone = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True).clonefile
+        clone.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int)
+        clone.restype = ctypes.c_int
+    except (OSError, AttributeError):
+        return shutil.copy2
+
+    def copy(source, target):
+        if Path(source).stat().st_size < 65536:
+            return shutil.copy2(source, target)
+        if clone(os.fsencode(source), os.fsencode(target), 0) == 0:
+            return target
+        code = ctypes.get_errno()
+        if code not in (errno.ENOTSUP, errno.EOPNOTSUPP, errno.EXDEV, errno.ENOSYS):
+            raise OSError(code, os.strerror(code), os.fspath(target))
+        if os.path.lexists(target):
+            raise ValueError('Clonage APFS incomplet ; aucun remplacement implicite.')
+        return shutil.copy2(source, target)
+
+    return copy
+
+
 def stage_release(helpers, runtime, release):
     payload = json.loads((helpers / 'payload-manifest.json').read_text())
     validate_yaml(helpers, payload)
@@ -539,7 +677,8 @@ def stage_release(helpers, runtime, release):
         if json.loads((helper_target / 'payload-manifest.json').read_text()) != payload:
             raise ValueError('Manifeste modifié pendant la copie.')
         validate_yaml(helper_target, payload)
-        shutil.copytree(runtime, resources / 'runtime', symlinks=True)
+        shutil.copytree(runtime, resources / 'runtime', symlinks=True,
+                        copy_function=_runtime_copy_function(runtime, resources))
         if (helpers.parent / 'native-manifest.json').is_file():
             shutil.copyfile(helpers.parent / 'native-manifest.json', resources / 'native-manifest.json')
         native = helpers.parent.parent / 'MacOS'
@@ -547,9 +686,21 @@ def stage_release(helpers, runtime, release):
             shutil.copytree(native, stage / 'Contents/MacOS')
         if bundle_info(helper_target)[2] != release.name:
             raise ValueError('Identité du bundle différente du plan ; publication refusée.')
-        atomic(stage / 'release.json', encoded({'format': 1, 'files': tree_files(stage)}))
-        _sync_tree(stage)
-        stage.rename(release)
+        atomic(stage / 'release.json', encoded({'format': 2, 'immutability': 'posix-readonly-v1',
+                                                'directories': _release_directory_paths(stage),
+                                                'files': tree_files(stage)}))
+        try:
+            _seal_release(stage, keep_root_writable=True)
+            _sync_tree(stage)
+            stage.rename(release)
+            # macOS rejects renaming a read-only source directory. Seal the
+            # root after rename, before acknowledging successful publication.
+            release.chmod(stat.S_IMODE(release.stat().st_mode) & ~0o222)
+            _sync_directory(release)
+        finally:
+            # TemporaryDirectory must remain removable if publication failed after sealing.
+            if stage.exists():
+                _restore_directory_writes(stage)
         _sync_directory(release.parent)
     release_check(release)
 
@@ -1558,11 +1709,16 @@ def main(root, argv=None):
     toggle = command.add_mutually_exclusive_group(required=True)
     toggle.add_argument('--codex-workspace-write', action='store_true', default=None)
     toggle.add_argument('--no-codex-workspace-write', dest='codex_workspace_write', action='store_false')
+    command = sub.add_parser('harness-integration-release-diagnose')
+    command.add_argument('--release', required=True,
+                         help='Chemin explicite d’une release MCP ; inventaire seul, sans exécution.')
     sub.add_parser('harness-integration-apply')
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
-        if args.command == 'harness-integration-inspect':
+        if args.command == 'harness-integration-release-diagnose':
+            result = diagnose_release(args.release)
+        elif args.command == 'harness-integration-inspect':
             result = inspect(args.home, args.profile)
         elif args.command == 'harness-integration-reconcile-plan':
             result = {'status': 'planned', 'plan': reconcile_plan(root, args.home, args.profile, args.project,
@@ -1606,4 +1762,6 @@ def main(root, argv=None):
         print(json.dumps(result, ensure_ascii=False))
         return 1
     print(json.dumps(result, ensure_ascii=False))
+    if args.command == 'harness-integration-release-diagnose':
+        return 0 if result['status'] == 'clean' else 2
     return 0

@@ -25,6 +25,7 @@ class SchedulerServiceTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.base = Path(temporary.name).resolve()
+        self.addCleanup(integration._restore_directory_writes, self.base)
         self.home = self.base / 'home'
         self.root = package_helpers.package(SOURCE, self.base / 'Reprise.app')
         runtime = self.root.parent / 'runtime'
@@ -473,7 +474,9 @@ class SchedulerServiceTests(unittest.TestCase):
     def test_missing_runtime_is_distinct_and_repair_does_not_run_it(self):
         value = self.plan()
         self.apply(value)
-        Path(plistlib.loads(self.plist.read_bytes())['ProgramArguments'][0]).unlink()
+        python = Path(plistlib.loads(self.plist.read_bytes())['ProgramArguments'][0])
+        python.parent.chmod(0o700)  # Explicit corruption fixture; published releases stay sealed.
+        python.unlink()
         observed = self.inspect()
         self.assertTrue(observed['file_present'])
         self.assertFalse(observed['runtime_integrity'])
