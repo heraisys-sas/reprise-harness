@@ -26,6 +26,11 @@ if len(sys.argv) > 1 and sys.argv[1] in ('memory-inspect', 'memory-migration-pla
     import memory_admin
     sys.exit(memory_admin.main(Path(__file__).resolve().parent, sys.argv[1:]))
 
+if len(sys.argv) > 1 and sys.argv[1] in ('approval-delegation-grant', 'approval-delegation-list', 'approval-delegation-revoke'):
+    import approval_delegation
+    operation = sys.argv[1].removeprefix('approval-delegation-')
+    sys.exit(approval_delegation.main(Path(__file__).resolve().parent, [operation, *sys.argv[2:]]))
+
 if len(sys.argv) > 1 and sys.argv[1] in ('ironclaw-inspect', 'ironclaw-configure', 'ironclaw-probe', 'ironclaw-submit', 'ironclaw-poll', 'ironclaw-result', 'ironclaw-requests', 'ironclaw-reconcile', 'ironclaw-followup', 'ironclaw-fail'):
     import ironclaw_connection
     sys.exit(ironclaw_connection.main(Path(__file__).resolve().parent, sys.argv[1:]))
