@@ -37,6 +37,34 @@ codex app-server proxy --sock /absolute/private/path/codex.sock
 
 Launching a listener creates a new server; it does not attach a socket to an already-running Desktop owner. Existing threads held by another server remain protected by writer ownership. A socket must be opened by the owning server or clients must initially share the same daemon. Desktop attachment must be verified separately. Do not delete locks or restart another application's server to obtain ownership.
 
+### Desktop shared-socket mode: retired (issue #172)
+
+The former `shared-mode prepare|launch|check|stop` UI/CLI pathway is now
+**unsupported and fail-closed**. On the operator's Mac, ChatGPT Desktop
+reliably kept its bundled Codex app-server on **stdio**, while an attempted
+`CODEX_APP_SERVER_WS_URL` socket attachment did not remain stable.
+
+The previous check only established socket responsiveness and that
+`thread/read` could see a specified thread. It did **not** prove that
+ChatGPT Desktop used that server as its RPC client. Nevertheless, the old
+check could store a `verified_session` and restore scheduler automation.
+That validation is unsafe to reuse and is now projected as **unverified**;
+historical fields remain in local storage for diagnostic provenance only.
+
+All four shared-mode actions refuse without side effects: no Desktop launch,
+no special socket variables, no app-server daemon start/stop, no thread
+mutation and no scheduler auto-enable. The `shared_mode.state()`
+projection always reports `startup_eligible: false` and
+`desktop_socket_binding_verified: false`, even with historical
+success flags. Use Desktop's native behavior normally; existing explicit
+Codex RPC delegation routes are **not** retired.
+
+Future restoration requires an independently verified proof of Desktop's
+actual owner/endpoint through its lifetime, plus controlled post-fallback
+monitoring and a separate operator authorization. A readable thread, socket
+liveness or application launch receipt is not sufficient.
+
+
 Use owner-only socket directories, retain approval/sandbox policies, and verify thread identity, project path and idle status before submitting a turn. A parent conversation is a useful coordinator only if its own agent tools still control the child; the server owner and the conversational parent are distinct concepts.
 
 The old `codex mcp-server` recipe is obsolete: [OpenAI documents its removal](https://learn.chatgpt.com/docs/mcp-server). A new integration must speak app-server JSON-RPC or explicitly translate a narrow MCP tool contract. App-server remains experimental.
