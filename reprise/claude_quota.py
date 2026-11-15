@@ -189,7 +189,12 @@ def admit_queue_continuation(db, root, quick_state, project_root, now=None, snap
     if scheduler.get(db, 'claude_queue_channel') is not True:
         return {'status': 'queue_disabled'}
     initialize(db)
-    if snapshot is None and observe is None:
+    # A durable verified event is sufficient to admit the advisory task at its
+    # deadline. A new observer measurement is not a prerequisite: it may be
+    # unavailable precisely because the original process was interrupted.
+    rows = db.execute("""SELECT event_key,chat_id,due FROM claude_quota_resumes
+                         WHERE status='waiting' ORDER BY due,event_key""").fetchall()
+    if not rows and snapshot is None and observe is None:
         try:
             from claude_session_observer import status as observer_status
             def observe():
@@ -200,12 +205,13 @@ def admit_queue_continuation(db, root, quick_state, project_root, now=None, snap
         try:
             snapshot = observe()
         except Exception as error:
-            return {'status': 'observe_failed', 'error': type(error).__name__}
+            if not rows:
+                return {'status': 'observe_failed', 'error': type(error).__name__}
+            # Existing durable event identities remain usable without a fresh
+            # observation. Never manufacture a new event from the failed read.
+            snapshot = None
 
-    # Only native-verified waiting events have a durable session identity.
     # Snapshot-derived reset dates alone are not permission to create a task.
-    rows = db.execute("""SELECT event_key,chat_id,due FROM claude_quota_resumes
-                         WHERE status='waiting' ORDER BY due,event_key""").fetchall()
     if not rows:
         return {'status': 'no_verified_session' if _resets_from_snapshot(snapshot) is not None
                 else 'no_deadline'}
