@@ -164,11 +164,22 @@ indépendantes. Une date découverte dans un snapshot sans ligne d'événement
 attribuable ne crée aucune tâche (`no_verified_session`).
 
 Le marqueur historique `claude_queue_admitted_for`, utilisé par les versions
-antérieures pour une unique tâche à clé de date, demeure un **signal de
-livraison potentiellement incertaine** : les événements de cette échéance ne
-sont pas remis à nouveau automatiquement (`legacy_uncertain`), tandis que
-les autres événements progressent. `already_admitted` indique le rejeu
-idempotent d'une clé d'événement déjà enregistrée.
+antérieures pour une seule tâche générique, demeure un **signal de livraison
+potentiellement incertaine**. L'ancienne date résultait du maximum entre
+l'observation du quota et toutes les échéances en attente : **tous les événements
+dont `due <= legacy_deadline` sont incertains**, même s'ils ne partagent pas
+exactement cette échéance. Les événements postérieurs restent éligibles.
+Un marqueur historique illisible déclenche une incertitude globale conservatrice
+jusqu'à réconciliation par l'opérateur.
+
+Une ancienne tâche `claude-continuation-<timestamp entier>` peut avoir été
+écrite dans `TaskStore` **avant** que le marqueur scheduler le soit.
+La migration identifie ces admissions par la combinaison de leur clé entière
+et de leur consigne historique, sans les réémettre. La clé tronquait une
+échéance fractionnaire : la borne d'exclusion inclut donc par précaution la
+seconde suivante. L'état `legacy_uncertain` n'autorise ni suppression ni
+renvoi ; `already_admitted` désigne au contraire le rejeu idempotent d'une
+clé d'événement moderne déjà enregistrée.
 
 La file demeure **consultative** : elle ne reprend ni ne possède la session
 native d'origine. La présence d'un identifiant de chat dans la tâche ne
