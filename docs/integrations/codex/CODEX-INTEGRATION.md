@@ -173,3 +173,45 @@ un crash entre les deux écritures est récupéré par projection au replay, san
 
 **Budgets transport :** la facade ChatGPT utilise `CLAUDE_MAX_LINE_BYTES` (8 MiB), compatible
 avec la limite `submit_result` de 2 000 000 caractères (test UTF-8 multioctet inclus).
+
+
+### Issue #218 — émission ChatGPT Desktop sur CDP pipe (non validée sur Mac)
+
+Le helper Python `chatgpt_desktop_pipe.py` accepte `inspect`, `probe` et désormais
+`send` : l'aller seul vers un renderer `app://-/index.html` possédé par
+une instance à profil dédié. Le retour métier et sa preuve restent dans
+l'INBOX Reprise : `get_task` puis `submit_result` accepté. Un tour visible
+dans Desktop ne prouve jamais `response_complete`.
+
+```sh
+python3 -B reprise/chatgpt_desktop_pipe.py send --profile dedicated \\
+  --prompt-file /chemin/prompt.txt --request-key cle-stable-du-job
+# --prompt-file - lit uniquement stdin ; aucun prompt inline accepté.
+```
+
+Le prompt doit être non vide et contenir au plus **20 000 caractères Unicode**
+(la limite indépendante **12 000** du bridge n'est pas modifiée).
+Sans `--request-key`, son empreinte sert d'identifiant stable : deux demandes
+distinctes portant exactement le même texte devront fournir des clés différentes.
+L'empreinte, et non le prompt, est enregistrée dans le profil privé.
+Une tentative de clic est inscrite durablement **avant** l'appel CDP ; tout
+rejeu avec la même clé ne clique jamais une seconde fois, y compris si la
+première tentative est restée `incertain`.
+
+Sortie JSON triée : `status` vaut `refused`, `incertain`, `sent`
+ou `confirmed`. `sent` exige ensemble un clic observé, exactement un
+nouveau tour utilisateur dont le texte correspond au prompt après `trim`
+et le compositeur vidé ; `confirmed` ajoute uniquement l'observation d'un
+nouveau texte assistant. `response_complete` et
+`operator_isolation_verified` restent **false**. Codes de sortie :
+0 si preuves `sent/confirmed`, 64 si prompt absent/vide, 2 sinon.
+Une perte du transport après la frontière du clic reste `incertain` et
+n'autorise jamais un deuxième envoi. Aucun repli port TCP/API payante.
+
+**Limite opérationnelle déterminante :** l'application ChatGPT officielle
+ne garantit pas la prise en charge de `--remote-debugging-pipe`.
+`launch_failed` / `pipe_unavailable` sont des résultats attendus et non
+des autorisations de passer au port DevTools historique. La validation réelle
+sur Mac (notamment coexistence sans interférence avec l'application opérateur)
+reste nécessaire ; les tests synthétiques de `PipeTransport` n'établissent
+pas la fonctionnalité Desktop.
