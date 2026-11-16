@@ -240,7 +240,7 @@ class SchedulerServiceTests(unittest.TestCase):
     def test_startup_activates_once_installs_owned_service_and_preserves_jobs(self):
         self.fresh_activation()
         with closing(sqlite3.connect(self.state / 'tasks.sqlite')) as db:
-            db.execute("INSERT OR REPLACE INTO scheduler_meta VALUES (?,?)"
+            db.execute("INSERT OR REPLACE INTO scheduler_meta VALUES (?,?)",
                        ('claude_desktop_transport', json.dumps('quick-apply')))
             db.commit()
         result = service.startup(self.root, self.home, self.runner)
