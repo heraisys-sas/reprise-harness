@@ -1637,8 +1637,11 @@ def verify(home, profile, root=None, project=None):
     with tempfile.TemporaryDirectory(prefix='reprise-bridge-check-') as temporary:
         program = release / 'Contents/Resources/runtime/bin/python3'
         command = [str(program), '-E', '-s', '-B', str(release / 'Contents/Resources/helpers/codex_expert_mcp.py'),
-                   '--project-root', old['project'], '--state', temporary, '--tools', ','.join(old['tools']),
-                    '--chatgpt-state', str(Path(temporary) / 'chatgpt-state')]
+                   '--project-root', old['project'], '--state', temporary, '--tools', ','.join(old['tools'])]
+        # Legacy releases do not recognize the new flag. Verification never
+        # writes ChatGPT state in the user's active profile.
+        if old.get('chatgpt_state'):
+            command += ['--chatgpt-state', str(Path(temporary) / 'chatgpt-state')]
         env = {k: v for k, v in os.environ.items() if not k.startswith(('PYTHON', 'DYLD_')) and k != 'AGENT_RESUME_STATE'}
         env['PYTHONDONTWRITEBYTECODE'] = '1'
         response = subprocess.run(command, input='\n'.join(json.dumps(r) for r in requests) + '\n',
