@@ -24,13 +24,16 @@ class ChatgptBridgeTests(RequestCalls, unittest.TestCase):
         self.addCleanup(self.bridge.close)
 
     def test_backends_lists_chatgpt_unconfigured_by_default(self):
+        # Contrat #222 : chatgpt est listé systématiquement ; configured
+        # reflète uniquement l'existence du TaskStore (--chatgpt-state).
         backends = self.call('reprise_backends', {})['backends']
-        self.assertNotIn('chatgpt', [entry['id'] for entry in backends])
+        entry = next(row for row in backends if row['id'] == 'chatgpt')
+        self.assertFalse(entry['configured'])
 
     def test_delegate_chatgpt_without_socket_returns_engine_unavailable(self):
         payload = self.call('reprise_delegate', {'question': 'Revue', 'kind': 'review', 'backend': 'chatgpt'})
         self.assertEqual(payload['status'], 'engine_unavailable')
-        self.assertEqual(payload['reason'], '--chatgpt-socket non configuré')
+        self.assertEqual(payload['reason'], '--chatgpt-state non configuré')
 
     def test_implementation_refused_in_v1(self):
         with self.assertRaises(ValueError) as caught:
