@@ -843,6 +843,13 @@ struct Dashboard: View {
     // connection panels (codex-desktop / claude-desktop), freeing the sidebar.
     var connections: some View {
         VStack(alignment: .leading, spacing: 18) {
+            if let verification = app.integrationVerification,
+               verification["status"] as? String == "verified",
+               verification["update_required"] as? Bool == true {
+                SettingsBanner(ok: false, title: "Mise à jour des connecteurs nécessaire",
+                               detail: "Le pont Harness manque d'outils de délégation ou sa release est périmée. Ouvrez Intégrations, préparez un plan --delegate, puis rechargez Harness.")
+                Button("Examiner l'intégration Harness") { app.page = "integrations" }
+            }
             Picker("Service", selection: Binding(get: { app.connectionTab }, set: { app.connectionTab = $0 })) {
                 Text("codex-desktop").tag("codex")
                 Text("claude-desktop").tag("quickapply")
@@ -1082,6 +1089,12 @@ struct Dashboard: View {
             ? (app.healthCheckedAt == nil ? "Santé indisponible · contrôle requis" : "Santé périmée · nouveau contrôle requis")
             : (actionCount == 0 ? "✓ Sain · aucun élément à examiner" : "⚠ \(actionCount) élément(s) à examiner")
         return VStack(alignment: .leading, spacing: 18) {
+            if let check = app.integrationVerification,
+               check["status"] as? String == "verified",
+               check["update_required"] as? Bool == true {
+                SettingsBanner(ok: false, title: "Mise à jour des connecteurs nécessaire",
+                               detail: "Le contrôle Harness signale une délégation absente ou une release dépassée. Corriger dans Intégrations et recharger le client.")
+            }
             SettingsBanner(
                 ok: verified && actionCount == 0,
                 title: verified ? (actionCount == 0 ? "Tout est sain" : "\(actionCount) élément(s) à examiner")

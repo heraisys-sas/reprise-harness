@@ -14,6 +14,7 @@ extension App {
         guard stateReady, !setupBusy else { return }
         var args = ["scheduler-service-plan", "--action", action]
         if schedulerServiceActivate && action == "install" { args.append("--activate") }
+        if action == "install" { args += ["--queue-channel", schedulerServiceQueueMode] }
         setupCommand(args) { result in
             self.schedulerServicePlan = result["plan"] as? [String: Any]
             self.schedulerServiceAcknowledged = false
@@ -26,6 +27,9 @@ extension App {
             self.schedulerServiceAcknowledged = false
             self.schedulerServiceMessage = result["message"] as? String ?? "Application non confirmée."
             if let backup = result["backup"] as? String { self.schedulerServiceMessage += "\nSauvegarde : " + backup }
+            if let queue = result["queue_channel_result"] as? [String: Any] {
+                self.schedulerServiceMessage += "\nFile Claude : " + (queue["status"] as? String ?? "inconnue")
+            }
             if result["status"] as? String == "completed" { self.schedulerServicePlan = nil }
         }
     }
@@ -71,6 +75,7 @@ struct SchedulerService: View {
                              "Registre chargé conforme : " + flag("loaded_state_matches"),
                              "Exécution et outils intègres : " + flag("runtime_integrity"),
                              "Automatique actif : " + flag("auto_enabled"),
+                             "File Claude active : " + flag("claude_queue_channel"),
                              (app.schedulerService["last_exit"] as? String).map { "Dernière sortie launchd : " + $0 } ?? "",
                              "Un service chargé ne prouve ni un tick réussi ni une reprise autorisée."]
                         .filter { !$0.isEmpty }.joined(separator: "\n")
@@ -91,6 +96,13 @@ struct SchedulerService: View {
                              detail: app.schedulerStartupResult["message"] as? String ?? "Le chargement launchd doit être vérifié séparément.")
             }
             Toggle("Activer le service après installation", isOn: $app.schedulerServiceActivate)
+            Picker("Continuations Claude en file", selection: $app.schedulerServiceQueueMode) {
+                Text("Conserver le réglage actuel").tag("preserve")
+                Text("Activer explicitement").tag("enable")
+                Text("Désactiver").tag("disable")
+            }
+            SettingsHint(text: "La file exige un consentement séparé.",
+                         detail: "Le mode conserver ne change aucune préférence. Une pause globale ou Claude préexistante reste prioritaire et n’est jamais réactivée.")
             SettingsHint(
                 text: "Sans activation, le service installé reste arrêté.",
                 detail: "Lors d’un remplacement, le service chargé est déchargé. Si l’activation n’est pas cochée, il reste arrêté : une installation ne lance donc aucun travail. Une pause automatique existante est conservée et sa réactivation se fait séparément dans Reprises.")
@@ -105,5 +117,6 @@ struct SchedulerService: View {
         }
         .disabled(app.setupBusy || !app.stateReady)
         .onChange(of: app.schedulerServiceActivate) { _, _ in app.schedulerServicePlan = nil; app.schedulerServiceAcknowledged = false }
+        .onChange(of: app.schedulerServiceQueueMode) { _, _ in app.schedulerServicePlan = nil; app.schedulerServiceAcknowledged = false }
     }
 }

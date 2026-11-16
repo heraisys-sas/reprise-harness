@@ -53,6 +53,12 @@ class SchedulerServiceTests(unittest.TestCase):
         self.fail_bootstrap = False
         self.support, self.plist, self.managed = service.paths(self.home)
 
+    def fresh_activation(self):
+        """Remove pre-existing fixture pauses to model a genuinely fresh setup."""
+        with closing(sqlite3.connect(self.state / 'tasks.sqlite')) as db:
+            db.execute("DELETE FROM scheduler_meta WHERE key IN ('auto_enabled','claude_desktop_auto_enabled')")
+            db.commit()
+
     def runner(self, args):
         self.calls.append(args)
         if args[0] == 'print':
@@ -232,8 +238,8 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual([c[0] for c in self.calls if c[0] in ('bootout', 'bootstrap')], ['bootout', 'bootstrap'])
 
     def test_startup_activates_once_installs_owned_service_and_preserves_jobs(self):
+        self.fresh_activation()
         with closing(sqlite3.connect(self.state / 'tasks.sqlite')) as db:
-            db.execute("INSERT OR REPLACE INTO scheduler_meta VALUES ('claude_desktop_auto_enabled','false')")
             db.execute("INSERT OR REPLACE INTO scheduler_meta VALUES (?,?)",
                        ('claude_desktop_transport', json.dumps('quick-apply')))
             db.commit()
@@ -254,7 +260,49 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual(repeated['status'], 'already_loaded')
         self.assertFalse(any(call[0] in ('bootstrap', 'bootout') for call in self.calls))
 
+    def test_imported_pause_without_startup_marker_is_preserved(self):
+        result = service.startup(self.root, self.home, self.runner)
+        self.assertEqual(result['status'], 'paused_by_user')
+        self.assertFalse(self.loaded)
+        with closing(sqlite3.connect(self.state / 'tasks.sqlite')) as db:
+            flags = dict(db.execute('SELECT key,value FROM scheduler_meta'))
+        self.assertEqual(flags['auto_enabled'], 'false')
+        self.assertEqual(flags['startup_activation_version'], json.dumps(service.STARTUP_ACTIVATION_VERSION))
+        self.assertNotIn('claude_queue_channel', flags)
+
+    def test_queue_channel_requires_explicit_plan(self):
+        self.fresh_activation()
+        self.apply(self.plan())
+        self.assertIsNone(self.inspect()['claude_queue_channel'])
+        result = self.apply(self.plan(queue_channel='enable'))
+        self.assertEqual(result['queue_channel_result']['status'], 'configured')
+        self.assertTrue(self.inspect()['claude_queue_channel'])
+        self.assertEqual(self.apply(self.plan(queue_channel='enable'))['queue_channel_result']['status'], 'already_set')
+
+    def test_queue_channel_does_not_override_imported_pause(self):
+        result = self.apply(self.plan(queue_channel='enable'))
+        self.assertEqual(result['queue_channel_result']['status'], 'paused_preserved')
+        self.assertIsNone(self.inspect()['claude_queue_channel'])
+        self.assertFalse(self.inspect()['auto_enabled'])
+
+    def test_queue_disable_and_stale_plan_are_safe(self):
+        self.fresh_activation()
+        self.apply(self.plan(queue_channel='enable'))
+        stale = self.plan(queue_channel='disable')
+        with closing(sqlite3.connect(self.state / 'tasks.sqlite')) as db:
+            db.execute("UPDATE scheduler_meta SET value='false' WHERE key='claude_queue_channel'")
+            db.commit()
+        with self.assertRaisesRegex(ValueError, 'périmé'):
+            self.apply(stale)
+        self.assertEqual(self.apply(self.plan(queue_channel='disable'))['queue_channel_result']['status'], 'already_set')
+        with closing(sqlite3.connect(self.state / 'tasks.sqlite')) as db:
+            db.execute("UPDATE scheduler_meta SET value='true' WHERE key='claude_queue_channel'")
+            db.commit()
+        self.assertEqual(self.apply(self.plan(queue_channel='disable'))['queue_channel_result']['status'], 'configured')
+        self.assertFalse(self.inspect()['claude_queue_channel'])
+
     def test_startup_respects_later_disable_without_unloading_or_rewriting(self):
+        self.fresh_activation()
         first = service.startup(self.root, self.home, self.runner)
         self.assertEqual(first['status'], 'installed_and_started')
         with closing(sqlite3.connect(self.state / 'tasks.sqlite')) as db:
@@ -270,6 +318,7 @@ class SchedulerServiceTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT value FROM scheduler_meta WHERE key='claude_desktop_auto_enabled'").fetchone()[0], 'false')
 
     def test_quota_monitor_opt_out_does_not_disable_other_scheduler_work(self):
+        self.fresh_activation()
         first = service.startup(self.root, self.home, self.runner)
         self.assertEqual(first['status'], 'installed_and_started')
         with closing(sqlite3.connect(self.state / 'tasks.sqlite')) as db:
@@ -297,6 +346,7 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual(values['auto_enabled'], 'false')
 
     def test_startup_bootstraps_owned_plist_without_rewrite_or_backup(self):
+        self.fresh_activation()
         self.apply(self.plan(activate=False))
         original = self.plist.read_bytes()
         result = service.startup(self.root, self.home, self.runner)
@@ -307,6 +357,7 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual([call[0] for call in self.calls].count('bootstrap'), 1)
 
     def test_startup_reports_indeterminate_if_bootstrap_raises_after_dispatch(self):
+        self.fresh_activation()
         def uncertain_runner(args):
             if args[0] == 'bootstrap':
                 self.runner(args)
@@ -318,6 +369,7 @@ class SchedulerServiceTests(unittest.TestCase):
         self.assertEqual([call[0] for call in self.calls].count('bootstrap'), 1)
 
     def test_startup_reports_indeterminate_if_post_bootstrap_hash_fails(self):
+        self.fresh_activation()
         real_hash = service.file_hash
         bootstrapped = False
         def runner(args):
