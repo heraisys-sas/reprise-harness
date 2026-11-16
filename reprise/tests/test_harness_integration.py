@@ -64,6 +64,15 @@ class HarnessIntegrationTests(unittest.TestCase):
     def plan(self, action='install', delegate=False):
         return integration.plan(self.root, self.home, 'desktop', self.project, action, delegate)
 
+    def test_new_delegate_plan_propagates_chatgpt_state_without_claiming_transport(self):
+        files, _, manifest = integration.desired(
+            self.root, self.home, 'desktop', self.project, 'install', delegate=True)
+        self.assertEqual(manifest['chatgpt_state'],
+                         str(integration.state_location(self.root, 'chatgpt-state').absolute()))
+        self.assertIn('--chatgpt-state', files[self.config])
+        self.assertIn('reprise_delegate', files[self.config])
+        self.assertNotIn('--chatgpt-socket', files[self.config])
+
     def test_yaml_integrity_and_identity(self):
         helpers, runtime, before = integration.bundle_info(self.root)
         yaml_file = helpers / 'vendor/yaml/reader.py'

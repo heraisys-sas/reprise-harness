@@ -324,7 +324,7 @@ class Bridge:
         if type(chatgpt_workspace_write) is not bool:
             raise ValueError('Explicit workspace-write grant required')
         if chatgpt_socket is not None and (not isinstance(chatgpt_socket, str) or not Path(chatgpt_socket).is_absolute()):
-            raise ValueError('Absolute ChatGPT socket path required')
+            raise ValueError('Absolute ChatGPT state directory required')
         self.chatgpt_socket = chatgpt_socket
         self.chatgpt_workspace_write = chatgpt_workspace_write
         self.codex_workspace_write = codex_workspace_write
@@ -705,11 +705,12 @@ class Bridge:
                  'billing': 'Remote IronClaw runtime (paid) — moteur lu via ironclaw.engine()',
                  'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': False,
                  'context': 'Experimental CLI retained for audit; use explicit durable ironclaw-submit/poll/result commands.'},
-                *([{'id': 'chatgpt', 'configured': True, 'models': [],
-                    'billing': 'Compte ChatGPT (Pro/Work)',
-                    'kinds': ['expertise', 'review'], 'levels': ['standard', 'deep'],
-                    'writes': self.chatgpt_workspace_write,
-                    'context': 'admission durable + canal local indéterminé'}] if self.chatgpt_socket else [])],
+                {'id': 'chatgpt', 'configured': self.chatgpt_tasks is not None, 'models': [],
+                  'billing': 'Compte ChatGPT existant ; pas de fallback API payante',
+                  'kinds': ['expertise', 'review'], 'levels': ['standard', 'deep'],
+                  'writes': False, 'transport_verified': False, 'availability': 'unverified',
+                  'dispatch': 'admission_only', 'task_return_supported': self.chatgpt_tasks is not None,
+                  'context': 'Admission SQLite durable ; envoi Desktop automatique non raccordé'}],
                 'automatic_fallback': False}
         allowed = {'question', 'thread_id'} if name in ('codex_followup', 'reprise_followup') else {'question', 'paths'}
         if name == 'reprise_followup':
@@ -818,7 +819,7 @@ class Bridge:
                     'reason': 'Apple fm executable unavailable.', 'automatic_fallback': False}
         if backend == 'chatgpt' and not self.chatgpt_socket:
             return {'status': 'engine_unavailable',
-                    'reason': '--chatgpt-socket non configuré'}
+                    'reason': '--chatgpt-state non configuré'}
         if backend == 'chatgpt' and self.chatgpt_tasks is None:
             return {'status': 'return_channel_unavailable', 'backend': backend,
                     'reason': 'Canal de retour MCP indisponible (TaskStore non initialisé) ; aucun aller-retour garanti.',
@@ -1179,7 +1180,8 @@ def main():
     parser.add_argument('--claude-included-quota-confirmed', action='store_true', help='Operator confirms paid usage credits disabled; CLI cannot verify this')
     parser.add_argument('--codex-workspace-write', action='store_true', help='Operator grant: implementation may write this project; native approvals remain required')
     parser.add_argument('--desktop-socket', help='Explicit absolute Quick Entry socket path; disabled by default')
-    parser.add_argument('--chatgpt-socket', help='Explicit absolute ChatGPT socket path; disabled by default')
+    parser.add_argument('--chatgpt-state', '--chatgpt-socket', dest='chatgpt_state',
+                        help='ChatGPT state directory, ledger and TaskStore (not a network socket)')
     parser.add_argument('--chatgpt-workspace-write', action='store_true', help='Operator grant: ChatGPT roundtrip may declare write capability')
     parser.add_argument('--ironclaw-config', help='JSON 0600: {host,port,user,key} du point d’acceptation IronClaw')
     args = parser.parse_args()
@@ -1189,11 +1191,14 @@ def main():
             ironclaw_values = json.loads(Path(args.ironclaw_config).read_text())
         except (OSError, ValueError):
             raise SystemExit('--ironclaw-config doit être un JSON 0600 lisible')
+    if '--chatgpt-socket' in sys.argv:
+        print('Warning: --chatgpt-socket is deprecated; use --chatgpt-state', file=sys.stderr)
+    chatgpt_state = args.chatgpt_state or str(state_location(Path(__file__).parent, 'chatgpt-state').absolute())
     bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.state or str(state_directory(Path(__file__).parent)), args.daily_limit,
                     claude_program=args.claude_program, claude_subscription_only=args.claude_included_quota_confirmed,
                     desktop_socket=args.desktop_socket, allowed_tools=args.tools.split(',') if args.tools is not None else None,
                     ironclaw_values=ironclaw_values, codex_workspace_write=args.codex_workspace_write,
-                    chatgpt_socket=args.chatgpt_socket, chatgpt_workspace_write=args.chatgpt_workspace_write)
+                    chatgpt_socket=chatgpt_state, chatgpt_workspace_write=args.chatgpt_workspace_write)
     def terminate(signum, frame):
         # Unwind active CLI cleanup before closing the DB and releasing the lock.
         raise SystemExit(128 + signum)

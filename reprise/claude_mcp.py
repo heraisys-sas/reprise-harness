@@ -47,7 +47,7 @@ BACKEND_ALIASES = {
 }
 
 
-def outbound_tools(removed=CLAUDE_REMOVED_BACKENDS):
+def outbound_tools(removed=()):
     """Façade tool schemas: drop backends not reachable from this connector.
 
     List AND dict enum forms are filtered; aliases of a removed backend are
@@ -174,7 +174,7 @@ class ClaudeMCP:
             return {'protocolVersion': '2024-11-05', 'capabilities': {'tools': {}}, 'serverInfo': {
                 'name': 'reprise-harness', 'version': Path(__file__).with_name('VERSION').read_text().strip(),
                 'source_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},
-                'instructions': 'Project-scoped bidirectional service. Quick Apply admission is not dispatch proof. Persist request_key and claim_key. Claim an incoming task only when its request_key is explicitly supplied, or by calling await_task for an explicit request_key in a chat the operator armed for that purpose. Only submit_result completes incoming tasks. Claude Desktop loopback is disabled.'}
+                'instructions': 'Project-scoped bidirectional service. Quick Apply admission is not dispatch proof. Persist request_key and claim_key. Claim an incoming task only when its request_key is explicitly supplied, or by calling await_task for an explicit request_key in a chat the operator armed for that purpose. Only submit_result completes incoming tasks. Self-delegation is permitted with a distinct request_key; no automatic retry.'}
         if method == 'ping':
             return {}
         if method == 'tools/list':
@@ -225,20 +225,8 @@ class ClaudeMCP:
             return tool_content(result)
         if name not in OUTBOUND:
             raise ValueError('Tool not enabled')
-        if args.get('backend') == 'claude-desktop':
-            raise ValueError('Claude Desktop loopback is disabled')
-        # Reuse ownership, budgets, bounded pagination and native dispatch unchanged.
-        result = self.bridge.dispatch(message)
-        if name == 'reprise_backends':
-            payload = json.loads(result['content'][0]['text'])
-            # Preserve shape while removing this client's reentrant backend route.
-            backends = payload.get('backends')
-            if isinstance(backends, list):
-                payload['backends'] = [item for item in backends if item.get('id', item.get('backend', item.get('name'))) != 'claude-desktop']
-            elif isinstance(backends, dict):
-                backends.pop('claude-desktop', None)
-            return tool_content(payload)
-        return result
+        # Self-delegation creates a distinct durable task; no automatic recursion.
+        return self.bridge.dispatch(message)
 
 
 class AwaitRequests:
@@ -339,6 +327,7 @@ def main():
     parser.add_argument('--state', required=True)
     parser.add_argument('--expert-state', required=True)
     parser.add_argument('--socket')
+    parser.add_argument('--chatgpt-state', '--chatgpt-socket', dest='chatgpt_state')
     parser.add_argument('--max-wait', type=int, default=DEFAULT_MAX_WAIT,
                         help='longest await_task wait in seconds; raise only after proving the client tolerates it')
     parser.add_argument('--enable-await', action='store_true',
@@ -349,8 +338,11 @@ def main():
                         help='seconds between notifications/progress during await_task; 0 (default) sends none')
     args = parser.parse_args()
     tasks = TaskStore(args.state, args.project_root)
+    from app_paths import state_location
+    chatgpt_state = args.chatgpt_state or str(state_location(Path(__file__).parent, 'chatgpt-state').absolute())
     bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.expert_state,
-                    desktop_state=args.state, allowed_tools=OUTBOUND)
+                    desktop_state=args.state, allowed_tools=OUTBOUND,
+                    chatgpt_socket=chatgpt_state)
     facade = ClaudeMCP(tasks, bridge, max_wait=args.max_wait, progress_interval=args.progress_interval, enable_await=args.enable_await, enable_queue=args.enable_queue)
     await_requests = AwaitRequests()
     connection = mcp_transport.Connection(lambda text: print(text, end='', flush=True))

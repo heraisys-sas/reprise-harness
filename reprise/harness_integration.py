@@ -240,12 +240,14 @@ def block_entries(block_text):
     return entries
 
 
-def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, codex_workspace_write=False, desktop_socket=None, bash_sandbox_disabled=False, memory=None):
+def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, codex_workspace_write=False, desktop_socket=None, bash_sandbox_disabled=False, memory=None, chatgpt_state=None):
     program = release / 'Contents/Resources/runtime/bin/python3'
     args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/codex_expert_mcp.py'),
             '--project-root', project]
     if desktop_socket:
         args.extend(['--desktop-socket', str(desktop_socket)])
+    if chatgpt_state:
+        args.extend(['--chatgpt-state', str(chatgpt_state)])
     args.extend(['--state', state, '--tools', ','.join(tools)])
     if codex_workspace_write:
         args.append('--codex-workspace-write')
@@ -1050,6 +1052,7 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         if memory['access'] != 'off' and not (helpers / 'reprise_memory_mcp.py').is_file():
             raise ValueError('Reconstruire le bundle avec le connecteur mémoire.')
         release = Path(state).parent / 'integration-releases' / identity
+        chatgpt_state = str(state_location(root, 'chatgpt-state').absolute())
         tools = OBSERVE + (DELEGATE if delegate else ())
         # Issue #117 T2a : --delegate n'expose plus approval_respond. L'outil reviendra
         # en T2b seulement avec un approval_delegate explicite ; la réponse opérateur
@@ -1061,7 +1064,8 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
             desktop_socket = str(DESKTOP_SOCKET)
         entries = _bridge_entries(release, state, tools, project, profile, managed,
                                   output_resume, resume_project, codex_workspace_write,
-                                  desktop_socket, bash_sandbox_disabled, memory)
+                                  desktop_socket, bash_sandbox_disabled, memory,
+                                  chatgpt_state=chatgpt_state)
         if mismatched_block:
             try:
                 parsed = block_entries(block)
@@ -1077,7 +1081,8 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
                     Path(old['release']), old['state'], old.get('tools', []), old['project'],
                     profile, managed, old.get('output_resume', False),
                     old.get('output_resume_project'), old.get('codex_workspace_write', False),
-                    old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), previous_memory)
+                    old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), previous_memory,
+                    old.get('chatgpt_state'))
             else:
                 expected = entries
             if parsed != expected:
@@ -1130,6 +1135,7 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
             next_manifest['codex_workspace_write'] = True
         if desktop_socket:
             next_manifest['desktop_socket'] = desktop_socket
+        next_manifest['chatgpt_state'] = chatgpt_state
         if bash_sandbox_disabled:
             next_manifest['bash_sandbox_disabled'] = True
         if reconciled_from:
@@ -1357,7 +1363,8 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
     memory = memory_integration.selected(old)
     expected = _bridge_entries(Path(old['release']), old['state'], old['tools'], project, profile, managed,
         True, old.get('output_resume_project'), old.get('codex_workspace_write', False),
-        old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory)
+        old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory,
+        old.get('chatgpt_state'))
     actual = block_entries(block.replace('\r\n', '\n'))
     # Normalize only fields explicitly replaced by this operation. All remaining
     # arguments, tools, permissions and plugin settings must match the old owner.
@@ -1399,7 +1406,8 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
     release = Path(old['state']).parent / 'integration-releases' / identity
     memory_integration.validate_binding(old['state'], memory, project, 'harness')
     entries = _bridge_entries(release, old['state'], old['tools'], project, profile, managed,
-        True, resume_project, write, old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory)
+        True, resume_project, write, old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory,
+        old.get('chatgpt_state'))
     _validate_target_entries(entries)
     if not _canonical_paths(entries):
         raise ValueError('Bloc non canonique : une seule ligne entre les délimiteurs, sans continuation.')
@@ -1586,7 +1594,8 @@ def verify(home, profile, root=None, project=None):
         expected = _bridge_entries(Path(old['release']), old['state'], old['tools'], old['project'],
                                    old['profile'], managed, old.get('output_resume', False),
                                    old.get('output_resume_project'), old.get('codex_workspace_write', False),
-                                   old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory_integration.selected(old))
+                                   old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory_integration.selected(old),
+                                   old.get('chatgpt_state'))
         if block is None or block_entries(block) != expected:
             raise ValueError('Configuration Reprise absente ou modifiée.')
         # Bloc reformatté équivalent : accepté sans réécriture ici.
@@ -1628,7 +1637,8 @@ def verify(home, profile, root=None, project=None):
     with tempfile.TemporaryDirectory(prefix='reprise-bridge-check-') as temporary:
         program = release / 'Contents/Resources/runtime/bin/python3'
         command = [str(program), '-E', '-s', '-B', str(release / 'Contents/Resources/helpers/codex_expert_mcp.py'),
-                   '--project-root', old['project'], '--state', temporary, '--tools', ','.join(old['tools'])]
+                   '--project-root', old['project'], '--state', temporary, '--tools', ','.join(old['tools']),
+                    '--chatgpt-state', str(Path(temporary) / 'chatgpt-state')]
         env = {k: v for k, v in os.environ.items() if not k.startswith(('PYTHON', 'DYLD_')) and k != 'AGENT_RESUME_STATE'}
         env['PYTHONDONTWRITEBYTECODE'] = '1'
         response = subprocess.run(command, input='\n'.join(json.dumps(r) for r in requests) + '\n',
