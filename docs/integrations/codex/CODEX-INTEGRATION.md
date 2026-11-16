@@ -146,8 +146,12 @@ changement observable).
 - INBOX (`get_task`, `submit_result`, `get_result`) : la même boucle SQLite que Claude Desktop
   (`TaskStore`, états absent|completed|attempted|reserved, résultat immuable = preuve de complétion).
 - OUTBOUND (`reprise_backends`, `reprise_requests`, `reprise_quotas`, `reprise_delegate`,
-  `reprise_followup`, `codex_review`, `codex_followup`) : mêmes schémas que la facade Claude,
-  filtrés pour retirer le backend `chatgpt` (loopback refusé : `'ChatGPT loopback is disabled'`).
+  `reprise_followup`, `codex_review`, `codex_followup`) : mêmes schémas
+  que la facade Claude. Le backend `chatgpt` **reste visible**, y compris depuis
+  ChatGPT Desktop : une auto-délégation explicite peut cibler une autre tâche
+  ChatGPT du même projet. Le même principe s'applique à `claude-desktop`
+  depuis Claude Desktop. La clé `request_key` doit identifier la tâche
+  indépendante ; le rejeu d'un reçu incertain ne redéclenche jamais l'inférence.
 
 **Politique v1 :**
 - backend `claude-desktop` reste sélectionnable en OUTBOUND depuis la facade ChatGPT ;
@@ -215,3 +219,33 @@ des autorisations de passer au port DevTools historique. La validation réelle
 sur Mac (notamment coexistence sans interférence avec l'application opérateur)
 reste nécessaire ; les tests synthétiques de `PipeTransport` n'établissent
 pas la fonctionnalité Desktop.
+
+
+### #221 — Backend ChatGPT universel, y compris route non vérifiée
+
+Les connecteurs gérés DeepSeek Harness et Claude Desktop propagent désormais
+`--chatgpt-state` (répertoire d'état SQLite, pas un socket réseau), avec le
+même périmètre projet que la façade `chatgpt_mcp.py`. L'ancien argument
+`--chatgpt-socket` est accepté comme alias transitoire.
+`reprise_backends` liste `chatgpt` même lorsque son état est absent
+(`configured: false`) ; avec l'état partagé initialisable,
+`configured: true` signifie uniquement que le canal d'admission/retour
+est disponible. `availability: unverified`,
+`transport_verified: false` et `dispatch: admission_only` sont maintenus
+jusqu'à un véritable aller-retour Mac, jamais déduits de `tools/list`.
+
+L'utilisateur a explicitement autorisé les essais de la route non vérifiée.
+Les façades ChatGPT et Claude autorisent désormais l'auto-délégation pour une
+**nouvelle demande** avec clé unique ; elles ne réenvoient pas automatiquement
+une demande existante ni une tentative incertaine. Le pont `chatgpt_quick.review`
+**admet** la tâche dans le registre ; il n'appelle toujours pas automatiquement
+`chatgpt_desktop_pipe.send`. Aucun message Desktop, modèle exécuté ou
+`submit_result` accepté ne peut donc être déduit du seul reçu d'admission.
+
+**Déploiement** : reconstruire la release depuis `dev`, prévisualiser/appliquer
+à nouveau les connecteurs gérés (DeepSeek avec `--delegate`, Claude, ChatGPT),
+puis recharger les clients. Lire `reprise_backends` depuis chacun et tenter
+une délégation `backend: chatgpt` avec un `request_key` nouveau. Exiger une
+preuve distincte d'arrivée Desktop et `submit_result` avant de déclarer le
+transport réellement fonctionnel. Ni fallback réseau/TCP ni bascule vers une
+API payante implicite.

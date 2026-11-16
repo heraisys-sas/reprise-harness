@@ -99,7 +99,6 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var schedulerServicePlan: [String: Any]? = nil
     @Published var schedulerServiceMessage = "Inspectez le planificateur avant de préparer une modification."
     @Published var schedulerServiceActivate = false
-    @Published var schedulerServiceQueueMode = "preserve"
     @Published var schedulerServiceAcknowledged = false
     @Published var scheduler: [String: Any] = [:]
     @Published var quotaKnowledge: [String: Any] = [:]

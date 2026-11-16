@@ -3,10 +3,10 @@
 
 V1 consultative: the bridge admits every inbound request durably
 (chatgpt_quick.Endpoint) and the roundtrip closes only on a validated
-submit_result. Outbound delegation allows codex and claude-code backends;
-loopback (backend chatgpt) is refused both at the schema layer (backend enum
-filtered, aliases included) and at dispatch (reprise_backends payload filtered
-in list AND dict forms).
+submit_result. Outbound delegation also includes ChatGPT itself for a
+new, separately identified task. The bridge only admits ChatGPT work into
+a durable TaskStore; automatic Desktop delivery remains unverified.
+Never infer successful inference or a final result from admission.
 """
 import argparse
 import copy
@@ -36,21 +36,11 @@ def inbox_tools():
 
 def claude_mcp_outbound():
     from claude_mcp import outbound_tools
-    return outbound_tools(CHATGPT_REMOVED_BACKENDS)
+    return outbound_tools()
 
 
 def chatgpt_backends_payload(payload):
-    """Filter reprise_backends payload: remove chatgpt in list and dict forms."""
-    if isinstance(payload, dict):
-        backends = payload.get('backends')
-        if isinstance(backends, list):
-            payload = dict(payload, backends=[item for item in backends
-                                              if not (isinstance(item, dict) and item.get('id') == 'chatgpt')
-                                              and item != 'chatgpt'])
-        if isinstance(backends, dict):
-            payload = dict(payload, backends={key: value for key, value in backends.items()
-                                              if not (isinstance(value, dict) and value.get('id') == 'chatgpt')
-                                              and key != 'chatgpt' and value != 'chatgpt'})
+    """Compatibility helper: self-delegation is now visible in discovery."""
     return payload
 
 
@@ -58,12 +48,12 @@ class ChatGPTMCP:
     """Facade: inbox roundtrip on the bridge TaskStore, outbound via Bridge.
 
     Mirrors claude_mcp.ClaudeMCP.dispatch minus await_task/claim_next/
-    register_session (v1 policy) and with the ChatGPT loopback removed.
+    register_session (v1 policy). Self-delegation is a separate task.
     """
 
     def __init__(self, tasks, bridge, endpoint=None):
         self.tasks, self.bridge, self.endpoint = tasks, bridge, endpoint
-        self.tools_list = inbox_tools() + outbound_tools(CHATGPT_REMOVED_BACKENDS)
+        self.tools_list = inbox_tools() + outbound_tools()
         self.definitions = {item['name']: item for item in inbox_tools()}
 
     def dispatch(self, message):
@@ -75,7 +65,7 @@ class ChatGPTMCP:
                                    'source_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},
                     'instructions': ('Project-scoped bidirectional service for ChatGPT. Quick Apply admission '
                                      'is not dispatch proof. Persist request_key and claim_key. Only submit_result '
-                                     'completes incoming tasks. ChatGPT loopback is disabled.')}
+                                     'completes incoming tasks. Self-delegation requires a distinct request_key.')}
         if method == 'ping':
             return {}
         if method == 'tools/list':
@@ -110,14 +100,9 @@ class ChatGPTMCP:
             if name == 'get_result' and args.get('view', 'receipt') != 'full':
                 return bounded_content(result, message.get('id'))
             return tool_content(result)
-        if args.get('backend') == 'chatgpt':
-            raise ValueError('ChatGPT loopback is disabled')
-        result = self.bridge.dispatch(message)
-        if name == 'reprise_backends':
-            payload = json.loads(result['content'][0]['text'])
-            payload = chatgpt_backends_payload(payload)
-            return tool_content(payload)
-        return result
+        # Same backend is allowed for a new task identity; admission stays
+        # durable and no automatic recursive dispatch is performed.
+        return self.bridge.dispatch(message)
 
 
 class ChatGPTStdioHandler(StdioHandler):

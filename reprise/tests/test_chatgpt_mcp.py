@@ -32,23 +32,23 @@ class ChatgptMcpToolsTests(unittest.TestCase):
             for item in listed:
                 backend = item['inputSchema'].get('properties', {}).get('backend')
                 if backend and 'enum' in backend:
-                    self.assertNotIn('chatgpt', backend['enum'])
+                    self.assertIn('chatgpt', backend['enum'])
             info = facade.dispatch({'method': 'initialize'})
             self.assertIn('version', info['serverInfo'])
-            self.assertIn('loopback', info['instructions'])
+            self.assertIn('Self-delegation', info['instructions'])
             tasks.close()
 
-    def test_chatgpt_loopback_refused_before_bridge(self):
+    def test_explicit_chatgpt_self_delegation_reaches_bridge(self):
         with tempfile.TemporaryDirectory() as tmp:
             tasks = TaskStore(tmp, tmp)
             bridge = Mock()
+            bridge.dispatch.return_value = {'status': 'finished', 'admission_only': True}
             facade = ChatGPTMCP(tasks, bridge)
             call = {'method': 'tools/call', 'params': {'name': 'reprise_delegate',
-                                                       'arguments': {'backend': 'chatgpt', 'question': 'x'}}}
-            with self.assertRaises(ValueError) as caught:
-                facade.dispatch(call)
-            self.assertIn('ChatGPT loopback is disabled', str(caught.exception))
-            bridge.dispatch.assert_not_called()
+                   'arguments': {'backend': 'chatgpt', 'kind': 'expertise',
+                                 'question': 'x', 'request_key': 'self-chatgpt-221'}}}
+            self.assertEqual(facade.dispatch(call), {'status': 'finished', 'admission_only': True})
+            bridge.dispatch.assert_called_once_with(call)
             tasks.close()
 
     def test_outbound_delegates_to_bridge(self):
@@ -65,9 +65,9 @@ class ChatgptMcpToolsTests(unittest.TestCase):
 
     def test_backends_payload_filtered_list_and_dict(self):
         listed = {'backends': [{'id': 'codex'}, {'id': 'chatgpt'}, 'chatgpt']}
-        self.assertEqual(chatgpt_backends_payload(listed)['backends'], [{'id': 'codex'}])
+        self.assertEqual(chatgpt_backends_payload(listed), listed)
         mapped = {'backends': {'codex': {'id': 'codex'}, 'chatgpt': {'id': 'chatgpt'}}}
-        self.assertEqual(chatgpt_backends_payload(mapped)['backends'], {'codex': {'id': 'codex'}})
+        self.assertEqual(chatgpt_backends_payload(mapped), mapped)
         # No backends field: payload untouched.
         self.assertEqual(chatgpt_backends_payload({'status': 'ok'}), {'status': 'ok'})
 
@@ -79,7 +79,7 @@ class ChatgptMcpToolsTests(unittest.TestCase):
                                                          'backends': [{'id': 'codex'}, {'id': 'chatgpt'}]})
             facade = ChatGPTMCP(tasks, bridge)
             payload = call_tool(facade, 'reprise_backends', {})
-            self.assertEqual(payload['backends'], [{'id': 'codex'}])
+            self.assertEqual(payload['backends'], [{'id': 'codex'}, {'id': 'chatgpt'}])
             tasks.close()
 
     def test_unknown_inbox_tool_never_reaches_bridge(self):
@@ -201,6 +201,37 @@ class ChatgptMcpOutboundSchemaTests(unittest.TestCase):
             bridge = Bridge(tmp, {}, Path(tmp)/'state', daily_limit=2)
             self.addCleanup(bridge.close)
             self.assertIsNone(bridge.chatgpt_tasks)
+
+    def test_chatgpt_backend_discovered_even_if_unverified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / 'project'
+            project.mkdir()
+            bridge = Bridge(project, {}, Path(tmp) / 'expert')
+            try:
+                backend = next(row for row in bridge._call('reprise_backends', {})['backends']
+                               if row['id'] == 'chatgpt')
+                self.assertFalse(backend['configured'])
+                self.assertEqual(backend['availability'], 'unverified')
+                self.assertFalse(backend['transport_verified'])
+                self.assertEqual(backend['dispatch'], 'admission_only')
+            finally:
+                bridge.close()
+
+    def test_explicit_chatgpt_state_enables_admission_without_transport_proof(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / 'project'
+            project.mkdir()
+            path = Path(tmp) / 'chatgpt-state'
+            bridge = Bridge(project, {}, Path(tmp) / 'expert', chatgpt_socket=str(path))
+            try:
+                backend = next(row for row in bridge._call('reprise_backends', {})['backends']
+                               if row['id'] == 'chatgpt')
+                self.assertTrue(backend['configured'])
+                self.assertTrue(backend['task_return_supported'])
+                self.assertFalse(backend['transport_verified'])
+                self.assertEqual(backend['dispatch'], 'admission_only')
+            finally:
+                bridge.close()
 
     def test_custom_chatgpt_state_is_shared_by_review_bridge_and_endpoint(self):
         from chatgpt_quick import Endpoint, review

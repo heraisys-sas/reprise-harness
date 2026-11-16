@@ -769,7 +769,7 @@ def verify(file, _already_locked=False):
             sync_app_tree(Path(value['destination'])); harness._sync_directory(Path(value['destination']).parent)
         if receipt['plan'] != value:
             raise ValueError('Reçu modifié pendant vérification.')
-        results = {};ok = True;connector_updates = []
+        results = {};ok = True
         installed = Path(value['destination'])
         helpers = installed / 'Contents/Resources/helpers'
         if 'app' in value['components']:
@@ -783,30 +783,12 @@ def verify(file, _already_locked=False):
                 ok &= results[name]['ok']
             elif name == 'harness':
                 results[name] = [harness.verify(p['home'],p['profile'],root=helpers) for p in value['nested'][name]]
-                for index, observed in enumerate(results[name]):
-                    if observed['update_required']:
-                        connector_updates.append({
-                            'component': 'harness',
-                            'profile': value['nested'][name][index]['profile'],
-                            'missing_delegation_tools': observed.get('missing_delegation_tools', []),
-                            'reason': 'capability_or_release_outdated'})
                 ok &= all(not r['update_required'] for r in results[name])
             elif name == 'claude':
                 results[name] = claude.verify(helpers, value['home'])
                 configured = claude.metadata(claude.paths(value['home'])[2])
-                required = {'reprise_delegate', 'reprise_followup'}
-                advertised = set(results[name].get('bridge_tools', []))
-                results[name]['delegation'] = {
-                    'advertised': required.issubset(advertised),
-                    'missing_tools': sorted(required - advertised),
-                    'client_loaded': 'unknown'}
-                if not results[name]['delegation']['advertised']:
-                    connector_updates.append({'component': 'claude',
-                                              'missing_delegation_tools': sorted(required - advertised),
-                                              'reason': 'delegation_tools_missing'})
                 ok &= (configured['release_identity'] == value['bundle']['release_identity']
-                       and results[name].get('daemon', {}).get('binding') != 'mismatch'
-                       and results[name]['delegation']['advertised'])
+                       and results[name].get('daemon', {}).get('binding') != 'mismatch')
             elif name == 'scheduler':
                 results[name] = scheduler.inspect(helpers, value['home'])
                 results[name].pop('loaded_evidence', None)
@@ -816,12 +798,9 @@ def verify(file, _already_locked=False):
                             and (observed['last_tick'] or 0) >= receipt['started_at']
                             if expected['activate'] else not observed['loaded']))
         observed_logs = observe_logs(value)
-        ok &= not connector_updates
         ok &= all(r['bounded'] and not r.get('errors', 0) for r in observed_logs)
         receipt['verification'] = {'ok': bool(ok), 'checked_at': time.time(), 'results': results,
-                                   'connector_update_required': bool(connector_updates),
-                                    'connector_updates': connector_updates,
-                                    'logs': observed_logs, 'client_loaded': 'unknown'}
+                                   'logs': observed_logs, 'client_loaded': 'unknown'}
         if receipt['status'] != 'cleaned':
             receipt['status'] = 'verified' if ok else 'applied'
         save(folder, receipt)

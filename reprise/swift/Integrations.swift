@@ -889,17 +889,6 @@ struct Integrations: View {
                          status: app.integrationDelegate ? "Exposée" : "Désactivée",
                          ok: true) {
                 Toggle("Exposer les outils de délégation", isOn: $app.integrationDelegate)
-                if let verification = app.integrationVerification,
-                   verification["status"] as? String == "verified" {
-                    let capability = (verification["bridge_capabilities"] as? [String: Any])?["delegation"] as? [String: Any] ?? [:]
-                    let needsUpdate = verification["update_required"] as? Bool == true
-                    SettingsHint(
-                        text: needsUpdate ? "Mise à jour des connecteurs nécessaire" : "Pont de délégation configuré et sondé",
-                        detail: "Mode installé : " + (capability["mode"] as? String ?? "inconnu")
-                            + " · Outils manquants : " + ((verification["missing_delegation_tools"] as? [String] ?? []).joined(separator: ", "))
-                            + ". Le chargement par Harness reste non observé ; rechargez le profil après application.",
-                        detailLabel: "Contrôle de délégation")
-                }
                 SettingsHint(
                     text: "Par défaut, seuls l’observation et les reçus sont exposés. La délégation peut consommer du quota.",
                     detail: "Autoriser l’exposition n’exécute aucune inférence : c’est le client qui décide d’appeler. Configurer un outil ne vaut pas autorisation de l’utiliser.")
