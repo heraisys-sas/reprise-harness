@@ -1,0 +1,23 @@
+---
+# Playbook de déploiement/redéploiement de Reprise sur ce Mac (localhost).
+# Exemples :
+#   ansible-playbook deploy.yml --tags build
+#   ansible-playbook deploy.yml --tags services,integrations
+#   ansible-playbook deploy.yml --skip-tags build
+- name: Déployer Reprise
+  hosts: reprise
+  gather_facts: true
+  become: false
+  tags: always
+  vars:
+    reprise_release_runtime_python: >-
+      {{ reprise_support_dir | dirname }}/builds/*/Contents/Resources/runtime/bin/python3
+  roles:
+    - role: reprise_build
+      tags: [build]
+    - role: reprise_integrations
+      tags: [integrations]
+    - role: reprise_services
+      tags: [services]
+    - role: reprise_verify
+      tags: [verify]

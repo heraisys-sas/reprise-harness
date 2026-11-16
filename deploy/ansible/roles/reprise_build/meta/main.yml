@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  author: heraisys-sas
+  description: Construction du bundle Reprise (restart-chain)
+  license: proprietary
+  min_ansible_version: "2.14"
+dependencies: []

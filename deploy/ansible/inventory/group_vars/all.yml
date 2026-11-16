@@ -1,0 +1,20 @@
+# Source de vérité du déploiement Reprise sur ce Mac (localhost).
+reprise_source_dir: "{{ ansible_env.HOME }}/Projets/reprise-harness/source"
+reprise_support_dir: "{{ ansible_env.HOME }}/Library/Application Support/Reprise"
+reprise_state_dir: "{{ reprise_support_dir }}/state"
+reprise_quick_state_dir: "{{ reprise_support_dir }}/quick-state"
+reprise_chatgpt_state_dir: "{{ reprise_support_dir }}/chatgpt-state"
+reprise_project_root: "{{ ansible_env.HOME }}/Documents/deepseek-harness/default-workspace"
+reprise_harness_project: "{{ ansible_env.HOME }}/Projets/reprise-harness/workspaces/harness"
+reprise_runtime_archive: /private/tmp/reprise-python.tar.gz
+# Chaîne cible : SHA du release (vide = dernier build).
+reprise_release_sha: ""
+# Intégrations managées à (ré)appliquer.
+reprise_integrations:
+  - claude
+  - chatgpt
+  - harness
+reprise_harness_profile: desktop
+# Services à (re)lancer.
+reprise_restart_scheduler: true
+reprise_restart_quick_daemon: true
