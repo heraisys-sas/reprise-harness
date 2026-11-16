@@ -32,7 +32,10 @@ jobs:
       - name: Lint
         working-directory: deploy/ansible
         run: ansible-lint deploy.yml
-      - name: Vérifier la syntaxe des helpers Python
+      - name: Vérifier la syntaxe des modules Python
         run: |
-          python3 -m py_compile deploy/ansible/roles/reprise_integrations/files/apply_integrations.py
-          python3 -m py_compile deploy/ansible/roles/reprise_verify/files/verify_all.py
+          python3 -m py_compile deploy/ansible/library/reprise_bundle.py \
+            deploy/ansible/roles/reprise_integrations/library/reprise_integration.py \
+            deploy/ansible/roles/reprise_services/library/reprise_quick_daemon.py \
+            deploy/ansible/roles/reprise_verify/library/reprise_verify.py \
+            deploy/ansible/roles/reprise_verify/library/reprise_daemon_release.py

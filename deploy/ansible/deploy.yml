@@ -9,9 +9,6 @@
   gather_facts: true
   become: false
   tags: always
-  vars:
-    reprise_release_runtime_python: >-
-      {{ reprise_support_dir | dirname }}/builds/*/Contents/Resources/runtime/bin/python3
   roles:
     - role: reprise_build
       tags: [build]

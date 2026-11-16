@@ -1,72 +1,30 @@
 ---
 # Redémarrage des services Reprise. Les plist et configs sont managés :
-# le pointage release passe par plutil/PlistBuddy, jamais une réécriture complète.
+# le pointage release passe par PlistBuddy, jamais une réécriture complète
+# (aucun module standard ne fait du Set ciblé sans resérialiser le plist).
+- name: Localiser le bundle courant
+  reprise_bundle:
+    builds_dir: "{{ reprise_build_app_path }}"
+  register: bundle
+
 - name: Repointer le LaunchAgent scheduler vers le release courant
   ansible.builtin.command:
     cmd: >
       /usr/libexec/PlistBuddy
-      -c "Set :ProgramArguments:0 {{ reprise_release_runtime_python }}"
-      -c "Set :ProgramArguments:4 {{ reprise_release_helpers }}/reprise"
+      -c "Set :ProgramArguments:0 {{ bundle.runtime_python }}"
+      -c "Set :ProgramArguments:4 {{ bundle.helpers }}/reprise"
       "{{ ansible_env.HOME }}/Library/LaunchAgents/local.agent-resume.plist"
   when: reprise_release_sha | length > 0
   changed_when: true
   notify: Recycler le LaunchAgent scheduler
   tags: [services]
 
-- name: Arrêter le daemon Quick Apply existant
-  ansible.builtin.shell: |
-    set -o pipefail; pids=$(pgrep -f claude_desktop_quick || true)
-    [ -n "$pids" ] && kill -TERM $pids && sleep 2
-    exit 0
-  when: reprise_restart_quick_daemon
-  changed_when: true
-  tags: [services]
-
-- name: Vérifier la vivacité du socket avant retrait
-  ansible.builtin.shell: |
-    python3 - <<'PY'
-    import socket
-    try:
-        s = socket.socket(socket.AF_UNIX)
-        s.connect("{{ ansible_env.HOME }}/.claude-desktop/quick-entry.sock")
-        s.close()
-        print("LIVE")
-    except (ConnectionRefusedError, FileNotFoundError):
-        print("DEAD")
-    PY
-  register: socket_check
-  changed_when: false
-  when: reprise_restart_quick_daemon
-  tags: [services]
-
-- name: "Retirer le socket orphelin (cas 105, connect refusé)"
-  ansible.builtin.file:
-    path: "{{ ansible_env.HOME }}/.claude-desktop/quick-entry.sock"
-    state: absent
-  when:
-    - reprise_restart_quick_daemon
-    - socket_check.stdout == 'DEAD'
-  tags: [services]
-
-- name: Démarrer le daemon Quick Apply sur le release courant
-  ansible.builtin.command:
-    cmd: >
-      {{ reprise_release_runtime_python }} -E -s -B
-      {{ reprise_release_helpers }}/claude_desktop_quick.py
-      --project-root {{ reprise_project_root | quote }}
-    chdir: "{{ reprise_state_dir }}"
-  environment:
-    AGENT_RESUME_STATE: "{{ reprise_state_dir }}"
-  async: 5
-  poll: 0
-  when: reprise_restart_quick_daemon
-  changed_when: true
-  tags: [services]
-
-- name: Attendre que le socket Quick Apply réponde
-  ansible.builtin.wait_for:
-    path: "{{ ansible_env.HOME }}/.claude-desktop/quick-entry.sock"
-    state: present
-    timeout: 30
+- name: Recycler le daemon Quick Apply (arrêt, socket orphelin, relance, attente)
+  reprise_quick_daemon:
+    state: "{{ 'restarted' if reprise_restart_quick_daemon else 'started' }}"
+    runtime_python: "{{ bundle.runtime_python }}"
+    helpers: "{{ bundle.helpers }}"
+    project_root: "{{ reprise_project_root }}"
+    state_dir: "{{ reprise_state_dir }}"
   when: reprise_restart_quick_daemon
   tags: [services]
