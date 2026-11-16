@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Installer Ansible et ansible-lint
-        run: python3 -m pip install --quiet ansible ansible-lint
+        run: python3 -m pip install --quiet --break-system-packages ansible ansible-lint
       - name: Vérifier la syntaxe du playbook
         working-directory: deploy/ansible
         run: ansible-playbook deploy.yml --syntax-check
