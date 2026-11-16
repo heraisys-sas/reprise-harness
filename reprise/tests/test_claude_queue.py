@@ -120,6 +120,63 @@ class QueueAdmissionTests(unittest.TestCase):
         finally:
             store.close()
 
+    def test_legacy_max_snapshot_deadline_covers_all_prior_events(self):
+        self.seeded(auto_enabled=True, claude_queue_channel=True,
+                    claude_queue_admitted_for='5000.0')
+        self.seed_event('early', 'chat-early', 4400)
+        self.seed_event('same', 'chat-same', 5000)
+        self.seed_event('later', 'chat-later', 5400)
+        result = self.run_admission(now=6000, snapshot={'resets_at': 5400})
+        self.assertEqual(result['status'], 'admitted')
+        self.assertEqual(result['legacy_uncertain_events'], ['early', 'same'])
+        self.assertEqual(result['request_keys'], ['claude-continuation-later'])
+        again = self.run_admission(now=6000, snapshot={'resets_at': 5400})
+        self.assertEqual(again['status'], 'legacy_uncertain')
+        self.assertEqual(again['event_keys'], ['early', 'same'])
+
+    def test_legacy_task_without_scheduler_marker_blocks_previous_sessions(self):
+        self.seeded(auto_enabled=True, claude_queue_channel=True)
+        store = TaskStore(self.quick_state, self.project)
+        try:
+            # Crash after the older TaskStore.admit, before its scheduler.put.
+            old_prompt = ('Continuation après quota (file opt-in #122) : '
+                          'la pause 5h du chat Desktop est levée (échéance 5000).')
+            store.admit('claude-continuation-5000', old_prompt)
+        finally:
+            store.close()
+        self.seed_event('earlier', 'chat-earlier', 4900)
+        self.seed_event('fractional', 'chat-fractional', 5000.75)
+        self.seed_event('new', 'chat-new', 5100)
+        result = self.run_admission(now=6000, snapshot={'resets_at': 5100})
+        self.assertEqual(result['legacy_uncertain_events'], ['earlier', 'fractional'])
+        self.assertEqual(result['request_keys'], ['claude-continuation-new'])
+        store = TaskStore(self.quick_state, self.project)
+        try:
+            tasks = {t['request_key'] for t in store.list_tasks()['tasks']}
+            self.assertEqual(tasks, {'claude-continuation-5000', 'claude-continuation-new'})
+        finally:
+            store.close()
+
+    def test_nonlegacy_timestamp_key_does_not_block_new_events(self):
+        self.seeded(auto_enabled=True, claude_queue_channel=True)
+        store = TaskStore(self.quick_state, self.project)
+        try:
+            store.admit('claude-continuation-7000', 'an unrelated prompt')
+        finally:
+            store.close()
+        self.seed_event('legitimate', 'chat', 6500)
+        result = self.run_admission(now=7000, snapshot={'resets_at': 6500})
+        self.assertEqual(result['request_keys'], ['claude-continuation-legitimate'])
+        self.assertEqual(result['legacy_uncertain_events'], [])
+
+    def test_unparseable_old_marker_requires_operator_reconciliation(self):
+        self.seeded(auto_enabled=True, claude_queue_channel=True,
+                    claude_queue_admitted_for='invalid-legacy-date')
+        self.seed_event('event', 'chat', 5000)
+        result = self.run_admission(now=5000, snapshot={'resets_at': 5000})
+        self.assertEqual(result['status'], 'legacy_uncertain')
+        self.assertEqual(result['event_keys'], ['event'])
+
     def test_durable_due_event_does_not_require_observer_availability(self):
         self.seeded(auto_enabled=True, claude_queue_channel=True)
         self.seed_event('ev-observer-down', 'chat-observer-down', 5000)

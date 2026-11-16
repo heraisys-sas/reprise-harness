@@ -248,3 +248,29 @@ L'acquittement du résultat projeté est explicite via `get_result` Desktop.
 Les prochaines intégrations Harness exposant cet outil utilisent un timeout
 transport de 630 s. Une installation existante exige plan/apply et rechargement
 explicites ; ce changement ne prouve pas que le client réel tient un appel de 600 s.
+
+## Réadmission et acquittement ChatGPT — issue #210
+
+Le `request_key` admis dans `chatgpt_quick.Endpoint` lie de façon immuable
+**la consigne intégrale** (instruction de pont + question). La réutilisation
+d'une clé avec une question différente retourne `Request identity conflict`,
+sans mutation du ledger ni nouvel envoi. Une réadmission à question identique
+est un reçu de consultation, **jamais** une instruction de redélivrer le prompt.
+Les opérations de ledger vérifient également que la même identité existe dans
+le `TaskStore` ; une divergence entre les deux bases demande réconciliation.
+
+La création de la ligne `chatgpt_submissions` inscrit directement
+`delivery=attempted` avec sa preuve d'admission locale en **une transaction
+SQLite**. `attempted` ne signifie pas que l'application a effectivement reçu
+la tâche. Les historiques `delivery=admitted` d'une ancienne écriture scindée
+peuvent être portés à `attempted` lors du rejeu identique, sans inférence ;
+si `TaskStore.submit_result` a déjà committé une réponse dont tentative et
+empreinte SHA-256 sont vérifiées, la projection vers `acknowledged` est
+permise directement depuis `admitted` ou `attempted`. Un résultat absent ou
+une tentative différente ne sont pas réparés automatiquement.
+
+Le chemin `chatgpt_socket` utilisé par le pont est, dans ce contrat,
+un **répertoire d'état local**, non un socket réseau. Il est aussi la source
+du `TaskStore` ChatGPT du pont et de l'`Endpoint` de réadmission,
+notamment lors de l'inspection d'une installation isolée. Aucune bascule
+sur un état implicite ou une API facturée n'est permise.

@@ -59,6 +59,82 @@ class ChatgptQuickTests(unittest.TestCase):
         again = self.endpoint.submit({'question': 'Question', 'request_key': key})
         self.assertFalse(again['resent'])
 
+    def test_replay_rejects_changed_question_without_mutating_receipt(self):
+        key = str(uuid.uuid4())
+        self.endpoint.submit({'question': 'Original', 'request_key': key})
+        before = self.endpoint.db.execute(
+            'SELECT prompt,delivery,dispatch_receipt FROM chatgpt_submissions '
+            'WHERE request_key=?', (key,)).fetchone()
+        with self.assertRaisesRegex(ValueError, 'Request identity conflict'):
+            self.endpoint.submit({'question': 'Different', 'request_key': key})
+        self.assertEqual(self.endpoint.db.execute(
+            'SELECT prompt,delivery,dispatch_receipt FROM chatgpt_submissions '
+            'WHERE request_key=?', (key,)).fetchone(), before)
+        self.assertEqual(self.endpoint.tasks._row(key)[0], before[0])
+
+    def test_legacy_admitted_replay_repairs_only_projection(self):
+        key = str(uuid.uuid4())
+        self.endpoint.submit({'question': 'Crash', 'request_key': key})
+        # Reproduce an older binary stopped between its ledger INSERT and UPDATE.
+        with self.endpoint.db:
+            self.endpoint.db.execute('''UPDATE chatgpt_submissions
+                SET delivery='admitted',dispatch_receipt=NULL WHERE request_key=?''', (key,))
+        attempt_before = self.endpoint.tasks._row(key)[3]
+        replay = self.endpoint.submit({'question': 'Crash', 'request_key': key})
+        self.assertEqual(replay['delivery'], 'attempted')
+        self.assertFalse(replay['resent'])
+        self.assertEqual(self.endpoint.tasks._row(key)[3], attempt_before)
+        row = self.endpoint.db.execute(
+            'SELECT delivery,dispatch_receipt FROM chatgpt_submissions WHERE request_key=?',
+            (key,)).fetchone()
+        self.assertEqual(row[0], 'attempted')
+        self.assertEqual(__import__('json').loads(row[1])['stage'], 'admitted')
+
+    def test_legacy_admitted_replay_rejects_missing_taskstore(self):
+        key = str(uuid.uuid4())
+        self.endpoint.submit({'question': 'Crash', 'request_key': key})
+        with self.endpoint.db:
+            self.endpoint.db.execute(
+                "UPDATE chatgpt_submissions SET delivery='admitted' WHERE request_key=?", (key,))
+        with self.endpoint.tasks.db:
+            self.endpoint.tasks.db.execute(
+                'DELETE FROM desktop_tasks WHERE scope=? AND request_key=?',
+                (self.endpoint.tasks.scope, key))
+        with self.assertRaisesRegex(ValueError, 'Admission ledger conflicts'):
+            self.endpoint.submit({'question': 'Crash', 'request_key': key})
+        self.assertEqual(self.endpoint.db.execute(
+            'SELECT delivery FROM chatgpt_submissions WHERE request_key=?',
+            (key,)).fetchone(), ('admitted',))
+
+    def test_concurrent_same_key_different_questions_cannot_both_succeed(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+        key = str(uuid.uuid4())
+        gate = threading.Barrier(2)
+
+        def submit(question):
+            endpoint = Endpoint(self.state, self.project)
+            try:
+                gate.wait(timeout=10)
+                try:
+                    return ('ok', question, endpoint.submit(
+                        {'question': question, 'request_key': key})['delivery'])
+                except ValueError as error:
+                    return ('conflict', question, str(error))
+            finally:
+                endpoint.close()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            result = list(executor.map(submit, ('first question', 'second question')))
+        self.assertEqual(sorted(item[0] for item in result), ['conflict', 'ok'])
+        self.assertIn('Request identity conflict', next(
+            item[2] for item in result if item[0] == 'conflict'))
+        winning_question = next(item[1] for item in result if item[0] == 'ok')
+        self.assertTrue(self.endpoint.tasks._row(key)[0].endswith(winning_question))
+        self.assertEqual(self.endpoint.db.execute(
+            'SELECT COUNT(*) FROM chatgpt_submissions WHERE request_key=?',
+            (key,)).fetchone()[0], 1)
+
     def test_file_evidence_changed_marks_needs_review(self):
         key = str(uuid.uuid4())
         before = file_evidence(self.project, ['note.py'])
@@ -103,6 +179,15 @@ class ChatgptCrashSafetyTests(unittest.TestCase):
             'SELECT 1 FROM chatgpt_submissions WHERE request_key=?', (key,)).fetchone()
         self.assertIsNone(row)
         self.assertFalse(self.endpoint.tasks.observe_result(key))
+
+    def test_nonserializable_before_evidence_cannot_leave_a_ghost_task(self):
+        key = str(uuid.uuid4())
+        with self.assertRaises(TypeError):
+            self.endpoint.submit({'question': 'Analyse', 'request_key': key,
+                                  'before_evidence': {'cannot-json-encode'}})
+        self.assertIsNone(self.endpoint.db.execute(
+            'SELECT 1 FROM chatgpt_submissions WHERE request_key=?', (key,)).fetchone())
+        self.assertIsNone(self.endpoint.tasks._row(key))
 
     def test_admission_rolls_forward_when_first_write_interrupted(self):
         # Crash between tasks.admit and the ledger INSERT: the SAME question
@@ -156,6 +241,22 @@ class ChatgptCrashSafetyTests(unittest.TestCase):
         self.assertEqual(self.endpoint.db.execute(
             'SELECT delivery FROM chatgpt_submissions WHERE request_key=?',
             (key,)).fetchone()[0], 'attempted')
+
+    def test_mark_acknowledged_reconciles_preexisting_admitted_row(self):
+        key = str(uuid.uuid4())
+        self.endpoint.submit({'question': 'Crash before attempted', 'request_key': key})
+        receipt = self.endpoint.tasks.claim(key, 'stable-' + str(uuid.uuid4()))
+        submitted = self.endpoint.tasks.submit(key, receipt['attempt_id'], 'done')
+        with self.endpoint.db:
+            self.endpoint.db.execute('''UPDATE chatgpt_submissions
+                SET delivery='admitted',dispatch_receipt=NULL WHERE request_key=?''', (key,))
+        result = self.endpoint.mark_acknowledged(key, receipt['attempt_id'], submitted['sha256'])
+        self.assertTrue(result['changed'])
+        self.assertEqual(self.endpoint.db.execute(
+            'SELECT delivery FROM chatgpt_submissions WHERE request_key=?',
+            (key,)).fetchone(), ('acknowledged',))
+        again = self.endpoint.mark_acknowledged(key, receipt['attempt_id'], submitted['sha256'])
+        self.assertFalse(again['changed'])
 
     def test_mark_acknowledged_rejects_bad_inputs_and_states(self):
         key = str(uuid.uuid4())

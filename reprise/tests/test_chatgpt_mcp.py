@@ -202,6 +202,43 @@ class ChatgptMcpOutboundSchemaTests(unittest.TestCase):
             self.addCleanup(bridge.close)
             self.assertIsNone(bridge.chatgpt_tasks)
 
+    def test_custom_chatgpt_state_is_shared_by_review_bridge_and_endpoint(self):
+        from chatgpt_quick import Endpoint, review
+        from unittest.mock import patch
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / 'project'
+            project.mkdir()
+            isolated = Path(tmp) / 'custom-chatgpt-state'
+            default = Path(tmp) / 'default-state'
+            with patch.dict(os.environ, {'AGENT_RESUME_STATE': str(default)}):
+                admission = review(project, 'Examen', socket=str(isolated),
+                                   request_key='custom-state-key')
+                self.assertEqual(admission['delivery'], 'attempted')
+                bridge = Bridge(str(project), {}, Path(tmp) / 'expert',
+                                daily_limit=2, chatgpt_socket=str(isolated))
+                try:
+                    self.assertEqual(bridge.chatgpt_state, isolated.resolve())
+                    self.assertEqual(bridge.chatgpt_tasks._row('custom-state-key')[0].splitlines()[-1],
+                                     'Examen')
+                    endpoint = Endpoint(isolated, project)
+                    try:
+                        facade = ChatGPTMCP(endpoint.tasks, bridge, endpoint=endpoint)
+                        claim = call_tool(facade, 'get_task',
+                                          {'request_key': 'custom-state-key',
+                                           'claim_key': 'custom-state-claim'})
+                        call_tool(facade, 'submit_result',
+                                  {'request_key': 'custom-state-key',
+                                   'attempt_id': claim['attempt_id'], 'answer': 'ok'})
+                        self.assertEqual(endpoint.db.execute(
+                            'SELECT delivery FROM chatgpt_submissions WHERE request_key=?',
+                            ('custom-state-key',)).fetchone(), ('acknowledged',))
+                    finally:
+                        endpoint.close()
+                finally:
+                    bridge.close()
+                self.assertFalse((default / 'chatgpt-state' / 'quick.sqlite').exists())
+
     def test_main_wiring_opens_endpoint_and_bridge_chatgpt_tasks(self):
         # Mirrors chatgpt_mcp.main(): Endpoint owns the ledger + roundtrip
         # TaskStore, the Bridge receives the state dir as absolute socket path.
