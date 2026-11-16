@@ -238,6 +238,35 @@ class ManagedUpdateTests(unittest.TestCase):
         self.assertEqual(selected['project'],str(self.base))
         self.assertEqual(selected['state'],str(self.state))
 
+    def test_verify_propagates_harness_delegation_gap_without_auto_enable(self):
+        profile = self.home / '.dsh/profiles/desktop'
+        profile.mkdir(parents=True)
+        (profile / 'cordis.patch.yml').write_text('[]\n')
+        (self.state / 'tasks.sqlite').touch()
+        helpers = self.source / 'Contents/Resources/helpers'
+        with update.settings(self.state):
+            initial = integration.plan(helpers, self.home / '.dsh', 'desktop',
+                                       self.base, delegate=False)
+            integration.apply(helpers, initial)
+        value = self.plan(components=('harness',), profiles=('desktop',))
+        self.assertFalse(value['nested']['harness'][0]['delegate'])
+        update.apply(value)
+        observed = {'status': 'verified', 'update_required': True,
+                    'missing_delegation_tools': list(integration.DELEGATE),
+                    'bridge_capabilities': {'delegation': {
+                        'configured': False, 'advertised': False}}}
+        with patch.object(update.harness, 'verify', return_value=observed):
+            receipt = update.verify(self.receipt(value))
+        self.assertFalse(receipt['ok'])
+        self.assertTrue(receipt['connector_update_required'])
+        self.assertEqual(receipt['connector_updates'][0]['component'], 'harness')
+        self.assertEqual(receipt['connector_updates'][0]['profile'], 'desktop')
+        self.assertEqual(set(receipt['connector_updates'][0]['missing_delegation_tools']),
+                         set(integration.DELEGATE))
+        with self.assertRaises(ValueError):
+            update.cleanup(self.receipt(value))
+        self.assertFalse(value['nested']['harness'][0]['delegate'])
+
     def test_default_state_does_not_turn_quick_state_into_a_child(self):
         from app_paths import state_location
         with patch.object(Path,'home',return_value=self.home), \
