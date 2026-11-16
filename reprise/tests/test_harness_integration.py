@@ -901,10 +901,27 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertTrue(all(result['bridge_capabilities']['result_transport'].values()))
         self.assertEqual(result['levels']['integration_loaded'], 'unknown')
         self.assertEqual(result['bridge_capabilities']['client_loaded'], 'unknown')
+        self.assertEqual(result['bridge_capabilities']['delegation']['mode'], 'delegate')
+        self.assertTrue(result['bridge_capabilities']['delegation']['configured'])
+        self.assertTrue(result['bridge_capabilities']['delegation']['advertised'])
+        self.assertEqual(result['missing_delegation_tools'], [])
         requests = [json.loads(line) for line in run.call_args.kwargs['input'].splitlines()]
         self.assertEqual([item['method'] for item in requests],
                          ['initialize', 'notifications/initialized', 'tools/list'])
         self.assertEqual(self.snapshot(self.state), before)
+
+    def test_verify_flags_observe_only_bridge_even_with_current_release(self):
+        probe = self.bridge_probe(delegate=False)
+        with patch.object(integration.subprocess, 'run', return_value=probe):
+            result = integration.verify(self.home, 'desktop', self.root)
+        self.assertEqual(result['status'], 'verified')
+        self.assertEqual(result['selected_release']['status'], 'current')
+        self.assertTrue(result['update_required'])
+        self.assertEqual(result['bridge_capabilities']['delegation']['mode'], 'observe_only')
+        self.assertFalse(result['bridge_capabilities']['delegation']['configured'])
+        self.assertFalse(result['bridge_capabilities']['delegation']['advertised'])
+        self.assertEqual(set(result['missing_delegation_tools']), set(integration.DELEGATE))
+        self.assertEqual(result['levels']['client_tools_discovered'], 'unknown')
 
     def test_verify_detects_legacy_tools_even_with_matching_release_identity(self):
         probe = self.bridge_probe(delegate=True, legacy=True)
@@ -932,7 +949,8 @@ class HarnessIntegrationTests(unittest.TestCase):
                 patch.object(integration, 'bundle_info', side_effect=FileNotFoundError('fixture')):
             result = integration.verify(self.home, 'desktop', self.root)
         self.assertEqual(result['selected_release']['status'], 'unknown')
-        self.assertFalse(result['update_required'])
+        self.assertTrue(result['update_required'])
+        self.assertEqual(set(result['missing_delegation_tools']), set(integration.DELEGATE))
         self.assertEqual(result['levels']['integration_loaded'], 'unknown')
 
     @unittest.skipUnless(os.environ.get('REPRISE_TEST_RUNTIME_ARCHIVE'), 'Pinned local runtime archive required')

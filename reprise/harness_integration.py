@@ -1650,13 +1650,29 @@ def verify(home, profile, root=None, project=None):
     capabilities = bridge_capabilities(tools)
     transport = capabilities['result_transport']
     missing = [name for name, available in transport.items() if available is False]
-    update_required = selected_release['status'] == 'outdated' or bool(missing)
+    configured = set(old['tools'])
+    observed = set(names)
+    missing_configured = [tool for tool in DELEGATE if tool not in configured]
+    missing_observed = [tool for tool in DELEGATE if tool not in observed]
+    capabilities['delegation'] = {
+        'configured': not missing_configured,
+        'advertised': not missing_observed,
+        'mode': 'delegate' if not missing_configured and not missing_observed else 'observe_only',
+        'configured_tools': sorted(configured.intersection(DELEGATE)),
+        'advertised_tools': sorted(observed.intersection(DELEGATE)),
+        'missing_configured_tools': missing_configured,
+        'missing_advertised_tools': missing_observed,
+        'client_loaded': 'unknown',
+    }
+    update_required = (selected_release['status'] == 'outdated' or bool(missing)
+                       or bool(missing_configured) or bool(missing_observed))
     message = 'Bloc géré et consignes vérifiés ; pont sondé directement sans inférence. Chargement par Harness non observé.'
     if update_required:
         message += ' Mise à jour de l’intégration requise ; rechargement du client à coordonner séparément.'
     result = {'status': 'verified', 'message': message,
             'selected_release': selected_release, 'update_required': update_required,
             'bridge_capabilities': capabilities, 'missing_result_capabilities': missing,
+            'missing_delegation_tools': sorted(set(missing_configured + missing_observed)),
             'output_resume': {'configured': old.get('output_resume', False), 'client_loaded': 'unknown'},
             'asi1_effort': {'configured': old.get('asi1_effort', False), 'client_loaded': 'unknown'},
             'levels': {'configuration_written': True, 'integration_loaded': 'unknown', 'client_tools_discovered': 'unknown', 'exchange_confirmed': 'unknown'},
