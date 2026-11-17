@@ -79,6 +79,28 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var integrationProfiles: [String] = []
     @Published var appClones: [[String: Any]] = []
     @Published var appClonesMessage = ""
+    @Published var relaunchNote = ""
+    @Published var relaunchBusy = false
+
+    func relaunchApp() {
+        guard let executable = Bundle.main.executablePath else {
+            relaunchNote = "Chemin de l’exécutable introuvable — relancez Reprise manuellement."
+            return
+        }
+        relaunchBusy = true
+        relaunchNote = ""
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = CommandLine.arguments.filter { $0 != executable }
+        do {
+            try process.run()
+            relaunchNote = "Nouvelle instance lancée — fermeture de l’interface actuelle."
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { NSApp.terminate(nil) }
+        } catch {
+            relaunchBusy = false
+            relaunchNote = "Relance impossible : " + (error as NSError).localizedDescription
+        }
+    }
     @Published var integrationPlan: [String: Any]? = nil
     var integrationPlanGeneration: UInt64 = 0
     var integrationPlanContext: [String]? = nil

@@ -1059,19 +1059,36 @@ struct Dashboard: View {
             }
         }
     }
-    var healthReviewItems: [String] {
+    var healthActions: [(text: String, page: String?, tab: String?)] {
         let features = app.health["quick_entry_features"] as? [String: Any] ?? [:]
         let claude = (features["anomalies"] as? [String: Any])?["anomalies"] as? [[String: Any]] ?? []
         let codex = app.health["codex_anomalies"] as? [[String: Any]] ?? []
-        var items = app.health["actions_for_human"] as? [String] ?? []
-        for (source, anomalies) in [("Claude Desktop", claude), ("Codex", codex)] {
+        var items: [(text: String, page: String?, tab: String?)] = []
+        for action in app.health["actions_for_human"] as? [String] ?? [] {
+            let nav = healthNavigation(action)
+            items.append((action, nav.page, nav.tab))
+        }
+        for (source, anomalies, page, tab) in [("Claude Desktop", claude, "connections", "quickapply"),
+                                               ("Codex", codex, "connections", "codex")] {
             for anomaly in anomalies {
                 let component = anomaly["component"] as? String ?? "Composant"
                 let detail = anomaly["detail"] as? String ?? "Anomalie à examiner"
-                items.append(source + " — " + component + " : " + detail)
+                items.append((source + " — " + component + " : " + detail, page, tab))
             }
         }
         return items
+    }
+
+    func healthNavigation(_ text: String) -> (page: String?, tab: String?) {
+        let lowered = text.lowercased()
+        if lowered.contains("harness") { return ("integrations", nil) }
+        if lowered.contains("claude") { return ("connections", "quickapply") }
+        if lowered.contains("codex") { return ("connections", "codex") }
+        return (nil, nil)
+    }
+
+    var healthReviewItems: [String] {
+        healthActions.map { $0.text }
     }
     var health: some View {
         let versions = app.health["versions"] as? [String: Any] ?? [:]
@@ -1103,29 +1120,44 @@ struct Dashboard: View {
                     ? "Aucune action nécessaire après la dernière mise à jour."
                     : app.healthCheckedAt.map { "Dernier contrôle réussi : " + localDateTime($0) + "." } ?? "Aucun contrôle vérifié pour l’instant.")
             SettingsCard(title: "Relancer Reprise",
-                         status: app.chainSupported ? "Disponible" : "Indisponible",
-                         ok: app.chainSupported) {
+                         status: "Disponible",
+                         ok: true) {
                 HStack(spacing: 10) {
-                    Button("Relancer Reprise") { app.restartChain() }.disabled(app.chainBusy || !app.chainSupported)
+                    Button("Relancer Reprise") { app.relaunchApp() }.disabled(app.relaunchBusy)
+                    if app.chainSupported {
+                        Button("Relance par script (dev)") { app.restartChain() }.disabled(app.chainBusy)
+                    }
                     Spacer()
-                    if app.chainBusy { InlineStatus(busy: true, message: app.chainNote) }
+                    if app.relaunchBusy || app.chainBusy {
+                        InlineStatus(busy: true, message: app.relaunchNote.isEmpty ? app.chainNote : app.relaunchNote)
+                    }
                 }
-                if !app.chainNote.isEmpty { InlineStatus(busy: false, message: app.chainNote) }
+                if !app.relaunchNote.isEmpty { InlineStatus(busy: false, message: app.relaunchNote) }
+                if app.chainSupported && !app.chainNote.isEmpty { InlineStatus(busy: false, message: app.chainNote) }
                 SettingsHint(
-                    text: "Les applications liées et codexd ne sont pas arrêtés de force.",
-                    detail: app.chainSupported
-                        ? "La commande lance le script de relance. Celui-ci peut exiger une archive runtime ; il ne redémarre jamais codexd. Consultez le résultat affiché pour confirmer l’opération."
-                        : "La relance par script est indisponible dans cette distribution (runtime embarqué ou script absent).")
+                    text: "L’interface redémarre ; les applications liées, codexd et le scheduler ne sont pas arrêtés.",
+                    detail: "La relance recrée le processus de l’app depuis son bundle — disponible dans toutes les distributions. La relance par script reste réservée aux lancements de développement (archive runtime).")
             }
             SettingsCard(title: "Éléments à examiner",
                          status: verified ? (actionCount == 0 ? "Rien à faire" : "\(actionCount) point(s)") : "Non vérifié",
                          ok: verified && actionCount == 0) {
+                let actions = healthActions
                 if actions.isEmpty {
                     Text(verified ? "Rien à examiner pour l’instant." : "Aucune conclusion possible sans contrôle vérifié.")
                         .font(.callout).foregroundStyle(.secondary)
                 } else {
                     ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
-                        Label(action, systemImage: "hand.point.right").font(.callout)
+                        HStack(spacing: 8) {
+                            Label(action.text, systemImage: "hand.point.right").font(.callout)
+                            Spacer()
+                            if let page = action.page {
+                                Button("Ouvrir") {
+                                    if let tab = action.tab { app.connectionTab = tab }
+                                    app.page = page
+                                }
+                                .controlSize(.small)
+                            }
+                        }
                     }
                 }
                 if !relaunch.isEmpty || !stale.isEmpty {
@@ -1183,8 +1215,13 @@ struct Dashboard: View {
                 if !anomalies.isEmpty {
                     Divider()
                     ForEach(Array(anomalies.enumerated()), id: \.offset) { _, a in
-                        Label((a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
-                            .font(.callout).foregroundStyle(.orange)
+                        HStack(spacing: 8) {
+                            Label((a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
+                                .font(.callout).foregroundStyle(.orange)
+                            Spacer()
+                            Button("Ouvrir") { app.connectionTab = "quickapply"; app.page = "connections" }
+                                .controlSize(.small)
+                        }
                     }
                 }
                 SettingsHint(
@@ -1205,8 +1242,13 @@ struct Dashboard: View {
                 if !codexAnomalies.isEmpty {
                     Divider()
                     ForEach(Array(codexAnomalies.enumerated()), id: \.offset) { _, a in
-                        Label((a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
-                            .font(.callout).foregroundStyle(.orange)
+                        HStack(spacing: 8) {
+                            Label((a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
+                                .font(.callout).foregroundStyle(.orange)
+                            Spacer()
+                            Button("Ouvrir") { app.connectionTab = "codex"; app.page = "connections" }
+                                .controlSize(.small)
+                        }
                     }
                 }
             }
