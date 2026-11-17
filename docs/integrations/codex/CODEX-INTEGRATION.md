@@ -142,15 +142,18 @@ harness_integration harness-integration-apply
 ChatGPT desktop n'a jamais complété la boucle). Le canal actuel est le dispatch
 CDP pipe décrit en § Issue #218 ci-dessous (`chatgpt_desktop_pipe.py` :
 holder persistant, profil dédié, receipts durables), avec dispatch par
-`chatgpt_quick.review` et retour par le TaskStore `chatgpt-state`.
+`chatgpt_quick.review` (admission) puis push holder ; retour principal =
+capture de réponse par le holder dans le receipt durable, TaskStore
+`chatgpt-state` en complément d'attribution.
 
 ### Issue #218 — émission ChatGPT Desktop sur CDP pipe (non validée sur Mac)
 
 Le helper Python `chatgpt_desktop_pipe.py` accepte `inspect`, `probe` et désormais
 `send` : l'aller seul vers un renderer `app://-/index.html` possédé par
-une instance à profil dédié. Le retour métier et sa preuve restent dans
-l'INBOX Reprise : `get_task` puis `submit_result` accepté. Un tour visible
-dans Desktop ne prouve jamais `response_complete`.
+une instance à profil dédié. Le retour métier = capture de réponse par le
+holder dans le receipt durable (Network/SSE prioritaire, repli AXTree) ;
+ChatGPT Desktop n'a aucun outil MCP Reprise. Un tour visible dans Desktop
+ne prouve jamais `response_complete` — c'est le receipt qui le porte.
 
 ```sh
 python3 -B reprise/chatgpt_desktop_pipe.py send --profile dedicated \\
