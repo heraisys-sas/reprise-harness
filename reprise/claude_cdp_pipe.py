@@ -153,6 +153,17 @@ class PipeTransport:
             cmd["sessionId"] = self._session_id
         self._send(cmd)
         resp = self._receive()
+        # Electron renderers reload their page shortly after launch, which
+        # destroys the attached session. A dead sessionId poisons every later
+        # command, including browser-level ones like Target.getTargets, so
+        # drop the session and retry once without it: the caller then
+        # re-selects and re-attaches a fresh target.
+        if (self._session_id is not None and "error" in resp
+                and "Session with given id not found" in str(resp["error"].get("message", ""))):
+            self._session_id = None
+            cmd.pop("sessionId", None)
+            self._send(cmd)
+            resp = self._receive()
         if resp.get("id") != msg_id:
             raise RuntimeError(f"Unexpected response id: expected {msg_id}, got {resp.get('id')}")
         if "error" in resp:

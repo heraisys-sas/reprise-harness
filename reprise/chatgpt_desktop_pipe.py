@@ -22,6 +22,13 @@ import sys
 import threading
 import time
 
+# This module doubles as a detached holder entrypoint (`python3 <script>
+# serve`); the bare import below only resolves when the module directory is
+# importable, which is not the case for a spawned child. Fix sys.path first.
+_HERE = str(Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
 from claude_cdp_pipe import launch_cdp_process, terminate_chrome
 
 DEFAULT_BINARY = Path('/Applications/ChatGPT.app/Contents/MacOS/ChatGPT')
@@ -221,7 +228,7 @@ function composerStatus(expected) {
   if (buttons.length !== 1) return {status: 'selectors_stale', send_button_count: buttons.length};
   const editor = found[0];
   const text = editor.tagName === 'TEXTAREA' ? editor.value : editor.innerText;
-  if (expected === null && text.length) return {status: 'draft_conflict'};
+  if (expected === null && text.trim().length) return {status: 'draft_conflict', draft_text: text.slice(0, 200)};
   if (expected !== null && text !== expected) return {status: 'draft_mismatch'};
   if (expected !== null && buttons[0].disabled) return {status: 'send_disabled'};
   return {status: 'ready', users: turns('user').length, assistants: turns('assistant').length};
@@ -252,7 +259,7 @@ function observeTurns(expected, beforeUsers, beforeAssistants) {
   return {status: 'observed', users: users.length, assistants: assistants.length,
     user_confirmed: matching,
     composer_emptied: found.length === 1 &&
-      (found[0].tagName === 'TEXTAREA' ? found[0].value : found[0].innerText) === '',
+      (found[0].tagName === 'TEXTAREA' ? found[0].value : found[0].innerText).trim() === '',
     assistant_observed: !!(matching && newText),
     assistant_text: matching && newText ? newText.slice(-1500) : ''};
 }
@@ -469,7 +476,7 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
     if not isinstance(before, dict) or before.get('status') != 'ready':
         receipt['reason'] = before.get('status', 'selectors_stale') if isinstance(before, dict) else 'selectors_stale'
         if isinstance(before, dict):
-            for key in ('composer_count', 'send_button_count'):
+            for key in ('composer_count', 'send_button_count', 'draft_text'):
                 if key in before:
                     receipt[key] = before[key]
         return receipt

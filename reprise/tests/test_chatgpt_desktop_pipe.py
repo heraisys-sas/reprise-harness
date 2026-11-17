@@ -252,7 +252,9 @@ class HolderHarness:
         deadline = time.monotonic() + 10
         path = adapter._holder_socket_path(self.root)
         while time.monotonic() < deadline:
-            if adapter._holder_connect(path, timeout=0.2) is not None:
+            probe = adapter._holder_connect(path, timeout=0.2)
+            if probe is not None:
+                probe.close()
                 break
             time.sleep(0.01)
         return self
