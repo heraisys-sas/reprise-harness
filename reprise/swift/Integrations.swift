@@ -665,6 +665,23 @@ extension App {
         return true
     }
 
+    func loadAppClones() {
+        let path = ("~/Library/Application Support/Reprise/app-clones.json" as NSString).expandingTildeInPath
+        guard let data = FileManager.default.contents(atPath: path),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let clones = root["clones"] as? [String: [String: Any]] else {
+            appClones = []
+            appClonesMessage = "Manifeste absent — créez un clone avec la CLI gérée (app_clones.py apply)."
+            return
+        }
+        appClones = clones.keys.sorted().map { name in
+            var row = clones[name] ?? [:]
+            row["name"] = name
+            return row
+        }
+        appClonesMessage = "\(appClones.count) clone(s) géré(s)."
+    }
+
     func refreshProjects(select projectID: String? = nil, completion: (() -> Void)? = nil) {
         guard projectCommandReady() else { return }
         setupCommand(["project-list"]) { result in
@@ -863,6 +880,33 @@ struct Integrations: View {
                         .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }.padding(6)
             }
+            GroupBox("Clones d’app") {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Button("Actualiser") { app.loadAppClones() }
+                        Text(app.appClonesMessage).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if app.appClones.isEmpty {
+                        Text("Aucun manifeste de clone lu (app-clones.json). La CLI gérée : app_clones.py inspect/plan/apply/verify.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(app.appClones.indices, id: \.self) { index in
+                            let clone = app.appClones[index]
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(clone["name"] as? String ?? "").font(.headline)
+                                path("Identité", clone["bundle_id"] as? String ?? "")
+                                path("Version gelée", clone["frozen_version"] as? String ?? "")
+                                path("Version upstream", clone["upstream_version"] as? String ?? "")
+                                let issues = clone["issues"] as? [String] ?? []
+                                Text(issues.isEmpty ? "Conforme au contrat." : "À traiter : " + issues.joined(separator: ", "))
+                                    .font(.caption).foregroundStyle(issues.isEmpty ? .secondary : .orange)
+                            }
+                        }
+                        Text("Auto-update du clone désactivé par contrat ; l’originale /Applications reste pristine et se met à jour normalement.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }.padding(6)
+            }.onAppear { app.loadAppClones() }
             SettingsCard(title: "Profil Harness",
                          status: hasProfile ? "Profil : " + app.integrationProfile : "Aucun profil",
                          ok: hasProfile) {

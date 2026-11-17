@@ -77,6 +77,8 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var integrationAgentRole = "standard"
     @Published var integrationAcknowledged = false
     @Published var integrationProfiles: [String] = []
+    @Published var appClones: [[String: Any]] = []
+    @Published var appClonesMessage = ""
     @Published var integrationPlan: [String: Any]? = nil
     var integrationPlanGeneration: UInt64 = 0
     var integrationPlanContext: [String]? = nil

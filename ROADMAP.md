@@ -8,6 +8,8 @@ L'audit d'écart courant : [#119](https://github.com/heraisys-sas/reprise-harnes
 
 - **Aller-retour Claude Desktop gratuit** : Quick Apply → `get_task` → `submit_result`, `await_task` borné, boîte de réception des résultats (0.1.17/0.1.18) — [contrat](docs/contracts/DELEGATION-PERSISTENCE.md).
 - **Reprise Codex après quota à l'échéance**, sessions goal incluses (#109) **dans le périmètre du moteur actuellement admissible** ; délégation Codex avec reçus durables — [rôles](docs/contracts/HARNESS-ROLES-CONTRACT.md). Cela ne garantit pas les threads du Desktop privé stdio ni les autres harness.
+- **Clones d'app à identité propre et version gelée** : ReChatGPT.app / ReClaude.app gérés par la même logique inspect/plan/apply/verify (contrat [APP-CLONES-CONTRACT](docs/contracts/APP-CLONES-CONTRACT.md), runbook [APP-CLONES](docs/runbooks/APP-CLONES.md)) ; le holder dédié démarre sur la copie quand elle existe.
+- **Route ChatGPT de bout en bout** : admission durable → dispatch holder CDP (Entrée, profil dédié, reçus bornés) → capture de réponse (WS `conversation-turn-complete` + MutationObserver + lecture rendue ancrée + sentinel) → résultat livré au délégant — preuve live t1 (17/11/2026), dispatch opt-in `--chatgpt-dispatch` ; issues #127/#152/#156/#226 clôturées.
 - **Installation/maintenance** `inspect/plan/apply/verify/remove` des composants Reprise (app, scheduler, profils Harness, connecteur), déploiements réels 0.1.13→0.1.18 — [contrat](docs/contracts/INSTALLATION-CONTRACT.md).
 - Registre projets (UUID ↔ workspaces), mémoire scoping par projet/work, checkpoints chiffrés.
 - Connecteur Claude Desktop unifié, Quick Apply CDP direct (applyd supprimé), barrières de dispatch séparées.

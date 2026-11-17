@@ -33,7 +33,18 @@ if _HERE not in sys.path:
 from claude_cdp_pipe import launch_cdp_process, terminate_chrome
 
 DEFAULT_BINARY = Path('/Applications/ChatGPT.app/Contents/MacOS/ChatGPT')
+# Clone gelé à identité propre (contrat APP-CLONES) : préféré pour le profil
+# dédié dès qu'il existe.
+RECHATGPT_BINARY = Path.home() / 'Applications/ReChatGPT.app/Contents/MacOS/ChatGPT'
 DEFAULT_PROFILE_ROOT = Path.home() / 'Library/Application Support/Reprise/chatgpt-cdp-profiles'
+
+def resolve_binary(binary, name):
+    """None → le clone ReChatGPT pour le profil dédié, sinon l'app officielle."""
+    if binary is not None:
+        return Path(binary).expanduser().absolute()
+    if name == 'dedicated' and RECHATGPT_BINARY.is_file():
+        return RECHATGPT_BINARY
+    return DEFAULT_BINARY
 PROFILE_NAME = re.compile(r'[A-Za-z0-9_-]{1,64}\Z')
 MAIN_URL = 'app://-/index.html'
 # Fixed, read-only probe. Never capture conversation text or authorization tokens.
@@ -926,7 +937,7 @@ def _serve_connection(conn, runtime, binary, profile):
         pass
 
 
-def serve(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT,
+def serve(binary=None, profile_root=DEFAULT_PROFILE_ROOT,
           name='dedicated', stop=None):
     """Long-lived holder: owns Chrome, the CDP pipe, and serves send requests.
 
@@ -937,7 +948,7 @@ def serve(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT,
     leaves Chrome running.
     """
     profile = profile_path(profile_root, name)
-    binary = Path(binary).expanduser().absolute()
+    binary = resolve_binary(binary, name)
     if binary.is_symlink() or not binary.is_file() or not os.access(binary, os.X_OK):
         return {'status': 'refused', 'reason': 'binary_unavailable'}
     _private_directory(profile.parent)
@@ -1021,7 +1032,7 @@ def serve(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT,
         # Chrome and the transport stay alive by design (holder contract).
 
 
-def send(prompt, binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT,
+def send(prompt, binary=None, profile_root=DEFAULT_PROFILE_ROOT,
          name='default', request_key=None):
     """At-most-once dispatch delegated to the profile's persistent holder.
 
@@ -1030,6 +1041,7 @@ def send(prompt, binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT,
     the holder's business (same profile folder, single source of truth).
     """
     receipt = _send_receipt()
+    binary = resolve_binary(binary, name)
     if not isinstance(prompt, str) or not prompt.strip():
         receipt['reason'] = 'prompt_required'
         return receipt
