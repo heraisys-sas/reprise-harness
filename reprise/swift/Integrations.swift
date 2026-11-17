@@ -891,16 +891,7 @@ struct Integrations: View {
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
                         ForEach(app.appClones.indices, id: \.self) { index in
-                            let clone = app.appClones[index]
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(clone["name"] as? String ?? "").font(.headline)
-                                path("Identité", clone["bundle_id"] as? String ?? "")
-                                path("Version gelée", clone["frozen_version"] as? String ?? "")
-                                path("Version upstream", clone["upstream_version"] as? String ?? "")
-                                let issues = clone["issues"] as? [String] ?? []
-                                Text(issues.isEmpty ? "Conforme au contrat." : "À traiter : " + issues.joined(separator: ", "))
-                                    .font(.caption).foregroundStyle(issues.isEmpty ? .secondary : .orange)
-                            }
+                            CloneRow(clone: app.appClones[index])
                         }
                         Text("Auto-update du clone désactivé par contrat ; l’originale /Applications reste pristine et se met à jour normalement.")
                             .font(.caption).foregroundStyle(.secondary)
@@ -1329,5 +1320,43 @@ struct Integrations: View {
         .onChange(of: app.claudeAwaitChoice) { _, _ in app.invalidateClaudeIntegrationPlan() }
         .onChange(of: app.claudeReplaceProbe) { _, _ in app.invalidateClaudeIntegrationPlan() }
         .onChange(of: app.chatgptIntegrationProject) { _, _ in app.invalidateChatgptIntegrationPlan() }
+    }
+}
+
+private struct CloneRow: View {
+    let clone: [String: Any]
+    private let name: String
+    private let bundleID: String
+    private let frozenVersion: String
+    private let upstreamVersion: String
+    private let issues: [String]
+
+    init(clone: [String: Any]) {
+        self.clone = clone
+        self.name = clone["name"] as? String ?? ""
+        self.bundleID = clone["bundle_id"] as? String ?? ""
+        self.frozenVersion = clone["frozen_version"] as? String ?? ""
+        self.upstreamVersion = clone["upstream_version"] as? String ?? ""
+        self.issues = clone["issues"] as? [String] ?? []
+    }
+
+    func path(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(value.isEmpty ? "Non choisi" : value).textSelection(.enabled)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(name).font(.headline)
+            path("Identité", bundleID)
+            path("Version gelée", frozenVersion)
+            path("Version upstream", upstreamVersion)
+            let summary = issues.isEmpty ? "Conforme au contrat." : "À traiter : " + issues.joined(separator: ", ")
+            Text(summary)
+                .font(.caption)
+                .foregroundStyle(issues.isEmpty ? Color.secondary : Color.orange)
+        }
     }
 }
