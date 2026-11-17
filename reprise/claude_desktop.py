@@ -93,8 +93,7 @@ def status(db, state):
     """Read-only connection discovery, mirroring connection.status()."""
     row = db.execute("SELECT options FROM engine_settings WHERE engine='claude-desktop'").fetchone()
     configured = json.loads(row[0]).get('socket') if row else None
-    paths = [(str(DEFAULT_SOCKET), 'Socket par défaut du démon claude-desktopd'),
-             (str(Path(state)/'claude-desktop.sock'), 'Serveur de supervision dédié')]
+    paths = [(str(DEFAULT_SOCKET), 'Socket par défaut du démon claude-desktopd')]
     if configured and configured not in {p for p, _ in paths}:
         paths.insert(0, (configured, 'Chemin enregistré'))
     candidates = []
