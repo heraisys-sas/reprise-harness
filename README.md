@@ -82,7 +82,7 @@ L'historique des versions est consolidé dans le [CHANGELOG](CHANGELOG.md) ; les
 
 - [Architecture cible de supervision multi-harness](docs/contracts/HARNESS-SUPERVISION-ARCHITECTURE.md) — contrat de conception, avec matrice des capacités par adaptateur et réserves de conception consolidées ; ce n'est pas une annonce d'implémentation complète.
 - [Quotas et fraîcheur des observations](docs/contracts/QUOTA-KNOWLEDGE.md) — distingue quota observé, disponibilité actuelle et résultat d'une reprise.
-- [Intégration Codex](docs/integrations/codex/CODEX-INTEGRATION.md) et [intégration Harness](docs/integrations/harness/HARNESS-INTEGRATION.md).
+- [Route opérateur DSH → Reprise → Codex](docs/integrations/harness/DSH-REPRISE-CODEX-ROUTE.md) — distingue le MCP Reprise du fournisseur Codex direct de DSH, avec étapes, permissions et preuves ; [intégration Codex](docs/integrations/codex/CODEX-INTEGRATION.md) (historique/variantes) et [intégration Harness](docs/integrations/harness/HARNESS-INTEGRATION.md).
 - [Registre de projets](docs/contracts/PROJECT-REGISTRY-CONTRACT.md) et [mémoire/checkpoints](docs/contracts/ORCHESTRATOR-MEMORY-CONTRACT.md) — prototypes et frontières d'accès.
 - [Pilote Apple](docs/integrations/apple/APPLE-PILOT-SERVICE.md) et [route Apple Intelligence](docs/integrations/apple/APPLE-INTELLIGENCE-INTEGRATION.md) — deux fonctions expérimentales distinctes.
 - [Planificateur](docs/runbooks/SCHEDULER-SERVICE.md) et [mise à jour gérée](docs/runbooks/MANAGED-UPDATE.md).
