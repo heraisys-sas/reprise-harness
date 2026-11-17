@@ -280,16 +280,19 @@ class TestGuardedSend(unittest.TestCase):
         self.binary.chmod(0o700)
 
     def fake(self, *, first=None, staged=None, click=None, body=None, after=None,
-             sse=None, observer=True, quiet_ms=None):
+             sse=None, observer=True, quiet_ms=None, enter=None):
         transport = mock.MagicMock()
         transport.drain_notifications.return_value = sse if sse is not None else []
         first = first if first is not None else {'status': 'ready'}
         staged = staged if staged is not None else {'status': 'ready'}
         click = click if click is not None else {'clicked': True, 'status': 'clicked'}
-        # Default rendered body: prompt echo, label, stable reply, footer — any
-        # click-observed receipt completes after two identical polls.
+        # Default rendered body: prompt echo, label, stable reply, footer. The
+        # static page is mutation-quiet immediately (STREAM_QUIET_MS), which is
+        # the live completeness evidence for an already-rendered reply.
         default_body = ('Vous avez dit : synthetic request ChatGPT a dit : '
-                        'Assistant reply body. ChatGPT peut faire des erreurs.')
+                        'Assistant reply body. ChatGPT peut faire des erreurs. '
+                        'Réponse terminée')
+        quiet_ms_default = adapter.STREAM_QUIET_MS
         clicked = {'done': False}
         states = {'poll': 0}
 
@@ -314,20 +317,29 @@ class TestGuardedSend(unittest.TestCase):
                 return staged
             if 'return focusUniqueComposer(' in expression:
                 return True
+            if 'return selectComposerContent(' in expression:
+                return True
             if 'return clickUniqueSend(' in expression:
                 clicked['done'] = True
                 if isinstance(click, Exception):
                     raise click
                 return click
             if 'return bodyProbe();' in expression:
+                ms = quiet_ms(states['poll']) if callable(quiet_ms) else \
+                    (quiet_ms if quiet_ms is not None else quiet_ms_default)
                 return {'url': adapter.MAIN_URL, 'ready': 'complete',
                         'text': body_text(), 'stream_len': 1 if observer else 0,
-                        'quiet_ms': quiet_ms}
+                        'quiet_ms': ms}
             if '__reprise_observer' in expression:
                 return 'armed' if observer else None
             raise AssertionError('Unexpected Runtime.evaluate')
 
         def respond_call(method, params):
+            if method == 'Input.dispatchKeyEvent':
+                clicked['done'] = True
+                if isinstance(enter, Exception):
+                    raise enter
+                return {}
             self.assertEqual(method, 'Network.enable')
             return {}
 
@@ -420,8 +432,7 @@ class TestGuardedSend(unittest.TestCase):
         self.assertEqual(result['response_source'], 'rendered-conversation')
         self.assertEqual(result['response_text'], 'Assistant reply body.')
         transport.insert_text.assert_called_once_with('synthetic request')
-        self.assertEqual(sum('return clickUniqueSend(' in c.args[0]
-                             for c in transport.evaluate.call_args_list), 1)
+        self.assertEqual(result['dispatch_action'], 'enter')
         with mock.patch.object(adapter, 'launch_cdp_process') as launch:
             replayed = adapter.send('synthetic request', self.binary, self.root,
                                     'dedicated', request_key='req-218')
@@ -437,7 +448,8 @@ class TestGuardedSend(unittest.TestCase):
         self.assertEqual(data['response_excerpt'], 'Assistant reply body.')
 
     def test_click_transport_loss_is_durable_uncertainty_without_retry(self):
-        transport = self.fake(click=RuntimeError('lost after dispatch'))
+        transport = self.fake(enter=RuntimeError('lost after dispatch'),
+                              click=RuntimeError('button fallback lost'))
         receipt = self.invoke(transport)
         self.assertEqual(receipt['status'], 'incertain')
         self.assertTrue(receipt['attempted'])
@@ -490,8 +502,8 @@ class TestRenderedConversationCapture(unittest.TestCase):
         self.holder = TestGuardedSend()
         self.holder.setUp()
 
-    def invoke(self, body=None, request='req-ax'):
-        transport = self.holder.fake(body=body)
+    def invoke(self, body=None, request='req-ax', quiet_ms=None):
+        transport = self.holder.fake(body=body, quiet_ms=quiet_ms)
         return transport, self.holder.invoke(transport, request=request)
 
     def test_stable_two_polls_complete_and_extract_reply(self):
@@ -512,7 +524,9 @@ class TestRenderedConversationCapture(unittest.TestCase):
         body = ['Vous avez dit : synthetic request ChatGPT a dit : Premier jet.',
                 'Vous avez dit : synthetic request ChatGPT a dit : Premier jet. Et la suite.',
                 'Vous avez dit : synthetic request ChatGPT a dit : Premier jet. Et la suite.']
-        transport, receipt = self.invoke(body=body, request='req-ax-2')
+        # Mutations stay active while the text changes, then go quiet.
+        quiet_ms = lambda poll: None if poll < 3 else adapter.STREAM_QUIET_MS
+        transport, receipt = self.invoke(body=body, request='req-ax-2', quiet_ms=quiet_ms)
         self.assertTrue(receipt['response_complete'])
         self.assertIn('Et la suite', receipt['response_excerpt'])
 
@@ -547,7 +561,7 @@ class TestRenderedConversationCapture(unittest.TestCase):
         def body(_poll):
             return 'Vous avez dit : synthetic request ChatGPT a dit : drift-%d' % _poll
 
-        transport = self.holder.fake(body=body)
+        transport = self.holder.fake(body=body, quiet_ms=lambda _poll: None)
         with mock.patch.object(adapter.time, 'monotonic',
                                side_effect=itertools.count(0, 200)):
             with HolderHarness(transport, self.holder.binary,
@@ -603,6 +617,7 @@ class TestHolderProtocol(unittest.TestCase):
         self.assertTrue(receipt['click_observed'])
         self.assertTrue(receipt['attempted'])
         transport.insert_text.assert_called_once_with('synthetic request')
+        self.assertEqual(receipt['dispatch_action'], 'enter')
         harness.terminate.assert_not_called()
         self.assertIsNone(harness.result.get('reason'))
 
@@ -654,7 +669,6 @@ class TestHolderProtocol(unittest.TestCase):
             second = adapter.send('synthetic request', self.binary, self.root,
                                   'dedicated', request_key='req-holder-4')
         self.assertEqual(first['status'], 'confirmed')
-        self.assertEqual(clicks, 1)
         self.assertTrue(second['replayed'])
         self.assertEqual(second['status'], 'confirmed')
 

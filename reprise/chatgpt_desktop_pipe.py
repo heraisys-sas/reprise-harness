@@ -233,7 +233,13 @@ function composerStatus(expected) {
   const editor = found[0];
   const text = editor.tagName === 'TEXTAREA' ? editor.value : editor.innerText;
   if (expected === null && text.trim().length) return {status: 'draft_conflict', draft_text: text.slice(0, 200)};
-  if (expected !== null && text !== expected) return {status: 'draft_mismatch'};
+  if (expected !== null) {
+    const norm = (value) => value.replace(/\s+/g, ' ').trim();
+    if (norm(text) !== norm(expected)) {
+      return {status: 'draft_mismatch', staged_text: text.slice(0, 120),
+              staged_chars: text.length};
+    }
+  }
   if (expected !== null && buttons[0].disabled) return {status: 'send_disabled'};
   return {status: 'ready'};
 }
@@ -242,6 +248,24 @@ function focusUniqueComposer() {
   if (found.length !== 1) return false;
   found[0].focus();
   return document.activeElement === found[0];
+}
+// Select the whole composer content so the following CDP Input.insertText
+// REPLACES any leftover draft (PoC #161 recipe: Cmd+A then insertText).
+function selectComposerContent() {
+  const found = editors();
+  if (found.length !== 1) return false;
+  const editor = found[0];
+  editor.focus();
+  if (editor.tagName === 'TEXTAREA') {
+    editor.select();
+    return editor.selectionStart === 0 && editor.selectionEnd === editor.value.length;
+  }
+  const selection = document.getSelection();
+  selection.removeAllRanges();
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  selection.addRange(range);
+  return document.getSelection().rangeCount === 1;
 }
 function clickUniqueSend(expected) {
   const status = composerStatus(expected);
@@ -270,7 +294,12 @@ def _evaluate_send(transport, function, *args):
 # the prompt echo, cut by an explicit sentinel when the model complied and
 # else by the conversation footer, and validated by two identical polls.
 COMPLETION_POLL_INTERVAL_SECONDS = 1.0
-COMPLETION_TIMEOUT_SECONDS = 120
+# Deep-reasoning turns ('Effort de réflexion : Élevé') can think for 60-90 s;
+# the ws turn-complete event ends the wait, not the clock.
+COMPLETION_TIMEOUT_SECONDS = 180
+# After the ws turn-complete event the DOM needs a moment to render the final
+# reply; read at most this long after the event (footer anchor ends it early).
+COMPLETION_SETTLE_SECONDS = 6.0
 RESPONSE_EXCERPT_CHARS = 1500
 MAX_RESPONSE_CHARS = 20000
 REPLY_SENTINEL = 'REPRISE-CAPTURE-FIN'
@@ -280,13 +309,18 @@ REPLY_LABELS = ('chatgpt a dit', 'chatgpt said')
 REPLY_FOOTERS = ('chatgpt peut faire des erreurs', 'chatgpt can make mistakes',
                  'peut faire des erreurs', 'can make mistakes')
 TURN_COMPLETE_MARKER = 'conversation-turn-complete'
+# Rendered completion marker (measured 17/11): the owl client prints it when
+# the turn is done. DOM marker + ws event are the primary end signals.
+COMPLETION_MARKERS = ('réponse terminée',)
 # Targeted DOM change detection (issue #226): a MutationObserver injected on
 # the dedicated renderer records that conversation rendering is active and
 # when it goes quiet. The stream is a change signal only: the reply text is
 # read from the rendered conversation (bodyProbe), never reconstructed from
 # deltas (owl obfuscation makes delta reconstruction fragile). Intersection
 # tracking adds nothing in the compact dedicated window and is left out.
-STREAM_QUIET_MS = 8000
+# Quiet is a degraded fallback: deep thinking can hold the DOM still for a
+# long time, so the threshold stays high (20 s).
+STREAM_QUIET_MS = 20000
 OBSERVER_SCRIPT = """
 (() => {
   if (window.__reprise_observer) return 'already';
@@ -447,6 +481,23 @@ def _persist_receipt(path, receipt, *, initial=False):
             target.unlink(missing_ok=True)
 
 
+def _dispatch_enter(transport):
+    """Submit the staged prompt with the PoC-validated Enter (keyCode 13).
+
+    Measured live (17/11): the button click can hit a node replaced by the
+    thinking-spinner re-render and silently no-op; the Enter key event on the
+    focused composer dispatches the whole staged draft.
+    """
+    transport.call('Input.dispatchKeyEvent',
+                   {'type': 'rawKeyDown', 'windowsVirtualKeyCode': 13, 'code': 'Enter',
+                    'key': 'Enter', 'text': '\r', 'unmodifiedText': '\r',
+                    'nativeVirtualKeyCode': 13})
+    transport.call('Input.dispatchKeyEvent',
+                   {'type': 'keyUp', 'windowsVirtualKeyCode': 13, 'code': 'Enter',
+                    'key': 'Enter'})
+    return True
+
+
 def _dispatch(transport, prompt, profile, request_key, receipt):
     before = _evaluate_send(transport, 'composerStatus', None)
     if not isinstance(before, dict) or before.get('status') != 'ready':
@@ -465,19 +516,36 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
     if _evaluate_send(transport, 'focusUniqueComposer') is not True:
         receipt['reason'] = 'focus_failed'
         return receipt
+    # Select-all first: a leftover draft (crashed prior dispatch) must be
+    # REPLACED, not appended to. The owned dedicated profile makes this safe.
+    if _evaluate_send(transport, 'selectComposerContent') is not True:
+        receipt['reason'] = 'select_failed'
+        return receipt
     transport.insert_text(prompt)
     staged = None
+    ready_streak = 0
     for attempt in range(15):
         staged = _evaluate_send(transport, 'composerStatus', prompt)
         if isinstance(staged, dict) and staged.get('status') == 'ready':
-            break
+            # ProseMirror commits the multi-paragraph insert asynchronously:
+            # require the staged state twice before the irreversible click.
+            ready_streak += 1
+            if ready_streak >= 2:
+                break
+            if attempt != 14:
+                time.sleep(0.2)
+            continue
         if not isinstance(staged, dict) or staged.get('status') not in ('send_disabled', 'draft_mismatch'):
             break
+        ready_streak = 0
         if attempt != 14:
             time.sleep(0.15)
     if not isinstance(staged, dict) or staged.get('status') != 'ready':
         receipt['reason'] = staged.get('status', 'selectors_stale') if isinstance(staged, dict) else 'selectors_stale'
+        if isinstance(staged, dict) and 'staged_text' in staged:
+            receipt['staged_text'] = staged['staged_text']
         return receipt
+    time.sleep(0.5)
 
     # Irreversible boundary: write an fsync'd uncertainty marker BEFORE click.
     # Even a crash between this marker and the CDP reply must never re-dispatch.
@@ -486,43 +554,70 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
                    prompt_sha256=hashlib.sha256(prompt.encode('utf-8')).hexdigest())
     _persist_receipt(path, receipt, initial=True)
     try:
-        click = _evaluate_send(transport, 'clickUniqueSend', prompt)
-        if not isinstance(click, dict) or click.get('clicked') is not True:
-            receipt.update(status='refused', attempted=False,
-                           reason=click.get('status', 'click_unconfirmed') if isinstance(click, dict) else 'click_unconfirmed')
-            return receipt
-        receipt['click_observed'] = True
+        # Irreversible boundary already marked. Primary dispatch = the PoC-
+        # validated Enter on the focused composer; the send button click is
+        # the fallback (its node can be replaced mid-render, measured live).
+        receipt['dispatch_action'] = 'enter'
+        try:
+            _dispatch_enter(transport)
+            receipt['click_observed'] = True
+        except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+            click = _evaluate_send(transport, 'clickUniqueSend', prompt)
+            if not isinstance(click, dict) or click.get('clicked') is not True:
+                receipt.update(status='refused', attempted=False,
+                               reason=click.get('status', 'click_unconfirmed') if isinstance(click, dict) else 'click_unconfirmed')
+                return receipt
+            receipt['click_observed'] = True
+            receipt['dispatch_action'] = 'button'
         # Post-send observation (issue #226): completion evidence from two
         # identical rendered polls, the ws.chatgpt.com lifecycle event, and
         # the injected MutationObserver quiet window; reply text anchored on
         # the prompt echo. Bounded; never a fatal error.
         best = None
         previous = None
-        completed = stable = quiet = False
+        stable_streak = 0
+        completed = quiet = sentinel_seen = dom_marker = False
         deadline = time.monotonic() + COMPLETION_TIMEOUT_SECONDS
+        completed_at = None
+        polls = 0
+        last = best = None
         while True:
             if drain_turn_completion(transport):
                 completed = True
+                if completed_at is None:
+                    completed_at = time.monotonic()
             probe = transport.evaluate(
                 '(() => {\n' + SEND_HELPERS + '\nreturn bodyProbe();\n})()')
             text = probe.get('text') if isinstance(probe, dict) else None
+            polls += 1
             if isinstance(text, str) and text:
                 reply, anchor = extract_reply(text, prompt)
+                if reply is not None:
+                    # The conversation is append-only: the LAST extraction is
+                    # the current final state; the longest seen is the fallback
+                    # (junk like the thinking indicator can outsize a short
+                    # true reply, so longest is never preferred over last).
+                    last = (reply, anchor)
                 if reply is not None and (best is None or len(reply) > len(best[0])):
                     best = (reply, anchor)
                 evidence = reply if reply is not None else text
                 digest = hashlib.sha256(_normalize(evidence).encode('utf-8')).hexdigest()
-                if previous is not None and digest == previous:
-                    stable = True
+                stable_streak = stable_streak + 1 if previous == digest else 0
                 previous = digest
                 quiet_ms = probe.get('quiet_ms') if isinstance(probe, dict) else None
                 if type(quiet_ms) in (int, float) and quiet_ms >= STREAM_QUIET_MS:
                     quiet = True
-            if stable:
+            if last is not None and any(marker in text.lower() for marker in COMPLETION_MARKERS):
+                dom_marker = True
                 break
-            if completed and previous is not None:
+            if quiet and last is not None:
                 break
-            if quiet and previous is not None:
+            if completed and last is not None and (
+                    (last[1] == 'footer' or last[1] == 'sentinel')
+                    or time.monotonic() - completed_at >= COMPLETION_SETTLE_SECONDS):
+                # The ws event ends the turn; let the DOM render the final
+                # reply (footer anchor) before reading it (measured 17/11:
+                # reading immediately captures the thinking indicator).
                 break
             if time.monotonic() >= deadline:
                 break
@@ -531,17 +626,24 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
             completed = True
         status = _evaluate_send(transport, 'composerStatus', None)
         receipt['composer_emptied'] = isinstance(status, dict) and status.get('status') == 'ready'
-        if best is not None:
-            reply, anchor = best
+        chosen = last if last is not None else best
+        if chosen is not None:
+            reply, anchor = chosen
             # The prompt echo in the rendered conversation is the delivery
             # evidence: the message is visibly part of the client conversation.
+            # The sentinel anchor (the reply was cut at REPRISE-CAPTURE-FIN),
+            # the ws lifecycle event, the rendered completion marker and the
+            # mutation-quiet window are the only completeness evidence.
+            sentinel_seen = anchor == 'sentinel'
             receipt['user_confirmed'] = True
             receipt['response_observed'] = True
-            receipt['response_complete'] = bool(stable or completed or quiet)
+            receipt['response_complete'] = bool(completed or quiet or sentinel_seen
+                                                or dom_marker)
             receipt['response_source'] = 'rendered-conversation'
             receipt['response_anchor'] = anchor
-            receipt['completion'] = ('stable' if stable else
+            receipt['completion'] = ('sentinel' if sentinel_seen else
                                      'turn-complete' if completed else
+                                     'dom-marker' if dom_marker else
                                      'quiet' if quiet else 'timeout')
             receipt['turn_completed'] = completed
             receipt['response_sha256'] = hashlib.sha256(reply.encode('utf-8')).hexdigest()
@@ -551,7 +653,9 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
         else:
             receipt['completion'] = ('turn-complete' if completed else
                                      'quiet' if quiet else 'timeout')
-        receipt['status'] = ('sent' if receipt['click_observed'] and receipt['composer_emptied']
+        receipt['status'] = ('sent' if receipt['click_observed'] and
+                             (receipt['composer_emptied'] or completed or
+                              bool(chosen and 'réflexion en cours' in chosen[0].lower()))
                              else 'incertain')
         if receipt['status'] == 'sent' and receipt['response_observed'] \
                 and receipt['response_complete']:
@@ -577,9 +681,9 @@ def _holder_socket_path(profile_root):
 HOLDER_SOCKET_PATH = _holder_socket_path(DEFAULT_PROFILE_ROOT)
 
 _HOLDER_START_ATTEMPTS = 30
-# One dispatch is bounded (launch ≤ 30 s + staging + completion ≤ 120 s + margin);
+# One dispatch is bounded (launch ≤ 30 s + staging + completion ≤ 180 s + margin);
 # the reply may take the whole budget, so the client recv must outlive it.
-HOLDER_EXCHANGE_TIMEOUT_SECONDS = 200
+HOLDER_EXCHANGE_TIMEOUT_SECONDS = 240
 
 
 def _holder_connect(path, timeout=2.0):
