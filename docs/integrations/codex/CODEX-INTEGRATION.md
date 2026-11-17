@@ -207,10 +207,21 @@ une demande existante ni une tentative incertaine. Le pont `chatgpt_quick.review
 `chatgpt_desktop_pipe.send`. Aucun message Desktop, modèle exécuté ou
 `submit_result` accepté ne peut donc être déduit du seul reçu d'admission.
 
+**Retour de réponse — capture holder, sans action de ChatGPT (17/11/2026).**
+Le retour principal ne dépend PAS d'une invocation MCP côté ChatGPT Desktop :
+après le clic, le holder capture la réponse directement — priorité 1 =
+Network/SSE (`collect_sse`), priorité 2 = repli AXTree (`collect_response`) —
+et l'écrit dans le receipt durable (`response_complete`, `assistant_excerpt` ;
+preuves live a6/a7/a8). Le canal `get_task`/`submit_result` (TaskStore
+`chatgpt-state`) reste un complément de preuve d'attribution, pas une
+condition de la boucle : un aller-retour consultatif se ferme sur le receipt
+holder seul.
+
 **Déploiement** : reconstruire la release depuis `dev`, prévisualiser/appliquer
 à nouveau les connecteurs gérés (DeepSeek avec `--delegate`, Claude, ChatGPT),
 puis recharger les clients. Lire `reprise_backends` depuis chacun et tenter
 une délégation `backend: chatgpt` avec un `request_key` nouveau. Exiger une
-preuve distincte d'arrivée Desktop et `submit_result` avant de déclarer le
-transport réellement fonctionnel. Ni fallback réseau/TCP ni bascule vers une
+preuve distincte d'arrivée Desktop et de capture de réponse (receipt holder,
+`response_complete`) avant de déclarer le transport réellement fonctionnel.
+Ni fallback réseau/TCP ni bascule vers une
 API payante implicite.
