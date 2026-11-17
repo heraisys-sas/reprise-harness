@@ -954,16 +954,10 @@ def serve(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT,
         os.write(fd, str(proc.pid).encode('ascii'))
         os.fsync(fd)
         runtime = {'transport': transport, 'proc': proc, 'lock_fd': fd}
-        try:
-            # The renderer does not register its app:// page without activation.
-            # `open <bundle>` targets the running instance of this bundle; with
-            # the operator app ALSO running, LaunchServices may pick either —
-            # acceptable: the window title (ReChatGPT) tells them apart.
-            bundle = _bundle_path(binary)
-            subprocess.run(['open', str(bundle)] if bundle else ['open', '-a', 'ChatGPT'],
-                           check=False, timeout=15)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        # No `open`/activation here: the owned child registers its app:// page
+        # by itself (measured across every 17/11 run), and `open <bundle>`
+        # launches or fronts the OPERATOR instance when the bundle id is
+        # shared — an operator-visible side effect that never helped census.
         ready = False
         for attempt in range(60):
             try:
@@ -994,10 +988,18 @@ def serve(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT,
         server.settimeout(0.5)
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGTERM, _holder_sigterm)
+        last_maintenance = 0.0
         while stop is None or not stop.is_set():
             try:
                 conn, _ = server.accept()
             except socket_module.timeout:
+                # Idle maintenance: owl re-opens the companion overlay after
+                # startup and resets document.title on re-render; enforce the
+                # one-window ReChatGPT identity while nothing is dispatched.
+                if time.monotonic() - last_maintenance >= 10.0:
+                    last_maintenance = time.monotonic()
+                    _close_secondary_pages(transport)
+                    apply_window_title(transport)
                 continue
             except OSError:
                 break
