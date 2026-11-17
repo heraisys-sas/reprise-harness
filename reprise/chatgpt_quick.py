@@ -153,7 +153,7 @@ class Endpoint:
         return {'status': 'finished', 'request_key': request_key, 'delivery': 'attempted',
                 'resent': False, 'admission_only': True, 'needs_review': needs_review,
                 'kind': kind, 'level': level,
-                'return_channel': 'MCP get_task/submit_result; completion only on validated submit_result',
+                'return_channel': "the holder's response capture in its durable receipt (Network/SSE, AXTree fallback) — no ChatGPT-side action",
                 'channel': 'indeterminate (canal local à déterminer)',
                 'automatic_fallback': False}
 
