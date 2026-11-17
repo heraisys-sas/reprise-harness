@@ -883,6 +883,25 @@ def _holder_dispatch(runtime, binary, profile, payload):
     return _dispatch(transport, prompt, profile, request_key, _send_receipt())
 
 
+def _close_secondary_pages(transport):
+    """One-window policy for the dedicated instance.
+
+    owl restores the companion overlay (avatar) window next to the main chat
+    window; close every page target that is not the main surface so the
+    operator sees exactly one ReChatGPT window.
+    """
+    closed = 0
+    try:
+        infos = transport.call('Target.getTargets', {}).get('targetInfos') or []
+        for info in infos:
+            if info.get('type') == 'page' and info.get('url') != MAIN_URL:
+                transport.call('Target.closeTarget', {'targetId': info.get('targetId')})
+                closed += 1
+    except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+        return closed
+    return closed
+
+
 def _serve_connection(conn, runtime, binary, profile):
     try:
         frame = bytearray()
@@ -937,11 +956,12 @@ def serve(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT,
         runtime = {'transport': transport, 'proc': proc, 'lock_fd': fd}
         try:
             # The renderer does not register its app:// page without activation.
-            # Activate the EXACT bundle we launched (a renamed copy like
-            # ReChatGPT must not activate the operator's ChatGPT.app).
+            # `open <bundle>` targets the running instance of this bundle; with
+            # the operator app ALSO running, LaunchServices may pick either —
+            # acceptable: the window title (ReChatGPT) tells them apart.
             bundle = _bundle_path(binary)
-            activation = ['open', str(bundle)] if bundle else ['open', '-a', 'ChatGPT']
-            subprocess.run(activation, check=False, timeout=15)
+            subprocess.run(['open', str(bundle)] if bundle else ['open', '-a', 'ChatGPT'],
+                           check=False, timeout=15)
         except (OSError, subprocess.TimeoutExpired):
             pass
         ready = False
@@ -952,6 +972,7 @@ def serve(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT,
                 state = None
             if isinstance(state, dict) and state.get('status') == 'ready':
                 ready = True
+                _close_secondary_pages(transport)
                 apply_window_title(transport)
                 break
             if proc.poll() is not None:
@@ -1077,7 +1098,7 @@ def main(argv=None):
     sub = parser.add_subparsers(dest='action', required=True)
     for cmd in ('inspect', 'probe', 'send', 'serve'):
         obj = sub.add_parser(cmd)
-        obj.add_argument('--profile', default='default')
+        obj.add_argument('--profile', default='default' if cmd != 'serve' else 'dedicated')
         obj.add_argument('--profile-root', type=Path, default=DEFAULT_PROFILE_ROOT)
         obj.add_argument('--binary', type=Path, default=DEFAULT_BINARY)
         if cmd == 'send':

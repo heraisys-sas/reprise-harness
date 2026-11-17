@@ -342,6 +342,10 @@ class TestGuardedSend(unittest.TestCase):
                 if isinstance(enter, Exception):
                     raise enter
                 return {}
+            if method == 'Target.getTargets':
+                return {'targetInfos': []}
+            if method == 'Target.closeTarget':
+                return {}
             self.assertEqual(method, 'Network.enable')
             return {}
 
@@ -588,7 +592,12 @@ class TestRenderedConversationCapture(unittest.TestCase):
             first={'status': 'selectors_stale', 'composer_count': 0})
         receipt = self.holder.invoke(transport, request='req-ax-5')
         self.assertEqual(receipt['status'], 'refused')
-        transport.call.assert_not_called()
+        # Aucune activation de domaine capture sur un refus (l'inventaire
+        # Target.getTargets du holder au démarrage est la seule exception).
+        self.assertNotIn('Network.enable',
+                         [c.args[0] for c in transport.call.call_args_list])
+        self.assertNotIn('Accessibility.getFullAXTree',
+                         [c.args[0] for c in transport.call.call_args_list])
         for key in ('response_sha256', 'response_chars', 'response_excerpt',
                     'response_anchor', 'response_source'):
             self.assertNotIn(key, receipt)
