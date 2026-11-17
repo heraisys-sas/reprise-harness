@@ -240,7 +240,7 @@ def block_entries(block_text):
     return entries
 
 
-def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, codex_workspace_write=False, desktop_socket=None, bash_sandbox_disabled=False, memory=None, chatgpt_state=None):
+def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, codex_workspace_write=False, desktop_socket=None, bash_sandbox_disabled=False, memory=None, chatgpt_state=None, chatgpt_dispatch=False):
     program = release / 'Contents/Resources/runtime/bin/python3'
     args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/codex_expert_mcp.py'),
             '--project-root', project]
@@ -248,6 +248,8 @@ def _bridge_entries(release, state, tools, project, profile, managed, output_res
         args.extend(['--desktop-socket', str(desktop_socket)])
     if chatgpt_state:
         args.extend(['--chatgpt-state', str(chatgpt_state)])
+    if chatgpt_dispatch:
+        args.append('--chatgpt-dispatch')
     args.extend(['--state', state, '--tools', ','.join(tools)])
     if codex_workspace_write:
         args.append('--codex-workspace-write')
@@ -1065,7 +1067,7 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         entries = _bridge_entries(release, state, tools, project, profile, managed,
                                   output_resume, resume_project, codex_workspace_write,
                                   desktop_socket, bash_sandbox_disabled, memory,
-                                  chatgpt_state=chatgpt_state)
+                                  chatgpt_state=chatgpt_state, chatgpt_dispatch=True)
         if mismatched_block:
             try:
                 parsed = block_entries(block)
@@ -1082,7 +1084,7 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
                     profile, managed, old.get('output_resume', False),
                     old.get('output_resume_project'), old.get('codex_workspace_write', False),
                     old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), previous_memory,
-                    old.get('chatgpt_state'))
+                    old.get('chatgpt_state'), old.get('chatgpt_dispatch', False))
             else:
                 expected = entries
             if parsed != expected:
@@ -1136,6 +1138,7 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         if desktop_socket:
             next_manifest['desktop_socket'] = desktop_socket
         next_manifest['chatgpt_state'] = chatgpt_state
+        next_manifest['chatgpt_dispatch'] = True
         if bash_sandbox_disabled:
             next_manifest['bash_sandbox_disabled'] = True
         if reconciled_from:
@@ -1364,7 +1367,7 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
     expected = _bridge_entries(Path(old['release']), old['state'], old['tools'], project, profile, managed,
         True, old.get('output_resume_project'), old.get('codex_workspace_write', False),
         old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory,
-        old.get('chatgpt_state'))
+        old.get('chatgpt_state'), old.get('chatgpt_dispatch', False))
     actual = block_entries(block.replace('\r\n', '\n'))
     # Normalize only fields explicitly replaced by this operation. All remaining
     # arguments, tools, permissions and plugin settings must match the old owner.
@@ -1407,7 +1410,7 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
     memory_integration.validate_binding(old['state'], memory, project, 'harness')
     entries = _bridge_entries(release, old['state'], old['tools'], project, profile, managed,
         True, resume_project, write, old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory,
-        old.get('chatgpt_state'))
+        old.get('chatgpt_state'), old.get('chatgpt_dispatch', False))
     _validate_target_entries(entries)
     if not _canonical_paths(entries):
         raise ValueError('Bloc non canonique : une seule ligne entre les délimiteurs, sans continuation.')
@@ -1595,7 +1598,7 @@ def verify(home, profile, root=None, project=None):
                                    old['profile'], managed, old.get('output_resume', False),
                                    old.get('output_resume_project'), old.get('codex_workspace_write', False),
                                    old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory_integration.selected(old),
-                                   old.get('chatgpt_state'))
+                                   old.get('chatgpt_state'), old.get('chatgpt_dispatch', False))
         if block is None or block_entries(block) != expected:
             raise ValueError('Configuration Reprise absente ou modifiée.')
         # Bloc reformatté équivalent : accepté sans réécriture ici.

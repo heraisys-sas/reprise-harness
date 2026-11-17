@@ -3,6 +3,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from codex_expert_mcp import Bridge
 from desktop_task_store import TaskStore
@@ -58,6 +59,41 @@ class ChatgptProjectionTests(unittest.TestCase):
         self.state = self.root / 'chatgpt-state'
         self.store = TaskStore(self.state, self.root)
         self.addCleanup(self.store.close)
+
+    def test_chatgpt_dispatch_flag_drives_holder_capture(self):
+        bridge = Bridge(self.root, {}, self.root / 'expert', daily_limit=2,
+                        desktop_state=self.root / 'desktop', chatgpt_socket=str(self.state),
+                        chatgpt_dispatch=True)
+        self.addCleanup(bridge.close)
+        captured = {'status': 'confirmed', 'attempted': True, 'click_observed': True,
+                    'response_text': 'Réponse capturée.',
+                    'response_excerpt': 'Réponse capturée.', 'response_complete': True,
+                    'response_chars': 17, 'response_sha256': 'b' * 64}
+        with mock.patch('chatgpt_quick.dispatch_to_holder', return_value=captured) as dispatch:
+            result = bridge.call('reprise_delegate', {'question': 'Revue', 'kind': 'expertise',
+                                                      'backend': 'chatgpt', 'request_key': 'dk'})
+        dispatch.assert_called_once()
+        self.assertEqual(result['response'], 'Réponse capturée.')
+        self.assertFalse(result['admission_only'])
+        self.assertEqual(result['delivery'], 'captured')
+
+    def test_chatgpt_dispatch_refusal_stays_admission_only(self):
+        bridge = Bridge(self.root, {}, self.root / 'expert', daily_limit=2,
+                        desktop_state=self.root / 'desktop', chatgpt_socket=str(self.state),
+                        chatgpt_dispatch=True)
+        self.addCleanup(bridge.close)
+        refused = {'status': 'refused', 'attempted': False, 'reason': 'holder_unavailable'}
+        with mock.patch('chatgpt_quick.dispatch_to_holder', return_value=refused):
+            result = bridge.call('reprise_delegate', {'question': 'Revue', 'kind': 'expertise',
+                                                      'backend': 'chatgpt', 'request_key': 'dr'})
+        self.assertTrue(result['admission_only'])
+        self.assertEqual(result['dispatch_receipt']['reason'], 'holder_unavailable')
+
+    def test_chatgpt_dispatch_requires_explicit_grant(self):
+        with self.assertRaises(ValueError):
+            Bridge(self.root, {}, self.root / 'expert', daily_limit=2,
+                   desktop_state=self.root / 'desktop', chatgpt_socket=str(self.state),
+                   chatgpt_dispatch='yes')
 
     def test_chatgpt_projection_routes_requests_and_wait_to_chatgpt_state(self):
         bridge = Bridge(self.root, {}, self.root / 'expert', daily_limit=2,

@@ -318,15 +318,18 @@ def wait_content(result, ident):
 
 
 class Bridge:
-    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, codex_workspace_write=False, chatgpt_socket=None, chatgpt_workspace_write=False):
+    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, codex_workspace_write=False, chatgpt_socket=None, chatgpt_workspace_write=False, chatgpt_dispatch=False):
         if type(codex_workspace_write) is not bool:
             raise ValueError('Explicit workspace-write grant required')
         if type(chatgpt_workspace_write) is not bool:
             raise ValueError('Explicit workspace-write grant required')
+        if type(chatgpt_dispatch) is not bool:
+            raise ValueError('Explicit ChatGPT dispatch grant required')
         if chatgpt_socket is not None and (not isinstance(chatgpt_socket, str) or not Path(chatgpt_socket).is_absolute()):
             raise ValueError('Absolute ChatGPT state directory required')
         self.chatgpt_socket = chatgpt_socket
         self.chatgpt_workspace_write = chatgpt_workspace_write
+        self.chatgpt_dispatch = chatgpt_dispatch
         self.codex_workspace_write = codex_workspace_write
         known_tools = {item['name'] for item in TOOLS}
         if allowed_tools is not None and (not allowed_tools or set(allowed_tools) - known_tools):
@@ -709,8 +712,8 @@ class Bridge:
                   'billing': 'Compte ChatGPT existant ; pas de fallback API payante',
                   'kinds': ['expertise', 'review'], 'levels': ['standard', 'deep'],
                   'writes': False, 'transport_verified': False, 'availability': 'unverified',
-                  'dispatch': 'admission_only', 'task_return_supported': self.chatgpt_tasks is not None,
-                  'context': 'Admission SQLite durable ; envoi Desktop automatique non raccordé'}],
+                  'dispatch': 'holder_capture_sync', 'task_return_supported': False,
+                  'context': 'Admission SQLite durable ; dispatch holder CDP profil dédié, retour = capture de réponse (WS fin de tour + lecture rendue ancrée)'}],
                 'automatic_fallback': False}
         allowed = {'question', 'thread_id'} if name in ('codex_followup', 'reprise_followup') else {'question', 'paths'}
         if name == 'reprise_followup':
@@ -887,6 +890,8 @@ class Bridge:
             result = chatgpt_quick.review(self.root, question, kind=args.get('kind', 'expertise'),
                                           level=args.get('level', 'standard'), paths=args.get('paths'),
                                           socket=self.chatgpt_socket, request_key=self.requests.active_key)
+            if self.chatgpt_dispatch:
+                result = chatgpt_quick.finish_with_holder_dispatch(self.root, self.chatgpt_state, result)
             routing_events.finalize(self.db, event_id, str(result.get('status') or 'unknown'))
             return result | {'backend': backend, 'automatic_fallback': False}
         if backend == 'claude-code':
@@ -1183,6 +1188,8 @@ def main():
     parser.add_argument('--chatgpt-state', '--chatgpt-socket', dest='chatgpt_state',
                         help='ChatGPT state directory, ledger and TaskStore (not a network socket)')
     parser.add_argument('--chatgpt-workspace-write', action='store_true', help='Operator grant: ChatGPT roundtrip may declare write capability')
+    parser.add_argument('--chatgpt-dispatch', action='store_true',
+                        help='Operator grant: admitted ChatGPT tasks are pushed to the CDP holder (profil dédié) for capture')
     parser.add_argument('--ironclaw-config', help='JSON 0600: {host,port,user,key} du point d’acceptation IronClaw')
     args = parser.parse_args()
     ironclaw_values = {}
@@ -1198,7 +1205,8 @@ def main():
                     claude_program=args.claude_program, claude_subscription_only=args.claude_included_quota_confirmed,
                     desktop_socket=args.desktop_socket, allowed_tools=args.tools.split(',') if args.tools is not None else None,
                     ironclaw_values=ironclaw_values, codex_workspace_write=args.codex_workspace_write,
-                    chatgpt_socket=chatgpt_state, chatgpt_workspace_write=args.chatgpt_workspace_write)
+                    chatgpt_socket=chatgpt_state, chatgpt_workspace_write=args.chatgpt_workspace_write,
+                    chatgpt_dispatch=args.chatgpt_dispatch)
     def terminate(signum, frame):
         # Unwind active CLI cleanup before closing the DB and releasing the lock.
         raise SystemExit(128 + signum)

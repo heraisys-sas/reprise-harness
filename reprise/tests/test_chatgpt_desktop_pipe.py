@@ -279,57 +279,57 @@ class TestGuardedSend(unittest.TestCase):
         self.binary.write_text('#!/bin/sh\nexit 0\n')
         self.binary.chmod(0o700)
 
-    def fake(self, *, first=None, staged=None, click=None, turns=None, axtree=None,
-             sse=None):
+    def fake(self, *, first=None, staged=None, click=None, body=None, after=None,
+             sse=None, observer=True, quiet_ms=None):
         transport = mock.MagicMock()
         transport.drain_notifications.return_value = sse if sse is not None else []
-        first = first if first is not None else {
-            'status': 'ready', 'users': 2, 'assistants': 1}
-        staged = staged if staged is not None else {
-            'status': 'ready', 'users': 2, 'assistants': 1}
+        first = first if first is not None else {'status': 'ready'}
+        staged = staged if staged is not None else {'status': 'ready'}
         click = click if click is not None else {'clicked': True, 'status': 'clicked'}
-        turns = turns if turns is not None else {
-            'status': 'observed', 'users': 3, 'assistants': 1,
-            'user_confirmed': True, 'composer_emptied': True,
-            'assistant_observed': False, 'assistant_text': ''}
-        # Default AX tree: stable reply after the prompt marker, so any
+        # Default rendered body: prompt echo, label, stable reply, footer — any
         # click-observed receipt completes after two identical polls.
-        if axtree is None:
-            axtree = ['Sidebar « Revue de code Reprise »', 'synthetic request',
-                      'Assistant reply body.']
-        calls = {'poll': 0}
+        default_body = ('Vous avez dit : synthetic request ChatGPT a dit : '
+                        'Assistant reply body. ChatGPT peut faire des erreurs.')
+        clicked = {'done': False}
+        states = {'poll': 0}
+
+        def body_text():
+            if isinstance(body, Exception):
+                raise body
+            if callable(body):
+                return body(states['poll'])
+            if isinstance(body, list):
+                text = body[min(states['poll'], len(body) - 1)]
+            else:
+                text = default_body if body is None else body
+            states['poll'] += 1
+            return text
 
         def respond(expression):
             if 'return composerStatus(null);' in expression:
+                if clicked['done'] and after is not None:
+                    return after
                 return first
             if 'return composerStatus(' in expression:
                 return staged
             if 'return focusUniqueComposer(' in expression:
                 return True
             if 'return clickUniqueSend(' in expression:
+                clicked['done'] = True
                 if isinstance(click, Exception):
                     raise click
                 return click
-            if 'return observeTurns(' in expression:
-                if isinstance(turns, Exception):
-                    raise turns
-                return turns
+            if 'return bodyProbe();' in expression:
+                return {'url': adapter.MAIN_URL, 'ready': 'complete',
+                        'text': body_text(), 'stream_len': 1 if observer else 0,
+                        'quiet_ms': quiet_ms}
+            if '__reprise_observer' in expression:
+                return 'armed' if observer else None
             raise AssertionError('Unexpected Runtime.evaluate')
 
         def respond_call(method, params):
-            nonlocal calls
-            if method == 'Network.enable':
-                return {}
-            self.assertEqual(method, 'Accessibility.getFullAXTree')
-            if isinstance(axtree, Exception):
-                raise axtree
-            if callable(axtree):
-                payload = axtree(calls['poll'])
-            else:
-                payload = axtree
-            calls['poll'] += 1
-            return {'nodes': [{'nodeId': str(index), 'name': {'value': line}}
-                              for index, line in enumerate(payload)]}
+            self.assertEqual(method, 'Network.enable')
+            return {}
 
         transport.evaluate.side_effect = respond
         transport.call.side_effect = respond_call
@@ -404,16 +404,21 @@ class TestGuardedSend(unittest.TestCase):
         self.assertFalse(result['attempted'])
         self.assertEqual(transport.insert_text.call_count, 1)
 
-    def test_sent_requires_click_user_turn_match_and_emptied_composer(self):
+    def test_confirmed_requires_click_echo_and_emptied_composer(self):
         transport = self.fake()
         result = self.invoke(transport)
-        self.assertEqual(result['status'], 'sent')
-        self.assertEqual(result['user_message_count_before'], 2)
-        self.assertEqual(result['user_message_count_after'], 3)
+        self.assertEqual(result['status'], 'confirmed')
+        self.assertIsNone(result['user_message_count_before'])
+        self.assertIsNone(result['user_message_count_after'])
         self.assertTrue(result['user_confirmed'])
         self.assertTrue(result['composer_emptied'])
         self.assertTrue(result['click_observed'])
         self.assertTrue(result['attempted'])
+        self.assertTrue(result['response_observed'])
+        self.assertTrue(result['response_complete'])
+        self.assertEqual(result['response_anchor'], 'footer')
+        self.assertEqual(result['response_source'], 'rendered-conversation')
+        self.assertEqual(result['response_text'], 'Assistant reply body.')
         transport.insert_text.assert_called_once_with('synthetic request')
         self.assertEqual(sum('return clickUniqueSend(' in c.args[0]
                              for c in transport.evaluate.call_args_list), 1)
@@ -422,19 +427,14 @@ class TestGuardedSend(unittest.TestCase):
                                     'dedicated', request_key='req-218')
         launch.assert_not_called()
         self.assertTrue(replayed['replayed'])
-        self.assertEqual(replayed['status'], 'sent')
+        self.assertEqual(replayed['status'], 'confirmed')
 
-    def test_confirmed_only_when_new_assistant_is_observed(self):
-        transport = self.fake(turns={'status': 'observed', 'users': 3, 'assistants': 2,
-                                     'user_confirmed': True, 'composer_emptied': True,
-                                     'assistant_observed': True, 'assistant_text': 'reply'})
-        receipt = self.invoke(transport)
-        self.assertEqual(receipt['status'], 'confirmed')
-        self.assertTrue(receipt['response_observed'])
-        self.assertEqual(receipt['assistant_excerpt'], 'reply')
-        # AX capture (issue #156) still ran after the click: the DOM-excerpt
-        # confirmation does not suppress the AXTree completion evidence.
-        self.assertTrue(receipt['response_complete'])
+    def test_durable_receipt_never_stores_full_reply(self):
+        self.invoke(self.fake(), request='req-receipt-strip')
+        path = adapter._receipt_path(self.root / 'dedicated', 'req-receipt-strip')
+        data = json.loads(path.read_text())
+        self.assertNotIn('response_text', data)
+        self.assertEqual(data['response_excerpt'], 'Assistant reply body.')
 
     def test_click_transport_loss_is_durable_uncertainty_without_retry(self):
         transport = self.fake(click=RuntimeError('lost after dispatch'))
@@ -450,23 +450,21 @@ class TestGuardedSend(unittest.TestCase):
         self.assertTrue(repeated['replayed'])
 
     def test_observer_transport_loss_after_click_is_uncertain(self):
-        receipt = self.invoke(self.fake(turns=RuntimeError('lost')))
+        receipt = self.invoke(self.fake(body=RuntimeError('lost')))
         self.assertEqual(receipt['status'], 'incertain')
         self.assertTrue(receipt['click_observed'])
 
-    def test_wrong_turn_or_unemptied_composer_is_never_sent(self):
-        for index, wrong in enumerate((
-            {'users': 4, 'user_confirmed': False, 'composer_emptied': True},
-            {'users': 3, 'user_confirmed': False, 'composer_emptied': True},
-            {'users': 3, 'user_confirmed': True, 'composer_emptied': False},
+    def test_unemptied_composer_is_never_sent(self):
+        for index, after in enumerate((
+            {'status': 'send_disabled'},
+            {'status': 'selectors_stale', 'composer_count': 1},
         )):
-            with self.subTest(wrong=wrong):
-                state = {'status': 'observed', 'users': 3, 'assistants': 1,
-                         'user_confirmed': True, 'composer_emptied': True,
-                         'assistant_observed': False, 'assistant_text': ''} | wrong
-                receipt = self.invoke(self.fake(turns=state), request='req-' + str(index))
+            with self.subTest(after=after):
+                receipt = self.invoke(self.fake(after=after),
+                                      request='req-after-' + str(index))
                 self.assertEqual(receipt['status'], 'incertain')
                 self.assertTrue(receipt['click_observed'])
+                self.assertFalse(receipt['composer_emptied'])
 
     def test_request_key_conflict_fails_closed(self):
         self.invoke(self.fake(), request='one-key')
@@ -480,49 +478,76 @@ class TestGuardedSend(unittest.TestCase):
     def test_renderer_source_never_uses_dom_input_events_or_tcp(self):
         source = adapter.SEND_HELPERS
         self.assertIn('buttons[0].click()', source)
-        self.assertIn('data-testid', source)
+        self.assertIn('bodyProbe', source)
         self.assertNotIn('dispatchEvent', source)
         self.assertNotIn('dispatchMouseEvent', source)
         self.assertNotIn('remote-debugging-port', source)
 
-class TestAxtreeResponseCapture(unittest.TestCase):
-    """Issue #156 option B: AXTree polling after a click, offline transports."""
+class TestRenderedConversationCapture(unittest.TestCase):
+    """Issue #226: rendered-conversation capture after a click, offline transports."""
 
     def setUp(self):
         self.holder = TestGuardedSend()
         self.holder.setUp()
 
-    def invoke(self, axtree=None, request='req-ax'):
-        transport = self.holder.fake(axtree=axtree)
+    def invoke(self, body=None, request='req-ax'):
+        transport = self.holder.fake(body=body)
         return transport, self.holder.invoke(transport, request=request)
 
     def test_stable_two_polls_complete_and_extract_reply(self):
         transport, receipt = self.invoke(request='req-ax-1')
         self.assertTrue(receipt['response_complete'])
+        self.assertEqual(receipt['status'], 'confirmed')
         expected = hashlib.sha256('Assistant reply body.'.encode('utf-8')).hexdigest()
         self.assertEqual(receipt['response_sha256'], expected)
         self.assertEqual(receipt['response_chars'], len('Assistant reply body.'))
         self.assertEqual(receipt['response_excerpt'], 'Assistant reply body.')
-        self.assertEqual(receipt['status'], 'sent')
-        self.assertGreaterEqual(transport.call.call_count, 2)
+        # The Network domain is enabled before staging; no AXTree call remains.
+        self.assertEqual(sum(c.args and c.args[0] == 'Accessibility.getFullAXTree'
+                             for c in transport.call.call_args_list), 0)
+        self.assertTrue(any(c.args and c.args[0] == 'Network.enable'
+                            for c in transport.call.call_args_list))
 
     def test_changing_then_stable_polls_complete(self):
-        replies = iter(['Assistant reply body.',
-                        'Assistant reply body. Also more text.',
-                        'Assistant reply body. Also more text.'])
-
-        def axtree(_poll):
-            return ['synthetic request', next(replies)]
-
-        transport, receipt = self.invoke(axtree=axtree, request='req-ax-2')
+        body = ['Vous avez dit : synthetic request ChatGPT a dit : Premier jet.',
+                'Vous avez dit : synthetic request ChatGPT a dit : Premier jet. Et la suite.',
+                'Vous avez dit : synthetic request ChatGPT a dit : Premier jet. Et la suite.']
+        transport, receipt = self.invoke(body=body, request='req-ax-2')
         self.assertTrue(receipt['response_complete'])
-        self.assertIn('Also more text', receipt['response_excerpt'])
+        self.assertIn('Et la suite', receipt['response_excerpt'])
 
-    def test_timeout_is_not_fatal_and_keeps_status(self):
-        def axtree(_poll):
-            return ['synthetic request', 'poll-%d unique drift' % _poll]
+    def test_sentinel_cut_takes_priority_over_footer(self):
+        prompt = 'Question ?'
+        body = ('Vous avez dit : Question ? ChatGPT a dit : Réponse '
+                + adapter.REPLY_SENTINEL + ' ChatGPT peut faire des erreurs.')
+        reply, anchor = adapter.extract_reply(body, prompt)
+        self.assertEqual(anchor, 'sentinel')
+        self.assertEqual(reply, 'Réponse')
 
-        transport = self.holder.fake(axtree=axtree)
+    def test_prompt_echo_missing_is_never_extracted(self):
+        reply, anchor = adapter.extract_reply('Texte sans écho.', 'Question ?')
+        self.assertIsNone(reply)
+        self.assertEqual(anchor, 'prompt_echo_missing')
+
+    def test_quiet_stream_completes_with_drifting_text(self):
+        def body(_poll):
+            return 'Vous avez dit : synthetic request ChatGPT a dit : drift-%d' % _poll
+
+        transport = self.holder.fake(body=body, quiet_ms=adapter.STREAM_QUIET_MS)
+        with HolderHarness(transport, self.holder.binary, self.holder.root):
+            receipt = adapter.send('synthetic request', self.holder.binary,
+                                   self.holder.root, 'dedicated',
+                                   request_key='req-ax-quiet')
+        self.assertTrue(receipt['response_complete'])
+        self.assertEqual(receipt['completion'], 'quiet')
+        self.assertEqual(receipt['status'], 'confirmed')
+        self.assertIn('drift-', receipt['response_excerpt'])
+
+    def test_timeout_is_not_fatal_and_keeps_sent_status(self):
+        def body(_poll):
+            return 'Vous avez dit : synthetic request ChatGPT a dit : drift-%d' % _poll
+
+        transport = self.holder.fake(body=body)
         with mock.patch.object(adapter.time, 'monotonic',
                                side_effect=itertools.count(0, 200)):
             with HolderHarness(transport, self.holder.binary,
@@ -531,16 +556,16 @@ class TestAxtreeResponseCapture(unittest.TestCase):
                                        self.holder.root, 'dedicated',
                                        request_key='req-ax-3')
         self.assertFalse(receipt['response_complete'])
-        self.assertEqual(receipt['response_reason'], 'axtree_timeout')
+        self.assertEqual(receipt['completion'], 'timeout')
         self.assertEqual(receipt['status'], 'sent')
         self.assertTrue(receipt['click_observed'])
 
-    def test_axtree_unavailable_is_bounded_and_keeps_status(self):
-        transport, receipt = self.invoke(axtree=RuntimeError('pipe lost'),
+    def test_unavailable_body_is_uncertain(self):
+        transport, receipt = self.invoke(body=RuntimeError('pipe lost'),
                                          request='req-ax-4')
-        self.assertFalse(receipt['response_complete'])
-        self.assertEqual(receipt['response_reason'], 'axtree_unavailable')
-        self.assertEqual(receipt['status'], 'sent')
+        self.assertEqual(receipt['status'], 'incertain')
+        self.assertTrue(receipt['click_observed'])
+        self.assertFalse(receipt['response_observed'])
 
     def test_no_click_means_no_capture_and_no_optional_fields(self):
         transport = self.holder.fake(
@@ -549,7 +574,7 @@ class TestAxtreeResponseCapture(unittest.TestCase):
         self.assertEqual(receipt['status'], 'refused')
         transport.call.assert_not_called()
         for key in ('response_sha256', 'response_chars', 'response_excerpt',
-                    'response_reason'):
+                    'response_anchor', 'response_source'):
             self.assertNotIn(key, receipt)
 
 
@@ -574,7 +599,7 @@ class TestHolderProtocol(unittest.TestCase):
         with HolderHarness(transport, self.binary, self.root) as harness:
             receipt = adapter.send('synthetic request', self.binary, self.root,
                                    'dedicated', request_key='req-holder-1')
-        self.assertEqual(receipt['status'], 'sent')
+        self.assertEqual(receipt['status'], 'confirmed')
         self.assertTrue(receipt['click_observed'])
         self.assertTrue(receipt['attempted'])
         transport.insert_text.assert_called_once_with('synthetic request')
@@ -628,10 +653,10 @@ class TestHolderProtocol(unittest.TestCase):
                          for call in transport.evaluate.call_args_list)
             second = adapter.send('synthetic request', self.binary, self.root,
                                   'dedicated', request_key='req-holder-4')
-        self.assertEqual(first['status'], 'sent')
+        self.assertEqual(first['status'], 'confirmed')
         self.assertEqual(clicks, 1)
         self.assertTrue(second['replayed'])
-        self.assertEqual(second['status'], 'sent')
+        self.assertEqual(second['status'], 'confirmed')
 
     def test_holder_not_ready_refuses_without_terminating_chrome(self):
         guarded = self.holder_test_guarded()

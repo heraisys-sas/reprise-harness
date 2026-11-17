@@ -1,10 +1,13 @@
+import json
 import sys
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from chatgpt_quick import Endpoint
+import chatgpt_desktop_pipe
+from chatgpt_quick import Endpoint, dispatch_to_holder, finish_with_holder_dispatch
 from delegation_store import file_evidence
 
 
@@ -150,6 +153,80 @@ class ChatgptQuickTests(unittest.TestCase):
             'SELECT needs_review, after_evidence FROM chatgpt_submissions WHERE request_key=?', (key2,)).fetchone()
         self.assertEqual(row[0], 1)
         self.assertIsNotNone(row[1])
+
+
+class ChatgptHolderDispatchTests(unittest.TestCase):
+    """Issue #226: admitted task -> holder client dispatch -> captured response."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.project = Path(self.temp.name) / 'project'
+        self.project.mkdir()
+        (self.project / 'note.py').write_text('print("ok")\n')
+        self.state = Path(self.temp.name) / 'chatgpt-state'
+        self.endpoint = Endpoint(self.state, self.project)
+        self.addCleanup(self.endpoint.close)
+
+    def invoke(self, transport_receipt):
+        with mock.patch.object(chatgpt_desktop_pipe, 'send',
+                               return_value=transport_receipt) as send:
+            admission = self.endpoint.submit({'question': 'Revue du module',
+                                              'request_key': 'req-chain'})
+            result = finish_with_holder_dispatch(self.project, self.state, admission)
+        return send, admission, result
+
+    def test_captured_response_becomes_the_answer(self):
+        receipt = {'status': 'confirmed', 'attempted': True, 'click_observed': True,
+                   'composer_emptied': True, 'response_observed': True,
+                   'response_complete': True, 'response_source': 'rendered-conversation',
+                   'response_anchor': 'footer', 'response_sha256': 'a' * 64,
+                   'response_chars': 17, 'response_excerpt': 'Assistant reply.',
+                   'response_text': 'Assistant reply.'}
+        send, admission, result = self.invoke(receipt)
+        send.assert_called_once()
+        self.assertEqual(send.call_args.kwargs.get('request_key'), 'req-chain')
+        self.assertEqual(send.call_args.kwargs.get('name'), 'dedicated')
+        self.assertTrue(admission['admission_only'])
+        self.assertFalse(result['admission_only'])
+        self.assertEqual(result['delivery'], 'captured')
+        self.assertEqual(result['response'], 'Assistant reply.')
+        self.assertEqual(result['dispatch_receipt']['response_excerpt'], 'Assistant reply.')
+        self.assertNotIn('response_text', result['dispatch_receipt'])
+        row = self.endpoint.db.execute(
+            'SELECT dispatch_receipt FROM chatgpt_submissions WHERE request_key=?',
+            ('req-chain',)).fetchone()
+        self.assertNotIn('response_text', row[0])
+
+    def test_refused_dispatch_keeps_admission_replayable(self):
+        receipt = {'status': 'refused', 'attempted': False, 'reason': 'holder_unavailable'}
+        send, admission, result = self.invoke(receipt)
+        send.assert_called_once()
+        self.assertTrue(result['admission_only'])
+        self.assertEqual(result['dispatch_receipt']['reason'], 'holder_unavailable')
+        self.assertNotIn('response', result)
+        row = self.endpoint.db.execute(
+            'SELECT delivery FROM chatgpt_submissions WHERE request_key=?',
+            ('req-chain',)).fetchone()
+        self.assertEqual(row[0], 'attempted')
+
+    def test_terminal_stored_receipt_short_circuits_redispatch(self):
+        self.endpoint.submit({'question': 'Revue du module', 'request_key': 'req-chain'})
+        stored = json.dumps({'status': 'confirmed', 'response_excerpt': 'Ancienne réponse.',
+                             'response_chars': 16})
+        with self.endpoint.db:
+            self.endpoint.db.execute(
+                'UPDATE chatgpt_submissions SET dispatch_receipt=? WHERE request_key=?',
+                (stored, 'req-chain'))
+        with mock.patch.object(chatgpt_desktop_pipe, 'send') as send:
+            replay = dispatch_to_holder(self.project, self.state, 'req-chain')
+        send.assert_not_called()
+        self.assertTrue(replay['replayed'])
+        self.assertEqual(replay['response_excerpt'], 'Ancienne réponse.')
+
+    def test_missing_admission_raises(self):
+        with self.assertRaisesRegex(ValueError, 'Missing ChatGPT admission'):
+            dispatch_to_holder(self.project, self.state, 'absent-key')
 
 
 class ChatgptCrashSafetyTests(unittest.TestCase):

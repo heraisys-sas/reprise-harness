@@ -214,12 +214,16 @@ const editors = () => [...document.querySelectorAll('textarea, [contenteditable=
 const sendButtons = () => [...document.querySelectorAll('button')].filter(visible)
   .filter(e => /^(send|envoyer)(\s+(message|le message))?$/i
     .test((e.getAttribute('aria-label') || e.getAttribute('title') || '').trim()));
-const turns = (role) => [...document.querySelectorAll(
-  '[data-message-author-role="' + role + '"], [data-testid="' + role + '-turn"]')];
-// Issue #156: the owl Electron client has neither selector family, so
-// observeTurns is inert there. Post-send observation now relies on the AXTree
-// polling below; the DOM turn counting is kept for clients that expose it.
-// Network/SSE capture: SUSPENDED (voir issue #156).
+// Issue #226 (live evidence, 17 nov. 2026): the owl Electron client exposes
+// neither turn selector family, and the conversation token stream is invisible
+// to CDP (no EventSource, renderer JS issues no conversation fetch). Completion
+// arrives as a Network.webSocketFrameReceived lifecycle event on the shared
+// topics socket; the reply text is read from the rendered conversation via
+// bodyProbe below.
+const bodyProbe = () => ({url: location.href, ready: document.readyState,
+  text: (document.body.innerText || '').slice(-60000),
+  stream_len: window.__reprise_stream || 0,
+  quiet_ms: window.__reprise_last_mutation ? (Date.now() - window.__reprise_last_mutation) : null});
 function composerStatus(expected) {
   if (location.href !== 'app://-/index.html') return {status: 'target_changed'};
   const found = editors();
@@ -231,7 +235,7 @@ function composerStatus(expected) {
   if (expected === null && text.trim().length) return {status: 'draft_conflict', draft_text: text.slice(0, 200)};
   if (expected !== null && text !== expected) return {status: 'draft_mismatch'};
   if (expected !== null && buttons[0].disabled) return {status: 'send_disabled'};
-  return {status: 'ready', users: turns('user').length, assistants: turns('assistant').length};
+  return {status: 'ready'};
 }
 function focusUniqueComposer() {
   const found = editors();
@@ -247,22 +251,6 @@ function clickUniqueSend(expected) {
   buttons[0].click();
   return {clicked: true, status: 'clicked'};
 }
-function observeTurns(expected, beforeUsers, beforeAssistants) {
-  if (location.href !== 'app://-/index.html') return {status: 'target_changed'};
-  const users = turns('user'), assistants = turns('assistant');
-  const found = editors();
-  const last = users.at(-1);
-  const matching = users.length === beforeUsers + 1 && !!last &&
-    last.innerText.trim() === expected.trim();
-  const newest = assistants.length > beforeAssistants ? assistants.at(-1) : null;
-  const newText = newest ? newest.innerText.trim() : '';
-  return {status: 'observed', users: users.length, assistants: assistants.length,
-    user_confirmed: matching,
-    composer_emptied: found.length === 1 &&
-      (found[0].tagName === 'TEXTAREA' ? found[0].value : found[0].innerText).trim() === '',
-    assistant_observed: !!(matching && newText),
-    assistant_text: matching && newText ? newText.slice(-1500) : ''};
-}
 """
 
 
@@ -273,18 +261,53 @@ def _evaluate_send(transport, function, *args):
     return transport.evaluate(expression)
 
 
-# Issue #156: post-send response capture. Priority 1 = Network/SSE events
-# (the Electron «owl» client streams assistant replies over EventSource, so
-# Network.eventSourceMessageReceived carries the tokens directly); Priority 2
-# = AXTree polling kept as fallback when no SSE event is observed.
-SSE_POLL_INTERVAL_SECONDS = 1.0
-SSE_TIMEOUT_SECONDS = 120
-AXTREE_POLL_INTERVAL_SECONDS = 1.0
-AXTREE_TIMEOUT_SECONDS = 120
+# Issue #226 (live evidence, 17 nov. 2026): the owl client streams no CDP
+# EventSource and its renderer JS issues no conversation fetch; the token
+# stream lives in the main process and is not observable over CDP. What the
+# Network domain does deliver on the shared ws.chatgpt.com topics socket is
+# the lifecycle: conversation-created and conversation-turn-complete. The
+# reply TEXT is read from the rendered conversation (bodyProbe), anchored on
+# the prompt echo, cut by an explicit sentinel when the model complied and
+# else by the conversation footer, and validated by two identical polls.
+COMPLETION_POLL_INTERVAL_SECONDS = 1.0
+COMPLETION_TIMEOUT_SECONDS = 120
 RESPONSE_EXCERPT_CHARS = 1500
+MAX_RESPONSE_CHARS = 20000
+REPLY_SENTINEL = 'REPRISE-CAPTURE-FIN'
+REPLY_LABELS = ('chatgpt a dit', 'chatgpt said')
+# Footer markers include the «ChatGPT» prefix so the cut drops the whole
+# closing sentence, not just its tail.
+REPLY_FOOTERS = ('chatgpt peut faire des erreurs', 'chatgpt can make mistakes',
+                 'peut faire des erreurs', 'can make mistakes')
+TURN_COMPLETE_MARKER = 'conversation-turn-complete'
+# Targeted DOM change detection (issue #226): a MutationObserver injected on
+# the dedicated renderer records that conversation rendering is active and
+# when it goes quiet. The stream is a change signal only: the reply text is
+# read from the rendered conversation (bodyProbe), never reconstructed from
+# deltas (owl obfuscation makes delta reconstruction fragile). Intersection
+# tracking adds nothing in the compact dedicated window and is left out.
+STREAM_QUIET_MS = 8000
+OBSERVER_SCRIPT = """
+(() => {
+  if (window.__reprise_observer) return 'already';
+  window.__reprise_stream = 0;
+  window.__reprise_last_mutation = 0;
+  const observer = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      if (m.type === 'characterData' || m.type === 'childList') {
+        window.__reprise_stream += 1;
+        window.__reprise_last_mutation = Date.now();
+      }
+    }
+  });
+  observer.observe(document.body, {subtree: true, childList: true, characterData: true});
+  window.__reprise_observer = observer;
+  return 'armed';
+})()
+"""
 
 
-def _sse_enable(transport):
+def _net_enable(transport):
     """Enable the Network domain on the attached renderer; best effort."""
     try:
         transport.call('Network.enable', {'maxTotalBufferSize': 10000000,
@@ -294,123 +317,73 @@ def _sse_enable(transport):
         return False
 
 
-def _sse_drain(transport):
-    """Collect SSE data chunks from buffered CDP notifications.
+def drain_turn_completion(transport):
+    """Scan buffered CDP notifications for the turn lifecycle event.
 
-    Events accumulate in the transport buffer while the post-click turn loop
-    polls, so one drain after the loop captures the whole streamed reply.
+    Returns True once a conversation-turn-complete frame is observed. The
+    shared topics socket may predate the Network.enable call: frames keep
+    flowing to a session that enables the domain mid-flight (measured).
     """
-    chunks = []
     for frame in transport.drain_notifications():
-        if not isinstance(frame, dict) or \
-                frame.get('method') != 'Network.eventSourceMessageReceived':
+        if not isinstance(frame, dict):
             continue
-        data = (frame.get('params') or {}).get('data')
-        if isinstance(data, str):
-            chunks.append(data)
-    return chunks
+        response = (frame.get('params') or {}).get('response') or {}
+        payload = response.get('payloadData') if isinstance(response, dict) else None
+        if isinstance(payload, str) and TURN_COMPLETE_MARKER in payload:
+            return True
+    return False
 
 
-def collect_sse(transport, *, timeout=30,
-                interval=SSE_POLL_INTERVAL_SECONDS):
-    """Build assistant text from drained Network.eventSourceMessageReceived.
-
-    Completeness mirrors the AXTree rule: the payload is complete when its
-    sha256 is identical on two consecutive polls (1 s apart). No event at all
-    returns immediately with reason 'sse_no_events' so the AXTree fallback
-    runs without delay. Never fatal; transport errors yield
-    response_complete=False with reason 'sse_unavailable'.
-    """
+def install_stream_observer(transport):
+    """Arm the targeted change detector on the attached renderer; best effort."""
     try:
-        chunks = _sse_drain(transport)
+        return transport.evaluate(OBSERVER_SCRIPT) in ('armed', 'already')
     except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
-        return {'response_complete': False, 'response_sha256': None,
-                'response_chars': 0, 'response_excerpt': '',
-                'response_reason': 'sse_unavailable'}
-    if not chunks:
-        return {'response_complete': False, 'response_sha256': None,
-                'response_chars': 0, 'response_excerpt': '',
-                'response_reason': 'sse_no_events'}
-    deadline = time.monotonic() + timeout
-    previous = None
-    while True:
-        try:
-            chunks.extend(_sse_drain(transport))
-        except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
-            return {'response_complete': False, 'response_sha256': None,
-                    'response_chars': 0, 'response_excerpt': '',
-                    'response_reason': 'sse_unavailable'}
-        text = '\n'.join(chunks)
-        digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
-        if digest == previous:
-            return {'response_complete': True, 'response_sha256': digest,
-                    'response_chars': len(text),
-                    'response_excerpt': text[:RESPONSE_EXCERPT_CHARS],
-                    'response_source': 'sse'}
-        previous = digest
-        if time.monotonic() >= deadline:
-            return {'response_complete': False, 'response_sha256': None,
-                    'response_chars': 0, 'response_excerpt': '',
-                    'response_reason': 'sse_incomplete'}
-        time.sleep(interval)
+        return False
 
 
-def collect_axtree(transport):
-    """Read the full accessibility tree over CDP; returns per-node texts only."""
-    nodes = transport.call('Accessibility.getFullAXTree', {}).get('nodes') or []
-    texts = []
-    for node in nodes:
-        name = node.get('name') if isinstance(node, dict) else None
-        value = name.get('value') if isinstance(name, dict) else None
-        if isinstance(value, str) and value.strip():
-            texts.append(value.strip())
-    return {'texts': texts, 'joined': '\n'.join(texts)}
+def _normalize(text):
+    return ' '.join((text or '').split())
 
 
-def _ax_normalize(text):
-    return re.sub(r'\s+', ' ', text).strip()
+def extract_reply(text, prompt):
+    """Bounded extraction of the assistant reply from rendered conversation text.
 
-
-def extract_assistant_response(ax_joined, prompt):
-    """Heuristic (documented): the assistant reply follows the user prompt in
-    AX reading order. Bounded output: sha256 + length + excerpt, never the
-    full text in the durable receipt."""
-    joined = _ax_normalize(ax_joined)
-    marker = _ax_normalize(prompt)
-    position = joined.find(marker)
+    Anchored on the last occurrence of the prompt echo; cut by the explicit
+    sentinel when present, else by the conversation footer. Returns
+    (reply or None, anchor); never raises, never returns unbounded text.
+    """
+    joined = _normalize(text)
+    marker = _normalize(prompt)
+    position = joined.rfind(marker)
     if position < 0:
-        return {'response_sha256': None, 'response_chars': 0, 'response_excerpt': ''}
-    rest = joined[position + len(marker):].strip()
-    if not rest:
-        return {'response_sha256': None, 'response_chars': 0, 'response_excerpt': ''}
-    return {'response_sha256': hashlib.sha256(rest.encode('utf-8')).hexdigest(),
-            'response_chars': len(rest),
-            'response_excerpt': rest[:RESPONSE_EXCERPT_CHARS]}
-
-
-def collect_response(transport, prompt, *, timeout=AXTREE_TIMEOUT_SECONDS,
-                     interval=AXTREE_POLL_INTERVAL_SECONDS):
-    """Poll the AXTree until the extracted reply text is identical on two
-    consecutive polls (completeness signal), or give up at timeout. Never a
-    fatal error: an unavailable tree yields response_complete=False."""
-    deadline = time.monotonic() + timeout
-    previous = None
-    while True:
-        try:
-            joined = collect_axtree(transport).get('joined') or ''
-        except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
-            return {'response_complete': False, 'response_sha256': None,
-                    'response_chars': 0, 'response_excerpt': '',
-                    'response_reason': 'axtree_unavailable'}
-        extraction = extract_assistant_response(joined, prompt)
-        if previous is not None and extraction['response_sha256'] is not None \
-                and extraction['response_sha256'] == previous:
-            return extraction | {'response_complete': True}
-        previous = extraction['response_sha256']
-        if time.monotonic() >= deadline:
-            return extraction | {'response_complete': False,
-                                 'response_reason': 'axtree_timeout'}
-        time.sleep(interval)
+        return None, 'prompt_echo_missing'
+    rest = joined[position + len(marker):]
+    anchor = 'end'
+    cut = len(rest)
+    sentinel = rest.find(REPLY_SENTINEL)
+    if sentinel >= 0:
+        cut = sentinel
+        anchor = 'sentinel'
+    lower = rest.lower()
+    for footer in REPLY_FOOTERS:
+        found = lower.find(footer)
+        if 0 <= found < cut:
+            cut = found
+            if anchor != 'sentinel':
+                anchor = 'footer'
+    rest = rest[:cut]
+    for label in REPLY_LABELS:
+        head = rest.lower().find(label)
+        if 0 <= head <= 40:
+            rest = rest[head + len(label):]
+            break
+    reply = rest.strip(' :\u00a0-')
+    if not reply:
+        return None, anchor
+    if len(reply) > MAX_RESPONSE_CHARS:
+        reply = reply[:MAX_RESPONSE_CHARS]
+    return reply, anchor
 
 
 def _send_receipt():
@@ -444,7 +417,10 @@ def _load_receipt(path, prompt_hash):
 
 
 def _persist_receipt(path, receipt, *, initial=False):
-    payload = json.dumps(receipt, sort_keys=True, ensure_ascii=False).encode('utf-8')
+    # The durable receipt keeps bounded evidence only: never the full reply
+    # text (response_text is an in-memory field for the synchronous caller).
+    durable = {k: v for k, v in receipt.items() if k != 'response_text'}
+    payload = json.dumps(durable, sort_keys=True, ensure_ascii=False).encode('utf-8')
     if initial:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0)
         fd = os.open(path, flags, 0o600)
@@ -480,12 +456,12 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
                 if key in before:
                     receipt[key] = before[key]
         return receipt
-    users, assistants = before.get('users'), before.get('assistants')
-    if type(users) is not int or type(assistants) is not int:
-        receipt['reason'] = 'turn_counts_invalid'
-        return receipt
-    receipt['user_message_count_before'] = users
-    receipt['user_message_count_after'] = users
+    # Refusals above stay CDP-quiet: nothing is enabled or injected before a
+    # viable dispatch. From here on: Network domain (lifecycle frames flow even
+    # if the topics socket predates the enable), then the targeted change
+    # detector, then staging and the guarded click.
+    _net_enable(transport)
+    install_stream_observer(transport)
     if _evaluate_send(transport, 'focusUniqueComposer') is not True:
         receipt['reason'] = 'focus_failed'
         return receipt
@@ -516,43 +492,72 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
                            reason=click.get('status', 'click_unconfirmed') if isinstance(click, dict) else 'click_unconfirmed')
             return receipt
         receipt['click_observed'] = True
-        for attempt in range(20):
-            time.sleep(1)
-            turn = _evaluate_send(transport, 'observeTurns', prompt, users, assistants)
-            if not isinstance(turn, dict) or turn.get('status') != 'observed':
-                receipt.update(status='incertain',
-                               reason=turn.get('status', 'observation_invalid') if isinstance(turn, dict) else 'observation_invalid')
+        # Post-send observation (issue #226): completion evidence from two
+        # identical rendered polls, the ws.chatgpt.com lifecycle event, and
+        # the injected MutationObserver quiet window; reply text anchored on
+        # the prompt echo. Bounded; never a fatal error.
+        best = None
+        previous = None
+        completed = stable = quiet = False
+        deadline = time.monotonic() + COMPLETION_TIMEOUT_SECONDS
+        while True:
+            if drain_turn_completion(transport):
+                completed = True
+            probe = transport.evaluate(
+                '(() => {\n' + SEND_HELPERS + '\nreturn bodyProbe();\n})()')
+            text = probe.get('text') if isinstance(probe, dict) else None
+            if isinstance(text, str) and text:
+                reply, anchor = extract_reply(text, prompt)
+                if reply is not None and (best is None or len(reply) > len(best[0])):
+                    best = (reply, anchor)
+                evidence = reply if reply is not None else text
+                digest = hashlib.sha256(_normalize(evidence).encode('utf-8')).hexdigest()
+                if previous is not None and digest == previous:
+                    stable = True
+                previous = digest
+                quiet_ms = probe.get('quiet_ms') if isinstance(probe, dict) else None
+                if type(quiet_ms) in (int, float) and quiet_ms >= STREAM_QUIET_MS:
+                    quiet = True
+            if stable:
                 break
-            count = turn.get('users')
-            if type(count) is int:
-                receipt['user_message_count_after'] = count
-            receipt['user_confirmed'] = turn.get('user_confirmed') is True and count == users + 1
-            receipt['composer_emptied'] = turn.get('composer_emptied') is True
-            # A later contradictory observation revokes an earlier positive one.
-            receipt['status'] = ('sent' if receipt['user_confirmed'] and receipt['composer_emptied']
-                                 else 'incertain')
-            if receipt['status'] == 'sent':
-                if turn.get('assistant_observed') is True and type(turn.get('assistants')) is int and turn['assistants'] > assistants:
-                    receipt.update(status='confirmed', response_observed=True,
-                                   assistant_excerpt=str(turn.get('assistant_text', ''))[-1500:])
-                    break
+            if completed and previous is not None:
+                break
+            if quiet and previous is not None:
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(COMPLETION_POLL_INTERVAL_SECONDS)
+        if drain_turn_completion(transport):
+            completed = True
+        status = _evaluate_send(transport, 'composerStatus', None)
+        receipt['composer_emptied'] = isinstance(status, dict) and status.get('status') == 'ready'
+        if best is not None:
+            reply, anchor = best
+            # The prompt echo in the rendered conversation is the delivery
+            # evidence: the message is visibly part of the client conversation.
+            receipt['user_confirmed'] = True
+            receipt['response_observed'] = True
+            receipt['response_complete'] = bool(stable or completed or quiet)
+            receipt['response_source'] = 'rendered-conversation'
+            receipt['response_anchor'] = anchor
+            receipt['completion'] = ('stable' if stable else
+                                     'turn-complete' if completed else
+                                     'quiet' if quiet else 'timeout')
+            receipt['turn_completed'] = completed
+            receipt['response_sha256'] = hashlib.sha256(reply.encode('utf-8')).hexdigest()
+            receipt['response_chars'] = len(reply)
+            receipt['response_excerpt'] = reply[:RESPONSE_EXCERPT_CHARS]
+            receipt['response_text'] = reply
+        else:
+            receipt['completion'] = ('turn-complete' if completed else
+                                     'quiet' if quiet else 'timeout')
+        receipt['status'] = ('sent' if receipt['click_observed'] and receipt['composer_emptied']
+                             else 'incertain')
+        if receipt['status'] == 'sent' and receipt['response_observed'] \
+                and receipt['response_complete']:
+            receipt['status'] = 'confirmed'
         if receipt['status'] == 'incertain' and receipt['reason'] is None:
             receipt['reason'] = 'evidence_incomplete'
-        # Post-send response capture (issue #156): priority 1 = Network/SSE
-        # events, priority 2 = AXTree polling as fallback when no SSE event
-        # was observed. Attempted only after a click; fields stay optional so
-        # receipts without capture keep their shape.
-        if receipt['click_observed']:
-            try:
-                _sse_enable(transport)
-                sse = collect_sse(transport)
-                if sse.get('response_source') == 'sse':
-                    receipt.update(sse)
-                else:
-                    receipt['sse_reason'] = sse.get('response_reason')
-                    receipt.update(collect_response(transport, prompt))
-            except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
-                receipt['response_complete'] = False
     except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
         receipt.update(status='incertain', reason='pipe_unavailable')
     finally:

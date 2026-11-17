@@ -152,7 +152,10 @@ jamais un canal de retour.
 Le helper Python `chatgpt_desktop_pipe.py` accepte `inspect`, `probe` et désormais
 `send` : l'aller seul vers un renderer `app://-/index.html` possédé par
 une instance à profil dédié. Le retour métier = capture de réponse par le
-holder dans le receipt durable (Network/SSE prioritaire, repli AXTree) ;
+holder dans le receipt durable (mesures du 17/11/2026 : le flux de tokens est
+dans le process principal owl, invisible au CDP — capture = lecture rendue
+ancrée + preuve de complétude WS `conversation-turn-complete`, fenêtre calme
+MutationObserver, deux sondes identiques) ;
 ChatGPT Desktop n'a aucun outil MCP Reprise. Un tour visible dans Desktop
 ne prouve jamais `response_complete` — c'est le receipt qui le porte.
 
@@ -172,11 +175,13 @@ rejeu avec la même clé ne clique jamais une seconde fois, y compris si la
 première tentative est restée `incertain`.
 
 Sortie JSON triée : `status` vaut `refused`, `incertain`, `sent`
-ou `confirmed`. `sent` exige ensemble un clic observé, exactement un
-nouveau tour utilisateur dont le texte correspond au prompt après `trim`
-et le compositeur vidé ; `confirmed` ajoute uniquement l'observation d'un
-nouveau texte assistant. `response_complete` et
-`operator_isolation_verified` restent **false**. Codes de sortie :
+ou `confirmed`. `sent` exige ensemble un clic observé et le compositeur
+vidé ; `confirmed` ajoute la capture d'un texte assistant non vide avec
+une preuve de complétude (`completion` = `stable`, `turn-complete` ou
+`quiet`). L'écho du prompt rendu vaut preuve d'arrivée (`user_confirmed`) ;
+la consigne porte un sentinel (`REPRISE-CAPTURE-FIN`) qui borne l'extraction.
+`response_complete` reste distincte d'`operator_isolation_verified` (toujours
+**false** tant que la coexistence n'est pas prouvée). Codes de sortie :
 0 si preuves `sent/confirmed`, 64 si prompt absent/vide, 2 sinon.
 Une perte du transport après la frontière du clic reste `incertain` et
 n'autorise jamais un deuxième envoi. Aucun repli port TCP/API payante.
@@ -199,27 +204,57 @@ même périmètre projet que le pont ChatGPT (TaskStore `chatgpt-state`). L'anci
 `reprise_backends` liste `chatgpt` même lorsque son état est absent
 (`configured: false`) ; avec l'état partagé initialisable,
 `configured: true` signifie uniquement que le canal d'admission/retour
-est disponible. `availability: unverified`,
-`transport_verified: false` et `dispatch: admission_only` sont maintenus
-jusqu'à un véritable aller-retour Mac, jamais déduits de `tools/list`.
+est disponible. `availability: unverified` et `transport_verified: false`
+sont maintenus jusqu'à un véritable aller-retour Mac, jamais déduits de
+`tools/list`. Le champ `dispatch` passe à `holder_capture_sync` quand le
+pont tourne avec le grant opérateur `--chatgpt-dispatch`, sinon
+`admission_only` reste le comportement par défaut.
 
 L'utilisateur a explicitement autorisé les essais de la route non vérifiée.
 Les façades ChatGPT et Claude autorisent désormais l'auto-délégation pour une
 **nouvelle demande** avec clé unique ; elles ne réenvoient pas automatiquement
 une demande existante ni une tentative incertaine. Le pont `chatgpt_quick.review`
-**admet** la tâche dans le registre ; il n'appelle toujours pas automatiquement
-`chatgpt_desktop_pipe.send`. Aucun message Desktop, modèle exécuté ou
-`submit_result` accepté ne peut donc être déduit du seul reçu d'admission.
+**admet** la tâche dans le registre ; le push holder n'a lieu que si le grant
+`--chatgpt-dispatch` est posé (voir #226 ci-dessous). Aucun message Desktop,
+modèle exécuté ou `submit_result` accepté ne peut donc être déduit du seul
+reçu d'admission.
 
 **Retour de réponse — capture holder, sans action de ChatGPT (17/11/2026).**
 Le retour principal ne dépend PAS d'une invocation MCP côté ChatGPT Desktop :
-après le clic, le holder capture la réponse directement — priorité 1 =
-Network/SSE (`collect_sse`), priorité 2 = repli AXTree (`collect_response`) —
-et l'écrit dans le receipt durable (`response_complete`, `assistant_excerpt` ;
-preuves live a6/a7/a8). ChatGPT n'a AUCUN outil MCP Reprise ; le TaskStore
+après le clic, le holder capture la réponse directement. Mesures du
+17/11/2026 (3 runs instrumentés) : aucun évènement EventSource, aucun fetch
+conversation côté renderer — le flux de tokens vit dans le process principal
+owl et n'est pas observable au CDP. La capture v1 s'appuie donc sur :
+lecture rendue ancrée (`bodyProbe` + `extract_reply` : écho du prompt,
+sentinel `REPRISE-CAPTURE-FIN`, pied « ChatGPT peut faire des erreurs »),
+preuve de complétude WS (`conversation-turn-complete` sur le socket topics
+`ws.chatgpt.com`), détecteur de changement ciblé (MutationObserver injecté,
+fenêtre calme 8 s) et deux sondes rendues identiques. Le receipt durable
+porte `response_complete`, `completion`, `response_sha256`,
+`response_chars` et un excerpt borné (1500 car.) — jamais le texte complet.
+Le texte intégral (≤ 20 000 car.) n'existe que dans le retour synchrone au
+délégant. AXTree est écarté (faux positifs mesurés) ; SSE est mort sur ce
+client. ChatGPT n'a AUCUN outil MCP Reprise ; le TaskStore
 `chatgpt-state` est un registre d'admission seul (idempotence du
 `request_key`), jamais un canal de retour ni un « complément de preuve » : un
 aller-retour consultatif se ferme sur le receipt holder seul.
+
+### Issue #226 — Chaînon admission → dispatch holder (opt-in `--chatgpt-dispatch`)
+
+Avec le grant opérateur `--chatgpt-dispatch`, le pont enchaîne après
+chaque admission fraîche ou rejouée : `chatgpt_quick.dispatch_to_holder`
+lit le prompt admis (jamais dupliqué), pousse via le client holder
+(`chatgpt_desktop_pipe.send`, at-most-once par receipts durables), puis
+écrit le reçu borné dans la colonne `dispatch_receipt` du registre. Si le
+reçu stocké est déjà terminal (`sent`/`confirmed`), aucun re-dispatch n'a
+lieu même si les fichiers du holder ont disparu. Un refus holder laisse
+l'admission `attempted` et rejouable ; le délégant reçoit `dispatch_receipt`
+et l'admission reste `admission_only`. Quand le holder confirme
+(`confirmed`/`sent` avec texte), la réponse capturée devient
+`result['response']`, `delivery` passe à `captured` et le drapeau
+`admission_only` tombe : `reprise_requests` stocke un résultat terminé,
+récupérable tel quel par le délégant. Sans le grant, le comportement reste
+l'admission seule de #221.
 
 **Déploiement** : reconstruire la release depuis `dev`, prévisualiser/appliquer
 à nouveau les connecteurs gérés (DeepSeek avec `--delegate`, Claude, ChatGPT),

@@ -8,12 +8,12 @@ delivery proof.
 
 Invariant « arrivé ≠ traité » : an admission only records that a submission
 was attempted (delivery='attempted'); the roundtrip is closed by the holder's
-response capture in its durable receipt (Network/SSE, AXTree fallback —
-chatgpt_desktop_pipe), not by any ChatGPT-side action: ChatGPT Desktop has no
-Reprise MCP tools. The TaskStore keeps the submission registry and may record
-an attribution complement, never a loop condition. A submission already
-attempted is never resent: idempotence is absolute, recovery goes through
-reprise_requests or an explicit operator reconciliation.
+response capture (chatgpt_desktop_pipe: ws.chatgpt.com turn-complete evidence
++ anchored rendered-conversation read), not by any ChatGPT-side action:
+ChatGPT Desktop has no Reprise MCP tools. The TaskStore keeps the submission
+registry and may record an attribution complement, never a loop condition. A
+submission already attempted is never resent: idempotence is absolute,
+recovery goes through reprise_requests or an explicit operator reconciliation.
 """
 import hashlib
 import json
@@ -22,13 +22,16 @@ import time
 import weakref
 from pathlib import Path
 
+import chatgpt_desktop_pipe
 from delegation_store import file_evidence
 from desktop_task_store import TaskStore, bounded
 
 CHATGPT_TASK_INSTRUCTION = ('Reprise consultative question (request_key={key}). '
                             'ChatGPT has no Reprise tools: answer directly in this '
                             'conversation — the reply is captured from it by the Reprise '
-                            'holder. Question:\n\n')
+                            'holder. End your answer with the exact line '
+                            + chatgpt_desktop_pipe.REPLY_SENTINEL + '. '
+                            'Question:\n\n')
 
 ALLOWED_SUBMISSION_KEYS = {'question', 'kind', 'level', 'paths', 'request_key', 'before_evidence'}
 
@@ -79,7 +82,7 @@ class Endpoint:
         Historical 'admitted' ledger rows represent a crash between two local
         projection writes, not proof that a model was ever invoked.
         """
-        row = self.db.execute('''SELECT delivery, needs_review, prompt
+        row = self.db.execute('''SELECT delivery, needs_review, prompt, dispatch_receipt
             FROM chatgpt_submissions WHERE scope=? AND request_key=?''',
             (self.scope, request_key)).fetchone()
         if row is None:
@@ -98,12 +101,19 @@ class Endpoint:
                     WHERE scope=? AND request_key=? AND delivery='admitted' ''',
                     (json.dumps({'stage': 'admitted', 'channel': 'indeterminate'}),
                      self.scope, request_key))
-            row = self.db.execute('''SELECT delivery,needs_review,prompt
+            row = self.db.execute('''SELECT delivery,needs_review,prompt,dispatch_receipt
                 FROM chatgpt_submissions WHERE scope=? AND request_key=?''',
                 (self.scope, request_key)).fetchone()
+        stored = None
+        if row[3]:
+            try:
+                stored = json.loads(row[3])
+            except ValueError:
+                stored = None
         return {'status': 'finished', 'request_key': request_key,
                 'delivery': row[0] or 'admitted', 'resent': False,
-                'admission_only': True, 'needs_review': bool(row[1])}
+                'admission_only': True, 'needs_review': bool(row[1]),
+                'dispatch_receipt': stored}
 
     def submit(self, args):
         if not isinstance(args, dict) or args.keys() - ALLOWED_SUBMISSION_KEYS:
@@ -153,8 +163,8 @@ class Endpoint:
         return {'status': 'finished', 'request_key': request_key, 'delivery': 'attempted',
                 'resent': False, 'admission_only': True, 'needs_review': needs_review,
                 'kind': kind, 'level': level,
-                'return_channel': "the holder's response capture in its durable receipt (Network/SSE, AXTree fallback) — no ChatGPT-side action",
-                'channel': 'indeterminate (canal local à déterminer)',
+                'return_channel': "the holder's captured response (ws.chatgpt.com turn-complete + anchored rendered-conversation read) — no ChatGPT-side action",
+                'channel': 'holder CDP pipe (profil dédié)',
                 'automatic_fallback': False}
 
     def mark_acknowledged(self, request_key, attempt_id, answer_sha256):
@@ -197,6 +207,76 @@ class Endpoint:
         if cursor.rowcount:
             return {'request_key': request_key, 'delivery': 'acknowledged', 'changed': True}
         raise ValueError('Delivery is not attempted')
+
+
+def dispatch_to_holder(root, state, request_key, *, profile='dedicated'):
+    """Push one admitted prompt through the holder client; persist the receipt.
+
+    At-most-once is enforced by the holder's durable receipt files keyed on
+    (profile, request_key, prompt hash). A terminal stored receipt
+    (sent/confirmed) short-circuits a re-dispatch even if the holder's files
+    were cleaned. A refusal leaves the admission 'attempted' and replayable;
+    the ledger's dispatch_receipt column records evidence, never a loop
+    condition (the TaskStore stays an admission registry).
+    """
+    root_path = Path(root).resolve(strict=True)
+    scope = str(root_path)
+    state = Path(state)
+    db = sqlite3.connect(state/'chatgpt.sqlite', timeout=2)
+    try:
+        row = db.execute('SELECT prompt, dispatch_receipt FROM chatgpt_submissions '
+                         'WHERE scope=? AND request_key=?', (scope, request_key)).fetchone()
+    finally:
+        db.close()
+    if row is None:
+        raise ValueError('Missing ChatGPT admission to dispatch')
+    prompt, stored = row
+    if stored:
+        try:
+            prior = json.loads(stored)
+        except ValueError:
+            prior = None
+        if isinstance(prior, dict) and prior.get('status') in ('sent', 'confirmed'):
+            return dict(prior, replayed=True)
+    receipt = chatgpt_desktop_pipe.send(prompt, request_key=request_key, name=profile)
+    durable = {k: v for k, v in receipt.items() if k != 'response_text'}
+    db = sqlite3.connect(state/'chatgpt.sqlite', timeout=2)
+    try:
+        with db:
+            db.execute('UPDATE chatgpt_submissions SET dispatch_receipt=? '
+                       'WHERE scope=? AND request_key=?',
+                       (json.dumps(durable, sort_keys=True, ensure_ascii=False),
+                        scope, request_key))
+    finally:
+        db.close()
+    return receipt
+
+
+def finish_with_holder_dispatch(root, state, admission):
+    """Merge one holder dispatch into an admission receipt (Bridge hook).
+
+    A captured response becomes the delegation answer (result['response']):
+    the admission then loses its admission_only flag and reprise_requests
+    stores the finished result. Holder refusals keep the admission replayable
+    and carry the dispatch evidence instead; never a fatal error.
+    """
+    result = dict(admission)
+    request_key = result.get('request_key')
+    if not isinstance(request_key, str) or not request_key:
+        return result
+    try:
+        receipt = dispatch_to_holder(root, state, request_key)
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        result['dispatch_error'] = f'{type(exc).__name__}: {exc}'
+        return result
+    durable = {k: v for k, v in receipt.items() if k != 'response_text'}
+    result['dispatch_receipt'] = durable
+    if receipt.get('status') in ('sent', 'confirmed') and receipt.get('response_text'):
+        result['response'] = receipt['response_text']
+        result['delivery'] = 'captured'
+        result['admission_only'] = False
+        result['captured_answer_sha256'] = receipt.get('response_sha256')
+    return result
 
 
 def review(root, question, *, kind='expertise', level='standard', paths=None,
