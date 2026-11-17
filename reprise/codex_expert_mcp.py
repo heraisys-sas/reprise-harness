@@ -758,7 +758,7 @@ class Bridge:
         if name == 'reprise_followup' and backend == 'claude-desktop':
             raise ValueError('Pas de session Quick Apply suiveuse ; la soumission est unidirectionnelle.')
         if name == 'reprise_followup' and backend == 'chatgpt':
-            raise ValueError('Pas de session ChatGPT suiveuse ; admission unidirectionnelle + retour par get_task/submit_result.')
+            raise ValueError('Pas de session ChatGPT suiveuse ; admission unidirectionnelle, retour = capture de réponse par le holder (receipt).')
         if name == 'reprise_followup' and backend == 'claude-code':
             if not isinstance(ident, str):
                 raise ValueError('Owned Claude session required')

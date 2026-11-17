@@ -13,9 +13,21 @@ import json
 import os
 from pathlib import Path
 import re
-import stat
-import sys
+import signal
 import time
+import socket as socket_module
+import stat
+import subprocess
+import sys
+import threading
+import time
+
+# This module doubles as a detached holder entrypoint (`python3 <script>
+# serve`); the bare import below only resolves when the module directory is
+# importable, which is not the case for a spawned child. Fix sys.path first.
+_HERE = str(Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 from claude_cdp_pipe import launch_cdp_process, terminate_chrome
 
@@ -204,6 +216,10 @@ const sendButtons = () => [...document.querySelectorAll('button')].filter(visibl
     .test((e.getAttribute('aria-label') || e.getAttribute('title') || '').trim()));
 const turns = (role) => [...document.querySelectorAll(
   '[data-message-author-role="' + role + '"], [data-testid="' + role + '-turn"]')];
+// Issue #156: the owl Electron client has neither selector family, so
+// observeTurns is inert there. Post-send observation now relies on the AXTree
+// polling below; the DOM turn counting is kept for clients that expose it.
+// Network/SSE capture: SUSPENDED (voir issue #156).
 function composerStatus(expected) {
   if (location.href !== 'app://-/index.html') return {status: 'target_changed'};
   const found = editors();
@@ -212,7 +228,7 @@ function composerStatus(expected) {
   if (buttons.length !== 1) return {status: 'selectors_stale', send_button_count: buttons.length};
   const editor = found[0];
   const text = editor.tagName === 'TEXTAREA' ? editor.value : editor.innerText;
-  if (expected === null && text.length) return {status: 'draft_conflict'};
+  if (expected === null && text.trim().length) return {status: 'draft_conflict', draft_text: text.slice(0, 200)};
   if (expected !== null && text !== expected) return {status: 'draft_mismatch'};
   if (expected !== null && buttons[0].disabled) return {status: 'send_disabled'};
   return {status: 'ready', users: turns('user').length, assistants: turns('assistant').length};
@@ -243,7 +259,7 @@ function observeTurns(expected, beforeUsers, beforeAssistants) {
   return {status: 'observed', users: users.length, assistants: assistants.length,
     user_confirmed: matching,
     composer_emptied: found.length === 1 &&
-      (found[0].tagName === 'TEXTAREA' ? found[0].value : found[0].innerText) === '',
+      (found[0].tagName === 'TEXTAREA' ? found[0].value : found[0].innerText).trim() === '',
     assistant_observed: !!(matching && newText),
     assistant_text: matching && newText ? newText.slice(-1500) : ''};
 }
@@ -255,6 +271,146 @@ def _evaluate_send(transport, function, *args):
     values = ','.join(json.dumps(v, ensure_ascii=True) for v in args)
     expression = '(() => {\n' + SEND_HELPERS + '\nreturn ' + function + '(' + values + ');\n})()'
     return transport.evaluate(expression)
+
+
+# Issue #156: post-send response capture. Priority 1 = Network/SSE events
+# (the Electron «owl» client streams assistant replies over EventSource, so
+# Network.eventSourceMessageReceived carries the tokens directly); Priority 2
+# = AXTree polling kept as fallback when no SSE event is observed.
+SSE_POLL_INTERVAL_SECONDS = 1.0
+SSE_TIMEOUT_SECONDS = 120
+AXTREE_POLL_INTERVAL_SECONDS = 1.0
+AXTREE_TIMEOUT_SECONDS = 120
+RESPONSE_EXCERPT_CHARS = 1500
+
+
+def _sse_enable(transport):
+    """Enable the Network domain on the attached renderer; best effort."""
+    try:
+        transport.call('Network.enable', {'maxTotalBufferSize': 10000000,
+                                          'maxResourceBufferSize': 5000000})
+        return True
+    except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+        return False
+
+
+def _sse_drain(transport):
+    """Collect SSE data chunks from buffered CDP notifications.
+
+    Events accumulate in the transport buffer while the post-click turn loop
+    polls, so one drain after the loop captures the whole streamed reply.
+    """
+    chunks = []
+    for frame in transport.drain_notifications():
+        if not isinstance(frame, dict) or \
+                frame.get('method') != 'Network.eventSourceMessageReceived':
+            continue
+        data = (frame.get('params') or {}).get('data')
+        if isinstance(data, str):
+            chunks.append(data)
+    return chunks
+
+
+def collect_sse(transport, *, timeout=30,
+                interval=SSE_POLL_INTERVAL_SECONDS):
+    """Build assistant text from drained Network.eventSourceMessageReceived.
+
+    Completeness mirrors the AXTree rule: the payload is complete when its
+    sha256 is identical on two consecutive polls (1 s apart). No event at all
+    returns immediately with reason 'sse_no_events' so the AXTree fallback
+    runs without delay. Never fatal; transport errors yield
+    response_complete=False with reason 'sse_unavailable'.
+    """
+    try:
+        chunks = _sse_drain(transport)
+    except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+        return {'response_complete': False, 'response_sha256': None,
+                'response_chars': 0, 'response_excerpt': '',
+                'response_reason': 'sse_unavailable'}
+    if not chunks:
+        return {'response_complete': False, 'response_sha256': None,
+                'response_chars': 0, 'response_excerpt': '',
+                'response_reason': 'sse_no_events'}
+    deadline = time.monotonic() + timeout
+    previous = None
+    while True:
+        try:
+            chunks.extend(_sse_drain(transport))
+        except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+            return {'response_complete': False, 'response_sha256': None,
+                    'response_chars': 0, 'response_excerpt': '',
+                    'response_reason': 'sse_unavailable'}
+        text = '\n'.join(chunks)
+        digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
+        if digest == previous:
+            return {'response_complete': True, 'response_sha256': digest,
+                    'response_chars': len(text),
+                    'response_excerpt': text[:RESPONSE_EXCERPT_CHARS],
+                    'response_source': 'sse'}
+        previous = digest
+        if time.monotonic() >= deadline:
+            return {'response_complete': False, 'response_sha256': None,
+                    'response_chars': 0, 'response_excerpt': '',
+                    'response_reason': 'sse_incomplete'}
+        time.sleep(interval)
+
+
+def collect_axtree(transport):
+    """Read the full accessibility tree over CDP; returns per-node texts only."""
+    nodes = transport.call('Accessibility.getFullAXTree', {}).get('nodes') or []
+    texts = []
+    for node in nodes:
+        name = node.get('name') if isinstance(node, dict) else None
+        value = name.get('value') if isinstance(name, dict) else None
+        if isinstance(value, str) and value.strip():
+            texts.append(value.strip())
+    return {'texts': texts, 'joined': '\n'.join(texts)}
+
+
+def _ax_normalize(text):
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def extract_assistant_response(ax_joined, prompt):
+    """Heuristic (documented): the assistant reply follows the user prompt in
+    AX reading order. Bounded output: sha256 + length + excerpt, never the
+    full text in the durable receipt."""
+    joined = _ax_normalize(ax_joined)
+    marker = _ax_normalize(prompt)
+    position = joined.find(marker)
+    if position < 0:
+        return {'response_sha256': None, 'response_chars': 0, 'response_excerpt': ''}
+    rest = joined[position + len(marker):].strip()
+    if not rest:
+        return {'response_sha256': None, 'response_chars': 0, 'response_excerpt': ''}
+    return {'response_sha256': hashlib.sha256(rest.encode('utf-8')).hexdigest(),
+            'response_chars': len(rest),
+            'response_excerpt': rest[:RESPONSE_EXCERPT_CHARS]}
+
+
+def collect_response(transport, prompt, *, timeout=AXTREE_TIMEOUT_SECONDS,
+                     interval=AXTREE_POLL_INTERVAL_SECONDS):
+    """Poll the AXTree until the extracted reply text is identical on two
+    consecutive polls (completeness signal), or give up at timeout. Never a
+    fatal error: an unavailable tree yields response_complete=False."""
+    deadline = time.monotonic() + timeout
+    previous = None
+    while True:
+        try:
+            joined = collect_axtree(transport).get('joined') or ''
+        except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+            return {'response_complete': False, 'response_sha256': None,
+                    'response_chars': 0, 'response_excerpt': '',
+                    'response_reason': 'axtree_unavailable'}
+        extraction = extract_assistant_response(joined, prompt)
+        if previous is not None and extraction['response_sha256'] is not None \
+                and extraction['response_sha256'] == previous:
+            return extraction | {'response_complete': True}
+        previous = extraction['response_sha256']
+        if time.monotonic() >= deadline:
+            return extraction | {'response_complete': False,
+                                 'response_reason': 'axtree_timeout'}
+        time.sleep(interval)
 
 
 def _send_receipt():
@@ -320,7 +476,7 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
     if not isinstance(before, dict) or before.get('status') != 'ready':
         receipt['reason'] = before.get('status', 'selectors_stale') if isinstance(before, dict) else 'selectors_stale'
         if isinstance(before, dict):
-            for key in ('composer_count', 'send_button_count'):
+            for key in ('composer_count', 'send_button_count', 'draft_text'):
                 if key in before:
                     receipt[key] = before[key]
         return receipt
@@ -382,6 +538,21 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
                     break
         if receipt['status'] == 'incertain' and receipt['reason'] is None:
             receipt['reason'] = 'evidence_incomplete'
+        # Post-send response capture (issue #156): priority 1 = Network/SSE
+        # events, priority 2 = AXTree polling as fallback when no SSE event
+        # was observed. Attempted only after a click; fields stay optional so
+        # receipts without capture keep their shape.
+        if receipt['click_observed']:
+            try:
+                _sse_enable(transport)
+                sse = collect_sse(transport)
+                if sse.get('response_source') == 'sse':
+                    receipt.update(sse)
+                else:
+                    receipt['sse_reason'] = sse.get('response_reason')
+                    receipt.update(collect_response(transport, prompt))
+            except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+                receipt['response_complete'] = False
     except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
         receipt.update(status='incertain', reason='pipe_unavailable')
     finally:
@@ -393,81 +564,283 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
     return receipt
 
 
+def _holder_socket_path(profile_root):
+    return Path(profile_root) / 'dedicated.pipe.sock'
+
+
+# Default holder socket, under the same private folder as the profile lock.
+HOLDER_SOCKET_PATH = _holder_socket_path(DEFAULT_PROFILE_ROOT)
+
+_HOLDER_START_ATTEMPTS = 30
+
+
+def _holder_connect(path, timeout=2.0):
+    """Return a connected unix socket, or None when nobody listens."""
+    sock = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect(str(path))
+    except OSError:
+        try:
+            sock.close()
+        except OSError:
+            pass
+        return None
+    return sock
+
+
+def _holder_exchange(sock, payload):
+    """One newline-framed JSON request; None on any transport/parse failure."""
+    try:
+        sock.sendall((json.dumps(payload, ensure_ascii=False) + '\n').encode('utf-8'))
+        frame = bytearray()
+        while b'\n' not in frame:
+            chunk = sock.recv(65536)
+            if not chunk:
+                return None
+            frame.extend(chunk)
+            if len(frame) > MAX_PROMPT_CHARS * 4 + 65536:
+                return None
+        line = frame.partition(b'\n')[0]
+        return json.loads(line)
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+def _client_replay(profile, prompt, request_key):
+    """Read-only durable replay when no holder lives: the receipt files are
+    the single source of truth and outlive the holder process. None when no
+    receipt exists yet (caller may then start a holder)."""
+    prompt_hash = hashlib.sha256(prompt.encode('utf-8')).hexdigest()
+    try:
+        existing = _load_receipt(_receipt_path(profile, request_key), prompt_hash)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return _send_receipt() | {'status': 'incertain', 'attempted': True,
+                                  'reason': 'receipt_conflict_or_unreadable'}
+    if existing is None:
+        return None
+    return existing | {'replayed': True}
+
+
+def _start_holder_daemon():
+    """Spawn a detached holder process; it owns Chrome and the pipe for good."""
+    script = Path(__file__).resolve()
+    try:
+        return subprocess.Popen(
+            [sys.executable, str(script), 'serve'],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        return None
+
+
+def _holder_sigterm(_signum, _frame):
+    # Close the socket and keep Chrome alive: only the holder owns the pipe,
+    # and the finally block of serve() performs the bounded cleanup.
+    raise SystemExit(0)
+
+
+def _holder_receipt(receipt, **update):
+    receipt.update(update)
+    return receipt
+
+
+def _holder_dispatch(transport, profile, payload):
+    """Validate, replay or dispatch one request on the holder's LIVE transport."""
+    if not isinstance(payload, dict):
+        return _send_receipt() | {'reason': 'invalid_request'}
+    prompt = payload.get('prompt')
+    request_key = payload.get('request_key')
+    if not isinstance(prompt, str) or not prompt.strip():
+        return _send_receipt() | {'reason': 'prompt_required'}
+    if len(prompt) > MAX_PROMPT_CHARS:
+        return _send_receipt() | {'reason': 'prompt_too_large'}
+    if request_key is None:
+        request_key = hashlib.sha256(prompt.encode('utf-8')).hexdigest()
+    if not isinstance(request_key, str) or not REQUEST_KEY.fullmatch(request_key):
+        return _send_receipt() | {'reason': 'invalid_request_key'}
+    prompt_hash = hashlib.sha256(prompt.encode('utf-8')).hexdigest()
+    path = _receipt_path(profile, request_key)
+    try:
+        existing = _load_receipt(path, prompt_hash)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return _send_receipt() | {'status': 'incertain', 'attempted': True,
+                                  'reason': 'receipt_conflict_or_unreadable'}
+    if existing is not None:
+        existing['replayed'] = True
+        return existing
+    # Quick census on the shared transport: never re-launch, never kill.
+    try:
+        state = census(transport)
+    except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+        state = None
+    if not isinstance(state, dict) or state.get('status') != 'ready':
+        return _send_receipt() | {'reason': 'holder_not_ready'}
+    return _dispatch(transport, prompt, profile, request_key, _send_receipt())
+
+
+def _serve_connection(conn, transport, profile):
+    try:
+        frame = bytearray()
+        while b'\n' not in frame:
+            chunk = conn.recv(65536)
+            if not chunk:
+                return
+            frame.extend(chunk)
+            if len(frame) > MAX_PROMPT_CHARS * 4 + 65536:
+                break
+    except OSError:
+        return
+    try:
+        payload = json.loads(frame.partition(b'\n')[0])
+    except (ValueError, UnicodeDecodeError):
+        payload = None
+    receipt = _holder_dispatch(transport, profile, payload)
+    try:
+        conn.sendall((json.dumps(receipt, sort_keys=True, ensure_ascii=False) + '\n')
+                     .encode('utf-8'))
+    except OSError:
+        pass
+
+
+def serve(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT,
+          name='dedicated', stop=None):
+    """Long-lived holder: owns Chrome, the CDP pipe, and serves send requests.
+
+    Chrome is launched once and NEVER terminated here; the pipe constraint
+    (only the launcher may use it) is what motivates this process. SIGTERM
+    closes the socket and leaves Chrome running.
+    """
+    profile = profile_path(profile_root, name)
+    binary = Path(binary).expanduser().absolute()
+    if binary.is_symlink() or not binary.is_file() or not os.access(binary, os.X_OK):
+        return {'status': 'refused', 'reason': 'binary_unavailable'}
+    _private_directory(profile.parent)
+    _private_directory(profile)
+    socket_path = _holder_socket_path(profile.parent)
+    lock, fd = _claim_lock(profile.parent, name)
+    transport = proc = server = None
+    try:
+        try:
+            transport, proc = launch_cdp_process(binary, build_args(profile),
+                                                 label='ChatGPT Desktop')
+        except (OSError, RuntimeError):
+            return {'status': 'refused', 'reason': 'launch_failed'}
+        os.write(fd, str(proc.pid).encode('ascii'))
+        os.fsync(fd)
+        try:
+            # The renderer does not register its app:// page without activation.
+            subprocess.run(['open', '-a', 'ChatGPT'], check=False, timeout=15)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        ready = False
+        for attempt in range(60):
+            try:
+                state = census(transport)
+            except (TimeoutError, EOFError, RuntimeError):
+                state = None
+            if isinstance(state, dict) and state.get('status') == 'ready':
+                ready = True
+                break
+            if proc.poll() is not None:
+                return {'status': 'refused', 'reason': 'instance_exited'}
+            time.sleep(0.5)
+        if not ready:
+            return {'status': 'refused', 'reason': 'holder_not_ready'}
+        if socket_path.exists() or socket_path.is_symlink():
+            probe = _holder_connect(socket_path, timeout=0.5)
+            if probe is not None:
+                probe.close()
+                return {'status': 'refused', 'reason': 'holder_already_running'}
+            # Nobody answers: orphaned socket file, no live holder holds it.
+            socket_path.unlink()
+        server = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+        server.bind(str(socket_path))
+        os.chmod(socket_path, 0o600)
+        server.listen(8)
+        server.settimeout(0.5)
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGTERM, _holder_sigterm)
+        while stop is None or not stop.is_set():
+            try:
+                conn, _ = server.accept()
+            except socket_module.timeout:
+                continue
+            except OSError:
+                break
+            with conn:
+                _serve_connection(conn, transport, profile)
+        return {'status': 'holder_stopped'}
+    finally:
+        if server is not None:
+            try:
+                server.close()
+            except OSError:
+                pass
+        try:
+            socket_path.unlink()
+        except OSError:
+            pass
+        if lock is not None:
+            _release_lock(lock, fd)
+        # Chrome and the transport stay alive by design (holder contract).
+
+
 def send(prompt, binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT,
          name='default', request_key=None):
-    """One at-most-once dispatch on an owned pipe; stdout is never the durable guard."""
+    """At-most-once dispatch delegated to the profile's persistent holder.
+
+    send owns no transport: it validates locally, then talks to the holder
+    socket (starting the detached holder when absent). Durable receipts are
+    the holder's business (same profile folder, single source of truth).
+    """
     receipt = _send_receipt()
-    transport = proc = lock = fd = None
     if not isinstance(prompt, str) or not prompt.strip():
         receipt['reason'] = 'prompt_required'
         return receipt
     if len(prompt) > MAX_PROMPT_CHARS:
         receipt['reason'] = 'prompt_too_large'
         return receipt
+    if request_key is None:
+        # Repeating identical prompts is intentionally blocked by default.
+        request_key = hashlib.sha256(prompt.encode('utf-8')).hexdigest()
+    if not isinstance(request_key, str) or not REQUEST_KEY.fullmatch(request_key):
+        receipt['reason'] = 'invalid_request_key'
+        return receipt
     try:
         profile = profile_path(profile_root, name)
-        binary = Path(binary).expanduser().absolute()
-        if request_key is None:
-            # Repeating identical prompts is intentionally blocked by default.
-            request_key = hashlib.sha256(prompt.encode('utf-8')).hexdigest()
-        if not isinstance(request_key, str) or not REQUEST_KEY.fullmatch(request_key):
-            receipt['reason'] = 'invalid_request_key'
+    except ValueError:
+        receipt['reason'] = 'invalid_profile'
+        return receipt
+    socket_path = _holder_socket_path(profile.parent)
+    sock = _holder_connect(socket_path, timeout=2.0)
+    if sock is None:
+        replay = _client_replay(profile, prompt, request_key)
+        if replay is not None:
+            return replay
+        holder = _start_holder_daemon()
+        if holder is None:
+            receipt['reason'] = 'holder_spawn_failed'
             return receipt
-        prompt_hash = hashlib.sha256(prompt.encode('utf-8')).hexdigest()
-        if binary.is_symlink() or not binary.is_file() or not os.access(binary, os.X_OK):
-            receipt['reason'] = 'binary_unavailable'
-            return receipt
-        _private_directory(profile.parent)
-        _private_directory(profile)
-        try:
-            existing = _load_receipt(_receipt_path(profile, request_key), prompt_hash)
-        except (OSError, ValueError, json.JSONDecodeError):
-            receipt.update(status='incertain', attempted=True,
-                       reason='receipt_conflict_or_unreadable')
-            return receipt
-        if existing is not None:
-            existing['replayed'] = True
-            return existing
-        lock, fd = _claim_lock(profile.parent, name)
-        try:
-            transport, proc = launch_cdp_process(binary, build_args(profile), label='ChatGPT Desktop')
-        except (OSError, RuntimeError):
-            receipt['reason'] = 'launch_failed'
-            return receipt
-        os.write(fd, str(proc.pid).encode('ascii'))
-        os.fsync(fd)
-        for attempt in range(20):
-            if proc.poll() is not None:
-                receipt['reason'] = 'instance_exited'
-                return receipt
-            state = census(transport)
-            if state.get('status') != 'target_missing':
-                if state.get('status') != 'ready':
-                    receipt['reason'] = state.get('status', 'selectors_stale')
-                    receipt.update({k: state[k] for k in ('composer_count',) if k in state})
-                    return receipt
+        for attempt in range(_HOLDER_START_ATTEMPTS):
+            sock = _holder_connect(socket_path, timeout=0.5)
+            if sock is not None:
                 break
-            if attempt != 19:
-                time.sleep(0.25)
-        else:
-            receipt['reason'] = 'target_missing'
+            if attempt != _HOLDER_START_ATTEMPTS - 1:
+                time.sleep(0.5)
+        if sock is None:
+            receipt['reason'] = 'holder_unavailable'
             return receipt
-        return _dispatch(transport, prompt, profile, request_key, receipt)
-    except FileExistsError:
-        receipt['reason'] = 'profile_busy'
-    except (TimeoutError, EOFError, RuntimeError, OSError, ValueError) as exc:
-        # Before the irreversible marker, transport failure proves no click.
-        receipt['reason'] = 'pipe_unavailable' if isinstance(exc, (TimeoutError, EOFError, RuntimeError)) else 'refused'
-        if receipt.get('attempted'):
-            receipt['status'] = 'incertain'
-    finally:
-        if proc is not None:
-            terminate_chrome(proc, timeout=3)
-        if transport is not None:
-            transport.close()
-        if lock is not None:
-            _release_lock(lock, fd)
-    return receipt
+    response = _holder_exchange(sock, {'prompt': prompt, 'request_key': request_key})
+    if not isinstance(response, dict):
+        receipt['reason'] = 'holder_unavailable'
+        return receipt
+    return response
 
 
 def _read_prompt(source):
@@ -530,4 +903,8 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
+    if len(sys.argv) > 1 and sys.argv[1] == 'serve':
+        os.umask(0o077)
+        serve()
+        sys.exit(0)
     sys.exit(main())

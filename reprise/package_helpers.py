@@ -12,8 +12,7 @@ ASSETS = ('apple_expert.py', 'apple_pilot.py', 'apple_pilot_service.py', 'apple_
 
 ASSETS += ('yaml_contract.py', 'codex_config_update.py',)
 ASSETS += ('siri_inbox_acl.py', 'siri_inbox_model.py', 'siri_inbox_store.py', 'siri_inbox_cli.py')
-ASSETS += ('mcp_transport.py', 'chatgpt_quick.py', 'chatgpt_mcp.py',)  # Issue #156: shared MCP transport + ChatGPT bridge.
-ASSETS += ('chatgpt_integration.py',)  # Issue #161: managed ChatGPT MCP server config.
+ASSETS += ('mcp_transport.py', 'chatgpt_quick.py',)  # mcp_transport partagé (claude_mcp, codex_expert) ; facade dispatch ChatGPT #156.
 ASSETS += ('codex_session_owners.py',)  # Issue #170: read-only multi-CODEX_HOME ownership census.
 ASSETS += ('chatgpt_desktop_pipe.py',)  # #161: isolated explicit CDP pipe probe; not a daemon.
 ASSETS += ('registry_marker.py', 'registry_adopt.py')

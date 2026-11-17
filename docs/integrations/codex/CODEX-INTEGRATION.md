@@ -135,57 +135,26 @@ harness_integration harness-integration-apply
 
 `--codex-workspace-write` exige `--delegate`. Le périmètre inscriptible est `implementation_scope` = le `project_root` du pont ; les approbations natives Codex restent requises. L'autorisation est lue au démarrage du pont : **redémarrer le pont** après `harness-integration-apply`, puis vérifier `reprise_backends` (`workspace_write_authorized: true`, `implementation_scope` renseigné).
 
-## Pont MCP ChatGPT desktop (issue #156)
+## Pont ChatGPT desktop (issue #156)
 
-Nouveau serveur MCP local `chatgpt_mcp.py` (CLI `--project-root`, `--state`, `--expert-state`) qui
-expose à ChatGPT desktop un canal d'expertise Reprise en boucle fermée, sur le transport partagé
-`mcp_transport.py` (extrait de `codex_expert_mcp.py`, consommé aussi par `claude_mcp.py` sans
-changement observable).
-
-**Outils exposés :**
-- INBOX (`get_task`, `submit_result`, `get_result`) : la même boucle SQLite que Claude Desktop
-  (`TaskStore`, états absent|completed|attempted|reserved, résultat immuable = preuve de complétion).
-- OUTBOUND (`reprise_backends`, `reprise_requests`, `reprise_quotas`, `reprise_delegate`,
-  `reprise_followup`, `codex_review`, `codex_followup`) : mêmes schémas
-  que la facade Claude. Le backend `chatgpt` **reste visible**, y compris depuis
-  ChatGPT Desktop : une auto-délégation explicite peut cibler une autre tâche
-  ChatGPT du même projet. Le même principe s'applique à `claude-desktop`
-  depuis Claude Desktop. La clé `request_key` doit identifier la tâche
-  indépendante ; le rejeu d'un reçu incertain ne redéclenche jamais l'inférence.
-
-**Politique v1 :**
-- backend `claude-desktop` reste sélectionnable en OUTBOUND depuis la facade ChatGPT ;
-- `claim_next`/`await_task` absents ; `register_session` non déclaré (hors INBOX_TOOLS) ;
-- aucun nouveau socket ChatGPT : le dispatch passe par `chatgpt_quick.review` (Endpoint + ledger),
-  et le retour par `get_task`/`submit_result` sur le TaskStore ;
-- pas de repli silencieux de VERSION : le fichier `VERSION` packagé est requis.
-
-**Projection dans le bridge (`reprise_delegate` backend `chatgpt`) :**
-- `wait_status`/`wait_for_result`/`_task_snapshot` acceptent `backend='chatgpt'` et lisent
-  l'état `chatgpt-state` ; `wait_result` du bridge route selon le backend de la requête
-  enregistrée (`requests.lookup`), défaut `claude-desktop` ;
-- tagging `admission_only: true` étendu à `chatgpt` (réponse `None` = admission seule, le
-  round-trip MCP complète la requête) ;
-- `reprise_requests`/replay projettent la source `chatgpt_tasks` (receipt avec `result_sha256`,
-  pagination, `delegation_receipt`) ; l'acquittement passe par `Endpoint.mark_acknowledged`
-  (one-way attempted→acknowledged, idempotent, seule écriture de delivery venant de l'Endpoint) ;
-- journal `routing_events` : `request_key` préservé (argument explicite, sinon `active_key`).
-
-**Sûreté d'admission (crash-safe) :** validation complète des arguments (12 000 caractères,
-`request_key` ≤ 128) AVANT toute écriture ; `admit()` du TaskStore précède l'INSERT du ledger —
-un crash entre les deux écritures est récupéré par projection au replay, sans ré-exécution.
-
-**Budgets transport :** la facade ChatGPT utilise `CLAUDE_MAX_LINE_BYTES` (8 MiB), compatible
-avec la limite `submit_result` de 2 000 000 caractères (test UTF-8 multioctet inclus).
-
+**Historique :** la première approche de #156 était un serveur MCP local
+(`chatgpt_mcp.py`, supprimé par cb7989c — fausse piste MCP : le client MCP de
+ChatGPT desktop n'a jamais complété la boucle). Le canal actuel est le dispatch
+CDP pipe décrit en § Issue #218 ci-dessous (`chatgpt_desktop_pipe.py` :
+holder persistant, profil dédié, receipts durables), avec dispatch par
+`chatgpt_quick.review` (admission) puis push holder ; retour principal =
+capture de réponse par le holder dans le receipt durable, TaskStore
+`chatgpt-state` = registre d'admission seul (idempotence du `request_key`),
+jamais un canal de retour.
 
 ### Issue #218 — émission ChatGPT Desktop sur CDP pipe (non validée sur Mac)
 
 Le helper Python `chatgpt_desktop_pipe.py` accepte `inspect`, `probe` et désormais
 `send` : l'aller seul vers un renderer `app://-/index.html` possédé par
-une instance à profil dédié. Le retour métier et sa preuve restent dans
-l'INBOX Reprise : `get_task` puis `submit_result` accepté. Un tour visible
-dans Desktop ne prouve jamais `response_complete`.
+une instance à profil dédié. Le retour métier = capture de réponse par le
+holder dans le receipt durable (Network/SSE prioritaire, repli AXTree) ;
+ChatGPT Desktop n'a aucun outil MCP Reprise. Un tour visible dans Desktop
+ne prouve jamais `response_complete` — c'est le receipt qui le porte.
 
 ```sh
 python3 -B reprise/chatgpt_desktop_pipe.py send --profile dedicated \\
@@ -225,7 +194,7 @@ pas la fonctionnalité Desktop.
 
 Les connecteurs gérés DeepSeek Harness et Claude Desktop propagent désormais
 `--chatgpt-state` (répertoire d'état SQLite, pas un socket réseau), avec le
-même périmètre projet que la façade `chatgpt_mcp.py`. L'ancien argument
+même périmètre projet que le pont ChatGPT (TaskStore `chatgpt-state`). L'ancien argument
 `--chatgpt-socket` est accepté comme alias transitoire.
 `reprise_backends` liste `chatgpt` même lorsque son état est absent
 (`configured: false`) ; avec l'état partagé initialisable,
@@ -242,10 +211,21 @@ une demande existante ni une tentative incertaine. Le pont `chatgpt_quick.review
 `chatgpt_desktop_pipe.send`. Aucun message Desktop, modèle exécuté ou
 `submit_result` accepté ne peut donc être déduit du seul reçu d'admission.
 
+**Retour de réponse — capture holder, sans action de ChatGPT (17/11/2026).**
+Le retour principal ne dépend PAS d'une invocation MCP côté ChatGPT Desktop :
+après le clic, le holder capture la réponse directement — priorité 1 =
+Network/SSE (`collect_sse`), priorité 2 = repli AXTree (`collect_response`) —
+et l'écrit dans le receipt durable (`response_complete`, `assistant_excerpt` ;
+preuves live a6/a7/a8). ChatGPT n'a AUCUN outil MCP Reprise ; le TaskStore
+`chatgpt-state` est un registre d'admission seul (idempotence du
+`request_key`), jamais un canal de retour ni un « complément de preuve » : un
+aller-retour consultatif se ferme sur le receipt holder seul.
+
 **Déploiement** : reconstruire la release depuis `dev`, prévisualiser/appliquer
 à nouveau les connecteurs gérés (DeepSeek avec `--delegate`, Claude, ChatGPT),
 puis recharger les clients. Lire `reprise_backends` depuis chacun et tenter
 une délégation `backend: chatgpt` avec un `request_key` nouveau. Exiger une
-preuve distincte d'arrivée Desktop et `submit_result` avant de déclarer le
-transport réellement fonctionnel. Ni fallback réseau/TCP ni bascule vers une
+preuve distincte d'arrivée Desktop et de capture de réponse (receipt holder,
+`response_complete`) avant de déclarer le transport réellement fonctionnel.
+Ni fallback réseau/TCP ni bascule vers une
 API payante implicite.

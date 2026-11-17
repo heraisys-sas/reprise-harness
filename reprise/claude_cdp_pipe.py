@@ -50,6 +50,9 @@ class PipeTransport:
         # which would defeat the select() gate below.
         self._reader = os.fdopen(read_fd, 'rb', buffering=0)
         self._writer = os.fdopen(write_fd, 'wb')
+        # CDP notifications (no 'id') collected here instead of being dropped;
+        # consumers drain via drain_notifications() (issue #156, SSE capture).
+        self._notifications = []
 
     # -- framing -------------------------------------------------------------
 
@@ -89,8 +92,11 @@ class PipeTransport:
             frame = json.loads(raw.decode('utf-8'))
             if not isinstance(frame, dict):
                 continue
-            # Skip notifications (no 'id' field) — we only care about responses
+            # Collect notifications (no 'id' field) instead of dropping them;
+            # bounded so a chatty session cannot grow this list indefinitely.
             if 'id' not in frame:
+                if len(self._notifications) < 10000:
+                    self._notifications.append(frame)
                 continue
             return frame
 
@@ -147,6 +153,17 @@ class PipeTransport:
             cmd["sessionId"] = self._session_id
         self._send(cmd)
         resp = self._receive()
+        # Electron renderers reload their page shortly after launch, which
+        # destroys the attached session. A dead sessionId poisons every later
+        # command, including browser-level ones like Target.getTargets, so
+        # drop the session and retry once without it: the caller then
+        # re-selects and re-attaches a fresh target.
+        if (self._session_id is not None and "error" in resp
+                and "Session with given id not found" in str(resp["error"].get("message", ""))):
+            self._session_id = None
+            cmd.pop("sessionId", None)
+            self._send(cmd)
+            resp = self._receive()
         if resp.get("id") != msg_id:
             raise RuntimeError(f"Unexpected response id: expected {msg_id}, got {resp.get('id')}")
         if "error" in resp:
@@ -169,6 +186,11 @@ class PipeTransport:
     def insert_text(self, text):
         """Input.insertText on the focused element."""
         self.call("Input.insertText", {"text": text})
+
+    def drain_notifications(self):
+        """Return and clear notifications collected since the last drain."""
+        items, self._notifications = self._notifications, []
+        return items
 
     def close(self):
         """Close the reader side; do NOT kill the child here."""

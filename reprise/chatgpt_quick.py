@@ -7,11 +7,13 @@ still indeterminate (local plugin/stdio/loopback). Nothing here claims a
 delivery proof.
 
 Invariant « arrivé ≠ traité » : an admission only records that a submission
-was attempted (delivery='attempted'); the roundtrip is closed solely by a
-validated submit_result (attempt_id + claim_key tied to the ChatGPT session)
-through desktop_task_store.TaskStore. A submission already attempted is never
-resent: idempotence is absolute, recovery goes through reprise_requests or an
-explicit operator reconciliation.
+was attempted (delivery='attempted'); the roundtrip is closed by the holder's
+response capture in its durable receipt (Network/SSE, AXTree fallback —
+chatgpt_desktop_pipe), not by any ChatGPT-side action: ChatGPT Desktop has no
+Reprise MCP tools. The TaskStore keeps the submission registry and may record
+an attribution complement, never a loop condition. A submission already
+attempted is never resent: idempotence is absolute, recovery goes through
+reprise_requests or an explicit operator reconciliation.
 """
 import hashlib
 import json
@@ -23,11 +25,10 @@ from pathlib import Path
 from delegation_store import file_evidence
 from desktop_task_store import TaskStore, bounded
 
-CHATGPT_TASK_INSTRUCTION = ('A Reprise task is waiting in the configured project. '
-                            'Persist a claim_key, then call get_task with request_key={key}. '
-                            'Follow your session instructions, perform that scoped task, and call '
-                            'submit_result with the returned attempt_id. If already completed, '
-                            'retrieve the existing result instead.')
+CHATGPT_TASK_INSTRUCTION = ('Reprise consultative question (request_key={key}). '
+                            'ChatGPT has no Reprise tools: answer directly in this '
+                            'conversation — the reply is captured from it by the Reprise '
+                            'holder. Question:\n\n')
 
 ALLOWED_SUBMISSION_KEYS = {'question', 'kind', 'level', 'paths', 'request_key', 'before_evidence'}
 
@@ -152,7 +153,7 @@ class Endpoint:
         return {'status': 'finished', 'request_key': request_key, 'delivery': 'attempted',
                 'resent': False, 'admission_only': True, 'needs_review': needs_review,
                 'kind': kind, 'level': level,
-                'return_channel': 'MCP get_task/submit_result; completion only on validated submit_result',
+                'return_channel': "the holder's response capture in its durable receipt (Network/SSE, AXTree fallback) — no ChatGPT-side action",
                 'channel': 'indeterminate (canal local à déterminer)',
                 'automatic_fallback': False}
 
