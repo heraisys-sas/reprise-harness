@@ -2,6 +2,10 @@
 
 Historique des versions, consolidé depuis les notes de release et les notes produit datées (détails complets dans l'historique Git, commits et balises).
 
+## 0.1.20 — route ChatGPT fermée, clones d'app, santé actionnable
+
+Version commune portée à 0.1.20. **Route ChatGPT fermée de bout en bout** (admission durable → dispatch holder CDP dédié → capture de réponse → résultat livré au délégant ; preuve live t1, dispatch opt-in `--chatgpt-dispatch`, `dispatch_receipt` borné). **Holder longue durée** à relance bornée de son propre Chrome (#198 partiel), politique une-fenêtre + titre ReChatGPT, dispatch Entrée primaire. **Clones d'app** ReChatGPT/ReClaude : identité propre, version gelée, auto-update du cloné coupé, module géré `app_clones.py` + vue Intégrations (lecture). **Santé post-update actionnable** : relance réelle de l'app dans toutes les distributions, liens d'action par élément à examiner ; Connexions sans les entrées « serveur dédié » sans service (#93). Suite complète 2084 tests OK ; détails dans les notes produit datées ci-dessous.
+
 ## Notes produit — 17 novembre 2026
 
 - **Clones d'app ReChatGPT / ReClaude (17/11)** — Copies APFS à identité propre (`com.reprise.rechatgpt`, `com.anthropic.claudefordesktop.reprise`), version gelée (auto-update du clone désactivé par son identité), originale `/Applications` pristine. Module géré `app_clones.py` (inspect/plan/apply/verify + manifeste `app-clones.json`), gardes PID/disque/originale, re-sign ad-hoc deep ; le holder dédié démarre sur la copie quand elle existe. Vue « Intégrations → Clones d’app » en lecture du manifeste. [Contrat](docs/contracts/APP-CLONES-CONTRACT.md), [runbook](docs/runbooks/APP-CLONES.md).
