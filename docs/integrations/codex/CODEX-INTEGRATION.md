@@ -264,6 +264,18 @@ et l'admission reste `admission_only`. Quand le holder confirme
 récupérable tel quel par le délégant. Sans le grant, le comportement reste
 l'admission seule de #221.
 
+**Binaire du holder — résolution et clone (contrat [APP-CLONES](../contracts/APP-CLONES-CONTRACT.md)).**
+Le profil `dedicated` démarre sur le clone gelé
+`~/Applications/ReChatGPT.app/Contents/MacOS/ChatGPT` dès qu'il existe
+(`resolve_binary`), sinon sur `/Applications/ChatGPT.app` (jamais mutée).
+Le clone porte l'identité `com.reprise.rechatgpt` + nom affiché « ReChatGPT »,
+auto-update Sparkle coupé pour SON identité, version gelée dans
+`app-clones.json` ; sa fenêtre est marquée « ReChatGPT » (titre CDP) et la
+fenêtre compagnon owl est fermée (politique une-fenêtre, maintenance idle
+10 s). Les opérations inspect/plan/apply/verify et le refresh après update
+upstream sont documentés dans le [runbook APP-CLONES](../runbooks/APP-CLONES.md) ;
+le branchement comme composant natif `managed_update` suit avec la release.
+
 **Déploiement** : reconstruire la release depuis `dev`, prévisualiser/appliquer
 à nouveau les connecteurs gérés (DeepSeek avec `--delegate`, Claude, ChatGPT),
 puis recharger les clients. Lire `reprise_backends` depuis chacun et tenter
