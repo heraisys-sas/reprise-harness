@@ -658,7 +658,7 @@ class TestHolderProtocol(unittest.TestCase):
         self.assertTrue(second['replayed'])
         self.assertEqual(second['status'], 'confirmed')
 
-    def test_holder_not_ready_refuses_without_terminating_chrome(self):
+    def test_degraded_transport_relaunches_own_child_then_refuses(self):
         guarded = self.holder_test_guarded()
         transport = guarded.fake()
         calls = itertools.count()
@@ -675,7 +675,27 @@ class TestHolderProtocol(unittest.TestCase):
         self.assertEqual(receipt['reason'], 'holder_not_ready')
         self.assertFalse(receipt['attempted'])
         self.assertFalse(receipt['click_observed'])
-        harness.terminate.assert_not_called()
+        # Recovery touches only the holder's OWN child, never the operator app.
+        self.assertEqual(harness.terminate.call_count, 1)
+        self.assertIs(harness.terminate.call_args.args[0], harness.process)
+
+    def test_dead_transport_triggers_bounded_relaunch_and_recovery(self):
+        guarded = self.holder_test_guarded()
+        transport = guarded.fake()
+        calls = {'n': 0}
+
+        def census(_transport):
+            calls['n'] += 1
+            if calls['n'] in (1, 3):
+                return {'status': 'target_missing', 'ready': False}
+            return {'status': 'ready', 'ready': True}
+
+        with HolderHarness(transport, self.binary, self.root, census=census) as harness:
+            receipt = adapter.send('synthetic request', self.binary, self.root,
+                                   'dedicated', request_key='req-relaunch')
+        self.assertEqual(receipt['status'], 'confirmed')
+        self.assertTrue(harness.terminate.called)
+        self.assertGreaterEqual(calls['n'], 4)
 
 
 if __name__ == '__main__':

@@ -577,6 +577,9 @@ def _holder_socket_path(profile_root):
 HOLDER_SOCKET_PATH = _holder_socket_path(DEFAULT_PROFILE_ROOT)
 
 _HOLDER_START_ATTEMPTS = 30
+# One dispatch is bounded (launch ≤ 30 s + staging + completion ≤ 120 s + margin);
+# the reply may take the whole budget, so the client recv must outlive it.
+HOLDER_EXCHANGE_TIMEOUT_SECONDS = 200
 
 
 def _holder_connect(path, timeout=2.0):
@@ -595,8 +598,13 @@ def _holder_connect(path, timeout=2.0):
 
 
 def _holder_exchange(sock, payload):
-    """One newline-framed JSON request; None on any transport/parse failure."""
+    """One newline-framed JSON request; None on any transport/parse failure.
+
+    The holder answers only after its full bounded dispatch, so the read
+    timeout must cover the whole budget instead of the 2 s connect timeout.
+    """
     try:
+        sock.settimeout(HOLDER_EXCHANGE_TIMEOUT_SECONDS)
         sock.sendall((json.dumps(payload, ensure_ascii=False) + '\n').encode('utf-8'))
         frame = bytearray()
         while b'\n' not in frame:
@@ -655,8 +663,44 @@ def _holder_receipt(receipt, **update):
     return receipt
 
 
-def _holder_dispatch(transport, profile, payload):
-    """Validate, replay or dispatch one request on the holder's LIVE transport."""
+def _holder_relaunch(runtime, binary, profile):
+    """Bounded recovery: replace the owned Chrome + transport when the pipe died.
+
+    A long-lived pipe dies on owl renderer reload churn (measured 17/11: one
+    CDP timeout marks the transport dead forever). Only the holder's OWN child
+    is touched — never the operator app — and the lock pid is refreshed so
+    diagnostics keep pointing at the live instance.
+    """
+    old_transport = runtime.get('transport')
+    old_proc = runtime.get('proc')
+    if old_transport is not None:
+        for handle in (old_transport._reader, old_transport._writer):
+            try:
+                handle.close()
+            except OSError:
+                pass
+    if old_proc is not None:
+        terminate_chrome(old_proc, timeout=3)
+    transport, proc = launch_cdp_process(binary, build_args(profile),
+                                         label='ChatGPT Desktop')
+    runtime['transport'] = transport
+    runtime['proc'] = proc
+    fd = runtime.get('lock_fd')
+    if fd is not None:
+        try:
+            os.pwrite(fd, str(proc.pid).encode('ascii'), 0)
+            os.fsync(fd)
+        except OSError:
+            pass
+    return transport
+
+
+def _holder_dispatch(runtime, binary, profile, payload):
+    """Validate, replay or dispatch one request on the holder's LIVE transport.
+
+    A dead pipe or a lagging renderer triggers ONE bounded relaunch of the
+    owned Chrome plus a fresh census before the request is refused.
+    """
     if not isinstance(payload, dict):
         return _send_receipt() | {'reason': 'invalid_request'}
     prompt = payload.get('prompt')
@@ -679,17 +723,35 @@ def _holder_dispatch(transport, profile, payload):
     if existing is not None:
         existing['replayed'] = True
         return existing
-    # Quick census on the shared transport: never re-launch, never kill.
+    # Quick census on the shared transport; one bounded relaunch on trouble.
+    transport = runtime.get('transport')
     try:
         state = census(transport)
     except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
         state = None
     if not isinstance(state, dict) or state.get('status') != 'ready':
-        return _send_receipt() | {'reason': 'holder_not_ready'}
+        try:
+            transport = _holder_relaunch(runtime, binary, profile)
+        except (OSError, RuntimeError):
+            return _send_receipt() | {'reason': 'holder_not_ready'}
+        ready = False
+        for _attempt in range(60):
+            if runtime['proc'].poll() is not None:
+                break
+            try:
+                state = census(transport)
+            except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+                state = None
+            if isinstance(state, dict) and state.get('status') == 'ready':
+                ready = True
+                break
+            time.sleep(0.5)
+        if not ready:
+            return _send_receipt() | {'reason': 'holder_not_ready'}
     return _dispatch(transport, prompt, profile, request_key, _send_receipt())
 
 
-def _serve_connection(conn, transport, profile):
+def _serve_connection(conn, runtime, binary, profile):
     try:
         frame = bytearray()
         while b'\n' not in frame:
@@ -705,7 +767,7 @@ def _serve_connection(conn, transport, profile):
         payload = json.loads(frame.partition(b'\n')[0])
     except (ValueError, UnicodeDecodeError):
         payload = None
-    receipt = _holder_dispatch(transport, profile, payload)
+    receipt = _holder_dispatch(runtime, binary, profile, payload)
     try:
         conn.sendall((json.dumps(receipt, sort_keys=True, ensure_ascii=False) + '\n')
                      .encode('utf-8'))
@@ -717,9 +779,11 @@ def serve(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT,
           name='dedicated', stop=None):
     """Long-lived holder: owns Chrome, the CDP pipe, and serves send requests.
 
-    Chrome is launched once and NEVER terminated here; the pipe constraint
-    (only the launcher may use it) is what motivates this process. SIGTERM
-    closes the socket and leaves Chrome running.
+    Chrome is owned for the holder's lifetime and is replaced (bounded relaunch)
+    only when its CDP pipe died or the renderer never became ready; the
+    operator app is never touched. The pipe constraint (only the launcher may
+    use it) is what motivates this process. SIGTERM closes the socket and
+    leaves Chrome running.
     """
     profile = profile_path(profile_root, name)
     binary = Path(binary).expanduser().absolute()
@@ -738,6 +802,7 @@ def serve(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT,
             return {'status': 'refused', 'reason': 'launch_failed'}
         os.write(fd, str(proc.pid).encode('ascii'))
         os.fsync(fd)
+        runtime = {'transport': transport, 'proc': proc, 'lock_fd': fd}
         try:
             # The renderer does not register its app:// page without activation.
             subprocess.run(['open', '-a', 'ChatGPT'], check=False, timeout=15)
@@ -779,7 +844,7 @@ def serve(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT,
             except OSError:
                 break
             with conn:
-                _serve_connection(conn, transport, profile)
+                _serve_connection(conn, runtime, binary, profile)
         return {'status': 'holder_stopped'}
     finally:
         if server is not None:
