@@ -1,4 +1,8 @@
-# Delegation installed in DSH (17 October 2026)
+# Intégration Codex — historique et variantes de transport
+
+**Pour une délégation actuelle depuis DSH via Reprise**, consulter d'abord la [route opérateur DSH → Reprise → Codex](../harness/DSH-REPRISE-CODEX-ROUTE.md). Elle documente le connecteur **géré** `@deepseek-ai/dsh-mcp-client` en STDIO, la release d'intégration, le proxy App Server sur socket Unix existant, les reçus durables, les modes `expertise`/`implementation` et la réconciliation. **Ne pas confondre** cette route avec le fournisseur `openai-codex` de DSH. Les recettes d'installation manuelle et constats datés ci-dessous sont conservés comme historique ; ils **ne sont pas** des instructions de déploiement prioritaires et ne prouvent pas l'état d'une installation actuelle.
+
+## Delegation installed in DSH (17 October 2026 — historique)
 
 The Desktop profile now contains a backed-up, marked `reprise-codex-expert` MCP entry connected to the shared Codex daemon, not the separate expert socket. It is bound to the project passed to the installer. Load a new Harness session or reload its profile to discover `mcp__reprise_codex__reprise_delegate`, `reprise_backends`, `codex_review` and `codex_followup` (the latter names have the same server prefix).
 
@@ -8,7 +12,7 @@ python3 install-expertise.py --project-root /absolute/project
 
 The installer preserves the rest of the profile, backs up modified files under `~/.dsh/backups`, installs the `reprise-delegation` skill, and is idempotent. Installing for another root replaces this profile’s project binding; do not assume that the active DSH project changes the MCP bridge root automatically.
 
-`reprise_delegate` takes `kind` (`expertise`, `review`, `batch`), `level` (`standard`, `deep`), `question`, and optional project-relative `paths`. Standard expertise/review uses **gpt-6.1-sol / medium**; standard batch uses **gpt-6-luna / medium**; deep uses **gpt-6-astra / high**. Models and efforts are checked against the server catalog before admission to a model turn. Batch generation returns code or patches: Harness applies them and runs deterministic checks. It is not an autonomous write worker. Output is bounded to 48,000 characters; truncation is marked incomplete. Split large jobs into coherent lots.
+`reprise_delegate` takes `kind` (`expertise`, `review`, `batch`), `level` (`standard`, `deep`), `question`, and optional project-relative `paths`. Standard expertise/review uses **gpt-6.1-sol / medium**; standard batch uses **gpt-6-luna / medium**; deep uses **gpt-6-astra / high**. Models and efforts are checked against the server catalog before admission to a model turn. Batch generation returns code or patches: Harness applies them and runs deterministic checks. In default `mode: expertise` it does not write; the separately authorized `mode: implementation` can apply project edits and run checks under native workspace-write, without any implicit push, merge or deployment authorization. The historical full response transport was bounded; current deployments support persisted compact receipts and paginated recovery (`return_mode: receipt`), and full results above the current transport threshold return a manifest. See the current operator route and [delegation persistence contract](../../contracts/DELEGATION-PERSISTENCE.md). Split large jobs into coherent lots.
 
 A follow-up remains bound to an allowlisted expert thread, model and effort. It can reload that thread if unloaded, but does not steer an active session. Quota failures never change accounts or billing automatically. `reprise_backends` reports Codex and optional Claude configuration and AutoClaw unvalidated, without inference; this is capability information, not a live quota check.
 
@@ -99,7 +103,7 @@ Expertise threads request `chatgpt_hidden` classification and persistent history
 
 If preflight fails before any turn submission, Reprise re-reads its newly created thread and deletes it through the native API only when it is still idle, has no turns and no history file. An ambiguous `turn/start` response never triggers deletion or automatic retry. Existing durable histories and caller-supplied follow-up threads are never deleted by this cleanup. The installed-server lifecycle test uses an isolated temporary `CODEX_HOME`, without authentication or inference.
 
-Start the explicitly separate local server in a terminal (private socket directory required):
+**Legacy/manual path only; do not use as the managed DSH deployment recipe.** The managed route attaches to an **existing** owner through `codex app-server proxy --sock` and never creates a replacement server. Historical isolated development sequence (private socket directory required):
 
 ```sh
 ./resume expert-server --socket /absolute/private/path/codex-expert.sock
@@ -107,7 +111,7 @@ Start the explicitly separate local server in a terminal (private socket directo
 python3 codex_expert_mcp.py --project-root /absolute/project --socket /absolute/private/path/codex-expert.sock
 ```
 
-The last command is the MCP stdio entrypoint for DSH, not an interactive shell. Configure a DSH `@deepseek-ai/dsh-mcp-client` row with `transport: stdio`, `serverName: reprise_codex`, a Python 3.11+ executable, the script and those arguments; set `toolCallTimeoutMs: 330000` and disable reconnection retries. Use a project-specific overlay rather than installing a project-bound tool globally. A local `reprise-expert.local.patch.yml` is generated for this workspace, excluded from Git; it has not been merged into the Desktop profile.
+The last command is an **historical manual** MCP STDIO entrypoint, not an interactive shell. The current managed installer builds the `@deepseek-ai/dsh-mcp-client` entry automatically from a sealed release, with `transport: stdio`, `serverName: reprise_codex`, explicit `--project-root`, `--state` and `--tools`, a call timeout set by the installer, and retries disabled. The example `reprise-expert.local.patch.yml` belonged to a workspace experiment; do **not** infer that it is installed or that its project binding matches the current DSH profile.
 
 Calls return the bounded response, Codex thread/turn IDs, event types and explicit errors. `codex_followup` accepts only review threads recorded by this bridge for its fixed project and endpoint, and reuses their Codex history. No full DSH conversation is copied. Approvals or user questions stop the tool and are reported to DSH; the bridge does not grant them, impersonate a user reply or claim an unfinished review succeeded.
 

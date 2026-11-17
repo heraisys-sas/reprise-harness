@@ -1,5 +1,7 @@
 # Intégration Harness gérée depuis Reprise
 
+Pour comprendre **la route de délégation DSH → Reprise → Codex**, distincte du fournisseur Codex directement choisi dans DSH, voir [la référence opérateur DSH–Reprise–Codex](DSH-REPRISE-CODEX-ROUTE.md). Cette référence décrit la route dans le code ; la configuration installée et l'échange réel doivent être vérifiés séparément.
+
 Premier incrément vertical D2, issue #6, 21/10/2026. Profil synthétique et pont directement sondé ; chargement par le client, échange depuis Harness, interface visuelle et compte macOS vierge **non validés**.
 
 ## Parcours
@@ -24,7 +26,7 @@ Le mode développement reste disponible. Ce nouvel adaptateur exige néanmoins u
 
 ## Capacités et consignes
 
-Le mode initial expose uniquement `reprise_backends`, `reprise_requests` et `reprise_quotas`. L’option explicite ajoute `reprise_delegate` et `reprise_followup`. L’allowlist est vérifiée dans `tools/list` **et** avant `tools/call`, pas seulement dans l’affichage. Les alias anciens et les outils d’historique/santé ne sont pas exposés par ce parcours. Les interfaces des anciens ponts sans allowlist restent compatibles.
+**Dans le code actuel** (`reprise/harness_integration.py`, constantes `OBSERVE` et `DELEGATE`), l'installation sans délégation expose `reprise_backends`, `reprise_requests`, `reprise_quotas`, `approval_list` et `wait_result`. L'option explicite `--delegate` y ajoute `reprise_delegate`, `reprise_followup` et `reprise_reconcile`. `approval_respond` n'est pas exposé automatiquement. L'allowlist est vérifiée dans `tools/list` **et** avant `tools/call`, pas seulement dans l'affichage. Les alias anciens et les outils d'historique/santé ne sont pas exposés par ce parcours. Une installation plus ancienne peut présenter une allowlist différente : **vérifier les outils du profil DSH effectivement chargé**. Les interfaces des anciens ponts sans allowlist restent compatibles.
 
 Les consignes enseignent découverte effective, projet vérifié, tâche bornée, contexte minimal, récupération d’un reçu avant renvoi, permissions et budgets explicites. Tous les modèles, économiques compris, doivent demander un fait bloquant avant répétition sans progrès ; l’escalade de raisonnement est une action distincte. Deux échecs sur un volet demandent changement d’approche ou d’auteur. Pas de cascade ni de cache partagé promis. Le protocole automatique de clarification durable reste **non implémenté** ; seuls les follow-ups effectivement disponibles et un repli manuel sont décrits. Aucun plafond quotidien ni changement de réserve/routage n’est introduit.
 
