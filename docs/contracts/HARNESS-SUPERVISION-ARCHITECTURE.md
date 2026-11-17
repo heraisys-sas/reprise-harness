@@ -129,7 +129,7 @@ Séparer trois dimensions : capacité demandée (`expertise`, `review`, `batch`,
 
 ### Contrat cible, pas API déjà disponible
 
-Le pont actuel n'accepte que expertise/review/batch et ses lots renvoient du texte sans appliquer les changements. Ne pas y ajouter `work` comme simple alias : l'exécution avec outils exige un contrat séparé.
+Le pont `reprise_delegate` accepte `kind=expertise|review|batch`, mais le backend **Codex** distingue aussi `mode=expertise` (lecture seule, avis ou patch) et `mode=implementation` (modifications et contrôles locaux si un grant projet `--codex-workspace-write` a été préalablement autorisé et chargé). Le second n'implique ni publication ni déploiement. Le `kind=work` générique et l'orchestration multi-harness autonome ne sont **pas** des capacités livrées par ce seul mode Codex. Voir [la route opérateur DSH–Reprise–Codex](../integrations/harness/DSH-REPRISE-CODEX-ROUTE.md) et [le contrat d'exécution Codex](CODEX-EXECUTION-CONTRACT.md).
 
 **Validation locale du 08/11 (#121)** : un environnement Work réel existe côté Desktop — un chat Desktop gratuit portant le connecteur Reprise MCP et un exécutant confiné (conteneur Docker : réseau coupé, workspace du projet monté en lecture-écriture) a réclamé une tâche (`get_task`), exécuté avec outils dans le workspace, et remis le résultat (`submit_result` accepté, livrable vérifié sur disque). L'automatisation de la création de session et du déclenchement reste à construire (patch #120) ; le retour de réponse ne passe pas par ce canal (outils scopés au client qui exécute le tour).
 
