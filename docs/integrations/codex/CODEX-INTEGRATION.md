@@ -144,7 +144,8 @@ CDP pipe décrit en § Issue #218 ci-dessous (`chatgpt_desktop_pipe.py` :
 holder persistant, profil dédié, receipts durables), avec dispatch par
 `chatgpt_quick.review` (admission) puis push holder ; retour principal =
 capture de réponse par le holder dans le receipt durable, TaskStore
-`chatgpt-state` en complément d'attribution.
+`chatgpt-state` = registre d'admission seul (idempotence du `request_key`),
+jamais un canal de retour.
 
 ### Issue #218 — émission ChatGPT Desktop sur CDP pipe (non validée sur Mac)
 
@@ -215,10 +216,10 @@ Le retour principal ne dépend PAS d'une invocation MCP côté ChatGPT Desktop :
 après le clic, le holder capture la réponse directement — priorité 1 =
 Network/SSE (`collect_sse`), priorité 2 = repli AXTree (`collect_response`) —
 et l'écrit dans le receipt durable (`response_complete`, `assistant_excerpt` ;
-preuves live a6/a7/a8). Le canal `get_task`/`submit_result` (TaskStore
-`chatgpt-state`) reste un complément de preuve d'attribution, pas une
-condition de la boucle : un aller-retour consultatif se ferme sur le receipt
-holder seul.
+preuves live a6/a7/a8). ChatGPT n'a AUCUN outil MCP Reprise ; le TaskStore
+`chatgpt-state` est un registre d'admission seul (idempotence du
+`request_key`), jamais un canal de retour ni un « complément de preuve » : un
+aller-retour consultatif se ferme sur le receipt holder seul.
 
 **Déploiement** : reconstruire la release depuis `dev`, prévisualiser/appliquer
 à nouveau les connecteurs gérés (DeepSeek avec `--delegate`, Claude, ChatGPT),
