@@ -51,7 +51,8 @@ class PipeTransport:
         self._reader = os.fdopen(read_fd, 'rb', buffering=0)
         self._writer = os.fdopen(write_fd, 'wb')
         # CDP notifications (no 'id') collected here instead of being dropped;
-        # consumers drain via drain_notifications() (issue #156, SSE capture).
+        # consumers drain via drain_notifications() (issue #156; drained CDP
+        # events only, e.g. WS lifecycle frames — never a conversation stream).
         self._notifications = []
 
     # -- framing -------------------------------------------------------------

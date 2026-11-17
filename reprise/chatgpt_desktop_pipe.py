@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Owned CDP pipe probe and guarded one-way ChatGPT Desktop send.
+"""Owned CDP pipe probe, guarded ChatGPT Desktop dispatch and reply capture.
 
 The official ChatGPT.app binary is launched as an owned child with its own
 persistent profile. No Codex CLI, operator app, TCP DevTools port, or
-implicit provider fallback. Sending requires a unique target and durable
-receipt; it is NOT proof of business completion or an autonomous backend.
+implicit provider fallback. Dispatch requires a unique target and a durable
+receipt; the send alone is NOT proof of business completion — the receipt's
+captured reply (anchored rendered read + completion evidence) is.
 """
 import argparse
 import hashlib
@@ -292,7 +293,8 @@ def _evaluate_send(transport, function, *args):
 # the lifecycle: conversation-created and conversation-turn-complete. The
 # reply TEXT is read from the rendered conversation (bodyProbe), anchored on
 # the prompt echo, cut by an explicit sentinel when the model complied and
-# else by the conversation footer, and validated by two identical polls.
+# else by the conversation footer; the retained extraction is the LAST
+# anchored read (append-only conversation — longest seen is only a fallback).
 COMPLETION_POLL_INTERVAL_SECONDS = 1.0
 # Deep-reasoning turns ('Effort de réflexion : Élevé') can think for 60-90 s;
 # the ws turn-complete event ends the wait, not the clock.

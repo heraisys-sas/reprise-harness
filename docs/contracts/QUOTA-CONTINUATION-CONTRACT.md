@@ -129,7 +129,9 @@ de ChatGPT Desktop ; `chatgptd` est le **nom cible** d'un porteur CDP
 distinct (non déclaré livré sur `dev`). Les agents doivent garder les
 canaux Codex app-server et ChatGPT conversation ordinaire distincts.
 La branche #172 déprécie le mode socket Desktop partagé trompeur ;
-la branche #161 expérimente le transport CDP pipe ; #169 conclut
+la branche #156 porte le transport CDP pipe — route fermée de bout en bout
+et validée live le 17/11/2026 (dispatch opt-in `--chatgpt-dispatch`,
+`delivery=captured`) ; #169 conclut
 négativement pour la voie codex-cli RPC vers les chats ordinaires de la
 version étudiée. **Aucune de ces branches ne doit être présentée comme
 fusionnée tant que `dev` ne l'atteste.**

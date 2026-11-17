@@ -13,11 +13,13 @@ L'audit d'écart courant : [#119](https://github.com/heraisys-sas/reprise-harnes
 - Connecteur Claude Desktop unifié, Quick Apply CDP direct (applyd supprimé), barrières de dispatch séparées.
 - Restructuration du dépôt (`reprise/`, `docs/`, `tools/`, `harness/`, `routing/`) + charte [USAGE](USAGE.md).
 - Suppression des plafonds quotidiens locaux, tous backends — [CACHE-POLICY](docs/contracts/CACHE-POLICY.md).
+- **Route ChatGPT Desktop fermée de bout en bout** : dispatch CDP pipe par un holder à profil dédié (Entrée primaire, receipts durables at-most-once) et chaînon admission → dispatch opt-in (`--chatgpt-dispatch`, #226) ; capture de réponse v1.1 par le holder (complétude WS `conversation-turn-complete`, fenêtre calme MutationObserver, marqueur rendu, sentinel) ; validée live le 17/11/2026 (`t1-live-1794938260` : PONG capturé, `delivery=captured`) — [intégration](docs/integrations/codex/CODEX-INTEGRATION.md).
 
 ## En cours
 
 - **Reprise après quota de tout travail interrompu** : reconnaître le signal sur le bon Desktop, conserver la session, tenter la continuation native à l'échéance sans imposer de nouvelle mesure de quota ; #10, [contrat](docs/contracts/QUOTA-CONTINUATION-CONTRACT.md), [tests locaux](docs/runbooks/QUOTA-LOCAL-ACCEPTANCE.md). La généralisation reste **non livrée**.
-- **ChatGPT Desktop / Codex stdio** : CDP pipe #161 intégré en mode expérimental non activé ; index passif #170 intégré (un seul CODEX_HOME sur le Mac testé), écriture par propriétaire non prouvée ; mode partagé socket retiré sur dev par #172 (CLI/RPC Codex indépendant préservé), `codexd` inchangé. `chatgptd` est une cible, pas un service déjà livré.
+- **Codex stdio** : index passif #170 intégré (un seul CODEX_HOME sur le Mac testé), écriture par propriétaire non prouvée ; mode partagé socket retiré sur dev par #172 (CLI/RPC Codex indépendant préservé), `codexd` inchangé. `chatgptd` reste une cible, pas un service déjà livré.
+- **Pont ChatGPT Desktop** : release et redéploiement des connecteurs gérés (DeepSeek, Claude, ChatGPT) après fermeture de la route ; preuve de coexistence avec l'application opérateur — `operator_isolation_verified` reste `false`.
 
 - Unification des surfaces MCP : mémoire partagée par projet livrée ; attente bornée des résultats Claude (#111, branche) ; réunion des délégations restante.
 - Session goal « Siri 27.2 » : pilot Apple Intelligence, clarification locale, guided generation (#111 et voisins).

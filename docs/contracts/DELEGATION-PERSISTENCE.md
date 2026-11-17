@@ -274,3 +274,9 @@ un **répertoire d'état local**, non un socket réseau. Il est aussi la source
 du `TaskStore` ChatGPT du pont et de l'`Endpoint` de réadmission,
 notamment lors de l'inspection d'une installation isolée. Aucune bascule
 sur un état implicite ou une API facturée n'est permise.
+
+Avec le grant opérateur `--chatgpt-dispatch` (#226), un reçu holder terminal
+(`sent`/`confirmed`) porte `delivery` à `captured` et le drapeau
+`admission_only` tombe : `reprise_requests` stocke un résultat terminé et
+le reçu borné vit en colonne `dispatch_receipt` — jamais le texte intégral
+dans le ledger durable. Sans le grant, la sémantique ci-dessus est inchangée.

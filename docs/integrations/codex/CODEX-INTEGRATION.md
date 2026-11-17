@@ -147,7 +147,7 @@ capture de réponse par le holder dans le receipt durable, TaskStore
 `chatgpt-state` = registre d'admission seul (idempotence du `request_key`),
 jamais un canal de retour.
 
-### Issue #218 — émission ChatGPT Desktop sur CDP pipe (non validée sur Mac)
+### Issue #218 — émission ChatGPT Desktop sur CDP pipe (validée live sur Mac, 17/11/2026)
 
 Le helper Python `chatgpt_desktop_pipe.py` accepte `inspect`, `probe` et désormais
 `send` : l'aller seul vers un renderer `app://-/index.html` possédé par
@@ -155,7 +155,8 @@ une instance à profil dédié. Le retour métier = capture de réponse par le
 holder dans le receipt durable (mesures du 17/11/2026 : le flux de tokens est
 dans le process principal owl, invisible au CDP — capture = lecture rendue
 ancrée + preuve de complétude WS `conversation-turn-complete`, fenêtre calme
-MutationObserver, deux sondes identiques) ;
+MutationObserver 20 s (`STREAM_QUIET_MS`), marqueur rendu « réponse
+terminée », settle DOM 6 s après turn-complete) ;
 ChatGPT Desktop n'a aucun outil MCP Reprise. Un tour visible dans Desktop
 ne prouve jamais `response_complete` — c'est le receipt qui le porte.
 
@@ -177,8 +178,8 @@ première tentative est restée `incertain`.
 Sortie JSON triée : `status` vaut `refused`, `incertain`, `sent`
 ou `confirmed`. `sent` exige ensemble un clic observé et le compositeur
 vidé ; `confirmed` ajoute la capture d'un texte assistant non vide avec
-une preuve de complétude (`completion` = `stable`, `turn-complete` ou
-`quiet`). L'écho du prompt rendu vaut preuve d'arrivée (`user_confirmed`) ;
+une preuve de complétude (`completion` = `sentinel`, `turn-complete`,
+`dom-marker` ou `quiet`). L'écho du prompt rendu vaut preuve d'arrivée (`user_confirmed`) ;
 la consigne porte un sentinel (`REPRISE-CAPTURE-FIN`) qui borne l'extraction.
 `response_complete` reste distincte d'`operator_isolation_verified` (toujours
 **false** tant que la coexistence n'est pas prouvée). Codes de sortie :
@@ -189,10 +190,12 @@ n'autorise jamais un deuxième envoi. Aucun repli port TCP/API payante.
 **Limite opérationnelle déterminante :** l'application ChatGPT officielle
 ne garantit pas la prise en charge de `--remote-debugging-pipe`.
 `launch_failed` / `pipe_unavailable` sont des résultats attendus et non
-des autorisations de passer au port DevTools historique. La validation réelle
-sur Mac (notamment coexistence sans interférence avec l'application opérateur)
-reste nécessaire ; les tests synthétiques de `PipeTransport` n'établissent
-pas la fonctionnalité Desktop.
+des autorisations de passer au port DevTools historique. La route est
+validée live sur Mac depuis le 17/11/2026 (`t1-live-1794938260` : PONG
+capturé, `delivery=captured`, `completion=sentinel`) ; la coexistence sans
+interférence avec l'application opérateur reste non prouvée
+(`operator_isolation_verified` toujours **false**) ; les tests synthétiques
+de `PipeTransport` n'établissent pas la fonctionnalité Desktop.
 
 
 ### #221 — Backend ChatGPT universel, y compris route non vérifiée
@@ -224,12 +227,17 @@ Le retour principal ne dépend PAS d'une invocation MCP côté ChatGPT Desktop :
 après le clic, le holder capture la réponse directement. Mesures du
 17/11/2026 (3 runs instrumentés) : aucun évènement EventSource, aucun fetch
 conversation côté renderer — le flux de tokens vit dans le process principal
-owl et n'est pas observable au CDP. La capture v1 s'appuie donc sur :
-lecture rendue ancrée (`bodyProbe` + `extract_reply` : écho du prompt,
-sentinel `REPRISE-CAPTURE-FIN`, pied « ChatGPT peut faire des erreurs »),
-preuve de complétude WS (`conversation-turn-complete` sur le socket topics
-`ws.chatgpt.com`), détecteur de changement ciblé (MutationObserver injecté,
-fenêtre calme 8 s) et deux sondes rendues identiques. Le receipt durable
+owl et n'est pas observable au CDP. La capture v1.1 s'appuie donc sur :
+lecture rendue ancrée (`bodyProbe` + `extract_reply` : écho du prompt
+(dernière occurrence), sentinel `REPRISE-CAPTURE-FIN` prioritaire, pied
+« ChatGPT peut faire des erreurs » ; l'extraction retenue est la DERNIÈRE
+sonde, la plus longue n'est qu'un repli), preuve de complétude WS
+(`conversation-turn-complete` sur le socket topics `ws.chatgpt.com`),
+détecteur de changement ciblé (MutationObserver injecté, fenêtre calme
+20 s, `STREAM_QUIET_MS`), marqueur rendu « réponse terminée »
+(`COMPLETION_MARKERS`) et settle DOM 6 s après turn-complete
+(`COMPLETION_SETTLE_SECONDS`) ; deux sondes rendues identiques ne
+complètent plus seules (prématurées en live). Le receipt durable
 porte `response_complete`, `completion`, `response_sha256`,
 `response_chars` et un excerpt borné (1500 car.) — jamais le texte complet.
 Le texte intégral (≤ 20 000 car.) n'existe que dans le retour synchrone au

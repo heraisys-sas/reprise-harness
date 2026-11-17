@@ -24,6 +24,10 @@ Avant une opération distante, identifier compte, environnement, région, cluste
 
 Livrer le résultat, les fichiers utiles, contrôles et limites. Mesurer avant d’affirmer un gain de coût ou de performance ; pour un portage Rust, préserver les contrats et utiliser tests différentiels et benchmarks comparables.
 
+## Pont ChatGPT Desktop (CDP pipe)
+
+La route ChatGPT est fermée de bout en bout et validée live (17/11/2026, `t1-live-1794938260` : PONG capturé, `delivery=captured`). Le dispatch Entrée primaire (keyCode 13, bouton en repli) est effectué par le holder à profil dédié (`chatgpt_desktop_pipe.py`, socket `dedicated.pipe.sock`, jamais de port TCP), opt-in avec le grant opérateur `--chatgpt-dispatch` après admission `chatgpt_quick.review` ; sans grant, le pont reste en admission seule (#221). Le retour = capture de réponse par le holder : lecture rendue ancrée (écho du prompt, sentinel `REPRISE-CAPTURE-FIN`, pied « ChatGPT peut faire des erreurs »), complétude par WS `conversation-turn-complete`, fenêtre calme MutationObserver (20 s), marqueur rendu et settle DOM (6 s) ; SSE/EventSource est mort, AXTree écarté (faux positifs), deux sondes identiques ne complètent plus seules. Reçus durables `refused`/`incertain`/`sent`/`confirmed`, at-most-once ; reçu borné en colonne `dispatch_receipt`, jamais le texte intégral dans le ledger durable. ChatGPT n’a aucun outil MCP Reprise ; le TaskStore `chatgpt-state` est un registre d’admission seul, jamais un canal de retour. Ne jamais lancer l’application ChatGPT opérateur : le holder ne relance que son propre Chrome, une fois par demande (#198). `operator_isolation_verified` reste `false`.
+
 ## Discipline d’exécution et arrêt des boucles
 
 - Privilégier les frontends, CLI et API existants. Après un refus sandbox, utiliser une route autorisée ou demander une permission ciblée ; ne pas répéter une commande inchangée.
