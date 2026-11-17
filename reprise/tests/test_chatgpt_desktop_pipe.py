@@ -309,6 +309,8 @@ class TestGuardedSend(unittest.TestCase):
             return text
 
         def respond(expression):
+            if 'document.title' in expression:
+                return adapter.WINDOW_TITLE
             if 'return composerStatus(null);' in expression:
                 if clicked['done'] and after is not None:
                     return after
@@ -651,7 +653,10 @@ class TestHolderProtocol(unittest.TestCase):
         self.assertEqual(result, receipt)
         command = popen.call_args.args[0]
         self.assertEqual(command[0], sys.executable)
-        self.assertEqual(command[-1], 'serve')
+        self.assertEqual(command[command.index('serve') + 1], '--binary')
+        self.assertEqual(command[command.index('--binary') + 1], str(self.binary))
+        self.assertEqual(command[command.index('--profile') + 1], 'dedicated')
+        self.assertEqual(command[command.index('--profile-root') + 1], str(self.root))
         self.assertTrue(popen.call_args.kwargs.get('start_new_session'))
         # 1 initial probe + 1 connect per start attempt; the sleep loop skips
         # its final iteration, hence 2 sleeps for 3 post-spawn attempts.

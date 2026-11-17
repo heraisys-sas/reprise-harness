@@ -311,6 +311,9 @@ REPLY_LABELS = ('chatgpt a dit', 'chatgpt said')
 REPLY_FOOTERS = ('chatgpt peut faire des erreurs', 'chatgpt can make mistakes',
                  'peut faire des erreurs', 'can make mistakes')
 TURN_COMPLETE_MARKER = 'conversation-turn-complete'
+# Distinct window title for the dedicated instance (visible in Mission Control
+# and window switchers); re-applied at dispatch start — the client resets it.
+WINDOW_TITLE = 'ReChatGPT'
 # Rendered completion marker (measured 17/11): the owl client prints it when
 # the turn is done. DOM marker + ws event are the primary end signals.
 COMPLETION_MARKERS = ('réponse terminée',)
@@ -368,6 +371,14 @@ def drain_turn_completion(transport):
         if isinstance(payload, str) and TURN_COMPLETE_MARKER in payload:
             return True
     return False
+
+
+def apply_window_title(transport):
+    """Mark the dedicated window so the operator never confuses the two apps."""
+    try:
+        return transport.evaluate('document.title = ' + json.dumps(WINDOW_TITLE)) == WINDOW_TITLE
+    except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+        return False
 
 
 def install_stream_observer(transport):
@@ -483,6 +494,14 @@ def _persist_receipt(path, receipt, *, initial=False):
             target.unlink(missing_ok=True)
 
 
+def _bundle_path(binary):
+    """The .app bundle owning this binary, for path-accurate activation."""
+    for parent in Path(binary).resolve().parents:
+        if parent.suffix == '.app':
+            return parent
+    return None
+
+
 def _dispatch_enter(transport):
     """Submit the staged prompt with the PoC-validated Enter (keyCode 13).
 
@@ -501,6 +520,7 @@ def _dispatch_enter(transport):
 
 
 def _dispatch(transport, prompt, profile, request_key, receipt):
+    apply_window_title(transport)
     before = _evaluate_send(transport, 'composerStatus', None)
     if not isinstance(before, dict) or before.get('status') != 'ready':
         receipt['reason'] = before.get('status', 'selectors_stale') if isinstance(before, dict) else 'selectors_stale'
@@ -746,12 +766,18 @@ def _client_replay(profile, prompt, request_key):
     return existing | {'replayed': True}
 
 
-def _start_holder_daemon():
-    """Spawn a detached holder process; it owns Chrome and the pipe for good."""
+def _start_holder_daemon(binary, profile_root, name):
+    """Spawn a detached holder process; it owns Chrome and the pipe for good.
+
+    The binary/profile choices travel with the spawn: a renamed bundle copy
+    (ReChatGPT) must survive client-triggered starts, not fall back to the
+    default app.
+    """
     script = Path(__file__).resolve()
     try:
         return subprocess.Popen(
-            [sys.executable, str(script), 'serve'],
+            [sys.executable, str(script), 'serve', '--binary', str(binary),
+             '--profile', name, '--profile-root', str(profile_root)],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError:
@@ -911,7 +937,11 @@ def serve(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT,
         runtime = {'transport': transport, 'proc': proc, 'lock_fd': fd}
         try:
             # The renderer does not register its app:// page without activation.
-            subprocess.run(['open', '-a', 'ChatGPT'], check=False, timeout=15)
+            # Activate the EXACT bundle we launched (a renamed copy like
+            # ReChatGPT must not activate the operator's ChatGPT.app).
+            bundle = _bundle_path(binary)
+            activation = ['open', str(bundle)] if bundle else ['open', '-a', 'ChatGPT']
+            subprocess.run(activation, check=False, timeout=15)
         except (OSError, subprocess.TimeoutExpired):
             pass
         ready = False
@@ -922,6 +952,7 @@ def serve(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT,
                 state = None
             if isinstance(state, dict) and state.get('status') == 'ready':
                 ready = True
+                apply_window_title(transport)
                 break
             if proc.poll() is not None:
                 return {'status': 'refused', 'reason': 'instance_exited'}
@@ -999,7 +1030,7 @@ def send(prompt, binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT,
         replay = _client_replay(profile, prompt, request_key)
         if replay is not None:
             return replay
-        holder = _start_holder_daemon()
+        holder = _start_holder_daemon(binary, profile_root, name)
         if holder is None:
             receipt['reason'] = 'holder_spawn_failed'
             return receipt
@@ -1044,7 +1075,7 @@ def _read_prompt(source):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
-    for cmd in ('inspect', 'probe', 'send'):
+    for cmd in ('inspect', 'probe', 'send', 'serve'):
         obj = sub.add_parser(cmd)
         obj.add_argument('--profile', default='default')
         obj.add_argument('--profile-root', type=Path, default=DEFAULT_PROFILE_ROOT)
@@ -1067,7 +1098,10 @@ def main(argv=None):
                 outcome = send(prompt, request_key=args.request_key, **values)
                 exit_code = 0 if outcome.get('status') in ('sent', 'confirmed') else 2
         else:
-            outcome = inspect(**values) if args.action == 'inspect' else probe(**values)
+            outcome = (inspect(**values) if args.action == 'inspect'
+                       else probe(**values) if args.action == 'probe'
+                       else serve(binary=args.binary, profile_root=args.profile_root,
+                                  name=args.profile))
     except (ValueError, OSError, RuntimeError) as exc:
         if args.action == 'send':
             outcome = _send_receipt() | {'reason': type(exc).__name__}
@@ -1079,8 +1113,4 @@ def main(argv=None):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1 and sys.argv[1] == 'serve':
-        os.umask(0o077)
-        serve()
-        sys.exit(0)
     sys.exit(main())
