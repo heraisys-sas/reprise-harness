@@ -277,8 +277,10 @@ class TestGuardedSend(unittest.TestCase):
         self.binary.write_text('#!/bin/sh\nexit 0\n')
         self.binary.chmod(0o700)
 
-    def fake(self, *, first=None, staged=None, click=None, turns=None, axtree=None):
+    def fake(self, *, first=None, staged=None, click=None, turns=None, axtree=None,
+             sse=None):
         transport = mock.MagicMock()
+        transport.drain_notifications.return_value = sse if sse is not None else []
         first = first if first is not None else {
             'status': 'ready', 'users': 2, 'assistants': 1}
         staged = staged if staged is not None else {
@@ -314,6 +316,8 @@ class TestGuardedSend(unittest.TestCase):
 
         def respond_call(method, params):
             nonlocal calls
+            if method == 'Network.enable':
+                return {}
             self.assertEqual(method, 'Accessibility.getFullAXTree')
             if isinstance(axtree, Exception):
                 raise axtree

@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import time
 import socket as socket_module
 import stat
 import subprocess
@@ -265,11 +266,86 @@ def _evaluate_send(transport, function, *args):
     return transport.evaluate(expression)
 
 
-# Issue #156 (option B): post-send response observation via CDP AXTree polling.
-# The Network/SSE capture is SUSPENDED (voir issue #156).
+# Issue #156: post-send response capture. Priority 1 = Network/SSE events
+# (the Electron «owl» client streams assistant replies over EventSource, so
+# Network.eventSourceMessageReceived carries the tokens directly); Priority 2
+# = AXTree polling kept as fallback when no SSE event is observed.
+SSE_POLL_INTERVAL_SECONDS = 1.0
+SSE_TIMEOUT_SECONDS = 120
 AXTREE_POLL_INTERVAL_SECONDS = 1.0
 AXTREE_TIMEOUT_SECONDS = 120
 RESPONSE_EXCERPT_CHARS = 1500
+
+
+def _sse_enable(transport):
+    """Enable the Network domain on the attached renderer; best effort."""
+    try:
+        transport.call('Network.enable', {'maxTotalBufferSize': 10000000,
+                                          'maxResourceBufferSize': 5000000})
+        return True
+    except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+        return False
+
+
+def _sse_drain(transport):
+    """Collect SSE data chunks from buffered CDP notifications.
+
+    Events accumulate in the transport buffer while the post-click turn loop
+    polls, so one drain after the loop captures the whole streamed reply.
+    """
+    chunks = []
+    for frame in transport.drain_notifications():
+        if not isinstance(frame, dict) or \
+                frame.get('method') != 'Network.eventSourceMessageReceived':
+            continue
+        data = (frame.get('params') or {}).get('data')
+        if isinstance(data, str):
+            chunks.append(data)
+    return chunks
+
+
+def collect_sse(transport, *, timeout=30,
+                interval=SSE_POLL_INTERVAL_SECONDS):
+    """Build assistant text from drained Network.eventSourceMessageReceived.
+
+    Completeness mirrors the AXTree rule: the payload is complete when its
+    sha256 is identical on two consecutive polls (1 s apart). No event at all
+    returns immediately with reason 'sse_no_events' so the AXTree fallback
+    runs without delay. Never fatal; transport errors yield
+    response_complete=False with reason 'sse_unavailable'.
+    """
+    try:
+        chunks = _sse_drain(transport)
+    except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+        return {'response_complete': False, 'response_sha256': None,
+                'response_chars': 0, 'response_excerpt': '',
+                'response_reason': 'sse_unavailable'}
+    if not chunks:
+        return {'response_complete': False, 'response_sha256': None,
+                'response_chars': 0, 'response_excerpt': '',
+                'response_reason': 'sse_no_events'}
+    deadline = time.monotonic() + timeout
+    previous = None
+    while True:
+        try:
+            chunks.extend(_sse_drain(transport))
+        except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+            return {'response_complete': False, 'response_sha256': None,
+                    'response_chars': 0, 'response_excerpt': '',
+                    'response_reason': 'sse_unavailable'}
+        text = '\n'.join(chunks)
+        digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
+        if digest == previous:
+            return {'response_complete': True, 'response_sha256': digest,
+                    'response_chars': len(text),
+                    'response_excerpt': text[:RESPONSE_EXCERPT_CHARS],
+                    'response_source': 'sse'}
+        previous = digest
+        if time.monotonic() >= deadline:
+            return {'response_complete': False, 'response_sha256': None,
+                    'response_chars': 0, 'response_excerpt': '',
+                    'response_reason': 'sse_incomplete'}
+        time.sleep(interval)
 
 
 def collect_axtree(transport):
@@ -455,12 +531,19 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
                     break
         if receipt['status'] == 'incertain' and receipt['reason'] is None:
             receipt['reason'] = 'evidence_incomplete'
-        # AXTree response capture (issue #156, option B), while the session is
-        # still open and before teardown. Attempted only after a click;
-        # fields stay optional so receipts without capture keep their shape.
+        # Post-send response capture (issue #156): priority 1 = Network/SSE
+        # events, priority 2 = AXTree polling as fallback when no SSE event
+        # was observed. Attempted only after a click; fields stay optional so
+        # receipts without capture keep their shape.
         if receipt['click_observed']:
             try:
-                receipt.update(collect_response(transport, prompt))
+                _sse_enable(transport)
+                sse = collect_sse(transport)
+                if sse.get('response_source') == 'sse':
+                    receipt.update(sse)
+                else:
+                    receipt['sse_reason'] = sse.get('response_reason')
+                    receipt.update(collect_response(transport, prompt))
             except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
                 receipt['response_complete'] = False
     except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):

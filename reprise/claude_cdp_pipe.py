@@ -50,6 +50,9 @@ class PipeTransport:
         # which would defeat the select() gate below.
         self._reader = os.fdopen(read_fd, 'rb', buffering=0)
         self._writer = os.fdopen(write_fd, 'wb')
+        # CDP notifications (no 'id') collected here instead of being dropped;
+        # consumers drain via drain_notifications() (issue #156, SSE capture).
+        self._notifications = []
 
     # -- framing -------------------------------------------------------------
 
@@ -89,8 +92,11 @@ class PipeTransport:
             frame = json.loads(raw.decode('utf-8'))
             if not isinstance(frame, dict):
                 continue
-            # Skip notifications (no 'id' field) — we only care about responses
+            # Collect notifications (no 'id' field) instead of dropping them;
+            # bounded so a chatty session cannot grow this list indefinitely.
             if 'id' not in frame:
+                if len(self._notifications) < 10000:
+                    self._notifications.append(frame)
                 continue
             return frame
 
@@ -169,6 +175,11 @@ class PipeTransport:
     def insert_text(self, text):
         """Input.insertText on the focused element."""
         self.call("Input.insertText", {"text": text})
+
+    def drain_notifications(self):
+        """Return and clear notifications collected since the last drain."""
+        items, self._notifications = self._notifications, []
+        return items
 
     def close(self):
         """Close the reader side; do NOT kill the child here."""
