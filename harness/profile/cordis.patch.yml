@@ -177,7 +177,14 @@
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: You are a coding agent powered by the {{model}} model.
+              prefix: >-
+                You are a coding agent powered by the {{model}} model. In
+                orchestrator mode, delegate analysis and implementation to
+                subagents with compact briefs, and ask for compact results, so
+                this session grows slowly and stays precise. When the exchange
+                has grown very long and compaction approaches, prefer the relay:
+                run /compact, continue the work in a forked subagent, and keep
+                this session as the precise archive of everything discussed.
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
@@ -238,6 +245,38 @@
             config:
               - id: compaction-basic
                 name: '@deepseek-ai/dsh-compaction-basic'
+                config:
+                  # Politiques par route : le seuil de déclenchement est
+                  # floor(min(W × thresholdRatio, W − O − headroomTokens)).
+                  # ASI1 — W=108000, O=16384, B=16384 → 64800 tokens.
+                  # Morph — W=1048576, O=131072, B=65536 → 838860 tokens.
+                  # `maxTokens` ici plafonne la SORTIE DU RÉSUMÉ, distinct du
+                  # plafond de sortie du modèle déclaré dans llm-pi-ai.
+                  # retainRatio 0.5 garde plus d'historique verbatim ; le résumé
+                  # est délégué à asi1-mini (gratuit sur ASI:Cloud, plus rapide).
+                  modelPolicies:
+                    - provider: asi-cloud
+                      model: asi1
+                      thresholdRatio: 0.6
+                      headroomTokens: 16384
+                      retainRatio: 0.5
+                      summarizationProvider: asi-cloud
+                      summarizationModel: asi1-mini
+                      maxTokens: 8192
+                    - provider: asi-cloud
+                      model: asi1-mini
+                      thresholdRatio: 0.6
+                      headroomTokens: 16384
+                      retainRatio: 0.5
+                      summarizationProvider: asi-cloud
+                      summarizationModel: asi1-mini
+                      maxTokens: 8192
+                    - provider: morph
+                      model: morph-dsv41flash-1017
+                      thresholdRatio: 0.8
+                      headroomTokens: 65536
+                      retainRatio: 0.25
+                      maxTokens: 8192
               - id: command-compact
                 name: '@deepseek-ai/dsh-command-compact'
               - id: tool-result-pruner
