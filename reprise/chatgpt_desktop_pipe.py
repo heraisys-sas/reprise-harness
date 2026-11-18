@@ -321,6 +321,20 @@ REPLY_LABELS = ('chatgpt a dit', 'chatgpt said')
 # closing sentence, not just its tail.
 REPLY_FOOTERS = ('chatgpt peut faire des erreurs', 'chatgpt can make mistakes',
                  'peut faire des erreurs', 'can make mistakes')
+# Issue #228 (2/2 confirmed): rendered conversation text can be pure UI chrome
+# — «Afficher plus», «Durée d'exécution : 0s», «Réflexion en cours» and
+# neighbours. Such text is NOT a reply: it is cut at the first label (like a
+# footer) and can never validate a receipt.
+REPLY_UI_CHROME = ('afficher plus', 'afficher la réponse', 'afficher le raisonnement',
+                   'durée d\'exécution', 'réflexion en cours', 'réfléchit',
+                   'reasoning', 'thinking')
+# A receipt is only confirmed for a capture that is neither chrome nor a
+# fragment. Threshold (issue #228, criterion 2): 80 non-blank chars — the
+# known chrome labels together stay below ~70 chars, while typical delegate
+# answers exceed 80. Short real replies (< 80 chars) without a sentinel are
+# degraded to captured_incomplete: include the sentinel in the prompt to get
+# a strict completion proof for a short expected answer.
+MIN_USEFUL_REPLY_CHARS = 80
 TURN_COMPLETE_MARKER = 'conversation-turn-complete'
 # Distinct window title for the dedicated instance (visible in Mission Control
 # and window switchers); re-applied at dispatch start — the client resets it.
@@ -424,7 +438,7 @@ def extract_reply(text, prompt):
         cut = sentinel
         anchor = 'sentinel'
     lower = rest.lower()
-    for footer in REPLY_FOOTERS:
+    for footer in REPLY_FOOTERS + REPLY_UI_CHROME:
         found = lower.find(footer)
         if 0 <= found < cut:
             cut = found
@@ -442,6 +456,23 @@ def extract_reply(text, prompt):
     if len(reply) > MAX_RESPONSE_CHARS:
         reply = reply[:MAX_RESPONSE_CHARS]
     return reply, anchor
+
+
+def _usable_reply(reply):
+    """Issue #228 gate: None or (True, None) for real content, else (False, reason).
+
+    UI chrome («Afficher plus», «Durée d'exécution», «Réflexion en cours»…)
+    never validates a receipt; a capture below MIN_USEFUL_REPLY_CHARS
+    non-blank chars is a fragment, not a complete answer.
+    """
+    if not reply:
+        return False, 'no_reply_text'
+    lowered = reply.lower()
+    if any(label in lowered for label in REPLY_UI_CHROME):
+        return False, 'ui_chrome_capture'
+    if sum(not ch.isspace() for ch in reply) < MIN_USEFUL_REPLY_CHARS:
+        return False, 'capture_too_short'
+    return True, None
 
 
 def _send_receipt():
@@ -610,6 +641,7 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
         previous = None
         stable_streak = 0
         completed = quiet = sentinel_seen = dom_marker = False
+        chrome_seen = False
         deadline = time.monotonic() + COMPLETION_TIMEOUT_SECONDS
         completed_at = None
         polls = 0
@@ -624,6 +656,9 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
             text = probe.get('text') if isinstance(probe, dict) else None
             polls += 1
             if isinstance(text, str) and text:
+                lowered_text = text.lower()
+                if any(label in lowered_text for label in REPLY_UI_CHROME):
+                    chrome_seen = True
                 reply, anchor = extract_reply(text, prompt)
                 if reply is not None:
                     # The conversation is append-only: the LAST extraction is
@@ -660,6 +695,8 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
         status = _evaluate_send(transport, 'composerStatus', None)
         receipt['composer_emptied'] = isinstance(status, dict) and status.get('status') == 'ready'
         chosen = last if last is not None else best
+        usable, unusable_reason = _usable_reply(chosen[0] if chosen else None)
+        chrome_only = chosen is None and chrome_seen
         if chosen is not None:
             reply, anchor = chosen
             # The prompt echo in the rendered conversation is the delivery
@@ -670,8 +707,13 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
             sentinel_seen = anchor == 'sentinel'
             receipt['user_confirmed'] = True
             receipt['response_observed'] = True
-            receipt['response_complete'] = bool(completed or quiet or sentinel_seen
-                                                or dom_marker)
+            # Issue #228 criterion 2/5: chrome or a too-short capture is never
+            # a complete reply, and turn_completed: false (a1: no ws event, no
+            # sentinel, no DOM marker, DOM silent) never yields
+            # response_complete: true even when some text was read.
+            completion_evidence = bool(completed or quiet or sentinel_seen
+                                       or dom_marker)
+            receipt['response_complete'] = bool(completion_evidence and usable)
             receipt['response_source'] = 'rendered-conversation'
             receipt['response_anchor'] = anchor
             receipt['completion'] = ('sentinel' if sentinel_seen else
@@ -679,6 +721,8 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
                                      'dom-marker' if dom_marker else
                                      'quiet' if quiet else 'timeout')
             receipt['turn_completed'] = completed
+            # Raw excerpt/hash are kept unchanged for diagnosis (criterion 3),
+            # even when the capture is chrome and the receipt stays incomplete.
             receipt['response_sha256'] = hashlib.sha256(reply.encode('utf-8')).hexdigest()
             receipt['response_chars'] = len(reply)
             receipt['response_excerpt'] = reply[:RESPONSE_EXCERPT_CHARS]
@@ -686,15 +730,31 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
         else:
             receipt['completion'] = ('turn-complete' if completed else
                                      'quiet' if quiet else 'timeout')
-        receipt['status'] = ('sent' if receipt['click_observed'] and
-                             (receipt['composer_emptied'] or completed or
-                              bool(chosen and 'réflexion en cours' in chosen[0].lower()))
-                             else 'incertain')
-        if receipt['status'] == 'sent' and receipt['response_observed'] \
-                and receipt['response_complete']:
-            receipt['status'] = 'confirmed'
-        if receipt['status'] == 'incertain' and receipt['reason'] is None:
-            receipt['reason'] = 'evidence_incomplete'
+        if chosen is not None and not usable:
+            # Issue #228 criterion 3/4: new durable status. The raw excerpt is
+            # kept for diagnosis and the receipt is persisted, so replay
+            # returns it as-is: captured_incomplete NEVER re-sends the prompt
+            # (at-most-once contract, single initial marker).
+            receipt['status'] = 'captured_incomplete'
+            if receipt['reason'] is None:
+                receipt['reason'] = unusable_reason
+        elif chrome_only:
+            # Issue #228 case a2: only UI chrome was rendered (thinking
+            # indicator, «Afficher plus»…); nothing usable was extracted but
+            # the observation itself is evidence, not silence.
+            receipt['status'] = 'captured_incomplete'
+            if receipt['reason'] is None:
+                receipt['reason'] = 'ui_chrome_capture'
+        else:
+            receipt['status'] = ('sent' if receipt['click_observed'] and
+                                 (receipt['composer_emptied'] or completed or
+                                  bool(chosen and 'réflexion en cours' in chosen[0].lower()))
+                                 else 'incertain')
+            if receipt['status'] == 'sent' and receipt['response_observed'] \
+                    and receipt['response_complete']:
+                receipt['status'] = 'confirmed'
+            if receipt['status'] == 'incertain' and receipt['reason'] is None:
+                receipt['reason'] = 'evidence_incomplete'
     except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
         receipt.update(status='incertain', reason='pipe_unavailable')
     finally:

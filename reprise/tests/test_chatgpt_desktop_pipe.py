@@ -20,6 +20,11 @@ from unittest import mock
 import chatgpt_desktop_pipe as adapter
 import claude_cdp_pipe
 
+# Standard long reply shared by the confirmed-capture fixtures: must stay above
+# adapter.MIN_USEFUL_REPLY_CHARS non-blank chars (issue #228).
+REPLY_FIXTURE_BODY = ('Assistant reply body with enough useful content to pass '
+                      'the usable-reply threshold of the capture contract.')
+
 
 class TestCdpContract(unittest.TestCase):
     def test_chatgpt_arguments_do_not_expose_devtools_tcp_or_codex(self):
@@ -288,9 +293,12 @@ class TestGuardedSend(unittest.TestCase):
         click = click if click is not None else {'clicked': True, 'status': 'clicked'}
         # Default rendered body: prompt echo, label, stable reply, footer. The
         # static page is mutation-quiet immediately (STREAM_QUIET_MS), which is
-        # the live completeness evidence for an already-rendered reply.
+        # the live completeness evidence for an already-rendered reply. The
+        # reply length stays above MIN_USEFUL_REPLY_CHARS (issue #228).
         default_body = ('Vous avez dit : synthetic request ChatGPT a dit : '
-                        'Assistant reply body. ChatGPT peut faire des erreurs. '
+                        'Assistant reply body with enough useful content to pass '
+                        'the usable-reply threshold of the capture contract. '
+                        'ChatGPT peut faire des erreurs. '
                         'Réponse terminée')
         quiet_ms_default = adapter.STREAM_QUIET_MS
         clicked = {'done': False}
@@ -436,7 +444,10 @@ class TestGuardedSend(unittest.TestCase):
         self.assertTrue(result['response_complete'])
         self.assertEqual(result['response_anchor'], 'footer')
         self.assertEqual(result['response_source'], 'rendered-conversation')
-        self.assertEqual(result['response_text'], 'Assistant reply body.')
+        self.assertEqual(result['response_text'], 'Assistant reply body with '
+                                                  'enough useful content to pass '
+                                                  'the usable-reply threshold of '
+                                                  'the capture contract.')
         transport.insert_text.assert_called_once_with('synthetic request')
         self.assertEqual(result['dispatch_action'], 'enter')
         with mock.patch.object(adapter, 'launch_cdp_process') as launch:
@@ -451,7 +462,10 @@ class TestGuardedSend(unittest.TestCase):
         path = adapter._receipt_path(self.root / 'dedicated', 'req-receipt-strip')
         data = json.loads(path.read_text())
         self.assertNotIn('response_text', data)
-        self.assertEqual(data['response_excerpt'], 'Assistant reply body.')
+        self.assertEqual(data['response_excerpt'], 'Assistant reply body with '
+                                                   'enough useful content to pass '
+                                                   'the usable-reply threshold of '
+                                                   'the capture contract.')
 
     def test_click_transport_loss_is_durable_uncertainty_without_retry(self):
         transport = self.fake(enter=RuntimeError('lost after dispatch'),
@@ -516,10 +530,10 @@ class TestRenderedConversationCapture(unittest.TestCase):
         transport, receipt = self.invoke(request='req-ax-1')
         self.assertTrue(receipt['response_complete'])
         self.assertEqual(receipt['status'], 'confirmed')
-        expected = hashlib.sha256('Assistant reply body.'.encode('utf-8')).hexdigest()
+        expected = hashlib.sha256(REPLY_FIXTURE_BODY.encode('utf-8')).hexdigest()
         self.assertEqual(receipt['response_sha256'], expected)
-        self.assertEqual(receipt['response_chars'], len('Assistant reply body.'))
-        self.assertEqual(receipt['response_excerpt'], 'Assistant reply body.')
+        self.assertEqual(receipt['response_chars'], len(REPLY_FIXTURE_BODY))
+        self.assertEqual(receipt['response_excerpt'], REPLY_FIXTURE_BODY)
         # The Network domain is enabled before staging; no AXTree call remains.
         self.assertEqual(sum(c.args and c.args[0] == 'Accessibility.getFullAXTree'
                              for c in transport.call.call_args_list), 0)
@@ -527,9 +541,11 @@ class TestRenderedConversationCapture(unittest.TestCase):
                             for c in transport.call.call_args_list))
 
     def test_changing_then_stable_polls_complete(self):
+        long_reply = ('Premier jet. Et la suite du contenu, rédigée assez long '
+                      'pour dépasser franchement le seuil de capture utile.')
         body = ['Vous avez dit : synthetic request ChatGPT a dit : Premier jet.',
-                'Vous avez dit : synthetic request ChatGPT a dit : Premier jet. Et la suite.',
-                'Vous avez dit : synthetic request ChatGPT a dit : Premier jet. Et la suite.']
+                'Vous avez dit : synthetic request ChatGPT a dit : ' + long_reply,
+                'Vous avez dit : synthetic request ChatGPT a dit : ' + long_reply]
         # Mutations stay active while the text changes, then go quiet.
         quiet_ms = lambda poll: None if poll < 3 else adapter.STREAM_QUIET_MS
         transport, receipt = self.invoke(body=body, request='req-ax-2', quiet_ms=quiet_ms)
@@ -551,7 +567,9 @@ class TestRenderedConversationCapture(unittest.TestCase):
 
     def test_quiet_stream_completes_with_drifting_text(self):
         def body(_poll):
-            return 'Vous avez dit : synthetic request ChatGPT a dit : drift-%d' % _poll
+            return ('Vous avez dit : synthetic request ChatGPT a dit : drift-%d '
+                    'with additional rendered conversation text, long enough to '
+                    'pass the usable-reply capture threshold.') % _poll
 
         transport = self.holder.fake(body=body, quiet_ms=adapter.STREAM_QUIET_MS)
         with HolderHarness(transport, self.holder.binary, self.holder.root):
@@ -565,7 +583,9 @@ class TestRenderedConversationCapture(unittest.TestCase):
 
     def test_timeout_is_not_fatal_and_keeps_sent_status(self):
         def body(_poll):
-            return 'Vous avez dit : synthetic request ChatGPT a dit : drift-%d' % _poll
+            return ('Vous avez dit : synthetic request ChatGPT a dit : drift-%d '
+                    'with additional rendered conversation text, long enough to '
+                    'pass the usable-reply capture threshold.') % _poll
 
         transport = self.holder.fake(body=body, quiet_ms=lambda _poll: None)
         with mock.patch.object(adapter.time, 'monotonic',
@@ -579,6 +599,58 @@ class TestRenderedConversationCapture(unittest.TestCase):
         self.assertEqual(receipt['completion'], 'timeout')
         self.assertEqual(receipt['status'], 'sent')
         self.assertTrue(receipt['click_observed'])
+
+    # Issue #228 regression tests: UI chrome must never validate a receipt.
+
+    def test_turn_not_completed_with_chrome_capture_is_captured_incomplete(self):
+        # Case a1: no ws turn-complete, no DOM marker, DOM never quiet — the
+        # capture read only a fragment plus UI chrome before the clock ran out.
+        def body(_poll):
+            return ('Vous avez dit : synthetic request ChatGPT a dit : Voici un '
+                    'début de réponse. Afficher plus. Durée d\'exécution : 0s.')
+
+        transport = self.holder.fake(body=body, quiet_ms=lambda _poll: None)
+        with mock.patch.object(adapter.time, 'monotonic',
+                               side_effect=itertools.count(0, 200)):
+            with HolderHarness(transport, self.holder.binary,
+                               self.holder.root):
+                receipt = adapter.send('synthetic request', self.holder.binary,
+                                       self.holder.root, 'dedicated',
+                                       request_key='req-228-a1')
+        self.assertFalse(receipt['turn_completed'])
+        self.assertFalse(receipt['response_complete'])
+        self.assertEqual(receipt['status'], 'captured_incomplete')
+        self.assertEqual(receipt['reason'], 'capture_too_short')
+        # Raw excerpt kept for diagnosis, cut before the chrome label; the
+        # hash covers the captured fragment, not a completed reply.
+        self.assertEqual(receipt['response_excerpt'], 'Voici un début de réponse.')
+        self.assertEqual(receipt['response_sha256'],
+                         hashlib.sha256('Voici un début de réponse.'.encode('utf-8')).hexdigest())
+
+    def test_capture_during_thinking_indicator_is_captured_incomplete(self):
+        # Case a2: turn completed but the DOM still shows only the thinking
+        # chrome — never a confirmed receipt.
+        def body(_poll):
+            return ('Vous avez dit : synthetic request ChatGPT a dit : '
+                    'Réflexion en cours. Durée d\'exécution : 0s. Afficher plus.')
+
+        transport = self.holder.fake(body=body, quiet_ms=adapter.STREAM_QUIET_MS)
+        with HolderHarness(transport, self.holder.binary, self.holder.root):
+            receipt = adapter.send('synthetic request', self.holder.binary,
+                                   self.holder.root, 'dedicated',
+                                   request_key='req-228-a2')
+        self.assertFalse(receipt['response_complete'])
+        self.assertEqual(receipt['status'], 'captured_incomplete')
+        self.assertEqual(receipt['reason'], 'ui_chrome_capture')
+        self.assertTrue(receipt['click_observed'])
+        # Idempotence: the receipt is durable, replay never re-sends.
+        with mock.patch.object(adapter, 'launch_cdp_process') as launch:
+            replayed = adapter.send('synthetic request', self.holder.binary,
+                                    self.holder.root, 'dedicated',
+                                    request_key='req-228-a2')
+        launch.assert_not_called()
+        self.assertTrue(replayed['replayed'])
+        self.assertEqual(replayed['status'], 'captured_incomplete')
 
     def test_unavailable_body_is_uncertain(self):
         transport, receipt = self.invoke(body=RuntimeError('pipe lost'),
