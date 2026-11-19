@@ -17,6 +17,9 @@ import time
 import unittest
 from unittest import mock
 
+# Sharded CI runs each module in its own process (ci_test.py): the parent
+# path cannot rely on another module having inserted it first (#236).
+sys.path.insert(0, str(Path(__file__).parents[1]))
 import chatgpt_desktop_pipe as adapter
 import claude_cdp_pipe
 
