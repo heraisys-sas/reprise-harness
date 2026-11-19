@@ -271,11 +271,33 @@ def finish_with_holder_dispatch(root, state, admission):
         return result
     durable = {k: v for k, v in receipt.items() if k != 'response_text'}
     result['dispatch_receipt'] = durable
-    if receipt.get('status') in ('sent', 'confirmed') and receipt.get('response_text'):
+    captured = (receipt.get('status') in ('sent', 'confirmed')
+                and receipt.get('response_text'))
+    # Issue #236: a truncated capture keeps the partial text (review material)
+    # and flips the delegated result to needs_review, mirroring the Codex
+    # backend semantics; the persistence layer then refuses it as incomplete.
+    truncated = bool(receipt.get('output_truncated') and receipt.get('response_text'))
+    if truncated:
         result['response'] = receipt['response_text']
         result['delivery'] = 'captured'
         result['admission_only'] = False
         result['captured_answer_sha256'] = receipt.get('response_sha256')
+        result['output_truncated'] = True
+        result['output_complete'] = False
+        result['capture_limit_characters'] = receipt.get('capture_limit_characters')
+        result['response_full_length'] = receipt.get('response_full_length')
+        result['status'] = 'needs_review'
+        result['work_completed'] = False
+        result['next_action'] = 'reconcile'
+        result['reason'] = ('ChatGPT capture exceeds the capture limit; stored '
+                            'output is incomplete. Do not automatically retry.')
+    elif captured:
+        result['response'] = receipt['response_text']
+        result['delivery'] = 'captured'
+        result['admission_only'] = False
+        result['captured_answer_sha256'] = receipt.get('response_sha256')
+        if receipt.get('output_complete'):
+            result['output_complete'] = True
     return result
 
 
