@@ -129,6 +129,24 @@ class PatchRestoreTests(unittest.TestCase):
         self.assertNotIn(desktop_patch.MARKER, desktop_patch._chunk_text(raw, header_size, entry))
         self.assertFalse(desktop_patch.BACKUP.exists())
 
+    def test_restore_recovers_pristine_bundle_id(self):
+        import plistlib
+        plist = {'CFBundleIdentifier': desktop_patch.ORIGINAL_BUNDLE_ID,
+                 'CFBundleShortVersionString': '9.9.9',
+                 'ElectronAsarIntegrity': {'Resources/app.asar': {
+                     'algorithm': 'SHA256', 'hash': 'x'}}}
+        with open(self.app / 'Contents' / 'Info.plist', 'wb') as handle:
+            plistlib.dump(plist, handle)
+        with unittest.mock.patch.object(desktop_patch, 'desktop_running', return_value=False):
+            desktop_patch.patch(app=self.app)
+        with open(self.app / 'Contents' / 'Info.plist', 'rb') as handle:
+            self.assertEqual(plistlib.load(handle)['CFBundleIdentifier'], desktop_patch.COPY_BUNDLE_ID)
+        with unittest.mock.patch.object(desktop_patch, 'desktop_running', return_value=False):
+            desktop_patch.restore(app=self.app)
+        with open(self.app / 'Contents' / 'Info.plist', 'rb') as handle:
+            self.assertEqual(plistlib.load(handle)['CFBundleIdentifier'],
+                             desktop_patch.ORIGINAL_BUNDLE_ID)
+
     def test_patch_refuses_when_anchors_missing(self):
         self._write_plist()
         tree, blobs = make_tree()
