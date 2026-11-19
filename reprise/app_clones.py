@@ -113,7 +113,15 @@ def _set_identity(app, spec):
     path = _plist(app)
     with open(path, 'rb') as handle:
         plist = plistlib.load(handle)
-    plist['CFBundleName'] = spec['display_name']
+    if spec['kind'] == 'patched':
+        # Electron uses CFBundleName to locate the original nested helper apps.
+        source_name = _read_plist(spec['source']).get('CFBundleName')
+        if source_name is None:
+            plist.pop('CFBundleName', None)
+        else:
+            plist['CFBundleName'] = source_name
+    else:
+        plist['CFBundleName'] = spec['display_name']
     plist['CFBundleDisplayName'] = spec['display_name']
     plist['CFBundleIdentifier'] = spec['bundle_id']
     with open(path, 'wb') as handle:
@@ -160,14 +168,20 @@ def inventory(home=CLONES_HOME, *, specs=None, manifest_path=MANIFEST_PATH,
                'target_version': _version(target) if target.is_dir() else None,
                'frozen_version': frozen.get('version'),
                'frozen_at': frozen.get('frozen_at'),
-               'bundle_id_ok': None, 'display_name_ok': None,
+               'bundle_id_ok': None, 'display_name_ok': None, 'bundle_name_ok': None,
                'signature_valid': None, 'su_off': None, 'running_pid': None,
                'upstream_newer': None}
         if row['present']:
             try:
                 plist = _read_plist(target)
                 row['bundle_id_ok'] = plist.get('CFBundleIdentifier') == spec['bundle_id']
-                row['display_name_ok'] = plist.get('CFBundleName') == spec['display_name']
+                row['display_name_ok'] = plist.get('CFBundleDisplayName') == spec['display_name']
+                if spec['kind'] == 'patched':
+                    if row['source_version'] is not None:
+                        source_name = _read_plist(source).get('CFBundleName')
+                        row['bundle_name_ok'] = plist.get('CFBundleName') == source_name
+                else:
+                    row['bundle_name_ok'] = plist.get('CFBundleName') == spec['display_name']
             except (OSError, plistlib.InvalidFileException):
                 row['bundle_id_ok'] = row['display_name_ok'] = False
             row['signature_valid'] = _signature_valid(target)
@@ -180,7 +194,7 @@ def inventory(home=CLONES_HOME, *, specs=None, manifest_path=MANIFEST_PATH,
         if not row['present']:
             issues.append('clone')
         else:
-            if row['bundle_id_ok'] is False or row['display_name_ok'] is False:
+            if any(row[key] is False for key in ('bundle_id_ok', 'display_name_ok', 'bundle_name_ok')):
                 issues.append('identity')
             if row['signature_valid'] is False:
                 issues.append('sign')

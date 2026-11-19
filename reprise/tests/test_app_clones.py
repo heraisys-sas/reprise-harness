@@ -98,6 +98,35 @@ class AppClonesTests(unittest.TestCase):
         verdict = self.invoke('verify')
         self.assertTrue(verdict['ok'], verdict)
 
+    def test_patched_clone_preserves_electron_helper_bundle_name(self):
+        self.specs['testclone']['kind'] = 'patched'
+
+        self.invoke('apply')
+
+        plist = app_clones._read_plist(self.target)
+        self.assertEqual(plist['CFBundleName'], 'FakeSource')
+        self.assertEqual(plist['CFBundleDisplayName'], 'FakeClone')
+        self.assertTrue(self.invoke('verify')['ok'])
+
+    def test_existing_patched_clone_repairs_internal_name_and_resigns_in_place(self):
+        self.invoke('apply')
+        self.specs['testclone']['kind'] = 'patched'
+        asar = self.target / 'Contents/Resources/app.asar'
+        asar.write_bytes(b'already patched')
+        app_clones._sign(self.target)
+        before = self.invoke('inventory')['testclone']
+
+        self.assertTrue(before['signature_valid'])
+        self.assertTrue(before['display_name_ok'])
+        self.assertFalse(before['bundle_name_ok'])
+        self.assertEqual(before['issues'], ['identity'])
+        receipt = self.invoke('apply')['testclone']
+
+        self.assertEqual(receipt['steps'][:2], ['identity', 'sign'])
+        self.assertNotIn('clone', receipt['steps'])
+        self.assertEqual(asar.read_bytes(), b'already patched')
+        self.assertTrue(self.invoke('verify')['ok'])
+
     def test_upstream_bump_plans_refresh_and_apply_replaces_clone(self):
         self.invoke('apply')
         with open(self.source / 'Contents/Info.plist', 'rb') as handle:
