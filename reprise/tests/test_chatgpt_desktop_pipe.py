@@ -220,6 +220,34 @@ print('CDP-PIPE-OK', flush=True)
 
 
 
+class AcceleratedTime:
+    """Issue #234: an accelerated clock handed to the adapter only.
+
+    Patching `adapter.time.<attr>` rewrites the REAL global `time` module,
+    which the test module shares: the HolderHarness readiness wait
+    (`time.monotonic() + 10`) collapsed to ~10 ticks, `send()` saw no socket
+    and spawned a detached holder (13 unreaped Popen). Exposing a shim as
+    `adapter.time` accelerates only the adapter's own deadlines and keeps the
+    test's clock, socket timeouts and sleeps real.
+    """
+
+    _tick = adapter.COMPLETION_POLL_INTERVAL_SECONDS
+
+    def __init__(self, start=1000.0):
+        self._now = start
+
+    def monotonic(self):
+        self._now += self._tick
+        return self._now
+
+    @staticmethod
+    def sleep(_seconds):
+        return None
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
 class HolderHarness:
     """Run the real serve() loop offline: mocked launch/census, live socket."""
 
@@ -237,13 +265,18 @@ class HolderHarness:
 
     def __enter__(self):
         self.terminate = mock.MagicMock()
+        # Issue #234: _dispatch measures the 20 s stream-quiet window and the
+        # settle window through time.monotonic — left alone, each quiet wait
+        # sleeps the real window while busy-polling (~186 s and ~5.7 Go RSS
+        # for TestRenderedConversationCapture). Accelerated clock, scoped to
+        # the adapter so this harness' own readiness wait stays real.
         self._patches = [
             mock.patch.object(adapter, 'launch_cdp_process',
                               return_value=(self.transport, self.process)),
             mock.patch.object(adapter, 'census', side_effect=self.census),
             mock.patch.object(adapter.subprocess, 'run'),
             mock.patch.object(adapter, 'terminate_chrome', new=self.terminate),
-            mock.patch.object(adapter.time, 'sleep'),
+            mock.patch.object(adapter, 'time', AcceleratedTime()),
         ]
         for patch in self._patches:
             patch.__enter__()
@@ -278,6 +311,11 @@ class TestGuardedSend(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
+        # Exposed so a hosting TestCase (TestRenderedConversationCapture reuses
+        # this setUp on a plain object) can register the cleanup as well:
+        # addCleanup on a non-TestCase never runs and the dir is then finalized
+        # by gc (issue #234, "TemporaryDirectory implicitly cleaned up").
+        self._folder = folder
         self.base = Path(folder.name)
         self.root = self.base / 'profiles'
         self.binary = self.base / 'ChatGPT'
@@ -521,6 +559,10 @@ class TestRenderedConversationCapture(unittest.TestCase):
     def setUp(self):
         self.holder = TestGuardedSend()
         self.holder.setUp()
+        # holder.setUp() is run on a plain object: its own addCleanup never
+        # executes, so the TemporaryDirectory would be finalized by gc —
+        # register it on the running TestCase (issue #234).
+        self.addCleanup(self.holder._folder.cleanup)
 
     def invoke(self, body=None, request='req-ax', quiet_ms=None):
         transport = self.holder.fake(body=body, quiet_ms=quiet_ms)
@@ -588,10 +630,13 @@ class TestRenderedConversationCapture(unittest.TestCase):
                     'pass the usable-reply capture threshold.') % _poll
 
         transport = self.holder.fake(body=body, quiet_ms=lambda _poll: None)
-        with mock.patch.object(adapter.time, 'monotonic',
-                               side_effect=itertools.count(0, 200)):
-            with HolderHarness(transport, self.holder.binary,
-                               self.holder.root):
+        # The clock jump MUST be applied inside the harness: patching
+        # adapter.time before __enter__ rewrites the shared global time
+        # module, collapsing the readiness wait and spawning a real holder
+        # (unreaped Popen, issue #234).
+        with HolderHarness(transport, self.holder.binary, self.holder.root):
+            with mock.patch.object(adapter.time, 'monotonic',
+                                   side_effect=itertools.count(0, 200)):
                 receipt = adapter.send('synthetic request', self.holder.binary,
                                        self.holder.root, 'dedicated',
                                        request_key='req-ax-3')
@@ -610,10 +655,11 @@ class TestRenderedConversationCapture(unittest.TestCase):
                     'début de réponse. Afficher plus. Durée d\'exécution : 0s.')
 
         transport = self.holder.fake(body=body, quiet_ms=lambda _poll: None)
-        with mock.patch.object(adapter.time, 'monotonic',
-                               side_effect=itertools.count(0, 200)):
-            with HolderHarness(transport, self.holder.binary,
-                               self.holder.root):
+        # Clock jump inside the harness only (issue #234): patching the shared
+        # global time module before __enter__ collapses the readiness wait.
+        with HolderHarness(transport, self.holder.binary, self.holder.root):
+            with mock.patch.object(adapter.time, 'monotonic',
+                                   side_effect=itertools.count(0, 200)):
                 receipt = adapter.send('synthetic request', self.holder.binary,
                                        self.holder.root, 'dedicated',
                                        request_key='req-228-a1')
