@@ -198,6 +198,50 @@ class ChatgptHolderDispatchTests(unittest.TestCase):
             ('req-chain',)).fetchone()
         self.assertNotIn('response_text', row[0])
 
+    def test_sentinel_complete_capture_declares_output_complete(self):
+        # Issue #236: a sentinel-anchored capture is producer-attested
+        # completeness — the delegated result carries output_complete=true and
+        # the persistence layer serves it as an integral answer.
+        receipt = {'status': 'confirmed', 'attempted': True, 'click_observed': True,
+                   'composer_emptied': True, 'response_observed': True,
+                   'response_complete': True, 'response_source': 'rendered-conversation',
+                   'response_anchor': 'sentinel', 'response_sha256': 'b' * 64,
+                   'response_chars': 4, 'response_excerpt': 'Oui.',
+                   'response_text': 'Oui.', 'output_complete': True}
+        _send, _admission, result = self.invoke(receipt)
+        self.assertEqual(result['delivery'], 'captured')
+        self.assertEqual(result['response'], 'Oui.')
+        self.assertTrue(result['output_complete'])
+        self.assertNotIn('output_truncated', result)
+        self.assertEqual(result['status'], 'finished')
+
+    def test_truncated_capture_keeps_partial_text_and_requires_review(self):
+        # Issue #236: an amputated capture is never a finished answer. The
+        # partial text is kept as review material, the delegated result flips
+        # to needs_review/reconcile, and the completeness flags let
+        # delegation_collect.py refuse it downstream.
+        receipt = {'status': 'captured_incomplete', 'attempted': True,
+                   'click_observed': True, 'composer_emptied': True,
+                   'response_observed': True, 'response_complete': False,
+                   'response_source': 'rendered-conversation',
+                   'response_anchor': 'footer', 'response_sha256': 'c' * 64,
+                   'response_chars': 58000, 'response_excerpt': 'part…',
+                   'response_text': 'P' * 58000, 'reason': 'capture_truncated',
+                   'output_truncated': True, 'output_complete': False,
+                   'response_full_length': 90123, 'capture_limit_characters': 58000}
+        _send, _admission, result = self.invoke(receipt)
+        self.assertEqual(result['status'], 'needs_review')
+        self.assertFalse(result['work_completed'])
+        self.assertEqual(result['next_action'], 'reconcile')
+        self.assertEqual(result['delivery'], 'captured')
+        self.assertFalse(result['admission_only'])
+        self.assertEqual(len(result['response']), 58000)
+        self.assertTrue(result['output_truncated'])
+        self.assertFalse(result['output_complete'])
+        self.assertEqual(result['capture_limit_characters'], 58000)
+        self.assertEqual(result['response_full_length'], 90123)
+        self.assertNotIn('response_text', result['dispatch_receipt'])
+
     def test_refused_dispatch_keeps_admission_replayable(self):
         receipt = {'status': 'refused', 'attempted': False, 'reason': 'holder_unavailable'}
         send, admission, result = self.invoke(receipt)

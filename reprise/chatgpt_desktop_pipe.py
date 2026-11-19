@@ -314,7 +314,13 @@ COMPLETION_TIMEOUT_SECONDS = 180
 # reply; read at most this long after the event (footer anchor ends it early).
 COMPLETION_SETTLE_SECONDS = 6.0
 RESPONSE_EXCERPT_CHARS = 1500
-MAX_RESPONSE_CHARS = 20000
+MAX_PROMPT_CHARS = 20000
+# Issue #236: the capture ceiling is now declared on the receipt instead of a
+# silent truncation. It must stay below the bodyProbe render window
+# (MAX_PROBE_CHARS = 60000 minus the prompt echo) so a reply cut here is a
+# real ceiling, and the sentinel-capped capture can carry an honest
+# output_complete proof for the pagination layer.
+MAX_CAPTURE_CHARS = 58000
 REPLY_SENTINEL = 'REPRISE-CAPTURE-FIN'
 REPLY_LABELS = ('chatgpt a dit', 'chatgpt said')
 # Footer markers include the «ChatGPT» prefix so the cut drops the whole
@@ -424,12 +430,17 @@ def extract_reply(text, prompt):
     Anchored on the last occurrence of the prompt echo; cut by the explicit
     sentinel when present, else by the conversation footer. Returns
     (reply or None, anchor); never raises, never returns unbounded text.
+
+    Issue #236: the third element reports the detected total length of the
+    reply before the defensive MAX_CAPTURE_CHARS ceiling, so a truncated
+    capture can declare its incompleteness on the receipt instead of
+    silently delivering a clipped answer as a complete one.
     """
     joined = _normalize(text)
     marker = _normalize(prompt)
     position = joined.rfind(marker)
     if position < 0:
-        return None, 'prompt_echo_missing'
+        return None, 'prompt_echo_missing', 0
     rest = joined[position + len(marker):]
     anchor = 'end'
     cut = len(rest)
@@ -452,25 +463,32 @@ def extract_reply(text, prompt):
             break
     reply = rest.strip(' :\u00a0-')
     if not reply:
-        return None, anchor
-    if len(reply) > MAX_RESPONSE_CHARS:
-        reply = reply[:MAX_RESPONSE_CHARS]
-    return reply, anchor
+        return None, anchor, len(rest)
+    total = len(reply)
+    if len(reply) > MAX_CAPTURE_CHARS:
+        reply = reply[:MAX_CAPTURE_CHARS]
+    return reply, anchor, total
 
 
-def _usable_reply(reply):
+def _usable_reply(reply, anchor=None):
     """Issue #228 gate: None or (True, None) for real content, else (False, reason).
 
     UI chrome («Afficher plus», «Durée d'exécution», «Réflexion en cours»…)
     never validates a receipt; a capture below MIN_USEFUL_REPLY_CHARS
     non-blank chars is a fragment, not a complete answer.
+
+    Issue #236: a sentinel-anchored capture is exempt from the length
+    threshold — REPRISE-CAPTURE-FIN is the strict completion proof the
+    delegate was instructed to emit, so a short real reply anchored on it
+    is a complete answer, not a fragment (the gate comment in #228
+    promised this exemption but never received the anchor).
     """
     if not reply:
         return False, 'no_reply_text'
     lowered = reply.lower()
     if any(label in lowered for label in REPLY_UI_CHROME):
         return False, 'ui_chrome_capture'
-    if sum(not ch.isspace() for ch in reply) < MIN_USEFUL_REPLY_CHARS:
+    if anchor != 'sentinel' and sum(not ch.isspace() for ch in reply) < MIN_USEFUL_REPLY_CHARS:
         return False, 'capture_too_short'
     return True, None
 
@@ -659,15 +677,15 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
                 lowered_text = text.lower()
                 if any(label in lowered_text for label in REPLY_UI_CHROME):
                     chrome_seen = True
-                reply, anchor = extract_reply(text, prompt)
+                reply, anchor, reply_total = extract_reply(text, prompt) if isinstance(text, str) else (None, 'prompt_echo_missing', 0)
                 if reply is not None:
                     # The conversation is append-only: the LAST extraction is
                     # the current final state; the longest seen is the fallback
                     # (junk like the thinking indicator can outsize a short
                     # true reply, so longest is never preferred over last).
-                    last = (reply, anchor)
+                    last = (reply, anchor, reply_total)
                 if reply is not None and (best is None or len(reply) > len(best[0])):
-                    best = (reply, anchor)
+                    best = (reply, anchor, reply_total)
                 evidence = reply if reply is not None else text
                 digest = hashlib.sha256(_normalize(evidence).encode('utf-8')).hexdigest()
                 stable_streak = stable_streak + 1 if previous == digest else 0
@@ -695,10 +713,11 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
         status = _evaluate_send(transport, 'composerStatus', None)
         receipt['composer_emptied'] = isinstance(status, dict) and status.get('status') == 'ready'
         chosen = last if last is not None else best
-        usable, unusable_reason = _usable_reply(chosen[0] if chosen else None)
+        usable, unusable_reason = _usable_reply(chosen[0] if chosen else None,
+                                                chosen[1] if chosen else None)
         chrome_only = chosen is None and chrome_seen
         if chosen is not None:
-            reply, anchor = chosen
+            reply, anchor, reply_total = chosen
             # The prompt echo in the rendered conversation is the delivery
             # evidence: the message is visibly part of the client conversation.
             # The sentinel anchor (the reply was cut at REPRISE-CAPTURE-FIN),
@@ -707,6 +726,17 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
             sentinel_seen = anchor == 'sentinel'
             receipt['user_confirmed'] = True
             receipt['response_observed'] = True
+            # Issue #236: declare capture completeness on the receipt instead
+            # of silently clipping. A reply whose detected length exceeded the
+            # defensive ceiling (probe window bound) is an amputated capture:
+            # it never validates a receipt and is flagged for reconciliation.
+            capture_truncated = reply_total > len(reply)
+            if capture_truncated:
+                # A truncated capture is never a complete reply, whatever the
+                # completion evidence: the delegated result must be reviewed,
+                # not consumed as the answer.
+                usable = False
+                unusable_reason = 'capture_truncated'
             # Issue #228 criterion 2/5: chrome or a too-short capture is never
             # a complete reply, and turn_completed: false (a1: no ws event, no
             # sentinel, no DOM marker, DOM silent) never yields
@@ -721,6 +751,16 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
                                      'dom-marker' if dom_marker else
                                      'quiet' if quiet else 'timeout')
             receipt['turn_completed'] = completed
+            if capture_truncated:
+                receipt['output_truncated'] = True
+                receipt['output_complete'] = False
+                receipt['response_full_length'] = reply_total
+                receipt['capture_limit_characters'] = MAX_CAPTURE_CHARS
+            elif sentinel_seen:
+                # Producer-attested completeness: the delegate emitted the
+                # exact end marker, so the captured content is the whole
+                # answer regardless of its length.
+                receipt['output_complete'] = True
             # Raw excerpt/hash are kept unchanged for diagnosis (criterion 3),
             # even when the capture is chrome and the receipt stays incomplete.
             receipt['response_sha256'] = hashlib.sha256(reply.encode('utf-8')).hexdigest()
@@ -734,7 +774,8 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
             # Issue #228 criterion 3/4: new durable status. The raw excerpt is
             # kept for diagnosis and the receipt is persisted, so replay
             # returns it as-is: captured_incomplete NEVER re-sends the prompt
-            # (at-most-once contract, single initial marker).
+            # (at-most-once contract, single initial marker). Issue #236: a
+            # truncated capture lands here too (usable was flipped to False).
             receipt['status'] = 'captured_incomplete'
             if receipt['reason'] is None:
                 receipt['reason'] = unusable_reason

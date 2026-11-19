@@ -598,12 +598,25 @@ class TestRenderedConversationCapture(unittest.TestCase):
         prompt = 'Question ?'
         body = ('Vous avez dit : Question ? ChatGPT a dit : Réponse '
                 + adapter.REPLY_SENTINEL + ' ChatGPT peut faire des erreurs.')
-        reply, anchor = adapter.extract_reply(body, prompt)
+        reply, anchor, _total = adapter.extract_reply(body, prompt)
         self.assertEqual(anchor, 'sentinel')
         self.assertEqual(reply, 'Réponse')
 
+    def test_sentinel_anchored_short_reply_passes_the_usable_gate(self):
+        # Issue #236: REPRISE-CAPTURE-FIN is the strict completion proof the
+        # delegate was instructed to emit — a short reply anchored on it is a
+        # complete answer, not a fragment (no capture_too_short degradation).
+        prompt = 'Question ?'
+        body = ('Vous avez dit : Question ? ChatGPT a dit : Oui. '
+                + adapter.REPLY_SENTINEL + ' ChatGPT peut faire des erreurs.')
+        reply, anchor, total = adapter.extract_reply(body, prompt)
+        self.assertEqual(anchor, 'sentinel')
+        self.assertEqual(reply, 'Oui.')
+        self.assertEqual(total, len('Oui.'))
+        self.assertEqual(adapter._usable_reply(reply, anchor), (True, None))
+
     def test_prompt_echo_missing_is_never_extracted(self):
-        reply, anchor = adapter.extract_reply('Texte sans écho.', 'Question ?')
+        reply, anchor, _total = adapter.extract_reply('Texte sans écho.', 'Question ?')
         self.assertIsNone(reply)
         self.assertEqual(anchor, 'prompt_echo_missing')
 
@@ -697,6 +710,52 @@ class TestRenderedConversationCapture(unittest.TestCase):
         launch.assert_not_called()
         self.assertTrue(replayed['replayed'])
         self.assertEqual(replayed['status'], 'captured_incomplete')
+
+    # Issue #236 regression tests: declared capture completeness.
+
+    def test_short_sentinel_reply_is_confirmed_with_output_complete(self):
+        # The bridge prompt instructs the delegate to end with the sentinel;
+        # a short sentinel-anchored reply is a complete answer (#228 follow-up:
+        # no more capture_too_short on the systematic bridge flow).
+        def body(_poll):
+            return ('Vous avez dit : synthetic request ChatGPT a dit : Oui. '
+                    + adapter.REPLY_SENTINEL + ' ChatGPT peut faire des erreurs.')
+
+        transport = self.holder.fake(body=body, quiet_ms=adapter.STREAM_QUIET_MS)
+        with HolderHarness(transport, self.holder.binary, self.holder.root):
+            receipt = adapter.send('synthetic request', self.holder.binary,
+                                   self.holder.root, 'dedicated',
+                                   request_key='req-236-short')
+        self.assertEqual(receipt['status'], 'confirmed')
+        self.assertTrue(receipt['response_complete'])
+        self.assertEqual(receipt['response_anchor'], 'sentinel')
+        self.assertTrue(receipt['output_complete'])
+        self.assertNotIn('output_truncated', receipt)
+        self.assertEqual(receipt['response_text'], 'Oui.')
+
+    def test_truncated_capture_is_declared_and_never_confirmed(self):
+        # Issue #236: a reply longer than the defensive capture ceiling is
+        # declared truncated (output_truncated / response_full_length /
+        # capture_limit_characters) and never validates the receipt.
+        def body(_poll):
+            return ('Vous avez dit : synthetic request ChatGPT a dit : '
+                    + 'long reply body. ' * 6000
+                    + adapter.REPLY_SENTINEL + ' ChatGPT peut faire des erreurs.')
+
+        transport = self.holder.fake(body=body, quiet_ms=adapter.STREAM_QUIET_MS)
+        with HolderHarness(transport, self.holder.binary, self.holder.root):
+            receipt = adapter.send('synthetic request', self.holder.binary,
+                                   self.holder.root, 'dedicated',
+                                   request_key='req-236-trunc')
+        self.assertFalse(receipt['response_complete'])
+        self.assertEqual(receipt['status'], 'captured_incomplete')
+        self.assertEqual(receipt['reason'], 'capture_truncated')
+        self.assertTrue(receipt['output_truncated'])
+        self.assertFalse(receipt['output_complete'])
+        self.assertEqual(receipt['capture_limit_characters'], adapter.MAX_CAPTURE_CHARS)
+        self.assertEqual(receipt['response_chars'], adapter.MAX_CAPTURE_CHARS)
+        self.assertGreater(receipt['response_full_length'], adapter.MAX_CAPTURE_CHARS)
+        self.assertTrue(receipt['response_observed'])
 
     def test_unavailable_body_is_uncertain(self):
         transport, receipt = self.invoke(body=RuntimeError('pipe lost'),
