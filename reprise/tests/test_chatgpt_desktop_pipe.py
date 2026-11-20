@@ -1167,6 +1167,41 @@ class TestExtractReplyPromptEchoOnly246(unittest.TestCase):
         self.assertEqual(anchor, 'sentinel')
         self.assertEqual(reply, 'Réponse directe')
 
+    def test_multiturn_prior_sentinel_with_echo_only_rejected(self):
+        # Issue #246: live probe c9 — in a multi-turn aggregate the previous
+        # sentinel is the PRIOR turn's reply; the cut segment holds only the
+        # current prompt echo («Vous avez dit :»), no assistant label, so
+        # the reply has not rendered yet.
+        prompt_turn_2 = 'Question suivante #246 ? Termine ta réponse par la ligne\n' + adapter.REPLY_SENTINEL
+        body = ('Vous avez dit :\n'
+                + PROMPT_246
+                + '\nChatGPT a dit :\nRéponse tour un '
+                + adapter.REPLY_SENTINEL
+                # The echo of the current prompt ends with the sentinel the
+                # prompt itself carries; nothing renders after it (probe c9).
+                + '\nVous avez dit :\n' + prompt_turn_2)
+        reply, anchor, total = adapter.extract_reply(
+            None, prompt_turn_2, assistant_text=body)
+        self.assertEqual((reply, anchor, total), (None, 'prompt_echo_only', 0))
+
+    def test_multiturn_rendered_reply_still_confirmed(self):
+        # Issue #246: same multi-turn structure but the second reply has
+        # rendered — the cut segment carries «ChatGPT a dit :» before the
+        # last sentinel, so the capture stays valid (probes c6/c8).
+        prompt_turn_2 = 'Question suivante #246 ? Termine ta réponse par la ligne\n' + adapter.REPLY_SENTINEL
+        body = ('Vous avez dit :\n'
+                + PROMPT_246
+                + '\nChatGPT a dit :\nRéponse tour un '
+                + adapter.REPLY_SENTINEL
+                + '\nVous avez dit :\n' + prompt_turn_2
+                + '\nChatGPT a dit :\nRéponse tour deux '
+                + adapter.REPLY_SENTINEL)
+        reply, anchor, _total = adapter.extract_reply(
+            None, prompt_turn_2, assistant_text=body)
+        self.assertIsNotNone(reply)
+        self.assertEqual(anchor, 'sentinel')
+        self.assertIn('Réponse tour deux', reply)
+
 
 class TestHolderProtocol(unittest.TestCase):
     """Holder pattern: send delegates, serve owns Chrome, never terminates it."""
