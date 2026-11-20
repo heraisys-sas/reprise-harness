@@ -325,13 +325,13 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(factory.instances, [])
 
     def test_active_client_lock_blocks_reconciliation(self):
-        import fcntl
+        import os
         bridge = self.bridge()
-        self.prepare(bridge)
-        with bridge.lock_path.open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            factory = self.factory()
-            result = self.reconcile(bridge, factory, action='stop', reason='user_stop')
+        # Un client vivant d'un autre processus tient la demande (claim frais,
+        # PID vivant) : la réconciliation est refusée sans nouveau tour.
+        self.prepare(bridge, owner='foreign:%d' % os.getpid())
+        factory = self.factory()
+        result = self.reconcile(bridge, factory, action='stop', reason='user_stop')
         self.assertEqual(result['status'], 'busy')
         self.assertEqual(factory.instances, [])
 

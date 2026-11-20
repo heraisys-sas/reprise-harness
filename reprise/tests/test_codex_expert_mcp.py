@@ -267,15 +267,17 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.assertIn('not found', error['message'])
 
     def test_busy_bridge_refuses_before_dispatch_with_reason_code(self):
-        import fcntl
-        with self.bridge.lock_path.open('a') as held:
-            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with patch.object(self.bridge, '_call', side_effect=AssertionError('not dispatched')):
-                result = self.call('reprise_delegate', {'question': 'Review', 'kind': 'expertise'})
-        self.assertEqual(result['status'], 'busy')
-        self.assertEqual(result['reason_code'], 'bridge_busy')
-        self.assertFalse(result['dispatched'])
-        self.assertFalse(result['automatic_retry'])
+        now = time.time()
+        for slot in ('0', '1'):
+            self.bridge.db.execute('INSERT INTO expert_active_turns VALUES (?,?,?,?,?,?)',
+                                   ('codex', slot, None, 'held-%s' % slot, now, now))
+        self.bridge.db.commit()
+        with patch.object(self.bridge, '_call', side_effect=AssertionError('not dispatched')) as dispatch:
+            result = self.call('reprise_delegate', {'question': 'Review', 'kind': 'expertise'})
+        dispatch.assert_not_called()
+        self.assertEqual(result, {'status': 'busy', 'reason_code': 'bridge_busy',
+                                  'automatic_retry': False, 'dispatched': False,
+                                  'reason': 'Bridge busy: one active expertise per state directory; no automatic retry.'})
 
     def test_padded_oversized_followup_rejected_before_budget(self):
         self.bridge.db.execute('INSERT INTO expert_threads VALUES (?,?)', (self.bridge.scope, ID))
