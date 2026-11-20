@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from codex_expert_mcp import Bridge
+from codex_expert_mcp import BACKEND_MODELS, Bridge
 from support_clock import FakeClock, ScriptedFactory, thread_reply, turn_payload
 
 THREAD = '12345678-1234-1234-1234-123456789abc'
@@ -21,6 +21,17 @@ TURN = 'turn-1'
 BUSY_ENVELOPE = {'status': 'busy', 'reason_code': 'bridge_busy',
                  'automatic_retry': False, 'dispatched': False,
                  'reason': 'Bridge busy: one active expertise per state directory; no automatic retry.'}
+
+
+def seed_catalog(bridge):
+    # #242 : admission dynamique codex — chaque bridge de test sème un
+    # catalogue live simulé (comportement de refus hors catalogue inchangé).
+    bridge._codex_catalog_cache = {
+        'models': [{'model': model, 'displayName': model,
+                    'supportedReasoningEfforts': ['low', 'medium', 'high']}
+                   for model in BACKEND_MODELS['codex']],
+        'source': 'live', 'updated_at': '2026-11-20T15:00:00+00:00', 'error': None}
+    bridge._codex_catalog_time = time.monotonic()
 
 
 class ExpertActiveTurnsTests(unittest.TestCase):
@@ -35,6 +46,7 @@ class ExpertActiveTurnsTests(unittest.TestCase):
     def bridge(self):
         bridge = Bridge(self.root, {}, self.state)
         bridge.program = 'codex'
+        seed_catalog(bridge)
         self.addCleanup(bridge.close)
         return bridge
 
@@ -163,6 +175,7 @@ class ExpertActiveTurnsTests(unittest.TestCase):
         for _ in range(3):
             restarted = Bridge(self.root, {}, self.state)
             restarted.program = 'codex'
+            seed_catalog(restarted)
             row = restarted.db.execute('SELECT request_key FROM expert_active_turns WHERE backend=? AND slot=?',
                                        ('codex', '0')).fetchone()
             restarted.close()
@@ -186,6 +199,7 @@ class ExpertActiveTurnsTests(unittest.TestCase):
         bridge.close()
         restarted = Bridge(self.root, {}, self.state)
         restarted.program = 'codex'
+        seed_catalog(restarted)
         self.addCleanup(restarted.close)
         rows = restarted.db.execute('SELECT request_key FROM expert_active_turns WHERE backend=? ORDER BY slot',
                                     ('codex',)).fetchall()
@@ -196,6 +210,7 @@ class ExpertActiveTurnsTests(unittest.TestCase):
         restarted.close()
         final = Bridge(self.root, {}, self.state)
         final.program = 'codex'
+        seed_catalog(final)
         self.addCleanup(final.close)
         rows = final.db.execute('SELECT request_key FROM expert_active_turns WHERE backend=? ORDER BY slot',
                                 ('codex',)).fetchall()

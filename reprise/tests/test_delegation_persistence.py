@@ -13,13 +13,24 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from codex_expert_mcp import Bridge
+from codex_expert_mcp import BACKEND_MODELS, Bridge
 from claude_desktop_quick import Endpoint, serve, _serve_owned
 from delegation_store import Store
 from support_clock import FakeClock
 from ux_review_probe import Probe
 
 ID = '12345678-1234-1234-1234-123456789abc'
+
+
+def seed_catalog(bridge):
+    # #242 : admission dynamique codex — chaque bridge de test sème un
+    # catalogue live simulé (comportement de refus hors catalogue inchangé).
+    bridge._codex_catalog_cache = {
+        'models': [{'model': model, 'displayName': model,
+                    'supportedReasoningEfforts': ['low', 'medium', 'high']}
+                   for model in BACKEND_MODELS['codex']],
+        'source': 'live', 'updated_at': '2026-11-20T15:00:00+00:00', 'error': None}
+    bridge._codex_catalog_time = time.monotonic()
 
 
 class DurableTests(unittest.TestCase):
@@ -32,6 +43,7 @@ class DurableTests(unittest.TestCase):
     def bridge(self):
         bridge = Bridge(self.root, {}, self.state, daily_limit=0)
         bridge.program = 'codex'
+        seed_catalog(bridge)
         self.addCleanup(bridge.close)
         return bridge
 
@@ -196,6 +208,7 @@ class DurableTests(unittest.TestCase):
     def test_oversized_implementation_result_is_bounded_like_any_full_result(self):
         bridge = Bridge(self.root, {}, self.state, daily_limit=0, codex_workspace_write=True)
         bridge.program = 'codex'
+        seed_catalog(bridge)
         self.addCleanup(bridge.close)
         reply = {'status': 'finished', 'response': 'é' * 60000, 'thread_id': 'impl-thread'}
         with patch('codex_expert_mcp.review', return_value=reply):
@@ -241,6 +254,7 @@ class DurableTests(unittest.TestCase):
         def worker():
             active = Bridge(self.root, {}, self.state)
             active.program = 'codex'
+            seed_catalog(active)
             try:
                 return active.call('reprise_delegate', self.args())
             finally:
@@ -477,6 +491,7 @@ class DurableTests(unittest.TestCase):
     def test_desktop_receipt_remains_admission_only_after_recovery(self):
         bridge = Bridge(self.root, {}, self.state, daily_limit=0, desktop_socket='/private/tmp/quick.sock')
         bridge.program = 'codex'
+        seed_catalog(bridge)
         self.addCleanup(bridge.close)
         with patch('codex_expert_mcp.claude_desktop.review', return_value={'status': 'finished', 'response': None}):
             bridge.call('reprise_delegate', self.args(backend='claude-desktop'))
