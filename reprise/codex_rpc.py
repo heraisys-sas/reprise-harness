@@ -8,7 +8,7 @@ import subprocess
 import time
 from engines import Unavailable, socket_path
 from runtime import codex_environment, terminate
-from websocket_transport import WebSocketTransport
+from websocket_transport import OversizedResponse, WebSocketTransport
 
 class Closed(Unavailable):
     """Le serveur propriétaire a fermé la connexion ; la fin du tour n'est pas prouvée.
@@ -68,17 +68,23 @@ class Client(WebSocketTransport):
         ident = self.ident
         self.send({'id': ident, 'method': method, 'params': params or {}})
         deadline = time.monotonic() + self.timeout
-        while time.monotonic() < deadline:
-            message = self.receive(max(.01, deadline-time.monotonic()))
-            if message.get('id') == ident and 'method' not in message:
-                if 'error' in message:
-                    from engine_events import failure
-                    state, reason = failure(message['error'])
-                    raise Unavailable(state, reason)
-                return message.get('result') or {}
-            self.notifications.append(message)
-            if len(self.notifications) > 200:
-                raise Unavailable('needs_review', 'Trop de notifications avant confirmation ; aucun nouveau tour demandé.')
+        try:
+            while time.monotonic() < deadline:
+                message = self.receive(max(.01, deadline-time.monotonic()))
+                if message.get('id') == ident and 'method' not in message:
+                    if 'error' in message:
+                        from engine_events import failure
+                        state, reason = failure(message['error'])
+                        raise Unavailable(state, reason)
+                    return message.get('result') or {}
+                self.notifications.append(message)
+                if len(self.notifications) > 200:
+                    raise Unavailable('needs_review', 'Trop de notifications avant confirmation ; aucun nouveau tour demandé.')
+        except OversizedResponse as error:
+            # Attach the pending request identity so a too-large capture stays distinguishable
+            # from an unavailable owner; the turn must never be redispatched because of it.
+            error.thread_id = (params or {}).get('threadId')
+            raise
         raise TimeoutError('Réponse du serveur Codex non reçue')
 
 

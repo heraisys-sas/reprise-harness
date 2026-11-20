@@ -92,10 +92,10 @@ RUNNING_STATUSES = ('running', 'awaiting_approval')
 # Native reconciliation phases. `finished` and `interrupted` are terminal; `owner_unavailable`
 # keeps the uncertainty instead of inventing a result.
 PHASES = ('starting', 'active', 'awaiting_approval', 'finished', 'interrupted',
-          'owner_unavailable', 'unknown')
+          'owner_unavailable', 'unknown', 'oversized_capture')
 NEXT_ACTIONS = {'starting': 'reconcile', 'active': 'reconcile', 'awaiting_approval': 'reconcile',
                 'finished': 'collect', 'interrupted': 'collect', 'owner_unavailable': 'collect',
-                'unknown': 'reconcile'}
+                'unknown': 'reconcile', 'oversized_capture': 'collect'}
 TURN_FIELDS = ('thread_id', 'turn_id', 'phase', 'work_completed', 'terminal_evidence',
                'pending_method', 'owner', 'started_at', 'deadline_at', 'last_event_at',
                'last_event', 'event_count', 'context')
