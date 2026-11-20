@@ -10,6 +10,49 @@ from tests import test_chatgpt_desktop_pipe as fixtures
 
 
 class AnchorLossTests(unittest.TestCase):
+    def test_extract_reply_multi_turn_keeps_last_sentinel_segment(self):
+        # Issue #228: a multi-turn aggregate carries one sentinel per assistant
+        # turn; the reply is the text between the previous sentinel and the
+        # last one (live dispatchs c2/c3 returned stale earlier turns).
+        sentinel = adapter.REPLY_SENTINEL
+        body = (
+            "Vous avez dit : Q1 ChatGPT a dit : Ancienne reponse ancienne reponse ancienne reponse ancienne reponse ancienne reponse ancienne reponse\n"
+            + sentinel + "\nEffort de réflexion\nAuto\nRéponse terminée\n"
+            "Vous avez dit : Q2 ChatGPT a dit : Nouvelle reponse fraiche et complete qui doit etre seule capture\n"
+            + sentinel + "\nEffort de réflexion\nAuto\nRéponse terminée\n"
+            "ChatGPT peut faire des erreurs")
+        reply, anchor, total = adapter.extract_reply(body, "Vous avez dit : Q2")
+        self.assertEqual(anchor, 'sentinel')
+        self.assertIn('Nouvelle reponse fraiche', reply)
+        self.assertNotIn('Ancienne', reply)
+        self.assertEqual(total, len('Nouvelle reponse fraiche et complete qui doit etre seule capture'))
+
+    def test_extract_reply_multi_turn_dom_anchored_skips_stale_chrome(self):
+        # The DOM probe now returns the last assistant container only, but the
+        # segment after the previous sentinel still starts with the previous
+        # turn's chrome block; the extraction must skip it, not cut on it.
+        sentinel = adapter.REPLY_SENTINEL
+        dom = ("Vous avez dit : Q1 Ancienne reponse assez longue pour exister dans la capture.\n"
+               + sentinel + "\nEffort de réflexion\nAuto\nRéponse terminée\n"
+               "Vous avez dit : Q2 Nouvelle reponse dom echo " + "avec contenu " * 10 + sentinel)
+        reply, anchor, _ = adapter.extract_reply(None, 'Vous avez dit : Q2', assistant_text=dom)
+        self.assertEqual(anchor, 'sentinel')
+        self.assertIn('Nouvelle reponse dom echo', reply)
+        self.assertNotIn('Ancienne', reply)
+
+    def test_extract_reply_single_sentinel_and_no_sentinel_unchanged(self):
+        sentinel = adapter.REPLY_SENTINEL
+        body = ("Vous avez dit : Q ChatGPT a dit : " + "Réponse simple avec suffisamment de contenu utile pour la capture. " * 2
+                + sentinel + "\nEffort de réflexion\nAuto\nRéponse terminée")
+        reply, anchor, _ = adapter.extract_reply(body, "Vous avez dit : Q")
+        self.assertEqual(anchor, 'sentinel')
+        self.assertIn('Réponse simple', reply)
+        plain = ("Vous avez dit : Q ChatGPT a dit : Réponse sans sentinel avec assez de contenu utile pour dépasser le seuil de capture valide.\n"
+                 "ChatGPT peut faire des erreurs")
+        reply2, anchor2, _ = adapter.extract_reply(plain, "Vous avez dit : Q")
+        self.assertEqual(anchor2, 'footer')
+        self.assertIn('Réponse sans sentinel', reply2)
+
     def test_probe_budget_reserves_prompt_and_reply(self):
         self.assertGreaterEqual(adapter.MAX_PROBE_CODE_UNITS,
                                 2 * (adapter.MAX_PROMPT_CHARS + adapter.MAX_CAPTURE_CHARS))

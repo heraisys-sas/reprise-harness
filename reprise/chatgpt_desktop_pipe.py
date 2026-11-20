@@ -260,22 +260,28 @@ const bodyProbe = () => {
     return /^(block|flex|grid|list-item|table)/.test(style.display) ? '\n' + text + '\n' : text;
   };
   // Issue #228: anchored read of the assistant message containers themselves.
-  // Ordered selectors: the first family with a non-empty text wins; the
-  // fallback filters conversation turns by their assistant-role descendant.
-  // This excludes the prompt echo and UI chrome before any Python cut logic.
+  // Only the LAST assistant container is read: concatenating every assistant
+  // message welded earlier replies (each ending with the sentinel) into the
+  // capture, and the Python cut at the FIRST sentinel then returned a stale
+  // reply as confirmed (proven on live dispatchs c2/c3, 20/11/2026).
   const assistantProbe = () => {
-    const readAll = nodes => nodes.map(read).join('\n').trim();
-    const byRole = readAll([...document.querySelectorAll(
-      '[data-message-author-role="assistant"]')]);
-    if (byRole) return {text: byRole.slice(-60000), selector:
-      '[data-message-author-role="assistant"]'};
+    const assistants = [...document.querySelectorAll(
+      '[data-message-author-role="assistant"]')];
+    const last = assistants.length ? assistants[assistants.length - 1] : null;
+    if (last) {
+      const text = read(last);
+      if (text) return {text: text.slice(-60000), selector:
+        '[data-message-author-role="assistant"] (last)'};
+    }
+    // Fallback: last conversation turn that carries an assistant message.
     const turns = [...document.querySelectorAll(
       '[data-testid^="conversation-turn"]')]
       .filter(turn => turn.querySelector(
         '[data-message-author-role="assistant"]'));
-    const text = readAll(turns);
+    const turn = turns.length ? turns[turns.length - 1] : null;
+    const text = turn ? read(turn) : '';
     return {text: text.slice(-60000), selector: text ?
-      '[data-testid^="conversation-turn"] (assistant)' : null};
+      '[data-testid^="conversation-turn"] (assistant, last)' : null};
   };
   const assistant = assistantProbe();
   return {url: location.href, ready: document.readyState,
@@ -495,6 +501,23 @@ def _cut_chrome_lines(rest):
     return rest, False
 
 
+def _strip_leading_chrome_lines(rest):
+    """Drop the LEADING full chrome lines of a multi-turn segment (issue #228).
+
+    Between the previous sentinel and the last one lies the previous turn's
+    chrome block followed by the current echo and reply; the first-chrome
+    cut would otherwise keep only the empty prefix before that stale chrome
+    block. Blank separator lines around the chrome block are skipped too.
+    Returns (rest, stripped).
+    """
+    lines = rest.split('\n')
+    index = 0
+    while index < len(lines) and (not lines[index].strip()
+                                  or lines[index].strip().lower() in REPLY_CHROME_LINES):
+        index += 1
+    return '\n'.join(lines[index:]), index > 0
+
+
 def extract_reply(text, prompt, assistant_text=None):
     """Bounded extraction of the assistant reply from rendered conversation text.
 
@@ -516,6 +539,19 @@ def extract_reply(text, prompt, assistant_text=None):
     """
     raw = assistant_text if assistant_text else text
     dom_anchored = bool(assistant_text)
+    # Issue #228: anchor on the LAST sentinel BEFORE the chrome cut. In a
+    # multi-turn aggregate the chrome labels of earlier turns precede the
+    # current reply, so a chrome cut on the raw text would keep only an
+    # earlier turn; between the previous sentinel and the last one lies the
+    # current, chronologically last reply (proven on live dispatchs c2/c3,
+    # 20/11/2026).
+    last = (raw or '').rfind(REPLY_SENTINEL)
+    sentinel_seen = last >= 0
+    if sentinel_seen:
+        previous = raw.rfind(REPLY_SENTINEL, 0, last)
+        start = previous + len(REPLY_SENTINEL) if previous >= 0 else 0
+        raw = raw[start:last]
+        raw, _ = _strip_leading_chrome_lines(raw or '')
     # Issue #228: the full-line chrome cut runs on the RAW rendered text —
     # _normalize flattens newlines, which would weld every chrome label into
     # the reply's own line and make the full-line match impossible.
@@ -532,17 +568,17 @@ def extract_reply(text, prompt, assistant_text=None):
     else:
         rest = source[position + len(marker):]
         anchor = 'end'
-    cut = len(rest)
-    sentinel = rest.find(REPLY_SENTINEL)
-    if sentinel >= 0:
-        cut = sentinel
+    if sentinel_seen:
         anchor = 'sentinel'
+    cut = len(rest)
     lower = rest.lower()
     for footer in REPLY_FOOTERS:
         found = lower.find(footer)
         if 0 <= found < cut:
             cut = found
-            anchor = 'cut_before_sentinel' if sentinel >= 0 else 'footer'
+            # A footer inside the kept segment means the current turn never
+            # reached its sentinel: the capture is incomplete, not complete.
+            anchor = 'cut_before_sentinel' if sentinel_seen else 'footer'
     rest = rest[:cut]
     if chrome_cut and anchor in ('end', 'assistant_container'):
         anchor = 'chrome_line'
