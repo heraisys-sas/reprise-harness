@@ -549,6 +549,17 @@ def extract_reply(text, prompt, assistant_text=None):
     sentinel_seen = last >= 0
     if sentinel_seen:
         previous = raw.rfind(REPLY_SENTINEL, 0, last)
+        # Issue #246: a single sentinel is the tail of the prompt echo — the
+        # reply has not been rendered yet. The echo keeps the whole user
+        # preamble and the sentinel anchor bypasses the usable-length gate,
+        # so the capture would confirm the prompt as the reply; the loop
+        # must keep polling instead. Only prompts that themselves carry the
+        # sentinel qualify: otherwise the single sentinel belongs to the
+        # rendered reply, not to the echo.
+        marker_probe = _normalize(prompt)
+        if (previous < 0 and REPLY_SENTINEL in (prompt or '')
+                and marker_probe and marker_probe in _normalize(raw)):
+            return None, 'prompt_echo_only', 0
         start = previous + len(REPLY_SENTINEL) if previous >= 0 else 0
         raw = raw[start:last]
         raw, _ = _strip_leading_chrome_lines(raw or '')
