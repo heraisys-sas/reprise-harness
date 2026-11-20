@@ -106,7 +106,7 @@ def error_payload(exc):
                      'human_reason': messages[kind], 'error': detail}}
 
 BACKEND_MODELS = {
-    'codex': ('gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'),
+    'codex': ('gpt-6.2-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'),
     'claude-code': ('sonnet', 'opus'),
     'ironclaw': (),
     'claude-desktop': (),
