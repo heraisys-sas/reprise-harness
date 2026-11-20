@@ -945,6 +945,42 @@ class CompactReceiptTests(unittest.TestCase):
             self.dispatch('reprise_requests', {
                 'request_key': 'key', 'view': 'page', 'acknowledge': True})
 
+class ChatGptStateRenameTests(unittest.TestCase):
+    """Issue #217 : le chemin ChatGPT est nommé --chatgpt-state (répertoire
+    d'état, ledger et TaskStore), --chatgpt-socket n'est qu'un alias déprécié."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
+        self.bridge.program = 'codex'
+        self.bridge._codex_catalog_cache = simulated_codex_catalog(BACKEND_MODELS['codex'])
+        self.bridge._codex_catalog_time = time.monotonic()
+        self.addCleanup(self.bridge.close)
+
+    def test_refusal_names_chatgpt_state(self):
+        # Le Bridge est construit sans chatgpt_socket : le refus backend chatgpt
+        # (Bridge.call reprise_delegate, ligne du refus 'non configuré') doit
+        # nommer la nouvelle option, jamais l'alias déprécié.
+        self.assertIsNone(self.bridge.chatgpt_socket)
+        payload = self.bridge.call('reprise_delegate', {
+            'request_key': str(uuid.uuid4()), 'backend': 'chatgpt',
+            'kind': 'review', 'question': 'Revue'})
+        self.assertEqual(payload['status'], 'engine_unavailable')
+        self.assertIn('--chatgpt-state', payload['reason'])
+        self.assertNotIn('--chatgpt-socket', payload['reason'])
+
+    def test_parser_accepts_legacy_alias(self):
+        # L'alias déprécié reste accepté par le parser : --help rend 0 et
+        # documente la nouvelle option (parse_args sort avant de servir).
+        completed = subprocess.run(
+            [sys.executable, 'reprise/codex_expert_mcp.py', '--project-root', self.temp.name,
+             '--chatgpt-socket', self.temp.name, '--help'],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(completed.returncode, 0)
+        self.assertIn('--chatgpt-state', completed.stdout + completed.stderr)
+
+
 class BridgeFinalizerTests(unittest.TestCase):
     """Le finalizer doit tourner sans close() explicite : pas de méthode liée
     dans weakref.finalize (elle retiendrait self et la collecte échouerait)."""
