@@ -109,6 +109,34 @@ class ExpertActiveTurnsTests(unittest.TestCase):
         self.assertEqual(bridge.db.execute('SELECT request_key FROM expert_active_turns WHERE backend=? AND slot=?',
                                            ('codex', '1')).fetchone()[0], 'held-b')
 
+    def test_admission_failure_without_request_key_releases_slot(self):
+        # #244 : un appel sans request_key insère une ligne request_key=NULL,
+        # puis l'admission lève (« Persist a nonempty request_key ») ; le
+        # finally doit supprimer cette ligne orpheline, pas la laisser fuiter.
+        bridge = self.bridge()
+        with self.assertRaises(ValueError) as caught:
+            bridge.call('reprise_delegate', {'question': 'Review', 'kind': 'expertise'})
+        self.assertIn('nonempty request_key', str(caught.exception))
+        self.assertEqual(bridge.db.execute('SELECT COUNT(*) FROM expert_active_turns').fetchone()[0], 0)
+        # Le slot libéré par le finally est immédiatement réacquis.
+        self.assertEqual(bridge._acquire_slot('reprise_delegate', {'backend': 'codex', 'request_key': 'req-a'})[1], '0')
+
+    def test_release_with_key_deletes_only_that_row(self):
+        bridge = self.bridge()
+        slot = bridge._acquire_slot('reprise_delegate', {'backend': 'codex', 'request_key': 'req-a'})
+        self.assertEqual(slot, ('codex', '0', 'req-a'))
+        bridge._release_slot(slot)
+        self.assertEqual(bridge.db.execute('SELECT COUNT(*) FROM expert_active_turns').fetchone()[0], 0)
+
+    def test_release_without_key_spares_third_party_row(self):
+        # Invariant followup : un slot dont la ligne porte la request_key d'un
+        # tour tiers n'est jamais supprimé par une libération sans clé.
+        bridge = self.bridge()
+        self.occupy(bridge, 'codex', '0', 'other-req')
+        bridge._release_slot(('codex', '0', None))
+        self.assertEqual(bridge.db.execute('SELECT request_key FROM expert_active_turns WHERE backend=? AND slot=?',
+                                           ('codex', '0')).fetchone(), ('other-req',))
+
     def test_reconcile_terminal_observation_releases_slot(self):
         bridge = self.bridge()
         self.prepare(bridge)
