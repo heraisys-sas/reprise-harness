@@ -1202,6 +1202,45 @@ class TestExtractReplyPromptEchoOnly246(unittest.TestCase):
         self.assertEqual(anchor, 'sentinel')
         self.assertIn('Réponse tour deux', reply)
 
+    # Live probe c11 (20/11/2026): the consultative wrapper carries the
+    # sentinel INSIDE the prompt («End your answer with the exact line …»),
+    # so the rendered echo contains that internal sentinel and the LAST
+    # sentinel sits mid-prompt; the cut segment is the echo truncated before
+    # «. Question: …» — the full-prompt rfind of the guard can never match.
+    MID_PROMPT_246 = ('Reprise consultative question (request_key="rk-246-c11"). '
+                      'End your answer with the exact line '
+                      + adapter.REPLY_SENTINEL
+                      + '. Question: météo imaginaire du tour ?')
+
+    def test_multiturn_internal_sentinel_truncated_echo_rejected(self):
+        prompt_turn_2 = self.MID_PROMPT_246
+        body = ('Vous avez dit :\n'
+                + PROMPT_246
+                + '\nChatGPT a dit :\nRéponse tour un '
+                + adapter.REPLY_SENTINEL
+                # The echo of the current prompt renders IN FULL (internal
+                # sentinel included) and the reply has not rendered yet: the
+                # last sentinel is the internal one, mid-prompt.
+                + '\nVous avez dit :\n' + prompt_turn_2)
+        reply, anchor, total = adapter.extract_reply(
+            None, prompt_turn_2, assistant_text=body)
+        self.assertEqual((reply, anchor, total), (None, 'prompt_echo_only', 0))
+
+    def test_multiturn_internal_sentinel_rendered_reply_still_confirmed(self):
+        prompt_turn_2 = self.MID_PROMPT_246
+        body = ('Vous avez dit :\n'
+                + PROMPT_246
+                + '\nChatGPT a dit :\nRéponse tour un '
+                + adapter.REPLY_SENTINEL
+                + '\nVous avez dit :\n' + prompt_turn_2
+                + '\nChatGPT a dit :\nRéponse tour deux '
+                + adapter.REPLY_SENTINEL)
+        reply, anchor, _total = adapter.extract_reply(
+            None, prompt_turn_2, assistant_text=body)
+        self.assertIsNotNone(reply)
+        self.assertEqual(anchor, 'sentinel')
+        self.assertIn('Réponse tour deux', reply)
+
 
 class TestHolderProtocol(unittest.TestCase):
     """Holder pattern: send delegates, serve owns Chrome, never terminates it."""
