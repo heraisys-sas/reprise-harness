@@ -340,7 +340,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.bridge.claude_program = '/claude'
         self.bridge.claude_subscription_only = True
         for backend, models, target in [
-                ('codex', ('gpt-6.2-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'), 'review'),
+                ('codex', ('gpt-6.2-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra', 'gpt-5.6-terra'), 'review'),
                 ('claude-code', ('sonnet', 'opus'), 'claude_review')]:
             for model in models:
                 with self.subTest(backend=backend, model=model), patch(
@@ -377,7 +377,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
 
     def test_backends_exposes_supported_model_ids_and_schemas(self):
         rows = {row['id']: row for row in self.call('reprise_backends', {})['backends']}
-        self.assertEqual(rows['codex']['models'], ['gpt-6.2-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'])
+        self.assertEqual(rows['codex']['models'], ['gpt-6.2-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra', 'gpt-5.6-terra'])
         self.assertEqual(rows['claude-code']['models'], ['sonnet', 'opus'])
         for backend in ('ironclaw', 'claude-desktop', 'autoclaw'):
             self.assertEqual(rows[backend]['models'], [])
