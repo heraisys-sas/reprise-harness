@@ -74,13 +74,18 @@ struct SettingsHint: View {
 struct RouteLine: View {
     var title: String
     var route: [String: Any]
-    var readyLabel: String
     var fallbackDetail: String
 
+    // Badge derived from the daemon-reported state; no static title ever
+    // claims a route is ready (#229).
     private var badge: (label: String, color: Color) {
         let state = route["state"] as? String ?? ""
         if route["enabled"] as? Bool == true {
-            return state == "prête" || state == "disponible" ? (readyLabel, Color.green) : ("Indisponible", Color.orange)
+            switch state {
+            case "prête", "disponible": return ("Prête", Color.green)
+            case "détectée": return ("Détectée · non vérifiée", Color.orange)
+            default: return ("Indisponible", Color.orange)
+            }
         }
         return ("Désactivée", Color.secondary)
     }
@@ -1029,17 +1034,15 @@ struct Dashboard: View {
                          status: "Lecture seule",
                          ok: true) {
                 let routes = app.desktopConnection["routes"] as? [String: Any] ?? [:]
-                RouteLine(title: "Patch natif — principale",
+                RouteLine(title: "Dispatch natif QTi — canal principal",
                           route: routes["native_patch"] as? [String: Any] ?? [:],
-                          readyLabel: "Disponible",
                           fallbackDetail: "Soumission via le socket du daemon claude-desktopd.")
-                RouteLine(title: "CDP web — prête, désactivée par défaut",
+                RouteLine(title: "CDP externe — canal optionnel historique",
                           route: routes["cdp_web"] as? [String: Any] ?? [:],
-                          readyLabel: "Prête",
                           fallbackDetail: "Aucune cible CDP activée ; activation par configuration uniquement.")
                 SettingsHint(
-                    text: "L’activation de la route CDP web se fait par configuration ; cette fenêtre reflète seulement l’état réel.",
-                    detail: "Le patch natif passe par le socket du daemon claude-desktopd. La route CDP web n’est proposée que si une cible CDP est activée en configuration ; aucun bouton d’activation ici, l’état affiché est celui lu du daemon.")
+                    text: "L’activation de la route CDP externe se fait par configuration ; cette fenêtre reflète seulement l’état réel.",
+                    detail: "Le dispatch natif QTi passe par le socket du daemon claude-desktopd. La route CDP externe n’est proposée que si une cible CDP est activée en configuration ; aucun bouton d’activation ici, l’état affiché est celui lu du daemon. La route ChatGPT CDP pipe est un mécanisme distinct.")
             }
             SettingsCard(title: "Soumission Quick Apply",
                          status: "Aucune autorisation requise",
