@@ -839,8 +839,8 @@ struct Dashboard: View {
             ForEach(Array(app.searchResults.enumerated()), id: \.offset) { _, value in Surface { VStack(alignment: .leading, spacing: 8) { Button { app.openSession(value) } label: { Text(value["title"] as? String ?? "Session").font(.headline) }.buttonStyle(.plain).help("Afficher l’application de cette session"); Text((value["provider"] as? String ?? "") + " · " + String((value["id"] as? String ?? "").suffix(8))).font(.caption).foregroundStyle(.secondary); Text(value["text"] as? String ?? "").textSelection(.enabled) } } }
         }
     }
-    // Single "Connexions" tab: an internal picker switches between the two
-    // connection panels (codex-desktop / claude-desktop), freeing the sidebar.
+    // Single "Connexions" tab: an internal picker switches between the three
+    // connection panels (codex-desktop / claude-desktop / ironclaw-ssh), freeing the sidebar.
     var connections: some View {
         VStack(alignment: .leading, spacing: 18) {
             if let verification = app.integrationVerification,
@@ -1340,7 +1340,7 @@ struct Dashboard: View {
     }
 
     // Attention count per sidebar section, so the user sees where to act
-    // without visiting all 9 tabs.
+    // without visiting every sidebar section.
     func sidebarBadge(_ section: String) -> Int? {
         switch section {
         case "sessions": return app.attention.count
