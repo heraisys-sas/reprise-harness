@@ -1241,8 +1241,51 @@ class TestExtractReplyPromptEchoOnly246(unittest.TestCase):
         self.assertEqual(anchor, 'sentinel')
         self.assertIn('Réponse tour deux', reply)
 
+    # Live probe c14 (20/11/2026): the probe itself pre-wrapped an already
+    # wrapped prompt, so the rendered echo holds TWO internal sentinels. The
+    # cut between them yields the wrapper-1 tail («. Question:\n\n <head>»)
+    # which ends with the prompt head but carries NO user chrome — the c14
+    # receipt answered confirmed with a 249-char wrapper fragment.
+    WRAPPER_HEAD_246 = ('Reprise consultative question (request_key="deploy-246-target-c14"). '
+                        'ChatGPT has no Reprise tools: answer directly in this conversation '
+                        '— the reply is captured from it by the Reprise holder. '
+                        'End your answer with the exact line ')
 
-class TestHolderProtocol(unittest.TestCase):
+    def test_double_wrapped_partial_echo_without_chrome_rejected(self):
+        prompt = (self.WRAPPER_HEAD_246 + adapter.REPLY_SENTINEL
+                  + '. Question:\n\n' + self.WRAPPER_HEAD_246
+                  + adapter.REPLY_SENTINEL
+                  + '. Question:\n\nSonde de ciblage c14 ?')
+        # The echo renders only up to the FIRST internal sentinel (partial
+        # render of the body_text capture); no assistant reply, no chrome.
+        body = prompt[:prompt.find(adapter.REPLY_SENTINEL) + len(adapter.REPLY_SENTINEL)]
+        reply, anchor, total = adapter.extract_reply(
+            None, prompt, assistant_text=body)
+        self.assertEqual((reply, anchor, total), (None, 'prompt_echo_only', 0))
+
+    def test_double_wrapped_full_echo_without_chrome_rejected(self):
+        prompt = (self.WRAPPER_HEAD_246 + adapter.REPLY_SENTINEL
+                  + '. Question:\n\n' + self.WRAPPER_HEAD_246
+                  + adapter.REPLY_SENTINEL
+                  + '. Question:\n\nSonde de ciblage c14 ?')
+        body = 'Vous avez dit :\n' + prompt
+        reply, anchor, total = adapter.extract_reply(
+            None, prompt, assistant_text=body)
+        self.assertEqual((reply, anchor, total), (None, 'prompt_echo_only', 0))
+
+    def test_chromeless_prompt_echo_with_rendered_reply_still_confirmed(self):
+        # Negative control: a genuine reply after a chrome-less echo must not
+        # be swallowed by the v4 head-cut guard.
+        prompt = (self.WRAPPER_HEAD_246 + adapter.REPLY_SENTINEL
+                  + '. Question:\n\nSonde de ciblage c14 ?')
+        body = (prompt
+                + '\n\nChatGPT a dit :\nLa cible est la conversation sélectionnée, troisième tour de sondes. '
+                + adapter.REPLY_SENTINEL)
+        reply, anchor, _total = adapter.extract_reply(
+            None, prompt, assistant_text=body)
+        self.assertIsNotNone(reply)
+        self.assertEqual(anchor, 'sentinel')
+        self.assertIn('La cible est', reply)
     """Holder pattern: send delegates, serve owns Chrome, never terminates it."""
 
     def setUp(self):

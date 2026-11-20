@@ -587,10 +587,15 @@ def extract_reply(text, prompt, assistant_text=None):
         # the sentinel — proof the tail sentinel belongs to the echo, not to
         # a rendered reply (a rendered reply leaves ". Question: …" after the
         # internal sentinel, as proven by probe c10).
+        # Issue #246 v4 (live probe c14, 20/11/2026): the decisive signature is
+        # the mid-prompt cut WITHOUT an assistant label — the user chrome
+        # (« vous avez dit ») is NOT required, the c14 double-wrap echo carries
+        # none. A rendered reply leaves text after the prompt head before its
+        # sentinel, so a segment ending exactly at the head proves the tail
+        # sentinel belongs to the echo (live legit reply c10 keeps its anchor).
         prompt_head = (echo_probe[:echo_probe.find(sentinel_tail)].strip()
                        if sentinel_tail in echo_probe else '')
         if (prompt_head
-                and 'vous avez dit' in segment_probe
                 and not any(label in segment_probe for label in REPLY_LABELS)
                 and segment_probe.endswith(prompt_head)):
             return None, 'prompt_echo_only', 0
