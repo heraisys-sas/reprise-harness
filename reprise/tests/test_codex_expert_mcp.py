@@ -517,6 +517,81 @@ class ClaudeDesktopBridgeTests(RequestCalls, unittest.TestCase):
         self.assertEqual(self.bridge.db.execute(
             "SELECT json_extract(result,'$.status') FROM delegation_requests").fetchone()[0], 'engine_unavailable')
 
+    def test_return_channel_unavailable_retries_taskstore_once(self):
+        # Canal de retour None au moment de l'appel : exactement UNE tentative
+        # de reconstruction du TaskStore par appel, avant tout refus.
+        from unittest.mock import MagicMock
+        self.bridge.desktop_tasks = None
+        with patch('codex_expert_mcp.TaskStore') as store, \
+                patch('claude_desktop.review', return_value={'status': 'finished', 'resumable': False}) as review:
+            result = self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
+                                                    'backend': 'claude-desktop'})
+        store.assert_called_once_with(self.bridge.desktop_state, self.bridge.root)
+        self.assertEqual(result['status'], 'finished')
+        review.assert_called_once()
+        # Reconstruction impossible : refus return_channel_unavailable, le refus
+        # persiste a chaque appel. call() execute un preflight + un passage reel,
+        # soit 2 constructions (2 essais) par appel : contract max 2 constructions
+        # par appel (le gate du handler n'en fait qu'une par passage).
+        self.bridge.desktop_tasks = None
+        store.reset_mock()
+        store.side_effect = sqlite3.OperationalError('state unreachable')
+        with patch('codex_expert_mcp.TaskStore', store), \
+                patch('claude_desktop.review') as review:
+            result = self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
+                                                    'backend': 'claude-desktop'})
+            self.assertEqual(store.call_count, 2)
+            self.bridge.desktop_tasks = None
+            store.reset_mock()
+            # Question différente : une demande équivalente incertaine serait
+            # dédupliquée ('indeterminate') sans nouvelle tentative.
+            result2 = self.call('reprise_delegate', {'question': 'Explique autrement', 'kind': 'expertise',
+                                                     'backend': 'claude-desktop'})
+            self.assertEqual(store.call_count, 2)
+        review.assert_not_called()
+        for refused in (result, result2):
+            self.assertEqual(refused['status'], 'return_channel_unavailable')
+            self.assertEqual(refused['backend'], 'claude-desktop')
+            self.assertFalse(refused['automatic_fallback'])
+            self.assertIs(refused['lazy_start_attempted'], False)
+        self.assertEqual(self.bridge.db.execute(
+            "SELECT json_extract(result,'$.status') FROM delegation_requests "
+            "WHERE scope=? AND result LIKE '%return_channel_unavailable%' "
+            "ORDER BY rowid DESC LIMIT 1",
+            (self.bridge.requests.scope,)).fetchone()[0], 'return_channel_unavailable')
+
+    def test_lazy_start_disabled_by_default(self):
+        # Cle delegation_lazy_start absente : AUCUN depart paresseux, le refus
+        # reste inchange ; lazy_start_attempted est present et vaut False.
+        self.bridge.desktop_tasks = None
+        with patch('codex_expert_mcp.TaskStore', side_effect=sqlite3.OperationalError('down')), \
+                patch('claude_desktop.review') as review, \
+                patch('delegation_resume.lazy_start') as lazy:
+            result = self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
+                                                    'backend': 'claude-desktop'})
+        review.assert_not_called()
+        lazy.assert_not_called()
+        self.assertEqual(result['status'], 'return_channel_unavailable')
+        self.assertIs(result['lazy_start_attempted'], False)
+        self.assertNotIn('lazy_start', result)
+
+    def test_call_opportunistic_resume_processes_due_job(self):
+        # Porte opportuniste (lot C #239) : un job du present dans expert.sqlite
+        # est traite pendant un appel call() quelconque (ici un refus de canal
+        # de retour). Receipt inexistant -> 'done' sans contact natif.
+        import delegation_resume
+        import delegation_reconcile
+        self.bridge.desktop_tasks = None
+        delegation_resume.schedule(self.bridge.db, 'opp-req-1', 'codex', str(self.bridge.root),
+                                   due_at=1.0)
+        with patch('delegation_reconcile.reconcile') as reconcile:
+            result = self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
+                                                    'backend': 'claude-desktop'})
+        reconcile.assert_not_called()
+        row = self.bridge.db.execute('SELECT status FROM delegation_resume_jobs WHERE request_key=?',
+                                     ('opp-req-1',)).fetchone()
+        self.assertEqual(row[0], 'done')
+
     def test_delegate_rejects_arbitrary_fields(self):
         with self.assertRaises(ValueError):
             self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
