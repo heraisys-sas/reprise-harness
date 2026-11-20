@@ -281,8 +281,17 @@ class HolderHarness:
             mock.patch.object(adapter, 'terminate_chrome', new=self.terminate),
             mock.patch.object(adapter, 'time', AcceleratedTime()),
         ]
-        for patch in self._patches:
-            patch.__enter__()
+        entered = []
+        try:
+            for patch in self._patches:
+                patch.__enter__()
+                entered.append(patch)
+        except BaseException:
+            # Issue #234: ne jamais laisser un patch entré (socket live, thread
+            # non encore démarré) fuiter si un patch suivant échoue.
+            for patch in reversed(entered):
+                patch.__exit__(None, None, None)
+            raise
 
         def run():
             self.result = adapter.serve(binary=self.binary, profile_root=self.root,
@@ -300,11 +309,18 @@ class HolderHarness:
             time.sleep(0.01)
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, exc_type, exc_value, traceback):
         self.stop.set()
         self.thread.join(timeout=10)
+        leaked = self.thread.is_alive()
         for patch in reversed(self._patches):
             patch.__exit__(None, None, None)
+        # Issue #234: un thread serve() non joint est une fuite visible, pas un
+        # silence ; masqué seulement si le test échouait déjà (pas de nouvelle
+        # exception par-dessus l'exception en cours).
+        if leaked and exc_type is None:
+            raise AssertionError(
+                'HolderHarness: thread serve() non jointe en 10 s — fuite de ressources')
         return False
 
 
