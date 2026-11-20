@@ -340,7 +340,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.bridge.claude_program = '/claude'
         self.bridge.claude_subscription_only = True
         for backend, models, target in [
-                ('codex', ('gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'), 'review'),
+                ('codex', ('gpt-6.2-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'), 'review'),
                 ('claude-code', ('sonnet', 'opus'), 'claude_review')]:
             for model in models:
                 with self.subTest(backend=backend, model=model), patch(
@@ -350,6 +350,16 @@ class BridgeTests(RequestCalls, unittest.TestCase):
                     self.assertEqual(review.call_args.kwargs['model'], model)
                     self.assertEqual(review.call_args.kwargs['effort'], 'medium')
                     self.assertFalse(result['automatic_fallback'])
+
+    def test_explicit_gpt_6_2_sol_route_is_admitted(self):
+        self.bridge.claude_program = '/claude'
+        self.bridge.claude_subscription_only = True
+        with patch('codex_expert_mcp.review', return_value={'status':'finished'}) as review:
+            result = self.call('reprise_delegate', {
+                'backend':'codex', 'kind':'review', 'question':'Review', 'model':'gpt-6.2-sol'})
+            self.assertEqual(review.call_args.kwargs['model'], 'gpt-6.2-sol')
+            self.assertEqual(review.call_args.kwargs['effort'], 'medium')
+            self.assertFalse(result['automatic_fallback'])
 
     def test_invalid_model_rejected_before_request_or_inference(self):
         cases = [('codex', value) for value in ('unknown', 'sonnet', '', None, [], 1)]
@@ -367,7 +377,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
 
     def test_backends_exposes_supported_model_ids_and_schemas(self):
         rows = {row['id']: row for row in self.call('reprise_backends', {})['backends']}
-        self.assertEqual(rows['codex']['models'], ['gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'])
+        self.assertEqual(rows['codex']['models'], ['gpt-6.2-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'])
         self.assertEqual(rows['claude-code']['models'], ['sonnet', 'opus'])
         for backend in ('ironclaw', 'claude-desktop', 'autoclaw'):
             self.assertEqual(rows[backend]['models'], [])
