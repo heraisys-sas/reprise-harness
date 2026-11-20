@@ -1132,6 +1132,42 @@ class TestRenderedConversationCapture(unittest.TestCase):
             self.assertNotIn(key, receipt)
 
 
+PROMPT_246 = ('Question #246 ? Termine ta réponse par la ligne\n'
+              + adapter.REPLY_SENTINEL)
+
+
+class TestExtractReplyPromptEchoOnly246(unittest.TestCase):
+    """Issue #246: a single sentinel that belongs to the prompt echo means
+    the reply is not rendered yet — the capture loop must keep polling,
+    never confirm the user preamble as the reply."""
+
+    def test_single_sentinel_prompt_echo_only_returns_prompt_echo_only(self):
+        body = ('Vous avez dit :\n' + PROMPT_246)
+        reply, anchor, total = adapter.extract_reply(
+            None, PROMPT_246, assistant_text=body)
+        self.assertEqual((reply, anchor, total), (None, 'prompt_echo_only', 0))
+
+    def test_multi_sentinel_reply_is_still_extracted(self):
+        body = ('Vous avez dit :\n' + PROMPT_246
+                + '\nVous avez dit :\n' + PROMPT_246
+                + '\nChatGPT a dit :\nRéponse finale '
+                + adapter.REPLY_SENTINEL)
+        reply, anchor, _total = adapter.extract_reply(
+            None, PROMPT_246, assistant_text=body)
+        self.assertIsNotNone(reply)
+        self.assertEqual(anchor, 'sentinel')
+        self.assertIn('Réponse finale', reply)
+
+    def test_single_sentinel_without_prompt_echo_is_still_extracted(self):
+        body = ('ChatGPT a dit :\nRéponse directe '
+                + adapter.REPLY_SENTINEL)
+        reply, anchor, _total = adapter.extract_reply(
+            None, PROMPT_246, assistant_text=body)
+        self.assertIsNotNone(reply)
+        self.assertEqual(anchor, 'sentinel')
+        self.assertEqual(reply, 'Réponse directe')
+
+
 class TestHolderProtocol(unittest.TestCase):
     """Holder pattern: send delegates, serve owns Chrome, never terminates it."""
 
