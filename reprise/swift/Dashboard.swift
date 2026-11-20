@@ -74,13 +74,18 @@ struct SettingsHint: View {
 struct RouteLine: View {
     var title: String
     var route: [String: Any]
-    var readyLabel: String
     var fallbackDetail: String
 
+    // Badge derived from the daemon-reported state; no static title ever
+    // claims a route is ready (#229).
     private var badge: (label: String, color: Color) {
         let state = route["state"] as? String ?? ""
         if route["enabled"] as? Bool == true {
-            return state == "prête" || state == "disponible" ? (readyLabel, Color.green) : ("Indisponible", Color.orange)
+            switch state {
+            case "prête", "disponible": return ("Prête", Color.green)
+            case "détectée": return ("Détectée · non vérifiée", Color.orange)
+            default: return ("Indisponible", Color.orange)
+            }
         }
         return ("Désactivée", Color.secondary)
     }
@@ -839,8 +844,8 @@ struct Dashboard: View {
             ForEach(Array(app.searchResults.enumerated()), id: \.offset) { _, value in Surface { VStack(alignment: .leading, spacing: 8) { Button { app.openSession(value) } label: { Text(value["title"] as? String ?? "Session").font(.headline) }.buttonStyle(.plain).help("Afficher l’application de cette session"); Text((value["provider"] as? String ?? "") + " · " + String((value["id"] as? String ?? "").suffix(8))).font(.caption).foregroundStyle(.secondary); Text(value["text"] as? String ?? "").textSelection(.enabled) } } }
         }
     }
-    // Single "Connexions" tab: an internal picker switches between the two
-    // connection panels (codex-desktop / claude-desktop), freeing the sidebar.
+    // Single "Connexions" tab: an internal picker switches between the three
+    // connection panels (codex-desktop / claude-desktop / ironclaw-ssh), freeing the sidebar.
     var connections: some View {
         VStack(alignment: .leading, spacing: 18) {
             if let verification = app.integrationVerification,
@@ -962,8 +967,8 @@ struct Dashboard: View {
                          status: (app.quickApplyStartupEnabled || app.desktopStartup) ? "Activation au démarrage" : "Manuel",
                          ok: true) {
                 HStack(spacing: 10) {
-                    Button("1. Démarrer l’appli liée") { app.desktopAction("launch") }.disabled(app.desktopBusy)
-                    Button("2. Démarrer claude-desktopd") { app.desktopAction("start") }.disabled(app.desktopBusy)
+                    Button("Ouvrir ReClaude") { app.desktopAction("launch") }.disabled(app.desktopBusy)
+                    Button("Démarrer claude-desktopd") { app.desktopAction("start") }.disabled(app.desktopBusy)
                     Button("Arrêter claude-desktopd") { app.desktopAction("stop") }.disabled(app.desktopBusy)
                     if app.desktopBusy { InlineStatus(busy: true, message: app.desktopNote) }
                 }
@@ -978,8 +983,8 @@ struct Dashboard: View {
                                     + "\nLe greeting du daemon ne prouve pas que le relais de l’application est connecté.")
                 }
                 SettingsHint(
-                    text: "Les préférences de l’application et du daemon sont indépendantes.",
-                    detail: "Le daemon Quick Apply peut démarrer sans Claude Desktop. Le démarrage de l’application liée ne la ferme ni ne la relance si elle est déjà ouverte. Aucun autre élément d’ouverture macOS n’est modifié.")
+                    text: "Le daemon peut démarrer indépendamment de ReClaude. La livraison des demandes nécessite ensuite un relais connecté.",
+                    detail: "Le démarrage de l’application liée ne la ferme ni ne la relance si elle est déjà ouverte. Aucun autre élément d’ouverture macOS n’est modifié.")
             }
             SettingsCard(title: "Socket de claude-desktopd",
                          status: app.desktopConnectionVerified ? "Testé" : (customSocket ? "Personnalisé" : "Automatique"),
@@ -1029,17 +1034,15 @@ struct Dashboard: View {
                          status: "Lecture seule",
                          ok: true) {
                 let routes = app.desktopConnection["routes"] as? [String: Any] ?? [:]
-                RouteLine(title: "Patch natif — principale",
+                RouteLine(title: "Dispatch natif QTi — canal principal",
                           route: routes["native_patch"] as? [String: Any] ?? [:],
-                          readyLabel: "Disponible",
                           fallbackDetail: "Soumission via le socket du daemon claude-desktopd.")
-                RouteLine(title: "CDP web — prête, désactivée par défaut",
+                RouteLine(title: "CDP externe — canal optionnel historique",
                           route: routes["cdp_web"] as? [String: Any] ?? [:],
-                          readyLabel: "Prête",
                           fallbackDetail: "Aucune cible CDP activée ; activation par configuration uniquement.")
                 SettingsHint(
-                    text: "L’activation de la route CDP web se fait par configuration ; cette fenêtre reflète seulement l’état réel.",
-                    detail: "Le patch natif passe par le socket du daemon claude-desktopd. La route CDP web n’est proposée que si une cible CDP est activée en configuration ; aucun bouton d’activation ici, l’état affiché est celui lu du daemon.")
+                    text: "L’activation de la route CDP externe se fait par configuration ; cette fenêtre reflète seulement l’état réel.",
+                    detail: "Le dispatch natif QTi passe par le socket du daemon claude-desktopd. La route CDP externe n’est proposée que si une cible CDP est activée en configuration ; aucun bouton d’activation ici, l’état affiché est celui lu du daemon. La route ChatGPT CDP pipe est un mécanisme distinct.")
             }
             SettingsCard(title: "Soumission Quick Apply",
                          status: "Aucune autorisation requise",
@@ -1340,7 +1343,7 @@ struct Dashboard: View {
     }
 
     // Attention count per sidebar section, so the user sees where to act
-    // without visiting all 9 tabs.
+    // without visiting every sidebar section.
     func sidebarBadge(_ section: String) -> Int? {
         switch section {
         case "sessions": return app.attention.count

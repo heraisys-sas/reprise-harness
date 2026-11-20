@@ -178,7 +178,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var quickApplyStartupEnabled = StartupPreferences.startupFlag(StartupPreferences.quickApplyStartupKey)
     @Published var chainBusy = false
     @Published var chainNote = ""
-    @Published var connectionTab = "codex"  // codex | quickapply
+    @Published var connectionTab = "codex"  // codex | quickapply | ironclaw
     @Published var desktopNote = ""
     @Published var sharedBusy = false
     @Published var sharedNote = ""
