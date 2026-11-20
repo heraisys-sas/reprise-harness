@@ -15,6 +15,7 @@ import time
 import weakref
 from desktop_task_store import TaskStore
 from delegation_store import LOOKUP_SCHEMA, Store, file_evidence, validate_key, validate_lookup, receipt_view
+import delegation_notifications
 from delegation_reconcile import reconcile as reconcile_turn
 from codex_expert import STOP_REASONS, positive, review, review_config
 from codex_rpc import Client
@@ -167,6 +168,15 @@ TOOLS = [
          'required': ['question', 'kind', 'request_key']}},
     {'name': 'reprise_backends', 'description': 'List configured delegation capabilities without inference. Availability is not a price or quota guarantee.',
      'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
+    {'name': 'reprise_notifications', 'description': 'Read, wait for or acknowledge durable delegation notifications (lot C, issue #237). read/wait never consume and never mark; ack is idempotent per (event_id, consumer_id); after a wait, events are re-read (at-least-once). No redispatch logic here: redispatching is decided by the caller, never by this tool.',
+     'inputSchema': {'type': 'object', 'properties': {
+         'action': {'type': 'string', 'enum': ['read', 'wait', 'ack']},
+         'consumer_id': {'type': 'string', 'minLength': 1, 'maxLength': 128},
+         'request_keys': {'type': 'array', 'maxItems': 100, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 128}},
+         'event_ids': {'type': 'array', 'maxItems': 100, 'items': {'type': 'string', 'minLength': 1}},
+         'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100},
+         'timeout_ms': {'type': 'number', 'minimum': 0, 'maximum': 600000}},
+         'required': ['action', 'consumer_id'], 'additionalProperties': False}},
     {'name': 'codex_review', 'description': 'Ask Codex for a read-only project review. Uses ChatGPT quota. No automatic retries or approval. Returns its answer and session ID.',
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | POLICY_PROPERTIES | {'paths': {'type': 'array', 'maxItems': 30, 'items': {'type': 'string'}}}}},
     {'name': 'codex_followup', 'description': 'Continue a review created by this project bridge; preserves its Codex conversation.',
@@ -463,6 +473,8 @@ class Bridge:
             return self._reconcile(args)
         if name in ('reprise_backends', 'reprise_health', 'reprise_history', 'reprise_resume'):
             return self._call(name, args)
+        if name == 'reprise_notifications':
+            return self._notifications(args)
         if name == 'approval_list':
             return self._approval_list(args)
         if name == 'approval_respond':
@@ -621,6 +633,38 @@ class Bridge:
         return dict(manifest, offset=offset, text=fragment,
                     returned_length=len(fragment), has_more=end < len(text),
                     next_offset=end if end < len(text) else None)
+
+    def _notifications(self, args):
+        """Phase 1 of #237: durable notification queue over the delegation
+        receipt store. read/wait never consume or mark anything; ack writes
+        per-(event_id, consumer_id) rows, idempotently. No redispatch logic
+        lives here — the caller decides what to do with an event."""
+        if not isinstance(args, dict) or args.keys() - {'action', 'consumer_id', 'request_keys', 'event_ids', 'limit', 'timeout_ms'}:
+            raise ValueError('Invalid notification arguments')
+        action = args.get('action')
+        if action not in ('read', 'wait', 'ack'):
+            raise ValueError('Invalid notification action')
+        if not isinstance(args.get('consumer_id'), str) or not args.get('consumer_id').strip():
+            raise ValueError('Persist a nonempty consumer_id')
+        request_keys = args.get('request_keys')
+        if request_keys is not None and (
+                not isinstance(request_keys, list) or not request_keys
+                or len(request_keys) > delegation_notifications.MAX_BATCH
+                or any(not isinstance(key, str) or not key.strip() or len(key) > 128 for key in request_keys)):
+            raise ValueError('Bounded list of nonempty request_keys required')
+        queue = delegation_notifications.Queue(self.db, self.requests.scope)
+        if action == 'ack':
+            return queue.ack(args.get('consumer_id'), args.get('event_ids'))
+        if action == 'wait':
+            timeout = args.get('timeout_ms')
+            if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                                        or timeout < 0 or timeout > delegation_notifications.MAX_WAIT_SECONDS * 1000):
+                raise ValueError('Bounded nonnegative timeout_ms required')
+            return queue.wait(args.get('consumer_id'), timeout_ms=timeout, request_keys=request_keys)
+        limit = args.get('limit')
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1):
+            raise ValueError('Positive integer limit required')
+        return {'status': 'read', 'events': queue.read(args.get('consumer_id'), limit=limit, request_keys=request_keys)}
 
 
     @staticmethod

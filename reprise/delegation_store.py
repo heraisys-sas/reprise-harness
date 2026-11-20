@@ -1,4 +1,5 @@
 """Durable admission receipts. No transaction spans an external call."""
+import delegation_notifications
 import hashlib
 import json
 import os
@@ -206,6 +207,7 @@ class Store:
                 updated_at REAL, context TEXT, PRIMARY KEY(scope,request_key))''')
             if 'context' not in {row[1] for row in db.execute('PRAGMA table_info(delegation_turns)')}:
                 db.execute('ALTER TABLE delegation_turns ADD COLUMN context TEXT')
+            delegation_notifications.install(db)
             self.reconcile_awaiting_human()
 
     def reconcile_awaiting_human(self):
@@ -708,7 +710,43 @@ class Store:
                     values.append((result['pending_request'] or {}).get('method'))
                 values += [self.scope, key]
                 self.db.execute('UPDATE delegation_turns SET ' + ', '.join(assignments) + ' WHERE scope=? AND request_key=?', values)
+            self._record_notifications(key, state, result)
         return result
+
+    def _notification_kinds(self, state, result):
+        """Kinds to emit for a finished receipt update. A `recorded` state is
+        terminal but only status `finished` proves a success (interrupted,
+        quota_blocked, timeout... never do); uncertain or human-blocked states
+        still deserve attention without claiming a termination."""
+        if state == 'recorded':
+            kinds = ['turn_terminal']
+            if result.get('status') != 'finished':
+                kinds.append('attention_required')
+            return kinds
+        if state in ('indeterminate', 'awaiting_human'):
+            return ['attention_required']
+        return []
+
+    def _record_notifications(self, key, state, result):
+        """Emit notification events INSIDE the caller's active transaction
+        (#237): receipt and signal commit or roll back together. Event ids are
+        deterministic (kind, key, result digest) so an idempotent re-finish
+        deduplicates instead of waking consumers twice."""
+        result_sha256 = digest(result)
+        turn = self.db.execute('SELECT attempt, thread_id, turn_id FROM delegation_turns WHERE scope=? AND request_key=?',
+                               (self.scope, key)).fetchone()
+        for kind in self._notification_kinds(state, result):
+            delegation_notifications.record_event(
+                self.db, self.scope, key, kind, now=self.now(),
+                event_id=f'{kind}:{key}:{result_sha256[:32]}',
+                attempt_id=turn[0] if turn else None,
+                thread_id=turn[1] if turn else None,
+                turn_id=turn[2] if turn else None,
+                receipt_revision=RECEIPT_FORMAT,
+                result_sha256=result_sha256,
+                terminal_evidence=result.get('terminal_evidence'),
+                work_completed=result.get('work_completed'),
+                receipt_ref=f'delegation_requests:{self.scope}:{key}')
 
 
 def owner_alive(owner):
