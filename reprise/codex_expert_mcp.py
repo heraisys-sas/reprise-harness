@@ -29,6 +29,7 @@ import reprise_health
 import shutil
 import mcp_transport
 from mcp_transport import StdioHandler
+from datetime import datetime, timezone
 from engines import Unavailable, executable, options
 
 
@@ -115,6 +116,15 @@ BACKEND_MODELS = {
     'foundation-models': ('system',),
 }
 RETURN_MODES = {'type': 'string', 'enum': ['full', 'receipt'], 'default': 'full'}
+# Catalogue de modèles Codex dynamique (#242) : préférences ordonnées résolues contre le
+# catalogue live `model/list` ; aucune substitution silencieuse hors catalogue.
+CODEX_ROUTE_PREFERENCES = {
+    'deep': ('gpt-6-astra', 'gpt-5.6-terra', 'gpt-6.1-sol'),
+    'batch': ('gpt-6-luna', 'gpt-5.6-terra', 'gpt-6.1-sol'),
+    'default': ('gpt-6.1-sol', 'gpt-6-luna', 'gpt-5.6-terra'),
+}
+CODEX_CATALOG_TTL = 30.0
+CODEX_EFFORT_PREFERENCES = {'deep': 'high', 'batch': 'medium', 'default': 'medium'}
 INFERENCE_TOOLS = ('reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup')
 # Lot C (#238) : capacité du slot Codex ; les singletons physiques restent mono-slot.
 CODEX_PARALLEL_SLOTS = 2
@@ -383,6 +393,10 @@ class Bridge:
         routing_events.seed_local(self.db)
         self.db.commit()
         self.requests = Store(self.db, str(self.root))
+        # Catalogue de modèles Codex dynamique (#242) : cache TTL strictement par instance,
+        # sans repli statique ni fichier persistant.
+        self._codex_catalog_cache = None
+        self._codex_catalog_time = None
         self._release_terminal_slots()
         # Canal de retour MCP (get_task/submit_result) : TaskStore durable, ou
         # None si l'état Quick Apply n'est pas initialisable — le pont doit
@@ -419,6 +433,88 @@ class Bridge:
         _close_bridge_databases(tasks, self.db)
         if chatgpt is not None:
             chatgpt.close()
+
+    def _codex_catalog(self, force=False):
+        """Catalogue de modèles Codex live (#242) : (`model/list` via le proxy RPC).
+
+        Cache TTL 30 s strictement par instance Bridge. Aucun repli statique :
+        en cas d'échec de rafraîchissement, le cache est invalidé et `source`
+        vaut 'unavailable' avec `models` vide — un modèle last-known-good
+        n'est jamais admis après un rafraîchissement raté.
+        """
+        now = time.monotonic()
+        if not force and self._codex_catalog_cache is not None \
+                and now - (self._codex_catalog_time or 0.0) < CODEX_CATALOG_TTL:
+            return self._codex_catalog_cache
+        models, error = [], None
+        client = None
+        try:
+            client = Client(self.program, self.values)
+            client.call('initialize', {'clientInfo': {'name': 'reprise-expert', 'version': '0.1.0'},
+                                       'capabilities': {'experimentalApi': True}})
+            client.send({'method': 'initialized'})
+            raw = client.call('model/list', {}).get('data') or []
+            for item in raw:
+                if isinstance(item, dict) and isinstance(item.get('model'), str) and item['model']:
+                    models.append({'model': item['model'],
+                                   'displayName': item.get('displayName'),
+                                   'supportedReasoningEfforts': [
+                                       effort.get('reasoningEffort') for effort in
+                                       (item.get('supportedReasoningEfforts') or [])
+                                       if isinstance(effort, dict) and effort.get('reasoningEffort')]})
+        except (OSError, ValueError, TimeoutError, Unavailable) as exc:
+            models, error = [], str(exc) or exc.__class__.__name__
+        finally:
+            if client is not None:
+                client.close()
+        entry = {'models': models, 'source': 'live' if models else 'unavailable',
+                 'updated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'error': error}
+        self._codex_catalog_cache, self._codex_catalog_time = entry, now
+        return entry
+
+    def _codex_admit_model(self, catalog, model):
+        """Admission stricte d'un modèle codex explicite contre le catalogue live.
+
+        Modèle absent d'un cache valide → revalidation forcée unique ; toujours
+        absent → ValueError AVANT toute création de requête ou insertion en base.
+        """
+        if not isinstance(model, str) or not model:
+            raise ValueError('Unknown or unsupported model for backend codex')
+        known = {item['model'] for item in catalog['models']}
+        if model not in known:
+            catalog = self._codex_catalog(force=True)
+            known = {item['model'] for item in catalog['models']}
+            if model not in known:
+                raise ValueError(f'Unknown or unsupported model for backend codex: {model!r} not in live catalog'
+                                 + (f' ({catalog["error"]})' if catalog['error'] else ''))
+
+    def _codex_route(self, catalog, preference):
+        """Résolution ordonnée d'une route codex contre le catalogue live (#242).
+
+        Premier candidat présent dans le catalogue ; effort prescrit validé
+        contre `supportedReasoningEfforts` (repli medium, sinon le plus bas) ;
+        aucun candidat présent → ValueError, jamais de substitution silencieuse.
+        """
+        if catalog['source'] != 'live':
+            raise ValueError(f'Codex model catalog unavailable: {catalog["error"] or "model/list failed"}')
+        available = {item['model']: item for item in catalog['models']}
+        for candidate in CODEX_ROUTE_PREFERENCES[preference]:
+            if candidate in available:
+                return self._codex_route_effort(available[candidate], preference)
+        raise ValueError('No preferred Codex model in live catalog: '
+                         + ', '.join(CODEX_ROUTE_PREFERENCES[preference]))
+
+    @staticmethod
+    def _codex_route_effort(item, preference):
+        efforts = item.get('supportedReasoningEfforts') or []
+        prescribed = CODEX_EFFORT_PREFERENCES[preference]
+        if not efforts:
+            return {'model': item['model'], 'effort': prescribed}
+        if prescribed in efforts:
+            return {'model': item['model'], 'effort': prescribed}
+        if 'medium' in efforts:
+            return {'model': item['model'], 'effort': 'medium'}
+        return {'model': item['model'], 'effort': min(efforts)}
 
     def _ironclaw_configured(self):
         try:
@@ -836,18 +932,25 @@ class Bridge:
         if name == 'reprise_backends':
             if args:
                 raise ValueError('No arguments expected')
-            return {'status': 'finished', 'project_root': str(self.root), 'result_transport': {
-                    'receipt': True, 'pagination': True, 'followup_receipt': True,
-                    'format': 'receipt-json-v1', 'transport_limit': TRANSPORT_LIMIT}, 'backends': [
-                {'id': 'codex', 'configured': bool(self.program), 'billing': 'ChatGPT quota',
-                 'models': list(BACKEND_MODELS['codex']),
+            catalog = self._codex_catalog()
+            codex_entry = {'id': 'codex', 'configured': bool(self.program),
+                 'models': list(catalog['models']),
+                 'models_source': catalog['source'],
+                 'models_updated_at': catalog['updated_at'],
+                 'billing': 'ChatGPT quota',
                  'modes': ['expertise'] + (['implementation'] if self.codex_workspace_write else []),
                  'workspace_write_authorized': self.codex_workspace_write,
                  'implementation_scope': str(self.root) if self.codex_workspace_write else None,
                  **({} if self.codex_workspace_write else {
                      'implementation_unavailable_reason': 'workspace_write_not_authorized',
                      'enable_with': WORKSPACE_WRITE_ENABLE}),
-                 'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': self.codex_workspace_write},
+                 'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': self.codex_workspace_write}
+            if catalog['error']:
+                codex_entry['models_error'] = catalog['error']
+            return {'status': 'finished', 'project_root': str(self.root), 'result_transport': {
+                    'receipt': True, 'pagination': True, 'followup_receipt': True,
+                    'format': 'receipt-json-v1', 'transport_limit': TRANSPORT_LIMIT}, 'backends': [
+                codex_entry,
                 {'id': 'foundation-models', 'configured': apple_expert.configured(),
                  'models': ['system'], 'availability': 'unknown', 'inference_verified': False,
                  'billing': 'On-device model; no cloud API cost', 'on_device': True,
@@ -896,7 +999,10 @@ class Bridge:
         if backend not in ('codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models', 'chatgpt'):
             raise ValueError('Unknown expertise backend')
         if 'model' in args:
-            if not isinstance(args['model'], str) or args['model'] not in BACKEND_MODELS[backend]:
+            if backend == 'codex':
+                # Admission dynamique (#242) : source de vérité = catalogue live.
+                self._codex_admit_model(self._codex_catalog(), args['model'])
+            elif not isinstance(args['model'], str) or args['model'] not in BACKEND_MODELS[backend]:
                 raise ValueError(f'Unknown or unsupported model for backend {backend}')
         if name == 'reprise_delegate' and backend != 'claude-desktop' and args.keys() & {'chatId', 'filePaths'}:
             raise ValueError('chatId and filePaths are only valid with backend claude-desktop')
@@ -907,10 +1013,12 @@ class Bridge:
                 raise ValueError('Invalid delegation kind or level')
             if backend == 'foundation-models' and level != 'standard':
                 raise ValueError('Apple local route supports standard level only.')
-            routing = {'model': 'gpt-6-astra' if level == 'deep' else 'gpt-6-luna' if kind == 'batch' else 'gpt-6.1-sol',
-                       'effort': 'high' if level == 'deep' else 'medium'}
+            preference = 'deep' if level == 'deep' else 'batch' if kind == 'batch' else 'default'
             if backend == 'claude-code':
-                routing['model'] = 'opus' if level == 'deep' else 'sonnet'
+                routing = {'model': 'opus' if level == 'deep' else 'sonnet',
+                           'effort': 'high' if level == 'deep' else 'medium'}
+            elif backend == 'codex':
+                routing = self._codex_route(self._codex_catalog(), preference)
             elif backend == 'foundation-models':
                 routing = {'model': 'system'}
             question = (('Implement the bounded task; apply project changes and run appropriate local checks.'
@@ -948,6 +1056,10 @@ class Bridge:
             routing['model'] = args['model']
             if backend != 'foundation-models':
                 routing.setdefault('effort', 'medium')
+        if backend == 'codex' and routing.get('model'):
+            # Validation du modèle codex FINAL résolu (argument explicite ou route
+            # restaurée d'expert_routes) : refus avant toute insertion en base (#242).
+            self._codex_admit_model(self._codex_catalog(), routing['model'])
         policy = {}
         for source, target in (('wait_seconds', 'wait_timeout'), ('execution_seconds', 'execution_deadline'),
                                ('inactivity_seconds', 'inactivity')):
