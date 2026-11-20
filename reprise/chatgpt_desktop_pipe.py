@@ -563,6 +563,28 @@ def extract_reply(text, prompt, assistant_text=None):
         start = previous + len(REPLY_SENTINEL) if previous >= 0 else 0
         raw = raw[start:last]
         raw, _ = _strip_leading_chrome_lines(raw or '')
+        # Issue #246: in a multi-turn aggregate the previous sentinel is the
+        # prior turn's reply, so when the current reply has not rendered yet
+        # the cut segment is the bare prompt echo (live probe c9): the user
+        # chrome label, no assistant label, and NOTHING after the echoed
+        # prompt. A rendered reply leaves text after the echo (probes c6/c8;
+        # #228 DOM aggregates keep it even without the assistant label), so
+        # an empty tail beyond the echo proves the tail sentinel belongs to
+        # the echo. Unlike the single-sentinel guard above, the prompt needs
+        # no sentinel of its own; its trailing sentinel is excluded from the
+        # probe because the segment cut stops right before it.
+        segment_probe = _normalize(raw).lower()
+        echo_probe = _normalize(prompt).lower().strip()
+        sentinel_tail = REPLY_SENTINEL.lower()
+        if echo_probe.endswith(sentinel_tail):
+            echo_probe = echo_probe[:-len(sentinel_tail)].strip()
+        echo_position = segment_probe.rfind(echo_probe) if echo_probe else -1
+        echo_tail = (segment_probe[echo_position + len(echo_probe):].strip()
+                     if echo_position >= 0 else None)
+        if ('vous avez dit' in segment_probe
+                and not any(label in segment_probe for label in REPLY_LABELS)
+                and echo_tail == ''):
+            return None, 'prompt_echo_only', 0
     # Issue #228: the full-line chrome cut runs on the RAW rendered text —
     # _normalize flattens newlines, which would weld every chrome label into
     # the reply's own line and make the full-line match impossible.
