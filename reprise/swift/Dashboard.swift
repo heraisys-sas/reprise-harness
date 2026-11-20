@@ -962,8 +962,8 @@ struct Dashboard: View {
                          status: (app.quickApplyStartupEnabled || app.desktopStartup) ? "Activation au démarrage" : "Manuel",
                          ok: true) {
                 HStack(spacing: 10) {
-                    Button("1. Démarrer l’appli liée") { app.desktopAction("launch") }.disabled(app.desktopBusy)
-                    Button("2. Démarrer claude-desktopd") { app.desktopAction("start") }.disabled(app.desktopBusy)
+                    Button("Ouvrir ReClaude") { app.desktopAction("launch") }.disabled(app.desktopBusy)
+                    Button("Démarrer claude-desktopd") { app.desktopAction("start") }.disabled(app.desktopBusy)
                     Button("Arrêter claude-desktopd") { app.desktopAction("stop") }.disabled(app.desktopBusy)
                     if app.desktopBusy { InlineStatus(busy: true, message: app.desktopNote) }
                 }
@@ -978,8 +978,8 @@ struct Dashboard: View {
                                     + "\nLe greeting du daemon ne prouve pas que le relais de l’application est connecté.")
                 }
                 SettingsHint(
-                    text: "Les préférences de l’application et du daemon sont indépendantes.",
-                    detail: "Le daemon Quick Apply peut démarrer sans Claude Desktop. Le démarrage de l’application liée ne la ferme ni ne la relance si elle est déjà ouverte. Aucun autre élément d’ouverture macOS n’est modifié.")
+                    text: "Le daemon peut démarrer indépendamment de ReClaude. La livraison des demandes nécessite ensuite un relais connecté.",
+                    detail: "Le démarrage de l’application liée ne la ferme ni ne la relance si elle est déjà ouverte. Aucun autre élément d’ouverture macOS n’est modifié.")
             }
             SettingsCard(title: "Socket de claude-desktopd",
                          status: app.desktopConnectionVerified ? "Testé" : (customSocket ? "Personnalisé" : "Automatique"),
