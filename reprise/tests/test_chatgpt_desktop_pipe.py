@@ -910,6 +910,159 @@ class TestRenderedConversationCapture(unittest.TestCase):
         self.assertTrue(replayed['replayed'])
         self.assertEqual(replayed['status'], 'captured_incomplete')
 
+    # Issue #228: chrome-line cut on raw text, DOM re-read budget, receipt
+    # criteria (usable gate unchanged).
+
+    def test_cut_chrome_lines_matches_only_full_lines(self):
+        self.assertEqual(adapter._cut_chrome_lines('Réponse utile.\nAuto\nfin'),
+                         ('Réponse utile.', True))
+        self.assertEqual(adapter._cut_chrome_lines('Réponse utile.\nAUTO'),
+                         ('Réponse utile.', True))
+        self.assertEqual(adapter._cut_chrome_lines('Automatic retry.\nfin'),
+                         ('Automatic retry.\nfin', False))
+        self.assertEqual(adapter._cut_chrome_lines('La réponse terminée arrive.'),
+                         ('La réponse terminée arrive.', False))
+        self.assertEqual(adapter._cut_chrome_lines('Effort de réflexion'),
+                         ('', True))
+        self.assertEqual(adapter._cut_chrome_lines('Sans chrome'),
+                         ('Sans chrome', False))
+
+    def test_extract_reply_cuts_chrome_lines_from_assistant_text(self):
+        # The full-line cut runs on the RAW rendered text: _normalize welds
+        # every line together, so a cut after normalization could never match.
+        body = ('Auto-détection et réglages conservés. '
+                'Assistant reply body with enough useful content to pass '
+                'the usable-reply threshold of the capture contract.')
+        text = body + '\nEffort de réflexion\nAuto\nRéponse terminée'
+        reply, anchor, total = adapter.extract_reply(None, 'Question ?',
+                                                     assistant_text=text)
+        self.assertEqual(anchor, 'chrome_line')
+        self.assertEqual(reply, body)
+        self.assertEqual(total, len(body))
+        for label in ('Effort de réflexion', 'Réponse terminée'):
+            self.assertNotIn(label, reply)
+        # «Auto» inside the reply's own words is never a cut point.
+        self.assertIn('Auto-détection', reply)
+        # Chrome-only assistant text yields no reply at all.
+        reply2, anchor2, _total2 = adapter.extract_reply(
+            None, 'Question ?', assistant_text='Effort de réflexion\nAuto')
+        self.assertIsNone(reply2)
+        self.assertEqual(anchor2, 'chrome_line')
+
+    def test_assistant_text_chrome_never_reaches_the_captured_reply(self):
+        reply_body = ('Assistant reply body with enough useful content to pass '
+                      'the usable-reply threshold of the capture contract.')
+
+        def body(_poll):
+            return {'text': 'Vous avez dit : synthetic request ChatGPT a dit : '
+                            + reply_body,
+                    'assistant_text': (reply_body + '\nEffort de réflexion\n'
+                                       'Auto\nRéponse terminée'),
+                    'assistant_selector': 'div.assistant'}
+
+        transport = self.holder.fake(body=body, quiet_ms=lambda _poll: None)
+        with HolderHarness(transport, self.holder.binary, self.holder.root):
+            receipt = adapter.send('synthetic request', self.holder.binary,
+                                   self.holder.root, 'dedicated',
+                                   request_key='req-228-chrome')
+        self.assertEqual(receipt['status'], 'confirmed')
+        self.assertTrue(receipt['response_complete'])
+        self.assertEqual(receipt['completion'], 'dom-marker')
+        self.assertEqual(receipt['capture_source'], 'assistant_text')
+        self.assertEqual(receipt['assistant_selector'], 'div.assistant')
+        self.assertEqual(receipt['response_text'], reply_body)
+        for label in ('Effort de réflexion', 'Auto', 'Réponse terminée'):
+            self.assertNotIn(label, receipt['response_excerpt'])
+
+    def test_turn_completed_before_render_rereads_and_dispatches_once(self):
+        # The ws event arrives while the DOM still shows only the thinking
+        # chrome; the bounded re-read picks the rendered reply afterwards.
+        rendered = ('Vous avez dit : synthetic request ChatGPT a dit : '
+                    + REPLY_FIXTURE_BODY)
+        reads = {'n': 0}
+
+        def body(_poll):
+            reads['n'] += 1
+            if reads['n'] == 1:
+                return {'text': 'Vous avez dit : synthetic request ChatGPT a dit : ',
+                        'chrome_seen': True}
+            return {'text': rendered}
+
+        sse = [{'params': {'response': {'payloadData':
+                                         'event: conversation-turn-complete'}}}]
+        transport = self.holder.fake(body=body, quiet_ms=lambda _poll: None,
+                                     sse=sse)
+        with HolderHarness(transport, self.holder.binary, self.holder.root):
+            receipt = adapter.send('synthetic request', self.holder.binary,
+                                   self.holder.root, 'dedicated',
+                                   request_key='req-228-reread')
+        self.assertEqual(receipt['status'], 'confirmed')
+        self.assertTrue(receipt['response_complete'])
+        self.assertEqual(receipt['completion'], 'turn-complete')
+        self.assertEqual(receipt['response_text'], REPLY_FIXTURE_BODY)
+        self.assertGreaterEqual(receipt['capture_reread_passes'], 1)
+        self.assertNotIn('capture_reread_exhausted', receipt)
+        # Exactly one dispatch: the primary Enter (2 key events) and the
+        # button-click fallback never fires — the re-read never re-submits.
+        self.assertEqual(receipt['dispatch_action'], 'enter')
+        self.assertEqual(
+            sum(c.args and c.args[0] == 'Input.dispatchKeyEvent'
+                for c in transport.call.call_args_list), 2)
+        self.assertFalse(any('return clickUniqueSend(' in (c.args[0] if c.args else '')
+                             for c in transport.evaluate.call_args_list))
+
+    def test_reread_budget_exhausted_keeps_captured_incomplete(self):
+        # A usable capture that never settles twice within the re-read budget
+        # stays captured_incomplete, with the reason kept on the receipt.
+        rendered = ('Vous avez dit : synthetic request ChatGPT a dit : '
+                    + REPLY_FIXTURE_BODY)
+
+        def body(_poll):
+            return {'text': rendered}
+
+        sse = [{'params': {'response': {'payloadData':
+                                         'event: conversation-turn-complete'}}}]
+        transport = self.holder.fake(body=body, quiet_ms=lambda _poll: None,
+                                     sse=sse)
+        with HolderHarness(transport, self.holder.binary, self.holder.root):
+            with mock.patch.object(adapter.time, 'monotonic',
+                                   side_effect=itertools.count(0, 200)):
+                receipt = adapter.send('synthetic request', self.holder.binary,
+                                       self.holder.root, 'dedicated',
+                                       request_key='req-228-budget')
+        self.assertEqual(receipt['status'], 'captured_incomplete')
+        self.assertEqual(receipt['reason'], 'capture_reread_budget_exhausted')
+        self.assertFalse(receipt['response_complete'])
+        self.assertTrue(receipt['turn_completed'])
+        self.assertEqual(receipt['completion'], 'turn-complete')
+        self.assertTrue(receipt['capture_reread_exhausted'])
+        self.assertEqual(receipt['capture_reread_budget_seconds'],
+                         adapter.CAPTURE_REREAD_BUDGET_SECONDS)
+        self.assertEqual(receipt['capture_reread_passes'], 0)
+        self.assertEqual(receipt['capture_source'], 'body_text')
+        # Raw capture kept for diagnosis; exactly one dispatch, no re-send.
+        self.assertEqual(receipt['response_text'], REPLY_FIXTURE_BODY)
+        self.assertTrue(receipt['response_observed'])
+        self.assertEqual(receipt['dispatch_action'], 'enter')
+        self.assertEqual(
+            sum(c.args and c.args[0] == 'Input.dispatchKeyEvent'
+                for c in transport.call.call_args_list), 2)
+        self.assertFalse(any('return clickUniqueSend(' in (c.args[0] if c.args else '')
+                             for c in transport.evaluate.call_args_list))
+
+    def test_usable_reply_gate_unchanged(self):
+        self.assertEqual(adapter._usable_reply(None, None),
+                         (False, 'no_reply_text'))
+        self.assertEqual(adapter._usable_reply('Trop court.', 'end'),
+                         (False, 'capture_too_short'))
+        self.assertEqual(adapter._usable_reply('   \n\t  ', 'end'),
+                         (False, 'capture_too_short'))
+        long_reply = 'x' * adapter.MIN_USEFUL_REPLY_CHARS
+        self.assertEqual(adapter._usable_reply(long_reply, 'end'), (True, None))
+        self.assertEqual(adapter._usable_reply('Court.', 'sentinel'), (True, None))
+        self.assertEqual(adapter._usable_reply('Court.', 'cut_before_sentinel'),
+                         (False, 'capture_cut_before_sentinel'))
+
     # Issue #236 regression tests: declared capture completeness.
 
     def test_short_sentinel_reply_is_confirmed_with_output_complete(self):

@@ -259,8 +259,28 @@ const bodyProbe = () => {
     const text = [...node.childNodes].map(read).join('');
     return /^(block|flex|grid|list-item|table)/.test(style.display) ? '\n' + text + '\n' : text;
   };
+  // Issue #228: anchored read of the assistant message containers themselves.
+  // Ordered selectors: the first family with a non-empty text wins; the
+  // fallback filters conversation turns by their assistant-role descendant.
+  // This excludes the prompt echo and UI chrome before any Python cut logic.
+  const assistantProbe = () => {
+    const readAll = nodes => nodes.map(read).join('\n').trim();
+    const byRole = readAll([...document.querySelectorAll(
+      '[data-message-author-role="assistant"]')]);
+    if (byRole) return {text: byRole.slice(-60000), selector:
+      '[data-message-author-role="assistant"]'};
+    const turns = [...document.querySelectorAll(
+      '[data-testid^="conversation-turn"]')]
+      .filter(turn => turn.querySelector(
+        '[data-message-author-role="assistant"]'));
+    const text = readAll(turns);
+    return {text: text.slice(-60000), selector: text ?
+      '[data-testid^="conversation-turn"] (assistant)' : null};
+  };
+  const assistant = assistantProbe();
   return {url: location.href, ready: document.readyState,
     text: read(document.body).slice(-60000), chrome_seen: chrome.size > 0,
+    assistant_text: assistant.text, assistant_selector: assistant.selector,
     stream_len: window.__reprise_stream || 0,
     quiet_ms: window.__reprise_last_mutation ? (Date.now() - window.__reprise_last_mutation) : null};
 };
@@ -338,9 +358,14 @@ COMPLETION_POLL_INTERVAL_SECONDS = 1.0
 # Deep-reasoning turns ('Effort de réflexion : Élevé') can think for 60-90 s;
 # the ws turn-complete event ends the wait, not the clock.
 COMPLETION_TIMEOUT_SECONDS = 180
-# After the ws turn-complete event the DOM needs a moment to render the final
-# reply; read at most this long after the event (footer anchor ends it early).
-COMPLETION_SETTLE_SECONDS = 6.0
+# Issue #228 (replaces the fixed 6 s settle): after the ws turn-complete
+# event the renderer may still be painting the reply. Keep re-reading the
+# DOM ONLY (never re-submit) within this total budget; each re-read is
+# spaced by CAPTURE_REREAD_INTERVAL_SECONDS. Stop early once two successive
+# reads are identical AND the read passes _usable_reply; a budget exhausted
+# without that yields captured_incomplete with the cause preserved.
+CAPTURE_REREAD_BUDGET_SECONDS = 8.0
+CAPTURE_REREAD_INTERVAL_SECONDS = 0.5
 RESPONSE_EXCERPT_CHARS = 1500
 MAX_PROMPT_CHARS = 20000
 MAX_CAPTURE_CHARS = 58000
@@ -350,6 +375,16 @@ SEND_HELPERS = SEND_HELPERS.replace('slice(-60000)',
                                     f'slice(-{MAX_PROBE_CODE_UNITS})')
 REPLY_SENTINEL = 'REPRISE-CAPTURE-FIN'
 REPLY_LABELS = ('chatgpt a dit', 'chatgpt said')
+# Issue #228: rendered chrome lines cut from the captured reply. Matching is
+# FULL-LINE ONLY (a line whose content, stripped then lowercased, equals one
+# of these labels) — never a substring search, so a reply legitimately
+# containing «Auto» (or any label inside a sentence) is never corrupted.
+# French labels only, by design of the dedicated fr instance; extend here.
+REPLY_CHROME_LINES = (
+    'effort de réflexion',
+    'auto',
+    'réponse terminée',
+)
 # Footer markers include the «ChatGPT» prefix so the cut drops the whole
 # closing sentence, not just its tail.
 REPLY_FOOTERS = ('chatgpt peut faire des erreurs', 'chatgpt can make mistakes',
@@ -447,25 +482,56 @@ def _normalize(text):
     return ' '.join((text or '').split())
 
 
-def extract_reply(text, prompt):
+def _cut_chrome_lines(rest):
+    """Cut the reply at the first FULL chrome line (issue #228).
+
+    A chrome label only matches when it forms a complete line of the rendered
+    text («Auto» never matches as a substring). Returns (rest, cut_applied).
+    """
+    lines = rest.split('\n')
+    for index, line in enumerate(lines):
+        if line.strip().lower() in REPLY_CHROME_LINES:
+            return '\n'.join(lines[:index]), True
+    return rest, False
+
+
+def extract_reply(text, prompt, assistant_text=None):
     """Bounded extraction of the assistant reply from rendered conversation text.
 
     Anchored on the last occurrence of the prompt echo; cut by the explicit
     sentinel when present, else by the conversation footer. Returns
     (reply or None, anchor); never raises, never returns unbounded text.
 
+    Issue #228: when the probe exposes non-empty assistant_text (the
+    assistant message containers, anchored by DOM construction rather than
+    by the prompt echo), it is preferred over the raw body text and keeps
+    the same cut order (prompt echo when present, sentinel, footers); a
+    missing prompt echo is then expected, not an error. Both paths end with
+    the full-line chrome cut.
+
     Issue #236: the third element reports the detected total length of the
     reply before the defensive MAX_CAPTURE_CHARS ceiling, so a truncated
     capture can declare its incompleteness on the receipt instead of
     silently delivering a clipped answer as a complete one.
     """
-    joined = _normalize(text)
+    raw = assistant_text if assistant_text else text
+    dom_anchored = bool(assistant_text)
+    # Issue #228: the full-line chrome cut runs on the RAW rendered text —
+    # _normalize flattens newlines, which would weld every chrome label into
+    # the reply's own line and make the full-line match impossible.
+    raw, chrome_cut = _cut_chrome_lines(raw or '')
+    source = _normalize(raw)
     marker = _normalize(prompt)
-    position = joined.rfind(marker)
+    position = source.rfind(marker)
     if position < 0:
-        return None, 'prompt_echo_missing', 0
-    rest = joined[position + len(marker):]
-    anchor = 'end'
+        if dom_anchored:
+            rest = source
+            anchor = 'assistant_container'
+        else:
+            return None, 'prompt_echo_missing', 0
+    else:
+        rest = source[position + len(marker):]
+        anchor = 'end'
     cut = len(rest)
     sentinel = rest.find(REPLY_SENTINEL)
     if sentinel >= 0:
@@ -478,12 +544,14 @@ def extract_reply(text, prompt):
             cut = found
             anchor = 'cut_before_sentinel' if sentinel >= 0 else 'footer'
     rest = rest[:cut]
+    if chrome_cut and anchor in ('end', 'assistant_container'):
+        anchor = 'chrome_line'
     for label in REPLY_LABELS:
         head = rest.lower().find(label)
         if 0 <= head <= 40:
             rest = rest[head + len(label):]
             break
-    reply = rest.strip(' :\u00a0-')
+    reply = rest.strip(' :\u00a0-\n\u00a0')
     if not reply:
         return None, anchor, len(rest)
     total = len(reply)
@@ -663,7 +731,8 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
         # Post-send observation (issue #226): completion evidence from two
         # identical rendered polls, the ws.chatgpt.com lifecycle event, and
         # the injected MutationObserver quiet window; reply text anchored on
-        # the prompt echo. Bounded; never a fatal error.
+        # the prompt echo, or on the assistant message containers when the
+        # probe exposes them (issue #228). Bounded; never a fatal error.
         best = None
         previous = None
         stable_streak = 0
@@ -672,8 +741,11 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
         anchor_lost = False
         deadline = time.monotonic() + COMPLETION_TIMEOUT_SECONDS
         completed_at = None
+        reread_exhausted = False
+        capture_reread_passes = 0
         polls = 0
         last = best = None
+        last_source = best_source = last_selector = best_selector = None
         while True:
             if drain_turn_completion(transport):
                 completed = True
@@ -681,25 +753,45 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
                     completed_at = time.monotonic()
             probe = transport.evaluate(
                 '(() => {\n' + SEND_HELPERS + '\nreturn bodyProbe();\n})()')
+            assistant_text = (probe.get('assistant_text')
+                              if isinstance(probe, dict) else None)
             if last is not None:
-                current_text = probe.get('text') if isinstance(probe, dict) else None
-                if (not isinstance(current_text, str) or
-                        _normalize(prompt) not in _normalize(current_text)):
+                # Anchoring must survive across polls. Two sources: the
+                # assistant containers (issue #228, DOM-anchored) or the
+                # body prompt echo (legacy path). Losing both is a real
+                # anchor loss; the assistant path merely falling back to
+                # the body path is not.
+                body_text = probe.get('text') if isinstance(probe, dict) else None
+                body_anchored = (isinstance(body_text, str) and
+                                 _normalize(prompt) in _normalize(body_text))
+                if not (isinstance(assistant_text, str) and assistant_text) \
+                        and not body_anchored:
                     anchor_lost = True
                     break
-            text = probe.get('text') if isinstance(probe, dict) else None
+            if isinstance(assistant_text, str) and assistant_text:
+                text = assistant_text
+                read_source = 'assistant_text'
+                read_selector = (probe.get('assistant_selector')
+                                 if isinstance(probe, dict) else None)
+            else:
+                text = probe.get('text') if isinstance(probe, dict) else None
+                read_source = 'body_text'
+                read_selector = None
             polls += 1
             if isinstance(text, str) and text:
                 chrome_seen = chrome_seen or probe.get('chrome_seen') is True
-                reply, anchor, reply_total = extract_reply(text, prompt) if isinstance(text, str) else (None, 'prompt_echo_missing', 0)
+                reply, anchor, reply_total = extract_reply(
+                    None, prompt, assistant_text=text) if isinstance(text, str) else (None, 'prompt_echo_missing', 0)
                 if reply is not None:
                     # The conversation is append-only: the LAST extraction is
                     # the current final state; the longest seen is the fallback
                     # (junk like the thinking indicator can outsize a short
                     # true reply, so longest is never preferred over last).
                     last = (reply, anchor, reply_total)
+                    last_source, last_selector = read_source, read_selector
                 if reply is not None and (best is None or len(reply) > len(best[0])):
                     best = (reply, anchor, reply_total)
+                    best_source, best_selector = read_source, read_selector
                 evidence = reply if reply is not None else text
                 digest = hashlib.sha256(_normalize(evidence).encode('utf-8')).hexdigest()
                 stable_streak = stable_streak + 1 if previous == digest else 0
@@ -712,21 +804,29 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
                 break
             if quiet and last is not None:
                 break
-            if completed and last is not None and (
-                    (last[1] == 'footer' or last[1] == 'sentinel')
-                    or time.monotonic() - completed_at >= COMPLETION_SETTLE_SECONDS):
-                # The ws event ends the turn; let the DOM render the final
-                # reply (footer anchor) before reading it (measured 17/11:
-                # reading immediately captures the thinking indicator).
-                break
+            if completed and last is not None:
+                # Issue #228: bounded DOM re-read instead of a blind 6 s
+                # settle. Re-read ONLY (never re-submit) within
+                # CAPTURE_REREAD_BUDGET_SECONDS, spaced by
+                # CAPTURE_REREAD_INTERVAL_SECONDS; stop once two successive
+                # reads are identical AND the read passes _usable_reply.
+                if _usable_reply(last[0], last[1])[0] and stable_streak >= 2:
+                    capture_reread_passes = max(1, stable_streak - 1)
+                    break
+                if time.monotonic() - completed_at >= CAPTURE_REREAD_BUDGET_SECONDS:
+                    reread_exhausted = True
+                    break
             if time.monotonic() >= deadline:
                 break
-            time.sleep(COMPLETION_POLL_INTERVAL_SECONDS)
+            time.sleep(CAPTURE_REREAD_INTERVAL_SECONDS if completed
+                       else COMPLETION_POLL_INTERVAL_SECONDS)
         if drain_turn_completion(transport):
             completed = True
         status = _evaluate_send(transport, 'composerStatus', None)
         receipt['composer_emptied'] = isinstance(status, dict) and status.get('status') == 'ready'
         chosen = last if last is not None else best
+        chosen_source = last_source if last is not None else best_source
+        chosen_selector = last_selector if last is not None else best_selector
         usable, unusable_reason = _usable_reply(chosen[0] if chosen else None,
                                                 chosen[1] if chosen else None)
         chrome_only = chosen is None and chrome_seen
@@ -751,6 +851,13 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
                 # not consumed as the answer.
                 usable = False
                 unusable_reason = 'capture_anchor_lost' if anchor_lost else 'capture_truncated'
+            elif reread_exhausted and usable:
+                # Issue #228: the re-read budget ended without two identical
+                # usable reads; a usable-but-unstable capture never confirms.
+                # Secondary to the truncation diagnosis above and to any
+                # specific reason returned by _usable_reply.
+                usable = False
+                unusable_reason = 'capture_reread_budget_exhausted'
             # Issue #228 criterion 2/5: chrome or a too-short capture is never
             # a complete reply, and turn_completed: false (a1: no ws event, no
             # sentinel, no DOM marker, DOM silent) never yields
@@ -758,6 +865,20 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
             completion_evidence = bool(completed or quiet or sentinel_seen
                                        or dom_marker)
             receipt['response_complete'] = bool(completion_evidence and usable)
+            if reread_exhausted:
+                # Issue #228: bounded re-read ended without a stable usable
+                # read; keep the diagnosis on the receipt (status is handled
+                # below through the unusable/complete gates, never confirmed).
+                receipt['capture_reread_exhausted'] = True
+                receipt['capture_reread_budget_seconds'] = CAPTURE_REREAD_BUDGET_SECONDS
+            # Issue #228: which DOM source produced the retained capture —
+            # the assistant containers when the probe exposed them, else the
+            # body text anchored on the prompt echo. Budget exhaustion is
+            # signaled by capture_reread_exhausted, not by a source label.
+            receipt['capture_source'] = chosen_source
+            if chosen_selector:
+                receipt['assistant_selector'] = chosen_selector
+            receipt['capture_reread_passes'] = capture_reread_passes
             receipt['response_source'] = 'rendered-conversation'
             receipt['response_anchor'] = anchor
             receipt['completion'] = ('sentinel' if sentinel_seen else
@@ -792,7 +913,9 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
             # kept for diagnosis and the receipt is persisted, so replay
             # returns it as-is: captured_incomplete NEVER re-sends the prompt
             # (at-most-once contract, single initial marker). Issue #236: a
-            # truncated capture lands here too (usable was flipped to False).
+            # truncated capture lands here too (usable was flipped to False),
+            # as does a re-read budget exhausted without a stable usable read
+            # (the gate above keeps the more specific cause when one exists).
             receipt['status'] = 'captured_incomplete'
             if receipt['reason'] is None:
                 receipt['reason'] = unusable_reason
