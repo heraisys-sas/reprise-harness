@@ -541,9 +541,16 @@ class Bridge:
     def _release_slot(self, slot):
         backend, name, key = slot
         if key is None:
-            return
-        self.db.execute('DELETE FROM expert_active_turns WHERE backend=? AND slot=? AND request_key=?',
-                        (backend, name, key))
+            # #244 : clé None signifie slot inséré avant un échec d'admission
+            # (INSERT avec request_key NULL) — sans suppression dédiée, la ligne
+            # fuit et verrouille le backend (bridge_busy définitif). Une ligne
+            # AVEC clé appartient à un tour tiers (réutilisation followup) et
+            # ne doit jamais être touchée par ce chemin.
+            self.db.execute('DELETE FROM expert_active_turns WHERE backend=? AND slot=? AND request_key IS NULL',
+                            (backend, name))
+        else:
+            self.db.execute('DELETE FROM expert_active_turns WHERE backend=? AND slot=? AND request_key=?',
+                            (backend, name, key))
         self.db.commit()
 
     def _release_terminal_slots(self):
