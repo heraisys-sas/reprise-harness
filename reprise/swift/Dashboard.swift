@@ -1217,7 +1217,7 @@ struct Dashboard: View {
                 }
                 SettingsHint(
                     text: "La synthèse Apple Intelligence se trouve dans Analyse locale.",
-                    detail: "La présence de ces composants est vérifiée de façon déterministe, sans inférence. Elle ne prouve pas qu’une soumission aboutira : Desktop doit être ouvert et les autorisations macOS accordées.")
+                    detail: "La présence des composants ne prouve pas qu’une soumission aboutira. Vérifiez la connexion au daemon claude-desktopd, la disponibilité du relais ReClaude et, séparément, les preuves de livraison et de traitement (« arrivé ≠ traité »).")
             }
             SettingsCard(title: "Codex · interaction avec Reprise",
                          status: codexChecks.isEmpty ? "Aucun relevé" : "Vérifié",
