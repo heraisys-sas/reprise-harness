@@ -1075,15 +1075,33 @@ def ensure_main_target(transport, *, timeout):
     return outcome | {'verified': False}
 
 
+def _holder_ensure_result(response):
+    """Map an 'ensure' reply to the launch_rechatgpt outcome contract."""
+    if not isinstance(response, dict):
+        return {'status': 'error', 'verified': False, 'pid': None,
+                'detail': 'holder_unavailable'}
+    if response.get('status') == 'ready':
+        return {'status': 'already_active', 'verified': True, 'pid': None,
+                'detail': 'holder_listening'}
+    if response.get('status') == 'holder_not_ready':
+        return {'status': 'error', 'verified': False, 'pid': None,
+                'detail': 'holder_chrome_unrecoverable'}
+    return {'status': 'error', 'verified': False, 'pid': None,
+            'detail': 'holder_unavailable'}
+
+
 def launch_rechatgpt(*, timeout=30.0, profile_root=DEFAULT_PROFILE_ROOT):
     """Launch the ReChatGPT clone on the ChatGPT screen, or report the holder.
 
     Holder liveness is checked by connect() only — an orphaned socket file is
-    a stopped holder. Under the profile lock, a second probe rules out the
-    holder racing us, then the resolved clone binary is launched with its
-    dedicated profile over --remote-debugging-pipe (never TCP). Our local
-    transport fds are closed without terminating the child: the launched app
-    stays alive by design, exactly like the holder's own serve() contract.
+    a stopped holder. A listening holder is then asked 'ensure': the holder
+    may have outlived its Chrome, and it recovers (bounded relaunch) or
+    admits the loss before we report already_active. Under the profile lock,
+    a second probe rules out the holder racing us, then the resolved clone
+    binary is launched with its dedicated profile over
+    --remote-debugging-pipe (never TCP). Our local transport fds are closed
+    without terminating the child: the launched app stays alive by design,
+    exactly like the holder's own serve() contract.
 
     'launched' never means the ChatGPT screen is shown; only a census with
     exactly one MAIN_URL page sets verified=True.
@@ -1092,9 +1110,17 @@ def launch_rechatgpt(*, timeout=30.0, profile_root=DEFAULT_PROFILE_ROOT):
     socket_path = _holder_socket_path(profile.parent)
     holder = _holder_connect(socket_path, timeout=2.0)
     if holder is not None:
-        holder.close()
-        return {'status': 'already_active', 'verified': False, 'pid': None,
-                'detail': 'holder_listening'}
+        # _holder_exchange raises the socket timeout to
+        # HOLDER_EXCHANGE_TIMEOUT_SECONDS itself and closes the socket in
+        # every path, so the 2.0 connect timeout never bounds the exchange.
+        try:
+            response = _holder_exchange(holder, {'cmd': 'ensure'})
+        finally:
+            try:
+                holder.close()
+            except OSError:
+                pass
+        return _holder_ensure_result(response)
     binary = dedicated_binary()
     if binary.is_symlink() or not binary.is_file() or not os.access(binary, os.X_OK):
         return {'status': 'error', 'verified': False, 'pid': None,
@@ -1108,9 +1134,16 @@ def launch_rechatgpt(*, timeout=30.0, profile_root=DEFAULT_PROFILE_ROOT):
         except FileExistsError:
             return {'status': 'error', 'verified': False, 'pid': None,
                     'detail': 'lock_busy'}
-        if _holder_connect(socket_path, timeout=1.0) is not None:
-            return {'status': 'already_active', 'verified': False, 'pid': None,
-                    'detail': 'holder_listening'}
+        holder = _holder_connect(socket_path, timeout=1.0)
+        if holder is not None:
+            try:
+                response = _holder_exchange(holder, {'cmd': 'ensure'})
+            finally:
+                try:
+                    holder.close()
+                except OSError:
+                    pass
+            return _holder_ensure_result(response)
         try:
             transport, proc = launch_cdp_process(binary, build_args(profile), label='ReChatGPT')
         except (OSError, RuntimeError) as exc:
@@ -1276,6 +1309,37 @@ def _holder_relaunch(runtime, binary, profile):
     return transport
 
 
+def _holder_ensure(runtime, binary, profile):
+    """Answer the 'ensure' command: is the owned Chrome actually alive?
+
+    A holder can outlive its Chrome (window closed, pipe dead), so a listening
+    socket proves nothing. One bounded relaunch of the OWN child mirrors
+    _holder_dispatch's recovery before 'holder_not_ready' is answered.
+    """
+    transport = runtime.get('transport')
+    try:
+        state = census(transport)
+    except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+        state = None
+    if isinstance(state, dict) and state.get('status') == 'ready':
+        return {'status': 'ready', 'verified': True}
+    try:
+        transport = _holder_relaunch(runtime, binary, profile)
+    except (OSError, RuntimeError):
+        return {'status': 'holder_not_ready', 'verified': False}
+    for _attempt in range(60):
+        if runtime['proc'].poll() is not None:
+            break
+        try:
+            state = census(transport)
+        except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+            state = None
+        if isinstance(state, dict) and state.get('status') == 'ready':
+            return {'status': 'ready', 'verified': True}
+        time.sleep(0.5)
+    return {'status': 'holder_not_ready', 'verified': False}
+
+
 def _holder_dispatch(runtime, binary, profile, payload):
     """Validate, replay or dispatch one request on the holder's LIVE transport.
 
@@ -1358,7 +1422,11 @@ def _serve_connection(conn, runtime, binary, profile):
         return
     except ValueError:
         return
-    receipt = _holder_dispatch(runtime, binary, profile, payload)
+    if isinstance(payload, dict) and payload.get('cmd') == 'ensure' \
+            and 'prompt' not in payload:
+        receipt = _holder_ensure(runtime, binary, profile)
+    else:
+        receipt = _holder_dispatch(runtime, binary, profile, payload)
     try:
         frame = _encode_holder_frame(receipt)
         if len(frame) > MAX_RESPONSE_BYTES:
