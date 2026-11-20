@@ -285,12 +285,18 @@ def finish_with_holder_dispatch(root, state, admission):
         result['output_truncated'] = True
         result['output_complete'] = False
         result['capture_limit_characters'] = receipt.get('capture_limit_characters')
-        result['response_full_length'] = receipt.get('response_full_length')
+        if receipt.get('capture_anchor_lost'):
+            result['capture_anchor_lost'] = True
+        else:
+            result['response_full_length'] = receipt.get('response_full_length')
         result['status'] = 'needs_review'
         result['work_completed'] = False
         result['next_action'] = 'reconcile'
-        result['reason'] = ('ChatGPT capture exceeds the capture limit; stored '
-                            'output is incomplete. Do not automatically retry.')
+        result['reason'] = (
+            'ChatGPT capture lost its prompt anchor; stored output is incomplete. '
+            'Do not automatically retry.' if receipt.get('capture_anchor_lost') else
+            'ChatGPT capture exceeds the capture limit; stored output is incomplete. '
+            'Do not automatically retry.')
     elif captured:
         result['response'] = receipt['response_text']
         result['delivery'] = 'captured'

@@ -232,10 +232,26 @@ const sendButtons = () => [...document.querySelectorAll('button')].filter(visibl
 // arrives as a Network.webSocketFrameReceived lifecycle event on the shared
 // topics socket; the reply text is read from the rendered conversation via
 // bodyProbe below.
-const bodyProbe = () => ({url: location.href, ready: document.readyState,
-  text: (document.body.innerText || '').slice(-60000),
-  stream_len: window.__reprise_stream || 0,
-  quiet_ms: window.__reprise_last_mutation ? (Date.now() - window.__reprise_last_mutation) : null});
+const bodyProbe = () => {
+  const chromeLabel = /^(?:afficher plus|afficher la réponse|afficher le raisonnement|réflexion en cours|réfléchit|reasoning|thinking)[\s.:…]*$|^durée d'exécution\s*:\s*\d+(?:[.,]\d+)?\s*(?:ms|s|sec|min)\.?$/i;
+  const controls = document.querySelectorAll('button, [role="button"], [role="status"], [role="progressbar"]');
+  const chrome = new Set([...controls].filter(element =>
+    chromeLabel.test((element.innerText || element.getAttribute('aria-label') || '').trim())));
+  const read = node => {
+    if (node.nodeType === 3) return node.nodeValue;
+    if (node.nodeType !== 1 || chrome.has(node) ||
+        /^(SCRIPT|STYLE|NOSCRIPT)$/.test(node.tagName)) return '';
+    const style = getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden') return '';
+    if (node.tagName === 'BR') return '\n';
+    const text = [...node.childNodes].map(read).join('');
+    return /^(block|flex|grid|list-item|table)/.test(style.display) ? '\n' + text + '\n' : text;
+  };
+  return {url: location.href, ready: document.readyState,
+    text: read(document.body).slice(-60000), chrome_seen: chrome.size > 0,
+    stream_len: window.__reprise_stream || 0,
+    quiet_ms: window.__reprise_last_mutation ? (Date.now() - window.__reprise_last_mutation) : null};
+};
 function composerStatus(expected) {
   if (location.href !== 'app://-/index.html') return {status: 'target_changed'};
   const found = editors();
@@ -315,25 +331,17 @@ COMPLETION_TIMEOUT_SECONDS = 180
 COMPLETION_SETTLE_SECONDS = 6.0
 RESPONSE_EXCERPT_CHARS = 1500
 MAX_PROMPT_CHARS = 20000
-# Issue #236: the capture ceiling is now declared on the receipt instead of a
-# silent truncation. It must stay below the bodyProbe render window
-# (MAX_PROBE_CHARS = 60000 minus the prompt echo) so a reply cut here is a
-# real ceiling, and the sentinel-capped capture can carry an honest
-# output_complete proof for the pagination layer.
 MAX_CAPTURE_CHARS = 58000
+# JavaScript slices UTF-16 code units; reserve the full prompt and DOM overhead.
+MAX_PROBE_CODE_UNITS = 2 * (MAX_PROMPT_CHARS + MAX_CAPTURE_CHARS + 4096)
+SEND_HELPERS = SEND_HELPERS.replace('slice(-60000)',
+                                    f'slice(-{MAX_PROBE_CODE_UNITS})')
 REPLY_SENTINEL = 'REPRISE-CAPTURE-FIN'
 REPLY_LABELS = ('chatgpt a dit', 'chatgpt said')
 # Footer markers include the «ChatGPT» prefix so the cut drops the whole
 # closing sentence, not just its tail.
 REPLY_FOOTERS = ('chatgpt peut faire des erreurs', 'chatgpt can make mistakes',
                  'peut faire des erreurs', 'can make mistakes')
-# Issue #228 (2/2 confirmed): rendered conversation text can be pure UI chrome
-# — «Afficher plus», «Durée d'exécution : 0s», «Réflexion en cours» and
-# neighbours. Such text is NOT a reply: it is cut at the first label (like a
-# footer) and can never validate a receipt.
-REPLY_UI_CHROME = ('afficher plus', 'afficher la réponse', 'afficher le raisonnement',
-                   'durée d\'exécution', 'réflexion en cours', 'réfléchit',
-                   'reasoning', 'thinking')
 # A receipt is only confirmed for a capture that is neither chrome nor a
 # fragment. Threshold (issue #228, criterion 2): 80 non-blank chars — the
 # known chrome labels together stay below ~70 chars, while typical delegate
@@ -342,6 +350,9 @@ REPLY_UI_CHROME = ('afficher plus', 'afficher la réponse', 'afficher le raisonn
 # a strict completion proof for a short expected answer.
 MIN_USEFUL_REPLY_CHARS = 80
 TURN_COMPLETE_MARKER = 'conversation-turn-complete'
+# JSON control characters can expand to six ASCII bytes, even with ensure_ascii=False.
+MAX_REQUEST_BYTES = 6 * MAX_PROMPT_CHARS + 1024
+MAX_RESPONSE_BYTES = 6 * (MAX_CAPTURE_CHARS + RESPONSE_EXCERPT_CHARS) + 16384
 # Distinct window title for the dedicated instance (visible in Mission Control
 # and window switchers); re-applied at dispatch start — the client resets it.
 WINDOW_TITLE = 'ReChatGPT'
@@ -449,12 +460,11 @@ def extract_reply(text, prompt):
         cut = sentinel
         anchor = 'sentinel'
     lower = rest.lower()
-    for footer in REPLY_FOOTERS + REPLY_UI_CHROME:
+    for footer in REPLY_FOOTERS:
         found = lower.find(footer)
         if 0 <= found < cut:
             cut = found
-            if anchor != 'sentinel':
-                anchor = 'footer'
+            anchor = 'cut_before_sentinel' if sentinel >= 0 else 'footer'
     rest = rest[:cut]
     for label in REPLY_LABELS:
         head = rest.lower().find(label)
@@ -471,23 +481,10 @@ def extract_reply(text, prompt):
 
 
 def _usable_reply(reply, anchor=None):
-    """Issue #228 gate: None or (True, None) for real content, else (False, reason).
-
-    UI chrome («Afficher plus», «Durée d'exécution», «Réflexion en cours»…)
-    never validates a receipt; a capture below MIN_USEFUL_REPLY_CHARS
-    non-blank chars is a fragment, not a complete answer.
-
-    Issue #236: a sentinel-anchored capture is exempt from the length
-    threshold — REPRISE-CAPTURE-FIN is the strict completion proof the
-    delegate was instructed to emit, so a short real reply anchored on it
-    is a complete answer, not a fragment (the gate comment in #228
-    promised this exemption but never received the anchor).
-    """
     if not reply:
         return False, 'no_reply_text'
-    lowered = reply.lower()
-    if any(label in lowered for label in REPLY_UI_CHROME):
-        return False, 'ui_chrome_capture'
+    if anchor == 'cut_before_sentinel':
+        return False, 'capture_cut_before_sentinel'
     if anchor != 'sentinel' and sum(not ch.isspace() for ch in reply) < MIN_USEFUL_REPLY_CHARS:
         return False, 'capture_too_short'
     return True, None
@@ -660,6 +657,7 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
         stable_streak = 0
         completed = quiet = sentinel_seen = dom_marker = False
         chrome_seen = False
+        anchor_lost = False
         deadline = time.monotonic() + COMPLETION_TIMEOUT_SECONDS
         completed_at = None
         polls = 0
@@ -671,12 +669,16 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
                     completed_at = time.monotonic()
             probe = transport.evaluate(
                 '(() => {\n' + SEND_HELPERS + '\nreturn bodyProbe();\n})()')
+            if last is not None:
+                current_text = probe.get('text') if isinstance(probe, dict) else None
+                if (not isinstance(current_text, str) or
+                        _normalize(prompt) not in _normalize(current_text)):
+                    anchor_lost = True
+                    break
             text = probe.get('text') if isinstance(probe, dict) else None
             polls += 1
             if isinstance(text, str) and text:
-                lowered_text = text.lower()
-                if any(label in lowered_text for label in REPLY_UI_CHROME):
-                    chrome_seen = True
+                chrome_seen = chrome_seen or probe.get('chrome_seen') is True
                 reply, anchor, reply_total = extract_reply(text, prompt) if isinstance(text, str) else (None, 'prompt_echo_missing', 0)
                 if reply is not None:
                     # The conversation is append-only: the LAST extraction is
@@ -730,13 +732,13 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
             # of silently clipping. A reply whose detected length exceeded the
             # defensive ceiling (probe window bound) is an amputated capture:
             # it never validates a receipt and is flagged for reconciliation.
-            capture_truncated = reply_total > len(reply)
+            capture_truncated = anchor_lost or reply_total > len(reply)
             if capture_truncated:
                 # A truncated capture is never a complete reply, whatever the
                 # completion evidence: the delegated result must be reviewed,
                 # not consumed as the answer.
                 usable = False
-                unusable_reason = 'capture_truncated'
+                unusable_reason = 'capture_anchor_lost' if anchor_lost else 'capture_truncated'
             # Issue #228 criterion 2/5: chrome or a too-short capture is never
             # a complete reply, and turn_completed: false (a1: no ws event, no
             # sentinel, no DOM marker, DOM silent) never yields
@@ -754,7 +756,10 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
             if capture_truncated:
                 receipt['output_truncated'] = True
                 receipt['output_complete'] = False
-                receipt['response_full_length'] = reply_total
+                if anchor_lost:
+                    receipt['capture_anchor_lost'] = True
+                else:
+                    receipt['response_full_length'] = reply_total
                 receipt['capture_limit_characters'] = MAX_CAPTURE_CHARS
             elif sentinel_seen:
                 # Producer-attested completeness: the delegate emitted the
@@ -835,26 +840,32 @@ def _holder_connect(path, timeout=2.0):
     return sock
 
 
-def _holder_exchange(sock, payload):
-    """One newline-framed JSON request; None on any transport/parse failure.
+def _encode_holder_frame(payload):
+    return (json.dumps(payload, sort_keys=True, ensure_ascii=False) + '\n').encode('utf-8')
 
-    The holder answers only after its full bounded dispatch, so the read
-    timeout must cover the whole budget instead of the 2 s connect timeout.
-    """
+
+def _read_holder_frame(sock, limit):
+    frame = bytearray()
+    while True:
+        chunk = sock.recv(min(65536, limit + 1 - len(frame)))
+        if not chunk:
+            raise EOFError('Incomplete holder frame')
+        frame.extend(chunk)
+        if len(frame) > limit:
+            raise ValueError('Holder frame exceeds byte limit')
+        if b'\n' in frame:
+            return json.loads(frame.partition(b'\n')[0])
+
+
+def _holder_exchange(sock, payload):
     try:
+        frame = _encode_holder_frame(payload)
+        if len(frame) > MAX_REQUEST_BYTES:
+            return None
         sock.settimeout(HOLDER_EXCHANGE_TIMEOUT_SECONDS)
-        sock.sendall((json.dumps(payload, ensure_ascii=False) + '\n').encode('utf-8'))
-        frame = bytearray()
-        while b'\n' not in frame:
-            chunk = sock.recv(65536)
-            if not chunk:
-                return None
-            frame.extend(chunk)
-            if len(frame) > MAX_PROMPT_CHARS * 4 + 65536:
-                return None
-        line = frame.partition(b'\n')[0]
-        return json.loads(line)
-    except (OSError, ValueError, UnicodeDecodeError):
+        sock.sendall(frame)
+        return _read_holder_frame(sock, MAX_RESPONSE_BYTES)
+    except (OSError, EOFError, ValueError):
         return None
     finally:
         try:
@@ -1016,25 +1027,18 @@ def _close_secondary_pages(transport):
 
 def _serve_connection(conn, runtime, binary, profile):
     try:
-        frame = bytearray()
-        while b'\n' not in frame:
-            chunk = conn.recv(65536)
-            if not chunk:
-                return
-            frame.extend(chunk)
-            if len(frame) > MAX_PROMPT_CHARS * 4 + 65536:
-                break
-    except OSError:
+        payload = _read_holder_frame(conn, MAX_REQUEST_BYTES)
+    except (OSError, EOFError):
         return
-    try:
-        payload = json.loads(frame.partition(b'\n')[0])
-    except (ValueError, UnicodeDecodeError):
-        payload = None
+    except ValueError:
+        return
     receipt = _holder_dispatch(runtime, binary, profile, payload)
     try:
-        conn.sendall((json.dumps(receipt, sort_keys=True, ensure_ascii=False) + '\n')
-                     .encode('utf-8'))
-    except OSError:
+        frame = _encode_holder_frame(receipt)
+        if len(frame) > MAX_RESPONSE_BYTES:
+            return
+        conn.sendall(frame)
+    except (OSError, ValueError):
         pass
 
 

@@ -564,18 +564,6 @@ def _should_unlink_socket(socket_path=SOCKET):
     return not probe_dispatch_socket(socket_path, timeout=1.0)
 
 
-def _pristine_bundle_id(plist_backup):
-    if plist_backup.exists():
-        try:
-            with open(plist_backup, 'rb') as handle:
-                bundle_id = plistlib.load(handle).get('CFBundleIdentifier')
-            if bundle_id:
-                return bundle_id
-        except plistlib.InvalidFileException:
-            pass
-    return ORIGINAL_BUNDLE_ID
-
-
 def restore(app=COPY_APP):
     asar = Path(app) / 'Contents' / 'Resources' / 'app.asar'
     plist_path = Path(app) / 'Contents' / 'Info.plist'
@@ -597,8 +585,9 @@ def restore(app=COPY_APP):
     with open(plist_path, 'rb') as handle:
         plist_new = plistlib.load(handle)
     plist_new['ElectronAsarIntegrity']['Resources/app.asar']['hash'] = hashlib.sha256(raw[16:16 + json_length]).hexdigest()
-    if app != APP:
-        plist_new['CFBundleIdentifier'] = _pristine_bundle_id(plist_backup)
+    if Path(app) != APP:
+        # A managed clone already has its own ID before patch() saves the plist.
+        plist_new['CFBundleIdentifier'] = ORIGINAL_BUNDLE_ID
     with open(plist_path, 'wb') as handle:
         plistlib.dump(plist_new, handle, fmt=plistlib.FMT_BINARY)
     try:

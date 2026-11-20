@@ -394,9 +394,10 @@ class TestGuardedSend(unittest.TestCase):
             if 'return bodyProbe();' in expression:
                 ms = quiet_ms(states['poll']) if callable(quiet_ms) else \
                     (quiet_ms if quiet_ms is not None else quiet_ms_default)
-                return {'url': adapter.MAIN_URL, 'ready': 'complete',
-                        'text': body_text(), 'stream_len': 1 if observer else 0,
-                        'quiet_ms': ms}
+                rendered = body_text()
+                probe = {'url': adapter.MAIN_URL, 'ready': 'complete',
+                         'stream_len': 1 if observer else 0, 'quiet_ms': ms}
+                return probe | (rendered if isinstance(rendered, dict) else {'text': rendered})
             if '__reprise_observer' in expression:
                 return 'armed' if observer else None
             raise AssertionError('Unexpected Runtime.evaluate')
@@ -683,8 +684,8 @@ class TestRenderedConversationCapture(unittest.TestCase):
         # Case a1: no ws turn-complete, no DOM marker, DOM never quiet — the
         # capture read only a fragment plus UI chrome before the clock ran out.
         def body(_poll):
-            return ('Vous avez dit : synthetic request ChatGPT a dit : Voici un '
-                    'début de réponse. Afficher plus. Durée d\'exécution : 0s.')
+            return {'text': 'Vous avez dit : synthetic request ChatGPT a dit : '
+                            'Voici un début de réponse.', 'chrome_seen': True}
 
         transport = self.holder.fake(body=body, quiet_ms=lambda _poll: None)
         # Clock jump inside the harness only (issue #234): patching the shared
@@ -709,8 +710,8 @@ class TestRenderedConversationCapture(unittest.TestCase):
         # Case a2: turn completed but the DOM still shows only the thinking
         # chrome — never a confirmed receipt.
         def body(_poll):
-            return ('Vous avez dit : synthetic request ChatGPT a dit : '
-                    'Réflexion en cours. Durée d\'exécution : 0s. Afficher plus.')
+            return {'text': 'Vous avez dit : synthetic request ChatGPT a dit : ',
+                    'chrome_seen': True}
 
         transport = self.holder.fake(body=body, quiet_ms=adapter.STREAM_QUIET_MS)
         with HolderHarness(transport, self.holder.binary, self.holder.root):
