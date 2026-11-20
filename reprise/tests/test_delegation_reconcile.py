@@ -143,6 +143,28 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(manifest['state'], 'running')
         self.assertEqual(factory.last.methods().count('turn/start'), 0)
 
+    def test_oversized_completed_turn_is_distinct_status_with_identity_preserved(self):
+        from websocket_transport import OversizedResponse
+        bridge = self.bridge()
+        self.prepare(bridge)
+        factory = self.factory(status='completed',
+                               items=[{'type': 'agentMessage', 'phase': 'final_answer', 'text': 'Late deliverable'}])
+        def oversized(params):
+            raise OversizedResponse('Oversized WebSocket response', thread_id=THREAD, turn_id=TURN)
+        factory.kwargs['replies']['thread/read'] = oversized
+        result = self.reconcile(bridge, factory)
+        self.assertNotEqual(result['status'], 'owner_unavailable')
+        self.assertEqual(result['status'], 'oversized_capture')
+        self.assertEqual((result['thread_id'], result['turn_id']), (THREAD, TURN))
+        methods = factory.last.methods()
+        self.assertNotIn('turn/start', methods)
+        self.assertNotIn('turn/resume', methods)
+        self.assertNotIn('turn/interrupt', methods)
+        manifest = self.manifest(bridge)
+        self.assertEqual(manifest['phase'], 'oversized_capture')
+        self.assertEqual(manifest['state'], 'running')
+        self.assertEqual(manifest['next_action'], 'collect')
+
     def test_pending_approval_is_reported_without_interrupt(self):
         bridge = self.bridge()
         self.prepare(bridge)

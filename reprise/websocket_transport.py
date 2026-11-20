@@ -10,8 +10,23 @@ import struct
 import time
 
 
+class OversizedResponse(ValueError):
+    """A WebSocket response exceeded the receive limit: content is unknown, this is not an outage.
+
+    The caller that knows the pending request identity may attach `thread_id`/`turn_id` so a
+    too-large capture can be reported without losing the turn identity or redispatching it.
+    """
+
+    def __init__(self, reason, thread_id=None, turn_id=None):
+        super().__init__(reason)
+        self.thread_id, self.turn_id = thread_id, turn_id
+
+
 class WebSocketTransport:
     LIMIT = 1024 * 1024
+    # Receive limit override; None keeps the send limit. Reconciliation raises it because a
+    # completed turn on a long history must be read whole, not mistaken for an outage.
+    RECEIVE_LIMIT = None
 
     def _handshake(self, host, path, timeout):
         key = base64.b64encode(os.urandom(16)).decode()
@@ -62,6 +77,7 @@ class WebSocketTransport:
 
     def receive(self, timeout=None):
         deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
+        limit = self.LIMIT if self.RECEIVE_LIMIT is None else self.RECEIVE_LIMIT
         payload, fragmented = bytearray(), False
         while True:
             first, second = self._take(2, deadline)
@@ -75,8 +91,8 @@ class WebSocketTransport:
                 size = struct.unpack('!Q', self._take(8, deadline))[0]
             if opcode >= 8 and (not final or size > 125):
                 raise ValueError('Invalid WebSocket control frame')
-            if size > self.LIMIT or len(payload) + size > self.LIMIT:
-                raise ValueError('Oversized WebSocket response')
+            if size > limit or len(payload) + size > limit:
+                raise OversizedResponse('Oversized WebSocket response')
             part = self._take(size, deadline)
             if opcode == 8:
                 self._peer_closed()
