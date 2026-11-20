@@ -578,6 +578,22 @@ def extract_reply(text, prompt, assistant_text=None):
         sentinel_tail = REPLY_SENTINEL.lower()
         if echo_probe.endswith(sentinel_tail):
             echo_probe = echo_probe[:-len(sentinel_tail)].strip()
+        # Issue #246 v3: when the prompt itself carries the sentinel, the
+        # rendered echo contains that internal sentinel, so the LAST sentinel
+        # sits inside the echoed prompt and the cut segment ends mid-prompt
+        # (live probe c11, 20/11/2026): the full-prompt rfind of the guard
+        # below can never match because the segment was truncated before the
+        # prompt's end. The segment then ends with the prompt prefix before
+        # the sentinel — proof the tail sentinel belongs to the echo, not to
+        # a rendered reply (a rendered reply leaves ". Question: …" after the
+        # internal sentinel, as proven by probe c10).
+        prompt_head = (echo_probe[:echo_probe.find(sentinel_tail)].strip()
+                       if sentinel_tail in echo_probe else '')
+        if (prompt_head
+                and 'vous avez dit' in segment_probe
+                and not any(label in segment_probe for label in REPLY_LABELS)
+                and segment_probe.endswith(prompt_head)):
+            return None, 'prompt_echo_only', 0
         echo_position = segment_probe.rfind(echo_probe) if echo_probe else -1
         echo_tail = (segment_probe[echo_position + len(echo_probe):].strip()
                      if echo_position >= 0 else None)
