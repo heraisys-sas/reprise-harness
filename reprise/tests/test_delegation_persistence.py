@@ -7,6 +7,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -248,6 +249,11 @@ class DurableTests(unittest.TestCase):
             future = pool.submit(worker)
             try:
                 self.assertTrue(entered.wait(5))
+                # Capacité codex = 2 slots : l'expertise active tient '0',
+                # on occupe '1' pour éprouver le refus d'admission pré-dispatch.
+                with bridge.db:
+                    bridge.db.execute("INSERT INTO expert_active_turns VALUES ('codex','1',NULL,'held-two',?,?)",
+                                      (time.time(), time.time()))
                 self.assertEqual(bridge.call('reprise_requests', {'request_key': 'one'})['state'], 'indeterminate')
                 self.assertEqual(bridge.call('reprise_delegate', self.args('two'))['status'], 'busy')
                 self.assertEqual(probe.call('submit_result', {'job_id': task['job_id'], 'attempt_id': task['attempt_id'], 'analysis': 'late result'})['status'], 'accepted')

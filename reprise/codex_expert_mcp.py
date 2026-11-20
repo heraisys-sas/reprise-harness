@@ -116,6 +116,8 @@ BACKEND_MODELS = {
 }
 RETURN_MODES = {'type': 'string', 'enum': ['full', 'receipt'], 'default': 'full'}
 INFERENCE_TOOLS = ('reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup')
+# Lot C (#238) : capacité du slot Codex ; les singletons physiques restent mono-slot.
+CODEX_PARALLEL_SLOTS = 2
 
 MODE_SCHEMA = {'type': 'string', 'enum': ['expertise', 'implementation'],
                'description': 'Implementation requires operator-enabled project workspace writes; followup preserves its original mode.'}
@@ -370,11 +372,18 @@ class Bridge:
         self.db.execute('CREATE TABLE IF NOT EXISTS expert_routes(scope TEXT,id TEXT,model TEXT,effort TEXT,PRIMARY KEY(scope,id))')
         self.db.execute('CREATE TABLE IF NOT EXISTS claude_expert_routes(scope TEXT,id TEXT,program TEXT,model TEXT,effort TEXT,PRIMARY KEY(scope,id))')
         self.db.execute('CREATE TABLE IF NOT EXISTS expert_thread_modes(scope TEXT,id TEXT,mode TEXT NOT NULL,PRIMARY KEY(scope,id))')
+        # Lot C / issue #238 : une ligne par tour d'inférence actif. Codex accepte
+        # CODEX_PARALLEL_SLOTS tours parallèles ; les singletons physiques un seul.
+        # Une ligne ne meurt que par observation d'un reçu terminal, jamais par âge.
+        self.db.execute('''CREATE TABLE IF NOT EXISTS expert_active_turns(
+            backend TEXT, slot TEXT, thread_id TEXT, request_key TEXT,
+            started_at REAL, heartbeat_at REAL, PRIMARY KEY(backend, slot))''')
         import routing_events
         routing_events.setup(self.db)
         routing_events.seed_local(self.db)
         self.db.commit()
         self.requests = Store(self.db, str(self.root))
+        self._release_terminal_slots()
         # Canal de retour MCP (get_task/submit_result) : TaskStore durable, ou
         # None si l'état Quick Apply n'est pas initialisable — le pont doit
         # alors refuser l'orchestration plutôt que promettre un aller-retour.
@@ -455,6 +464,64 @@ class Bridge:
                 raise WorkspaceWriteNotAuthorized('Project workspace writes not authorized by the integration')
         return mode
 
+    def _acquire_slot(self, name, args):
+        """Acquiert un slot d'inférence par INSERT atomique (PK backend+slot).
+        Retourne (backend, slot, clé de libération) ; clé None quand le slot
+        appartient à un autre tour (followup réutilisant un thread déjà actif)."""
+        backend = args.get('backend', 'codex')
+        if not isinstance(backend, str) or not backend:
+            backend = 'codex'
+        now = time.time()
+        thread_id = args.get('thread_id')
+        if name in ('reprise_followup', 'codex_followup') and isinstance(thread_id, str) and thread_id:
+            row = self.db.execute('SELECT slot, request_key FROM expert_active_turns WHERE backend=? AND thread_id=?',
+                                  (backend, thread_id)).fetchone()
+            if row:
+                # Le thread_id actif est propriétaire légitime du slot : réutilisation, pas refus.
+                self.db.execute('UPDATE expert_active_turns SET heartbeat_at=? WHERE backend=? AND slot=?',
+                                (now, backend, row[0]))
+                self.db.commit()
+                key = args.get('request_key')
+                return (backend, row[0], key if row[1] == key else None)
+        capacity = CODEX_PARALLEL_SLOTS if backend == 'codex' else 1
+        for index in range(capacity):
+            slot = str(index)
+            try:
+                self.db.execute('INSERT INTO expert_active_turns(backend, slot, thread_id, request_key, started_at, heartbeat_at) VALUES (?,?,?,?,?,?)',
+                                (backend, slot, thread_id if isinstance(thread_id, str) else None,
+                                 args.get('request_key'), now, now))
+                self.db.commit()
+            except sqlite3.IntegrityError:
+                # Slot pris : la tentative d'INSERT a ouvert une transaction
+                # implicite — la fermer pour laisser la connexion propre.
+                self.db.rollback()
+                continue
+            return (backend, slot, args.get('request_key'))
+        return None
+
+    def _release_slot(self, slot):
+        backend, name, key = slot
+        if key is None:
+            return
+        self.db.execute('DELETE FROM expert_active_turns WHERE backend=? AND slot=? AND request_key=?',
+                        (backend, name, key))
+        self.db.commit()
+
+    def _release_terminal_slots(self):
+        """Ne libère que sur observation d'un reçu terminal (cycle reconcile ou
+        redémarrage) ; jamais par âge : un long tour Codex ne doit jamais être
+        invalidé par un tick."""
+        scope = self.requests.scope
+        self.db.execute('''DELETE FROM expert_active_turns WHERE request_key IN (
+            SELECT t.request_key FROM expert_active_turns t
+            JOIN delegation_turns d ON d.scope=? AND d.request_key=t.request_key
+            WHERE d.phase IN ('finished','interrupted'))''', (scope,))
+        self.db.execute('''DELETE FROM expert_active_turns WHERE request_key IN (
+            SELECT t.request_key FROM expert_active_turns t
+            JOIN delegation_requests r ON r.scope=? AND r.request_key=t.request_key
+            WHERE r.state IN ('recorded','indeterminate'))''', (scope,))
+        self.db.commit()
+
     def call(self, name, args):
         if name not in self.allowed_tools:
             raise ValueError('Tool not enabled for this integration')
@@ -487,13 +554,12 @@ class Bridge:
                 raise ValueError('Invalid return_mode')
         elif 'return_mode' in args:
             raise ValueError('return_mode requires an inference tool')
-        with self.lock_path.open('a') as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return {'status': 'busy', 'reason_code': 'bridge_busy',
-                        'automatic_retry': False, 'dispatched': False,
-                        'reason': 'Bridge busy: one active expertise per state directory; no automatic retry.'}
+        slot = self._acquire_slot(name, args)
+        if slot is None:
+            return {'status': 'busy', 'reason_code': 'bridge_busy',
+                    'automatic_retry': False, 'dispatched': False,
+                    'reason': 'Bridge busy: one active expertise per state directory; no automatic retry.'}
+        try:
             clean = {k: v for k, v in args.items() if k not in ('request_key', 'parent_request_key', 'return_mode')}
             mode = self.execution_mode(name, clean)
             if clean.get('backend') == 'foundation-models':
@@ -571,6 +637,8 @@ class Bridge:
             if return_mode == 'receipt':
                 return self._tag(self.requests.lookup({'request_key': key, 'view': 'receipt'}), result)
             return self._bounded_full(key, result)
+        finally:
+            self._release_slot(slot)
 
     def wait_result(self, args, cancel=None):
         if 'wait_result' not in self.allowed_tools:
@@ -1057,6 +1125,8 @@ class Bridge:
             try:
                 result = reconcile_turn(self.requests, self.root, key, action=action, reason=args.get('reason'),
                                         program=self.program, values=self.values)
+                # Libération par observation : un tour terminal rend son slot disponible.
+                self._release_terminal_slots()
                 return self._bounded_full(key, dict(result, claim=claim, automatic_fallback=False))
             finally:
                 self.requests.release(key, self.owner)
