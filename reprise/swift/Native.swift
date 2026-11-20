@@ -183,7 +183,6 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var sharedBusy = false
     @Published var sharedNote = ""
     @Published var sharedSession = ""
-    @Published var sharedStartup = StartupPreferences.startupFlag("SharedCodexStartup")
     var pilotProjectsRequested = false
     @Published var pilotProjectsLoadFailed = false
     var startupAttempted = false
@@ -286,7 +285,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         process.standardOutput = pipe; process.standardError = FileHandle.nullDevice
         do {
             try process.run()
-            DispatchQueue.global().asyncAfter(deadline: .now() + (args.first == "vault-authorize" ? 100 : (["analyze", "search", "shared-mode"].contains(args.first ?? "") ? 45 : 15))) { if process.isRunning { process.terminate() } }
+            DispatchQueue.global().asyncAfter(deadline: .now() + (args.first == "vault-authorize" ? 100 : (["analyze", "search", "shared-mode", "rechatgpt-launch"].contains(args.first ?? "") ? 45 : 15))) { if process.isRunning { process.terminate() } }
             let data = pipe.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
             guard process.terminationStatus == 0 else { return nil }
             return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
@@ -347,7 +346,6 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                 }
                 if !self.startupAttempted {
                     self.startupAttempted = true
-                    if self.sharedStartup && !self.running.contains("com.openai.codex") { self.sharedAction("launch", startup: true) }
                     self.startManagedServices()
                 }
                 if let result { self.snapshot = result; self.lastRefresh = Date() }
@@ -653,9 +651,30 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             }
         }
     }
-    func setSharedStartup(_ enabled: Bool) {
-        sharedStartup = enabled
-        UserDefaults.standard.set(enabled, forKey: "SharedCodexStartup")
+    func launchReChatGPT() {
+        guard !sharedBusy else { return }
+        sharedBusy = true
+        sharedNote = "Démarrage de ReChatGPT…"
+        perform(["rechatgpt-launch"]) { result in
+            self.sharedBusy = false
+            let status = result?["status"] as? String
+            let verified = result?["verified"] as? Bool == true
+            self.sharedNote = {
+                switch status {
+                case "launched" where verified:
+                    return "ReChatGPT lancé et écran ChatGPT vérifié."
+                case "launched":
+                    return "ReChatGPT lancé, mais l'écran ChatGPT n'a pas pu être vérifié."
+                case "already_active":
+                    return "ReChatGPT est déjà actif (service de l'application liée à l'écoute)."
+                case "error":
+                    return "Démarrage de ReChatGPT impossible : \(result?["detail"] as? String ?? "cause inconnue")."
+                default:
+                    return "Démarrage de ReChatGPT non confirmé. Aucun nouvel essai automatique."
+                }
+            }()
+            self.refresh()
+        }
     }
     func checkVaultAvailability() {
         guard stateReady, !vaultChecking, !vaultBusy else { return }

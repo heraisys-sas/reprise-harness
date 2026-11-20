@@ -45,6 +45,18 @@ def resolve_binary(binary, name):
     if name == 'dedicated' and RECHATGPT_BINARY.is_file():
         return RECHATGPT_BINARY
     return DEFAULT_BINARY
+
+
+def dedicated_binary():
+    """Binary launched by the ReChatGPT button: the clone when present."""
+    return resolve_binary(None, 'dedicated')
+
+
+def dedicated_profile(profile_root=DEFAULT_PROFILE_ROOT):
+    """Named isolated profile reserved for the dedicated clone."""
+    return profile_path(profile_root, 'dedicated')
+
+
 PROFILE_NAME = re.compile(r'[A-Za-z0-9_-]{1,64}\Z')
 MAIN_URL = 'app://-/index.html'
 # Fixed, read-only probe. Never capture conversation text or authorization tokens.
@@ -810,6 +822,107 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
             # The initial marker is still present, so replay stays blocked.
             receipt.update(status='incertain', reason='receipt_update_failed')
     return receipt
+
+
+def ensure_main_target(transport, *, timeout):
+    """Census loop, then create the main app:// page when it never appears.
+
+    Returns the last census outcome with a 'verified' flag. Success requires
+    exactly one MAIN_URL page observed by census; an ambiguous page set is a
+    failure, never a success.
+    """
+    deadline = time.monotonic() + timeout
+    outcome = {'status': 'target_missing', 'ready': False}
+    while True:
+        outcome = census(transport)
+        if outcome['status'] != 'target_missing':
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.25)
+    if outcome['status'] == 'ready':
+        return outcome | {'verified': True}
+    if outcome['status'] != 'target_missing':
+        return outcome | {'verified': False}
+    # The dedicated Electron renderer may register its app:// page later;
+    # create it explicitly (same fallback as the Claude bridge, proven live).
+    try:
+        created = transport.call('Target.createTarget', {'url': MAIN_URL})
+    except (EOFError, RuntimeError, OSError, ValueError) as exc:
+        return outcome | {'verified': False, 'detail': 'createTarget_failed:' + type(exc).__name__}
+    if not isinstance(created, dict) or not isinstance(created.get('targetId'), str) or not created['targetId']:
+        return outcome | {'verified': False, 'detail': 'createTarget_unidentified'}
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        outcome = census(transport)
+        if outcome['status'] == 'ready':
+            return outcome | {'verified': True}
+        if outcome['status'] != 'target_missing':
+            break
+    return outcome | {'verified': False}
+
+
+def launch_rechatgpt(*, timeout=30.0, profile_root=DEFAULT_PROFILE_ROOT):
+    """Launch the ReChatGPT clone on the ChatGPT screen, or report the holder.
+
+    Holder liveness is checked by connect() only — an orphaned socket file is
+    a stopped holder. Under the profile lock, a second probe rules out the
+    holder racing us, then the resolved clone binary is launched with its
+    dedicated profile over --remote-debugging-pipe (never TCP). Our local
+    transport fds are closed without terminating the child: the launched app
+    stays alive by design, exactly like the holder's own serve() contract.
+
+    'launched' never means the ChatGPT screen is shown; only a census with
+    exactly one MAIN_URL page sets verified=True.
+    """
+    profile = dedicated_profile(profile_root)
+    socket_path = _holder_socket_path(profile.parent)
+    holder = _holder_connect(socket_path, timeout=2.0)
+    if holder is not None:
+        holder.close()
+        return {'status': 'already_active', 'verified': False, 'pid': None,
+                'detail': 'holder_listening'}
+    binary = dedicated_binary()
+    if binary.is_symlink() or not binary.is_file() or not os.access(binary, os.X_OK):
+        return {'status': 'error', 'verified': False, 'pid': None,
+                'detail': 'binary_unavailable:' + str(binary)}
+    _private_directory(profile.parent)
+    _private_directory(profile)
+    lock = fd = transport = proc = None
+    try:
+        try:
+            lock, fd = _claim_lock(profile.parent, 'dedicated')
+        except FileExistsError:
+            return {'status': 'error', 'verified': False, 'pid': None,
+                    'detail': 'lock_busy'}
+        if _holder_connect(socket_path, timeout=1.0) is not None:
+            return {'status': 'already_active', 'verified': False, 'pid': None,
+                    'detail': 'holder_listening'}
+        try:
+            transport, proc = launch_cdp_process(binary, build_args(profile), label='ReChatGPT')
+        except (OSError, RuntimeError) as exc:
+            return {'status': 'error', 'verified': False, 'pid': None,
+                    'detail': 'launch_failed:' + type(exc).__name__}
+        os.write(fd, str(proc.pid).encode('ascii'))
+        os.fsync(fd)
+        if proc.poll() is not None:
+            return {'status': 'error', 'verified': False, 'pid': proc.pid,
+                    'detail': f'exited_immediately_code_{proc.returncode}'}
+        try:
+            outcome = ensure_main_target(transport, timeout=timeout)
+        except (TimeoutError, EOFError, RuntimeError, OSError, ValueError) as exc:
+            return {'status': 'error', 'verified': False, 'pid': proc.pid,
+                    'detail': 'pipe_unavailable:' + type(exc).__name__}
+        status = 'launched' if outcome.get('verified') else 'launched_screen_unverified'
+        return {'status': status, 'verified': outcome.get('verified') is True,
+                'pid': proc.pid, 'census_status': outcome.get('status'),
+                'detail': outcome.get('detail', 'ok')}
+    finally:
+        # Keep the child running: close our pipe ends without terminate_chrome.
+        if transport is not None:
+            transport.close()
+        if lock is not None:
+            _release_lock(lock, fd)
 
 
 def _holder_socket_path(profile_root):
