@@ -601,6 +601,17 @@ def main():
             with db:
                 scheduler.put(db, 'claude_queue_last', {'status': 'unavailable', 'checked_at': dt.datetime.now().timestamp(), 'error': type(error).__name__})
         run_due(db, executable)
+        # Reprise automatique des délégations (lot C #239) : observe-only, jamais
+        # de re-dispatch ; kill-switch delegation_resume_enabled, trace sur la
+        # clé scheduler 'delegation_resume', ne lève jamais.
+        try:
+            import delegation_resume
+            summary = delegation_resume.run_due(db)
+            with db:
+                scheduler.put(db, 'delegation_resume', dict(summary, checked_at=dt.datetime.now().timestamp()))
+        except Exception as error:
+            with db:
+                scheduler.put(db, 'delegation_resume', {'status': 'error', 'checked_at': dt.datetime.now().timestamp(), 'error': type(error).__name__ + ': ' + str(error)})
         try:
             cleanup(STATE)
         except (ValueError, OSError, sqlite3.Error):

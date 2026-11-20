@@ -442,6 +442,45 @@ class Bridge:
             return None
         return (data or {}).get('account_key')
 
+    def _retry_task_store(self, which):
+        """Une seule tentative de reconstruction du TaskStore par appel (lot C
+        #239) : un état Quick Apply/ChatGPT initialisable depuis l'init du pont
+        doit redevenir utilisable sans redémarrer le bridge. Retourne True si
+        le canal de retour est disponible après la tentative."""
+        if which == 'desktop':
+            if self.desktop_tasks is not None:
+                return True
+            try:
+                self.desktop_tasks = TaskStore(self.desktop_state, self.root)
+                return True
+            except (OSError, sqlite3.Error, ValueError):
+                self.desktop_tasks = None
+                return False
+        if self.chatgpt_tasks is not None:
+            return True
+        if not self.chatgpt_socket:
+            return False
+        try:
+            self.chatgpt_tasks = TaskStore(self.chatgpt_state, self.root)
+            return True
+        except (OSError, sqlite3.Error, ValueError):
+            self.chatgpt_tasks = None
+            return False
+
+    def _lazy_claude_start(self):
+        """Départ paresseux optionnel du daemon Quick Apply (lot C #239) :
+        opt-in via la clé scheduler delegation_lazy_start (défaut False) ;
+        sonde connect() seule ≤ 2 s, jamais de spawn (TODO : lancement daemon
+        hors contrat pour l'instant). Retourne le dict de delegation_resume.
+        lazy_start, ou None quand la sonde est désactivée ou impossible."""
+        try:
+            import delegation_resume
+            if not delegation_resume.lazy_start_enabled(self.db):
+                return None
+            return delegation_resume.lazy_start(self.root, self.desktop_values)
+        except Exception:
+            return None
+
     def execution_mode(self, name, args):
         mode = args.get('mode', 'expertise')
         if not isinstance(mode, str) or mode not in ('expertise', 'implementation'):
@@ -559,6 +598,14 @@ class Bridge:
             return {'status': 'busy', 'reason_code': 'bridge_busy',
                     'automatic_retry': False, 'dispatched': False,
                     'reason': 'Bridge busy: one active expertise per state directory; no automatic retry.'}
+        # Porte opportuniste (lot C #239) : l'appel admis sert de point de
+        # rendez-vous pour la reprise observe-only des jobs dus. Borne interne
+        # de run_due (budget 2 s), total try/except : ne lève jamais.
+        try:
+            import delegation_resume
+            delegation_resume.run_due(self.db)
+        except Exception:
+            pass
         try:
             clean = {k: v for k, v in args.items() if k not in ('request_key', 'parent_request_key', 'return_mode')}
             mode = self.execution_mode(name, clean)
@@ -926,16 +973,24 @@ class Bridge:
             return {'status': 'engine_unavailable', 'backend': backend,
                     'reason': 'Quick Apply non configuré sur ce pont ; relancez-le avec --desktop-socket.', 'automatic_fallback': False}
         if backend == 'claude-desktop' and self.desktop_tasks is None:
-            return {'status': 'return_channel_unavailable', 'backend': backend,
-                    'reason': "Canal de retour MCP indisponible (TaskStore non initialisé) ; aucun aller-retour garanti.",
-                    'automatic_fallback': False}
+            if self._retry_task_store('desktop'):
+                pass  # reconstruit : on poursuit le parcours normal de l'appel
+            else:
+                payload = {'status': 'return_channel_unavailable', 'backend': backend,
+                           'reason': "Canal de retour MCP indisponible (TaskStore non initialisé) ; aucun aller-retour garanti.",
+                           'automatic_fallback': False, 'lazy_start_attempted': False}
+                lazy = self._lazy_claude_start()
+                if lazy is not None:
+                    payload['lazy_start_attempted'] = True
+                    payload['lazy_start'] = lazy
+                return payload
         if backend == 'foundation-models' and not apple_expert.configured():
             return {'status': 'engine_unavailable', 'backend': backend,
                     'reason': 'Apple fm executable unavailable.', 'automatic_fallback': False}
         if backend == 'chatgpt' and not self.chatgpt_socket:
             return {'status': 'engine_unavailable',
                     'reason': '--chatgpt-state non configuré'}
-        if backend == 'chatgpt' and self.chatgpt_tasks is None:
+        if backend == 'chatgpt' and self.chatgpt_tasks is None and not self._retry_task_store('chatgpt'):
             return {'status': 'return_channel_unavailable', 'backend': backend,
                     'reason': 'Canal de retour MCP indisponible (TaskStore non initialisé) ; aucun aller-retour garanti.',
                     'automatic_fallback': False}
