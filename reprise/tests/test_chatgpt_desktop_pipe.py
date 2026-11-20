@@ -174,6 +174,185 @@ class TestOwnedProfile(unittest.TestCase):
         self.assertFalse(self.root.exists())
 
 
+class TestReChatGPTLaunch(unittest.TestCase):
+    """Contract of the Dashboard button: same launch mechanics as the bridge.
+
+    The dedicated clone is launched over --remote-debugging-pipe with the
+    dedicated profile; our pipe ends are closed without killing the child;
+    'launched' is never conflated with a verified ChatGPT screen.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+        self.root = self.base / 'profiles'
+        self.binary = self.base / 'ReChatGPT'
+        self.binary.write_text('#!/bin/sh\nexit 0\n')
+        self.binary.chmod(0o700)
+
+    def test_dedicated_resolvers_point_at_clone_and_profile(self):
+        clone = self.base / 'ReChatGPT.app'
+        clone.write_text('')
+        with mock.patch.object(adapter, 'RECHATGPT_BINARY', clone):
+            self.assertEqual(adapter.dedicated_binary(), clone)
+            clone.unlink()
+            self.assertEqual(adapter.dedicated_binary(), adapter.DEFAULT_BINARY)
+        self.assertEqual(adapter.dedicated_profile(self.root), self.root / 'dedicated')
+
+    def test_launch_uses_clone_binary_with_bridge_args_and_verified_screen(self):
+        transport = mock.MagicMock()
+        process = mock.Mock(pid=123458)
+        process.poll.return_value = None
+        with mock.patch.object(adapter, 'dedicated_binary', return_value=self.binary), \
+             mock.patch.object(adapter, 'launch_cdp_process',
+                               return_value=(transport, process)) as launch, \
+             mock.patch.object(adapter, 'census',
+                               return_value={'status': 'ready', 'ready': True}), \
+             mock.patch.object(adapter, 'terminate_chrome') as terminate:
+            result = adapter.launch_rechatgpt(profile_root=self.root)
+        self.assertEqual(result['status'], 'launched')
+        self.assertTrue(result['verified'])
+        self.assertEqual(result['pid'], 123458)
+        command = launch.call_args.args
+        self.assertEqual(command[0], self.binary)
+        self.assertEqual(command[1], ['--remote-debugging-pipe',
+                                      f'--user-data-dir={self.root / "dedicated"}',
+                                      '--no-first-run'])
+        self.assertTrue(self.root.joinpath('dedicated').is_dir())
+        self.assertEqual(stat.S_IMODE((self.root / 'dedicated').stat().st_mode), 0o700)
+        self.assertFalse(self.root.joinpath('.dedicated.cdp-pipe.lock').exists())
+        terminate.assert_not_called()
+        transport.close.assert_called_once()
+
+    def test_screen_never_registered_is_launched_but_unverified(self):
+        transport = mock.MagicMock()
+        transport.call.return_value = {'targetId': 'created-1'}
+        process = mock.Mock(pid=123459)
+        process.poll.return_value = None
+        with mock.patch.object(adapter, 'dedicated_binary', return_value=self.binary), \
+             mock.patch.object(adapter, 'launch_cdp_process',
+                               return_value=(transport, process)), \
+             mock.patch.object(adapter, 'census',
+                               return_value={'status': 'target_missing', 'ready': False}), \
+             mock.patch.object(adapter, 'time', AcceleratedTime()):
+            result = adapter.launch_rechatgpt(profile_root=self.root, timeout=5.0)
+        self.assertEqual(result['status'], 'launched_screen_unverified')
+        self.assertFalse(result['verified'])
+        self.assertEqual(result['census_status'], 'target_missing')
+        transport.call.assert_called_once_with('Target.createTarget', {'url': adapter.MAIN_URL})
+
+    def test_create_target_failure_stays_unverified_without_raising(self):
+        transport = mock.MagicMock()
+        transport.call.side_effect = EOFError('pipe closed')
+        process = mock.Mock(pid=123460)
+        process.poll.return_value = None
+        with mock.patch.object(adapter, 'dedicated_binary', return_value=self.binary), \
+             mock.patch.object(adapter, 'launch_cdp_process',
+                               return_value=(transport, process)), \
+             mock.patch.object(adapter, 'census',
+                               return_value={'status': 'target_missing', 'ready': False}), \
+             mock.patch.object(adapter, 'time', AcceleratedTime()):
+            result = adapter.launch_rechatgpt(profile_root=self.root, timeout=0.0)
+        self.assertEqual(result['status'], 'launched_screen_unverified')
+        self.assertFalse(result['verified'])
+        self.assertEqual(result['detail'], 'createTarget_failed:EOFError')
+        self.assertFalse(self.root.joinpath('.dedicated.cdp-pipe.lock').exists())
+
+    def test_ambiguous_main_page_is_refused_as_success(self):
+        transport = mock.MagicMock()
+        process = mock.Mock(pid=123461)
+        process.poll.return_value = None
+        with mock.patch.object(adapter, 'dedicated_binary', return_value=self.binary), \
+             mock.patch.object(adapter, 'launch_cdp_process',
+                               return_value=(transport, process)), \
+             mock.patch.object(adapter, 'census',
+                               return_value={'status': 'target_ambiguous', 'ready': False}), \
+             mock.patch.object(adapter, 'time', AcceleratedTime()):
+            result = adapter.launch_rechatgpt(profile_root=self.root, timeout=0.0)
+        self.assertEqual(result['status'], 'launched_screen_unverified')
+        self.assertFalse(result['verified'])
+        self.assertEqual(result['census_status'], 'target_ambiguous')
+        transport.call.assert_not_called()
+
+    def test_pipe_failure_during_census_closes_transport_without_killing_child(self):
+        transport = mock.MagicMock()
+        process = mock.Mock(pid=123462)
+        process.poll.return_value = None
+        with mock.patch.object(adapter, 'dedicated_binary', return_value=self.binary), \
+             mock.patch.object(adapter, 'launch_cdp_process',
+                               return_value=(transport, process)), \
+             mock.patch.object(adapter, 'census', side_effect=EOFError('pipe closed')), \
+             mock.patch.object(adapter, 'terminate_chrome') as terminate:
+            result = adapter.launch_rechatgpt(profile_root=self.root, timeout=0.0)
+        self.assertEqual(result['status'], 'error')
+        self.assertEqual(result['detail'], 'pipe_unavailable:EOFError')
+        self.assertEqual(result['pid'], 123462)
+        self.assertFalse(result['verified'])
+        terminate.assert_not_called()
+        transport.close.assert_called_once()
+        self.assertFalse(self.root.joinpath('.dedicated.cdp-pipe.lock').exists())
+
+    def test_immediate_child_exit_is_reported(self):
+        transport = mock.MagicMock()
+        process = mock.Mock(pid=123463)
+        process.poll.return_value = 3
+        process.returncode = 3
+        with mock.patch.object(adapter, 'dedicated_binary', return_value=self.binary), \
+             mock.patch.object(adapter, 'launch_cdp_process',
+                               return_value=(transport, process)):
+            result = adapter.launch_rechatgpt(profile_root=self.root)
+        self.assertEqual(result['status'], 'error')
+        self.assertEqual(result['detail'], 'exited_immediately_code_3')
+        self.assertFalse(result['verified'])
+        transport.close.assert_called_once()
+        self.assertFalse(self.root.joinpath('.dedicated.cdp-pipe.lock').exists())
+
+    def test_launch_failure_is_bounded_and_cleans_lock(self):
+        with mock.patch.object(adapter, 'dedicated_binary', return_value=self.binary), \
+             mock.patch.object(adapter, 'launch_cdp_process',
+                               side_effect=RuntimeError('cannot spawn')):
+            result = adapter.launch_rechatgpt(profile_root=self.root)
+        self.assertEqual(result['status'], 'error')
+        self.assertEqual(result['detail'], 'launch_failed:RuntimeError')
+        self.assertFalse(result['verified'])
+        self.assertFalse(self.root.joinpath('.dedicated.cdp-pipe.lock').exists())
+        self.assertTrue(self.root.joinpath('dedicated').is_dir())
+
+    def test_existing_profile_lock_refuses_dedicated_launch(self):
+        self.root.mkdir(mode=0o700)
+        lock = self.root / '.dedicated.cdp-pipe.lock'
+        lock.write_text('other-owner')
+        with mock.patch.object(adapter, 'dedicated_binary', return_value=self.binary), \
+             mock.patch.object(adapter, 'launch_cdp_process') as launch:
+            result = adapter.launch_rechatgpt(profile_root=self.root)
+        self.assertEqual(result['status'], 'error')
+        self.assertEqual(result['detail'], 'lock_busy')
+        launch.assert_not_called()
+        self.assertEqual(lock.read_text(), 'other-owner')
+
+    def test_holder_active_reports_already_active_without_second_launch(self):
+        holder = mock.MagicMock()
+        with mock.patch.object(adapter, '_holder_connect', return_value=holder), \
+             mock.patch.object(adapter, 'launch_cdp_process') as launch:
+            result = adapter.launch_rechatgpt(profile_root=self.root)
+        holder.close.assert_called_once()
+        self.assertEqual(result['status'], 'already_active')
+        self.assertFalse(result['verified'])
+        self.assertIsNone(result['pid'])
+        launch.assert_not_called()
+        self.assertFalse(self.root.joinpath('dedicated').exists())
+
+    def test_live_holder_wins_the_race_without_a_second_process(self):
+        transport = mock.MagicMock()
+        with HolderHarness(transport, self.binary, self.root):
+            with mock.patch.object(adapter, 'launch_cdp_process',
+                                   return_value=(mock.MagicMock(), mock.Mock(pid=99))) as launch:
+                result = adapter.launch_rechatgpt(profile_root=self.root)
+        self.assertEqual(result['status'], 'already_active')
+        launch.assert_not_called()
+
+
 class TestGenericPipeLauncher(unittest.TestCase):
     def test_real_fd_3_4_echo(self):
         """Run intrusive fd3/4 wiring in a bounded *separate* test process.

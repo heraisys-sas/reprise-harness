@@ -884,14 +884,10 @@ struct Dashboard: View {
                     .font(.caption).foregroundStyle(.secondary)
                 HStack(spacing: 10) {
                     Button("1. Préparer codexd") { app.sharedAction("prepare") }.disabled(app.sharedBusy)
-                    Button("2. Démarrer l’appli liée") { app.sharedAction("launch") }
-                        .disabled(app.sharedBusy || app.running.contains("com.openai.codex"))
+                    Button("2. Démarrer ReChatGPT") { app.launchReChatGPT() }
+                        .disabled(app.sharedBusy)
                     Spacer()
                     if app.sharedBusy { InlineStatus(busy: true, message: app.sharedNote) }
-                }
-                if app.running.contains("com.openai.codex") {
-                    Label("Desktop est ouvert : fermez-le normalement avant l’étape 2. Reprise reste ouvert.", systemImage: "exclamationmark.triangle")
-                        .font(.caption).foregroundStyle(.orange)
                 }
                 HStack(spacing: 10) {
                     TextField("Identifiant ou lien du chat à vérifier", text: $app.sharedSession).textFieldStyle(.roundedBorder)
@@ -901,11 +897,6 @@ struct Dashboard: View {
                 SettingsHint(
                     text: "Après validation, choisissez le socket et réactivez les reprises depuis leur vue.",
                     detail: "La vérification confirme que le chat est chargé dans le service partagé, sans prouver que Desktop utilise ce même propriétaire. Vérifiez aussi les outils de Desktop avant d’activer le lancement automatique. Contrôlez l’état des reprises après validation.")
-                Toggle("Lancer ce mode à l’ouverture de Reprise", isOn: Binding(get: { app.sharedStartup }, set: { app.setSharedStartup($0) }))
-                    .disabled(app.sharedBusy || (shared["startup_eligible"] as? Bool != true && !app.sharedStartup))
-                SettingsHint(
-                    text: "Disponible seulement après un test réussi avec cette version de Desktop.",
-                    detail: "Une mise à jour de Desktop impose une nouvelle validation. Ce réglage concerne le lancement de Reprise, pas la liste des éléments d’ouverture de macOS.")
                 Divider()
                 HStack(spacing: 10) {
                     Button("Arrêter codexd") { app.sharedAction("stop") }

@@ -303,6 +303,7 @@ def main():
     sub.add_parser('health-watch')
     sub.add_parser('desktop-status')
     sub.add_parser('desktop-launch')
+    sub.add_parser('rechatgpt-launch')
     server = sub.add_parser('desktop-server-start')
     server.add_argument('--socket')
     sub.add_parser('desktop-server-stop')
@@ -402,6 +403,9 @@ def main():
     elif args.action == 'desktop-launch':
         import desktop_mode
         print(json.dumps(desktop_mode.launch(), ensure_ascii=False))
+    elif args.action == 'rechatgpt-launch':
+        import chatgpt_desktop_pipe
+        print(json.dumps(chatgpt_desktop_pipe.launch_rechatgpt(), ensure_ascii=False))
     elif args.action == 'desktop-server-start':
         import desktop_mode
         print(json.dumps(desktop_mode.start(socket=args.socket), ensure_ascii=False))
