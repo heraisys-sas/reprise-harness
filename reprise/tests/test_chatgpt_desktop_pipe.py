@@ -334,12 +334,30 @@ class TestReChatGPTLaunch(unittest.TestCase):
     def test_holder_active_reports_already_active_without_second_launch(self):
         holder = mock.MagicMock()
         with mock.patch.object(adapter, '_holder_connect', return_value=holder), \
+             mock.patch.object(adapter, '_holder_exchange',
+                               return_value={'status': 'ready', 'verified': True}) as exchange, \
              mock.patch.object(adapter, 'launch_cdp_process') as launch:
             result = adapter.launch_rechatgpt(profile_root=self.root)
         holder.close.assert_called_once()
+        exchange.assert_called_once_with(holder, {'cmd': 'ensure'})
         self.assertEqual(result['status'], 'already_active')
-        self.assertFalse(result['verified'])
+        self.assertTrue(result['verified'])
         self.assertIsNone(result['pid'])
+        launch.assert_not_called()
+        self.assertFalse(self.root.joinpath('dedicated').exists())
+
+    def test_holder_that_cannot_recover_chrome_reports_error(self):
+        holder = mock.MagicMock()
+        with mock.patch.object(adapter, '_holder_connect', return_value=holder), \
+             mock.patch.object(adapter, '_holder_exchange',
+                               return_value={'status': 'holder_not_ready',
+                                             'verified': False}), \
+             mock.patch.object(adapter, 'launch_cdp_process') as launch:
+            result = adapter.launch_rechatgpt(profile_root=self.root)
+        holder.close.assert_called_once()
+        self.assertEqual(result['status'], 'error')
+        self.assertFalse(result['verified'])
+        self.assertEqual(result['detail'], 'holder_chrome_unrecoverable')
         launch.assert_not_called()
         self.assertFalse(self.root.joinpath('dedicated').exists())
 
@@ -1406,6 +1424,70 @@ class TestExtractReplyPromptEchoOnly246(unittest.TestCase):
         self.assertEqual(receipt['status'], 'confirmed')
         self.assertTrue(harness.terminate.called)
         self.assertGreaterEqual(calls['n'], 4)
+
+
+class TestHolderEnsure247(unittest.TestCase):
+    """Issue #247: a holder can outlive its Chrome; 'ensure' verifies or repairs."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.base = Path(folder.name)
+        self.root = self.base / 'profiles'
+        self.binary = self.base / 'ChatGPT'
+        self.binary.write_text('#!/bin/sh\nexit 0\n')
+        self.binary.chmod(0o700)
+
+    def process(self, pid):
+        child = mock.Mock(pid=pid)
+        child.poll.return_value = None
+        return child
+
+    def test_ready_transport_answers_verified_without_relaunch(self):
+        runtime = {'transport': mock.MagicMock(), 'proc': self.process(9001)}
+        with mock.patch.object(adapter, 'census',
+                               return_value={'status': 'ready', 'ready': True}) as census, \
+             mock.patch.object(adapter, '_holder_relaunch') as relaunch:
+            result = adapter._holder_ensure(runtime, self.binary, self.root)
+        self.assertEqual(result, {'status': 'ready', 'verified': True})
+        census.assert_called_once_with(runtime['transport'])
+        relaunch.assert_not_called()
+
+    def test_dead_transport_relaunches_once_then_ready(self):
+        runtime = {'transport': mock.MagicMock(), 'proc': self.process(9002)}
+        with mock.patch.object(adapter, 'census',
+                               side_effect=[EOFError('pipe closed'),
+                                            {'status': 'ready', 'ready': True}]) as census, \
+             mock.patch.object(adapter, '_holder_relaunch',
+                               return_value=mock.MagicMock()) as relaunch:
+            result = adapter._holder_ensure(runtime, self.binary, self.root)
+        self.assertEqual(result, {'status': 'ready', 'verified': True})
+        relaunch.assert_called_once_with(runtime, self.binary, self.root)
+        self.assertEqual(census.call_count, 2)
+
+    def test_relaunch_that_never_becomes_ready_is_holder_not_ready(self):
+        runtime = {'transport': mock.MagicMock(), 'proc': self.process(9003)}
+        with mock.patch.object(adapter, 'census', side_effect=EOFError('pipe dead')), \
+             mock.patch.object(adapter, '_holder_relaunch',
+                               return_value=mock.MagicMock()) as relaunch, \
+             mock.patch.object(adapter, 'time', AcceleratedTime()):
+            result = adapter._holder_ensure(runtime, self.binary, self.root)
+        self.assertEqual(result, {'status': 'holder_not_ready', 'verified': False})
+        relaunch.assert_called_once()
+
+    def test_serve_connection_routes_ensure_command_to_holder_ensure(self):
+        conn = mock.MagicMock()
+        runtime = {'transport': mock.MagicMock(), 'proc': self.process(9004)}
+        with mock.patch.object(adapter, '_read_holder_frame',
+                               return_value={'cmd': 'ensure'}), \
+             mock.patch.object(adapter, '_holder_ensure',
+                               return_value={'status': 'ready', 'verified': True}) as ensure, \
+             mock.patch.object(adapter, '_holder_dispatch') as dispatch:
+            adapter._serve_connection(conn, runtime, self.binary, self.root)
+        ensure.assert_called_once_with(runtime, self.binary, self.root)
+        dispatch.assert_not_called()
+        frame = json.loads(conn.sendall.call_args.args[0].decode('utf-8'))
+        self.assertEqual(frame, {'status': 'ready', 'verified': True})
 
 
 if __name__ == '__main__':
