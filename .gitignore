@@ -31,3 +31,5 @@
 # Immutable local standalone builds and publication staging
 /reprise/builds/
 **/.runtime-py/
+
+reprise/chatgpt-state/

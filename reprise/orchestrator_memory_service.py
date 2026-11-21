@@ -15,6 +15,7 @@ import sqlite3
 import uuid
 
 import orchestrator_memory
+import registry_marker
 
 MAX_INPUT_BYTES = 65535
 MAX_OUTPUT_BYTES = 32768
@@ -96,6 +97,9 @@ def _classify(error):
     # These codes are generated locally; do not relay exception text to the UI.
     if isinstance(error, TimeoutError):
         return 'memory_busy'
+    # A registry that fail-closed after snapshot loss is unavailable, not invalid.
+    if isinstance(error, registry_marker.RegistryMissing):
+        return 'memory_unavailable'
     if isinstance(error, ValueError):
         text = str(error)
         if text.startswith('Coffre Reprise indisponible'):

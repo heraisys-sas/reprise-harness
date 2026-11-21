@@ -6,6 +6,26 @@ L'hôte authentifie l'appelant et choisit explicitement projet, travail, provena
 
 Ces données sont **déclaratives** : elles ne prouvent ni identité, facturation, fraîcheur de la découverte, permission actuelle, ni compétence du harness. Le projet enregistré est vérifié, mais son UUID n'est pas une autorisation. Une intégration doit déterminer les droits à partir de l'identité effective, vérifier la configuration et la fraîcheur des capacités indépendamment du modèle, et préserver les politiques de facturation de l'opérateur. Un changement de rôles ou de configuration ne doit jamais entraîner de substitution automatique. `routing_actor` peut désigner un harness hyperviseur configuré, l'opérateur ou un coordinateur AFM optionnel ; le champ n'affirme pas que cet acteur a réellement exécuté un tour ni que sa sélection est déjà opérationnelle.
 
+## Protection de l'initialisation des jobs (#158)
+
+La première publication d'un `jobs.enc` crée et synchronise d'abord un
+marqueur privé vide `coordinator-jobs.noindex/initialized`, sous le
+verrou du registre. Le couple marqueur présent / snapshot absent
+est refusé sans recréer une liste de jobs vide. Un crash entre
+les deux publications demande une récupération manuelle.
+
+Un ancien `jobs.enc` sans marqueur reste lisible mais non modifiable
+jusqu'à l'adoption explicite, après quiescence des clients :
+`registry_adopt.py --state <état privé absolu> --registry jobs
+--confirm-existing-registry`. Cette opération vérifie l'ancien
+snapshot chiffré et son enveloppe de version, puis écrit le marqueur
+sans réécrire les jobs ou reçus. Une installation historique doit
+prévoir cette adoption avant toute nouvelle mutation.
+
+La suppression simultanée du snapshot et du marqueur et le rejeu
+d'un ancien chiffré authentifié ne sont pas détectés. Les tests
+et le déploiement restent à valider par l'agent local.
+
 ## Stockage et identités
 
 Le stockage distinct `coordinator-jobs.noindex/jobs.enc` chiffre les brouillons avec `Vault` et le purpose authentifié `coordinator-jobs-v1`. Il exige un répertoire d'état privé et un registre de projets existant ; aucun transcript ni prompt n'est écrit en clair par ce module. Les tests utilisent un faux coffre, qui ne démontre pas la confidentialité cryptographique du Trousseau réel. Comme pour la mémoire locale, l'opération Vault `seal` peut créer la clé locale si elle est absente, sans interaction ; un Trousseau indisponible échoue sans sauvegarde en clair. Aucune purge automatique ni effacement physique des sauvegardes et snapshots n'est promis.

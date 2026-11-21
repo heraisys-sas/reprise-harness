@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import subprocess
@@ -176,12 +177,11 @@ def _resets_from_snapshot(snapshot, db_due=None):
 
 
 def admit_queue_continuation(db, root, quick_state, project_root, now=None, snapshot=None, observe=None):
-    """Opt-in (#122): at the quota deadline, admit the continuation task into the project queue.
+    """Admit one advisory queue task per verified waiting quota event (#208).
 
-    Deadline sources: the native observation snapshot (run_native) and/or the waiting rows of
-    claude_quota_resumes; without either, the session observer (no Accessibility needed) refreshes it.
-    Gated by scheduler.enabled + claude_desktop_auto_enabled + claude_queue_channel (opt-in).
-    Dedup: one admission per deadline (claude_queue_admitted_for).
+    The queue is not a native same-chat resume. Its prompt carries the durable
+    chat/event identity so an executor can reconcile before any work. A legacy
+    deadline-only admission is uncertain: never silently emit a replacement.
     """
     import scheduler
     now = time.time() if now is None else now
@@ -189,7 +189,13 @@ def admit_queue_continuation(db, root, quick_state, project_root, now=None, snap
         return {'status': 'paused'}
     if scheduler.get(db, 'claude_queue_channel') is not True:
         return {'status': 'queue_disabled'}
-    if snapshot is None and observe is None:
+    initialize(db)
+    # A durable verified event is sufficient to admit the advisory task at its
+    # deadline. A new observer measurement is not a prerequisite: it may be
+    # unavailable precisely because the original process was interrupted.
+    rows = db.execute("""SELECT event_key,chat_id,due FROM claude_quota_resumes
+                         WHERE status='waiting' ORDER BY due,event_key""").fetchall()
+    if not rows and snapshot is None and observe is None:
         try:
             from claude_session_observer import status as observer_status
             def observe():
@@ -200,32 +206,90 @@ def admit_queue_continuation(db, root, quick_state, project_root, now=None, snap
         try:
             snapshot = observe()
         except Exception as error:
-            return {'status': 'observe_failed', 'error': type(error).__name__}
-    due_row = db.execute("SELECT MAX(due) FROM claude_quota_resumes WHERE status='waiting'").fetchone()
-    resets = _resets_from_snapshot(snapshot if isinstance(snapshot, dict) else None,
-                                   due_row[0] if due_row else None)
-    if resets is None:
-        return {'status': 'no_deadline'}
-    if now < resets:
-        return {'status': 'waiting', 'resets_at': resets}
-    if scheduler.get(db, 'claude_queue_admitted_for') == str(resets):
-        return {'status': 'already_admitted'}
+            if not rows:
+                return {'status': 'observe_failed', 'error': type(error).__name__}
+            # Existing durable event identities remain usable without a fresh
+            # observation. Never manufacture a new event from the failed read.
+            snapshot = None
+
+    # Snapshot-derived reset dates alone are not permission to create a task.
+    if not rows:
+        return {'status': 'no_verified_session' if _resets_from_snapshot(snapshot) is not None
+                else 'no_deadline'}
+    due_rows = [(key, chat, due) for key, chat, due in rows if due <= now]
+    if not due_rows:
+        return {'status': 'waiting', 'resets_at': min(due for _, _, due in rows)}
+
+    legacy_deadline = scheduler.get(db, 'claude_queue_admitted_for')
+    # Earlier releases used MAX(snapshot_deadline, MAX(waiting_due)) as the
+    # identity of ONE generic queue item. It could implicitly encompass
+    # multiple earlier events, so exact equality is not a safe replay guard.
+    invalid_legacy_marker = False
+    try:
+        legacy_due = float(legacy_deadline) if legacy_deadline is not None else None
+        if legacy_due is not None and not math.isfinite(legacy_due):
+            invalid_legacy_marker = True
+    except (ValueError, TypeError, OverflowError):
+        legacy_due = None
+        invalid_legacy_marker = legacy_deadline is not None
     from desktop_task_store import TaskStore
     store = TaskStore(quick_state, project_root)
+    admitted = []
+    already = []
+    legacy_uncertain = []
     try:
-        key = f'claude-continuation-{int(resets)}'
-        stamp = time.strftime('%Y-%m-%d %H:%M', time.localtime(resets))
-        brief = ('Continuation après quota (file opt-in #122) : la pause 5h du chat Desktop est levée '
-                 f'(échéance {stamp}). Le travail interrompu vit dans le workspace monté sur /workspace : '
-                 'inspecte l’état des fichiers, identifie la dernière étape accomplie, et poursuis la tâche '
-                 'restante de manière bornée. Puis submit_result avec le résumé. Si rien n’indique un '
-                 'travail en cours, signale-le au lieu d’inventer.')
-        r = store.admit(key, brief)
+        # The prior release wrote the TaskStore admission FIRST, then the
+        # scheduler marker. A crash between those writes leaves a generic
+        # task with no marker. Discover it read-only by its legacy prompt AND
+        # integer-timestamp key. The integer key truncates fractional due
+        # times, hence include the following second conservatively.
+        legacy_rows = store.db.execute('''SELECT request_key FROM desktop_tasks
+            WHERE scope=? AND prompt LIKE ?''',
+            (store.scope,
+             'Continuation après quota (file opt-in #122) : la pause 5h du chat Desktop est levée %')).fetchall()
+        legacy_cutoffs = [legacy_due] if legacy_due is not None and not invalid_legacy_marker else []
+        prefix = 'claude-continuation-'
+        for (old_key,) in legacy_rows:
+            if old_key.startswith(prefix):
+                tail = old_key[len(prefix):]
+                if tail.isascii() and tail.isdigit() and len(tail) <= 16:
+                    legacy_cutoffs.append(int(tail) + 1)
+        legacy_cutoff = max(legacy_cutoffs, default=None)
+        for event_key, chat_id, due in due_rows:
+            # An unreadable historical marker is an explicit uncertainty:
+            # fail closed for all due events until the operator reconciles it.
+            # A generic legacy task may have covered ANY earlier waiting
+            # session, regardless of whether it shares the exact due date.
+            if invalid_legacy_marker or (legacy_cutoff is not None and due <= legacy_cutoff):
+                legacy_uncertain.append(event_key)
+                continue
+            key = f'claude-continuation-{event_key}'
+            stamp = time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(due))
+            brief = ('Continuation après quota (file opt-in #122, événement #208). '
+                     f'Identité observée : chat_id={chat_id}, event_key={event_key}, '
+                     f'échéance={stamp}. Admission en file ≠ reprise du chat natif. '
+                     'Vérifie explicitement le propriétaire de la session et les '
+                     'travaux déjà réalisés ; ne suppose pas avoir accès à son '
+                     'historique. Si la route vers cette session est indisponible '
+                     'ou ambiguë, signale needs_review sans déclencher de nouvelle '
+                     'inférence. Ne change pas de fournisseur ni de mode de facturation. '
+                     'Sinon, reprends seulement les tâches restantes et retourne '
+                     'un résumé via submit_result.')
+            if store._row(key) is not None:
+                already.append(key)
+                continue
+            store.admit(key, brief, chat_id=chat_id)
+            admitted.append(key)
     finally:
         store.close()
-    with db:
-        scheduler.put(db, 'claude_queue_admitted_for', str(resets))
-    return {'status': 'admitted', 'request_key': key, 'resets_at': resets}
+    if admitted:
+        return {'status': 'admitted', 'request_key': admitted[0],
+                'request_keys': admitted, 'count': len(admitted),
+                'legacy_uncertain_events': legacy_uncertain}
+    if legacy_uncertain:
+        return {'status': 'legacy_uncertain', 'event_keys': legacy_uncertain,
+                'instruction': 'Reconcile legacy deadline-only queue admission before new delivery.'}
+    return {'status': 'already_admitted', 'request_keys': already}
 
 
 def quota_state(db, now=None):

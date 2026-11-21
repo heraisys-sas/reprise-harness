@@ -81,11 +81,21 @@ class QuotaStateTests(unittest.TestCase):
             db.close()
 
     def test_tick_writes_blocked_state_after_quota_refusal(self):
+        now = datetime(2026, 11, 11, 10, 0, tzinfo=ZONE).timestamp()
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                fixed = datetime.fromtimestamp(now, ZONE)
+                return fixed.astimezone(tz) if tz else fixed.replace(tzinfo=None)
+
+        from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as folder, \
-             patch.object(module, 'STATE', Path(folder)):
+             patch.object(module, 'STATE', Path(folder)), \
+             patch.object(module, 'dt', SimpleNamespace(datetime=FixedDateTime)), \
+             patch.object(time, 'time', return_value=now):
             db = module.database()
             claude_quota.register_notice(db, '12345678-1234-1234-1234-123456789abc',
-                                         PAUSE_TEXT, time.time(), ZONE)
+                                         PAUSE_TEXT, now, ZONE)
             state = self._tick(db, {'status': 'observed', 'submitted': 0})
             self.assertEqual(state['status'], 'blocked')
             self.assertEqual(state['reason'], 'quota')

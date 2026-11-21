@@ -17,6 +17,8 @@ import os
 import time
 
 VERSION = 4
+# Independent of PRAGMA user_version: external_rankings owns later versions.
+LEGACY_IDENTITY_SCRUB_KEY = 'legacy_opaque_identity_scrub_v1'
 TYPES = ('routed', 'explicit', 'routing_substituted')
 DEFAULT_RETENTION_DAYS = 180
 # Classes de facturation : free (local), included (abonnement confirmé),
@@ -52,6 +54,37 @@ ADMISSIBILITY_SCHEMA = (
 def _meta_value(db, key):
     row = db.execute('SELECT value FROM routing_meta WHERE key=?', (key,)).fetchone()
     return row[0] if row else None
+
+
+def _invalid_opaque_sql(column):
+    """Static SQL predicate for malformed legacy HMAC-shaped values."""
+    if column not in ('account_key', 'pool_key'):
+        raise ValueError('Unexpected routing identity column')
+    return (f"{column} IS NOT NULL AND (typeof({column}) != 'text' "
+            f"OR length({column}) != 64 OR {column} GLOB '*[^0-9a-f]*')")
+
+
+def _scrub_legacy_identities(db):
+    """One-time, transactional redaction. Report counts, never raw identities.
+
+    Must run inside setup's write transaction after both routing tables exist.
+    This only removes logically visible values, not copies in WAL/backups.
+    """
+    if _meta_value(db, LEGACY_IDENTITY_SCRUB_KEY) is not None:
+        return
+    redacted = db.execute(
+        'UPDATE routing_events SET account_key=NULL WHERE '
+        + _invalid_opaque_sql('account_key')).rowcount
+    unsafe = ('(' + _invalid_opaque_sql('account_key') + ') OR ('
+              + _invalid_opaque_sql('pool_key') + ')')
+    revoked = db.execute(
+        "UPDATE route_admissibility SET account_key=NULL, pool_key=NULL, "
+        "billing_class='unknown', identity_status='unknown' WHERE "
+        + unsafe).rowcount
+    counts = json.dumps({'events_redacted': redacted, 'admissibility_revoked': revoked},
+                        sort_keys=True, separators=(',', ':'))
+    db.execute('INSERT INTO routing_meta(key,value) VALUES (?,?)',
+               (LEGACY_IDENTITY_SCRUB_KEY, counts))
 
 
 def setup(db):
@@ -90,16 +123,28 @@ def setup(db):
         db.execute("INSERT OR IGNORE INTO routing_meta VALUES ('retention_days',?)", (str(DEFAULT_RETENTION_DAYS),))
         # v4 : cache externe (tables additives IF NOT EXISTS, données préservées).
         external_rankings.setup(db)
+        # A version current on entry does not prove historical identity redaction.
+        # Updates + audit marker commit as one unit; failure retains original rows.
+        _scrub_legacy_identities(db)
         # user_version reflète le schéma le plus récent (le cache peut être en
         # avance sur le journal) : la valeur la plus élevée fait foi.
         db.execute(f'PRAGMA user_version = {max(VERSION, external_rankings.VERSION)}')
     return version
 
 
+def _opaque_sha256(value):
+    """Format from quota_knowledge.Registry.opaque; does not authenticate origin."""
+    return (isinstance(value, str) and len(value) == 64
+            and all(char in '0123456789abcdef' for char in value))
+
+
 def declare(db, channel, billing_class, account_key=None, pool_key=None, identity_status='known'):
     """Déclaration opérateur ou peuplement d'admissibilité pour un canal."""
     if billing_class not in BILLING_CLASSES or identity_status not in ('known', 'unknown'):
         raise ValueError('Invalid billing class or identity status')
+    if (account_key is not None and not _opaque_sha256(account_key)
+            or pool_key is not None and not _opaque_sha256(pool_key)):
+        raise ValueError('Only opaque SHA-256 account/pool keys may be stored')
     with db:
         db.execute('INSERT OR REPLACE INTO route_admissibility VALUES (?,?,?,?,?,?)',
                    (channel, account_key, pool_key, billing_class, identity_status, time.time()))
@@ -122,20 +167,23 @@ def admissible(db, channel, automatic):
 
 
 def populate_from_quota(db, quota_status):
-    """Peuplement codex=included depuis une observation quota_knowledge conforme :
-    identity_status known ET ordinary_usage_allowed observé. Sinon unknown."""
-    if not isinstance(quota_status, dict):
+    """Admit included only for a known opaque account with observed usage.
+
+    A newer unknown identity must replace stale included evidence; it cannot
+    retain previous account/pool identifiers or silently inherit eligibility.
+    """
+    status = quota_status if isinstance(quota_status, dict) else {}
+    account = status.get('account_key')
+    if status.get('identity_status') != 'known' or not _opaque_sha256(account):
+        declare(db, 'codex', 'unknown', identity_status='unknown')
         return
-    if quota_status.get('identity_status') == 'known' and quota_status.get('account_key'):
-        pools = quota_status.get('pools') or []
-        allowed = quota_status.get('ordinary_usage_allowed_observed')
-        pool_key = next((p['quota_pool_key'] for p in pools if p.get('quota_pool_key')), None)
-        if allowed is True:
-            declare(db, 'codex', 'included', account_key=quota_status['account_key'],
-                    pool_key=pool_key, identity_status='known')
-        else:
-            declare(db, 'codex', 'unknown', account_key=quota_status['account_key'],
-                    pool_key=pool_key, identity_status='known')
+    pools = status.get('pools')
+    pools = pools if isinstance(pools, list) else []
+    pool_key = next((pool['quota_pool_key'] for pool in pools
+                     if isinstance(pool, dict) and _opaque_sha256(pool.get('quota_pool_key'))), None)
+    billing = 'included' if status.get('ordinary_usage_allowed_observed') is True else 'unknown'
+    declare(db, 'codex', billing, account_key=account,
+            pool_key=pool_key, identity_status='known')
 
 
 def seed_local(db):
@@ -170,11 +218,12 @@ def pseudonymize(db, ident):
 
 
 def account_hash(db, account_key):
-    """Passe-through du HMAC quota_knowledge (déjà haché, sal partagé) ;
-    refuse toute valeur qui ne ressemble pas à un HMAC hexadécimal."""
-    if not isinstance(account_key, str) or len(account_key) < 16:
-        return None
-    return account_key
+    """Pass through only a quota_knowledge-style HMAC-SHA-256 hex digest.
+
+    Reject possible raw account identifiers; shape alone cannot prove HMAC
+    provenance, so callers must continue to use quota_knowledge.
+    """
+    return account_key if _opaque_sha256(account_key) else None
 
 
 def _route(value):

@@ -6,10 +6,13 @@ allocation site, so the exercises below either drive a full lifecycle
 (build, use, close) or force collection before restoring the filter.
 """
 import gc
+import sys
 import tempfile
 import unittest
 import warnings
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
 
 import codex_expert_mcp
 import desktop_job_probe

@@ -131,7 +131,7 @@ class PureWaitTests(unittest.TestCase):
         bridge.requests.lookup.return_value = historic
         snapshot = {'status': 'finished', 'request_key': 'k', 'state': 'recorded',
                     'completed': True, 'acknowledged': False, 'result': {'answer': 'late'}}
-        bridge._desktop_snapshot = Mock(return_value=snapshot)
+        bridge._task_snapshot = Mock(return_value=snapshot)
         full = bridge._lookup_requests({'request_key': 'k'})
         self.assertEqual(full['delegation_admission'], historic)
         self.assertEqual(full['response'], 'late')

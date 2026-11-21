@@ -136,7 +136,7 @@ def inspect(root, home=None, runner=launch):
               'interval': settings.get('StartInterval'), 'arguments': settings.get('ProgramArguments'),
               'configured_state': settings.get('EnvironmentVariables', {}).get('AGENT_RESUME_STATE'),
               'effective_state': loaded_registry(loaded),
-              'auto_enabled': None, 'last_tick': None, 'last_error': None, 'pending': None,
+              'auto_enabled': None, 'claude_queue_channel': None, 'last_tick': None, 'last_error': None, 'pending': None,
               'runtime_integrity': False, 'configured_release': None, 'effective_release': None,
               'message': 'Inspection sans écriture. Chargement, tick et quotas sont des preuves distinctes.'}
     try:
@@ -170,7 +170,7 @@ def inspect(root, home=None, runner=launch):
             tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if 'scheduler_meta' in tables:
                 meta = dict(db.execute('SELECT key,value FROM scheduler_meta'))
-                for key in ('auto_enabled', 'last_tick', 'last_error'):
+                for key in ('auto_enabled', 'claude_queue_channel', 'last_tick', 'last_error'):
                     if key in meta:
                         result[key] = json.loads(meta[key])
             if 'tasks' in tables:
@@ -178,6 +178,60 @@ def inspect(root, home=None, runner=launch):
     journal = read(managed / 'operation.json') or {}
     result['pending_plan'] = journal.get('plan') if journal.get('status') == 'pending' else None
     return result
+
+
+def _queue_setting(state):
+    """Return the configured queue flag from a read-only snapshot."""
+    dbpath = Path(state) / 'tasks.sqlite'
+    if not dbpath.is_file() or dbpath.is_symlink():
+        raise ValueError('Registre du planificateur non régulier.')
+    with readonly_registry(dbpath) as db:
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'scheduler_meta' not in tables:
+            raise ValueError('Métadonnées du planificateur absentes.')
+        row = db.execute("SELECT value FROM scheduler_meta WHERE key='claude_queue_channel'").fetchone()
+        if row is None:
+            return None
+        observed = json.loads(row[0])
+        if type(observed) is not bool:
+            raise ValueError('Préférence de file invalide.')
+        return observed
+
+
+def _configure_queue_channel(value):
+    """Called under worker.lock; refuse stale plans, preserve preexisting pauses."""
+    mode = value.get('queue_channel', 'preserve')
+    if mode == 'preserve':
+        return {'status': 'preserved', 'changed': False}
+    path = Path(value['state']) / 'tasks.sqlite'
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('Registre de file absent ou symbolique.')
+    with closing(sqlite3.connect(path, timeout=2)) as db:
+        db.execute('BEGIN IMMEDIATE')
+        values = dict(db.execute("SELECT key,value FROM scheduler_meta WHERE key IN (?,?,?)",
+                                 ('claude_queue_channel', 'auto_enabled', 'claude_desktop_auto_enabled')))
+        def flag(key, default):
+            if key not in values:
+                return default
+            answer = json.loads(values[key])
+            if type(answer) is not bool:
+                raise ValueError('Préférence invalide : ' + key)
+            return answer
+        before = flag('claude_queue_channel', None)
+        wanted = mode == 'enable'
+        if before != value.get('queue_before') and before != wanted:
+            raise ValueError('Préférence de file modifiée depuis la prévisualisation.')
+        if wanted and not (flag('auto_enabled', True) and flag('claude_desktop_auto_enabled', True)):
+            db.rollback()
+            return {'status': 'paused_preserved', 'changed': False,
+                    'message': 'Pause automatique préexistante : aucune activation de file.'}
+        if before == wanted:
+            db.rollback()
+            return {'status': 'already_set', 'changed': False}
+        db.execute("INSERT OR REPLACE INTO scheduler_meta(key,value) VALUES (?,?)",
+                   ('claude_queue_channel', json.dumps(wanted)))
+        db.commit()
+        return {'status': 'configured', 'changed': True, 'enabled': wanted}
 
 
 def _activate_monitoring_once(state):
@@ -229,14 +283,25 @@ def _activate_monitoring_once(state):
                 return {'status': 'already_applied', 'changed': False,
                         'enabled': {'auto_enabled': enabled.get('auto_enabled', True),
                                     'claude_desktop_auto_enabled': enabled.get('claude_desktop_auto_enabled', True)}}
+            # Imported state can already be paused even without our marker.
+            values = dict(db.execute("SELECT key,value FROM scheduler_meta WHERE key IN (?,?)",
+                                     ('auto_enabled', 'claude_desktop_auto_enabled')))
+            try:
+                enabled = {key: json.loads(values[key]) if key in values else True
+                           for key in ('auto_enabled', 'claude_desktop_auto_enabled')}
+                if any(type(flag) is not bool for flag in enabled.values()):
+                    raise ValueError('Préférence de pause invalide.')
+            except (ValueError, TypeError, json.JSONDecodeError):
+                db.rollback()
+                return {'status': 'blocked', 'changed': False,
+                        'message': 'Préférence de pause illisible ; aucune modification.'}
             db.executemany('INSERT OR REPLACE INTO scheduler_meta(key,value) VALUES (?,?)', [
-                ('auto_enabled', json.dumps(True)),
-                ('claude_desktop_auto_enabled', json.dumps(True)),
+                ('auto_enabled', json.dumps(enabled['auto_enabled'])),
+                ('claude_desktop_auto_enabled', json.dumps(enabled['claude_desktop_auto_enabled'])),
                 ('startup_activation_version', json.dumps(STARTUP_ACTIVATION_VERSION)),
             ])
             db.commit()
-            return {'status': 'activated_once', 'changed': True,
-                    'enabled': {'auto_enabled': True, 'claude_desktop_auto_enabled': True}}
+            return {'status': 'activated_once', 'changed': True, 'enabled': enabled}
 
 
 def _bootstrap_current(root, home, runner, state, plist, managed, activation, operation):
@@ -372,10 +437,13 @@ def startup(root, home=None, runner=launch):
         return {'status': 'blocked', 'activation': activation, 'service': None,
                 'message': f'Démarrage bloqué ({type(error).__name__}) ; aucune réparation automatique.'}
 
-def plan(root, home=None, action='install', activate=False, interval=60, startup_safe=False):
+def plan(root, home=None, action='install', activate=False, interval=60, startup_safe=False,
+         queue_channel='preserve'):
     if (action not in ('install', 'remove') or type(activate) is not bool
             or type(startup_safe) is not bool or type(interval) is not int
-            or not 30 <= interval <= 86400):
+            or not 30 <= interval <= 86400
+            or queue_channel not in ('preserve', 'enable', 'disable')
+            or (action == 'remove' and queue_channel != 'preserve')):
         raise ValueError('Paramètres du plan invalides.')
     home = str(Path(home or Path.home()).absolute())
     support, plist, managed = paths(home)
@@ -428,12 +496,14 @@ def plan(root, home=None, action='install', activate=False, interval=60, startup
                     'StartInterval': interval, 'EnvironmentVariables': {'AGENT_RESUME_STATE': str(state), 'PYTHONDONTWRITEBYTECODE': '1', 'PATH': os.environ.get('PATH', '/usr/bin:/bin')},
                     'StandardOutPath': str(state / 'service.log'), 'StandardErrorPath': str(state / 'service-error.log')}
         content = plistlib.dumps(settings).decode()
+    queue_before = _queue_setting(state) if action == 'install' else None
     value = {'format': 1, 'home': home, 'action': action, 'activate': activate,
+             'queue_channel': queue_channel, 'queue_before': queue_before,
              'interval': interval,
              'state': str(state), 'state_marker_sha256': file_hash(state / '.reprise-state.json'), 'plist': str(plist), 'before_sha256': before, 'manifest_sha256': file_hash(managed / 'managed.json'),
              'release': str(release) if release else None, 'repair_tree_sha256': repair_tree,
              'release_backup': str(release) + '.damaged-' + repair_tree if repair_tree else None, 'content': content, 'adopt_legacy': adoption,
-             'effects': 'Si chargé, le service est déchargé pour remplacement ou retrait. Sans activation cochée, il reste arrêté après remplacement. Activation : le prochain tick peut reprendre les travaux autorisés si le mode automatique est actif. La pause enregistrée est conservée.',
+             'effects': 'Le service peut être remplacé. Sans activation cochée il reste arrêté. File Claude : ' + queue_channel + '. Le mode enable explicitement sélectionné respecte toute pause automatique/Claude existante. Les travaux autorisés peuvent reprendre au prochain tick.',
              'recovery': 'Sauvegarde du plist et journal conservés ; registres, résultats et releases conservés au retrait.'}
     if startup_safe:
         value['startup_safe'] = True
@@ -450,7 +520,11 @@ def apply(root, value, runner=launch):
             fcntl.flock(worker, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise ValueError('Un worker est actif ; attendre sa fin avant modification du service.') from error
-        return _apply_locked(root, value, runner)
+        result = _apply_locked(root, value, runner)
+        if value['action'] == 'install' and result.get('status') == 'completed':
+            result = dict(result)
+            result['queue_channel_result'] = _configure_queue_channel(value)
+        return result
 
 
 def _apply_locked(root, value, runner):
@@ -467,7 +541,7 @@ def _apply_locked(root, value, runner):
                 raise ValueError('Une opération interrompue doit être reprise avant un nouveau plan.')
         else:
             expected = plan(root, value['home'], value['action'], value['activate'], value['interval'],
-                            value.get('startup_safe', False))
+                            value.get('startup_safe', False), value.get('queue_channel', 'preserve'))
             if expected != value:
                 raise ValueError('Plan périmé ; prévisualiser de nouveau.')
             wanted_hash = digest(value['content'].encode()) if value['content'] else None
@@ -555,12 +629,14 @@ def main(root, argv):
     parser.add_argument('--action', choices=('install', 'remove'), default='install')
     parser.add_argument('--activate', action='store_true')
     parser.add_argument('--interval', type=int, default=60)
+    parser.add_argument('--queue-channel', choices=('preserve', 'enable', 'disable'), default='preserve')
     args = parser.parse_args(argv)
     try:
         if args.command.endswith('-startup'):
             result = startup(root)
         elif args.command.endswith('-plan'):
-            result = {'plan': plan(root, action=args.action, activate=args.activate, interval=args.interval), 'message': 'Plan sans écriture ; confirmez les effets avant application.'}
+            result = {'plan': plan(root, action=args.action, activate=args.activate,
+                                   interval=args.interval, queue_channel=args.queue_channel), 'message': 'Plan sans écriture ; confirmez les effets avant application.'}
         elif args.command.endswith('-apply'):
             result = apply(root, json.load(sys.stdin)['plan'])
         else:

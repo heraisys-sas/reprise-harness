@@ -44,7 +44,7 @@ LOG_SIGNATURES = {
 
 # Supervised processes Reprise may need to relaunch after an update.
 SUPERVISED = {
-    'codex-server': {'label': 'Serveur Codex local', 'marker': 'app-server'},
+    'codex-server': {'label': 'Socket du démon codexd', 'marker': 'app-server'},
     'quick-entry-server': {'label': 'Socket Quick Apply (claude-desktopd)', 'marker': 'claude_desktop_quick'},
 }
 

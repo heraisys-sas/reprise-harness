@@ -3,8 +3,9 @@
 ## Convention GitHub utilisable immédiatement
 
 Une issue est le point de coordination ; sa branche est liée avec `gh issue develop`.
-Réutiliser les labels `agent:<harness>` existants (notamment `agent:codex`,
-`agent:claude`), sans créer une seconde famille `harness:*`.
+Réutiliser les labels `agent:<harness>` de la famille documentée —
+`agent:codex`, `agent:claude`, `agent:asi1`, `agent:chatgpt`, `agent:flash`,
+`agent:autoclaw` — sans créer une seconde famille `harness:*`.
 
 - `work:active` : exactement un responsable `agent:*`, travail en cours.
 - `work:available` : aucun responsable actif ; reprise proposée à un autre harness.

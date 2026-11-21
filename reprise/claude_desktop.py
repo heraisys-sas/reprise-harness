@@ -93,8 +93,7 @@ def status(db, state):
     """Read-only connection discovery, mirroring connection.status()."""
     row = db.execute("SELECT options FROM engine_settings WHERE engine='claude-desktop'").fetchone()
     configured = json.loads(row[0]).get('socket') if row else None
-    paths = [(str(DEFAULT_SOCKET), 'Socket par défaut du démon claude-desktopd'),
-             (str(Path(state)/'claude-desktop.sock'), 'Serveur de supervision dédié')]
+    paths = [(str(DEFAULT_SOCKET), 'Socket par défaut du démon claude-desktopd')]
     if configured and configured not in {p for p, _ in paths}:
         paths.insert(0, (configured, 'Chemin enregistré'))
     candidates = []
@@ -121,13 +120,20 @@ def _routes(db, state):
 
 
 def _native_patch_route(db):
+    """Presence of the socket file never claims readiness: the daemon greeting
+    is probed, so presence / connection / readiness stay distinct (#229)."""
+    from claude_desktop_rpc import probe_dispatch_socket
     path = _configured_socket(db) or str(DEFAULT_SOCKET)
     try:
         engines.socket_path({'socket': path})
-        return {'enabled': True, 'state': 'disponible',
-                'reason': 'Socket Quick Apply détecté · connexion à tester.'}
     except engines.Unavailable as error:
-        return {'enabled': True, 'state': 'indisponible', 'reason': error.reason}
+        return {'enabled': True, 'state': 'indisponible', 'connection': 'absent',
+                'reason': error.reason}
+    if not probe_dispatch_socket(path):
+        return {'enabled': True, 'state': 'détectée', 'connection': 'failed',
+                'reason': 'Socket détecté · connexion non établie ; démarrez claude-desktopd puis actualisez.'}
+    return {'enabled': True, 'state': 'prête', 'connection': 'ok',
+            'reason': 'Socket détecté · greeting du daemon vérifié.'}
 
 
 def _cdp_web_route(db, state):

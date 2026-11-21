@@ -10,6 +10,30 @@ avec des chemins et UUID à remplacer par les valeurs réelles de l'installation
 La clé du coffre doit déjà être accessible sans interaction pour une application.
 Les commandes n'autorisent pas le Trousseau et ne lancent aucune inférence.
 
+## Adopter les registres historiques avant d'écrire (#158)
+
+Après livraison du correctif, si `memory.enc` ou `jobs.enc` existe
+déjà sans marqueur `initialized`, le registre reste lisible mais
+refuse les mutations. Rendre les clients concernés quiescents,
+inspecter les fichiers existants sans les modifier, puis exécuter
+depuis le runtime et les modules du bundle validé :
+
+```sh
+python3 reprise/registry_adopt.py --state /absolute/private/state --registry memory --confirm-existing-registry
+python3 reprise/registry_adopt.py --state /absolute/private/state --registry jobs --confirm-existing-registry
+```
+
+Chaque commande porte sur un registre distinct. L'adoption vérifie et
+déchiffre l'ancien snapshot sous verrou, synchronise le marqueur
+`initialized`, mais ne réécrit ni ne restaure les données. Une réponse
+`refused` exige une inspection ; elle ne justifie jamais la suppression
+d'un marqueur ou d'un snapshot. Lors d'un premier démarrage, aucun
+appel d'adoption n'est nécessaire. Un snapshot absent après création
+du marqueur exige une procédure de récupération séparée.
+
+Cette adoption n'est pas une migration v1 vers v2 des scopes mémoire
+et ne remplace aucune étape de cette procédure.
+
 ## Inspecter et préparer la migration
 
 ```sh

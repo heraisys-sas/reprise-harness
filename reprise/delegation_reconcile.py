@@ -4,15 +4,21 @@ from pathlib import Path
 from codex_expert import MAX_RESPONSE_CHARACTERS, STOP_REASONS, stop_turn
 from codex_rpc import Client
 from engines import Unavailable
+from websocket_transport import OversizedResponse
 from delegation_store import file_evidence
 
 ACTIVE_STATUSES = ('inprogress', 'in_progress', 'active', 'running', 'pending')
+# A completed turn on a long history exceeds the usual 1 MiB send limit; reconciliation reads
+# it with a raised receive limit instead of reporting an unavailable owner (#243).
+RECEIVE_LIMIT = 64 * 1024 * 1024
 
 
 def _thread(client, thread_id):
     """Observe without loading first; resume only loads history, it starts no turn."""
     try:
         thread = client.call('thread/read', {'threadId': thread_id, 'includeTurns': True}).get('thread')
+    except OversizedResponse:
+        raise
     except (OSError, ValueError, TimeoutError, Unavailable):
         thread = None
     if thread:
@@ -20,6 +26,8 @@ def _thread(client, thread_id):
     try:
         client.call('thread/resume', {'threadId': thread_id, 'excludeTurns': False})
         return client.call('thread/read', {'threadId': thread_id, 'includeTurns': True}).get('thread')
+    except OversizedResponse:
+        raise
     except (OSError, ValueError, TimeoutError, Unavailable):
         return None
 
@@ -108,6 +116,8 @@ def reconcile(store, root, request_key, *, action='observe', reason=None, progra
     try:
         try:
             client = (client_factory or Client)(program, values)
+            # A completed turn on a long history must be read whole; test doubles ignore it (#243).
+            client.RECEIVE_LIMIT = RECEIVE_LIMIT
             client.call('initialize', {'clientInfo': {'name': 'reprise-reconcile', 'version': '0.1.0'},
                                        'capabilities': {'experimentalApi': True}})
             client.send({'method': 'initialized'})
@@ -116,7 +126,19 @@ def reconcile(store, root, request_key, *, action='observe', reason=None, progra
             return _response(store, request_key, status='owner_unavailable', thread_id=thread_id,
                              turn_id=turn_id,
                              reason='Native endpoint unreachable; uncertainty preserved, no new turn.')
-        thread = _thread(client, thread_id)
+        try:
+            thread = _thread(client, thread_id)
+        except OversizedResponse as error:
+            # A completed turn on a long history exceeds the usual limit: this is a capture
+            # problem, not an outage. Keep the turn identity, never redispatch it (#243).
+            big_thread_id = getattr(error, 'thread_id', None) or thread_id
+            store.set_phase(request_key, 'oversized_capture', work_completed=False,
+                            terminal_evidence='native:unreadable; response exceeds receive limit')
+            return _response(store, request_key, status='oversized_capture', thread_id=big_thread_id,
+                             turn_id=turn_id, next_action='collect',
+                             reason='Native response exceeds the receive limit; the turn exists daemon-side '
+                                    'but its capture is too large to read. Raise the limit or collect manually; '
+                                    'the turn was not restarted.')
         if not _owned(thread, thread_id, root):
             store.set_phase(request_key, 'owner_unavailable')
             return _response(store, request_key, status='owner_unavailable', thread_id=thread_id,

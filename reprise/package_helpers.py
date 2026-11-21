@@ -8,18 +8,28 @@ import tempfile
 from package_runtime import metadata
 from yaml_contract import YAML_FILES, yaml_hashes
 
-ASSETS = ('apple_expert.py', 'apple_pilot.py', 'apple_pilot_service.py', 'apple_pilot_transport.py', 'orchestrator_memory.py', 'orchestrator_memory_service.py', 'project_registry.py', 'project_commands.py', 'claude_session_store.py', 'claude_session_observer.py', 'websocket_transport.py', 'cdp_targets.py', 'cdp_targets.json', 'claude_desktop_apply.py', 'claude_quota_log.py', 'claude_quota_banner.py', 'claude_cdp_pipe.py', 'managed_update.py', 'VERSION', 'ironclaw.py', 'install-ux-review.py', 'ironclaw_ssh.py', 'ironclaw_tasks.py', 'ironclaw_connection.py', 'scheduler_service.py', 'harness_integration.py', 'asi1-orchestrator-effort.cjs', 'app_paths.py', 'state_install.py', 'state_setup.py', 'ux_review_setup.py', 'claude_desktop.py', 'claude_desktop_cli.py', 'claude_desktop_quick.py', 'claude_desktop_rpc.py', 'claude_inbox.py', 'claude_expert.py', 'claude_quota.py', 'claude_mcp.py', 'desktop_task_store.py', 'claude_integration.py', 'codex_expert.py', 'codex_expert_mcp.py', 'codex_rpc.py', 'connection.py', 'routing_events.py', 'external_rankings.py', 'openrouter_adapter.py', 'artificial_analysis_adapter.py', 'dashboard.html', 'dashboard.py', 'delegation_store.py', 'delegation_collect.py', 'delegation_reconcile.py', 'desktop_app_probe.py', 'desktop_job_probe.py', 'desktop_mode.py', 'detect.py', 'engine_events.py', 'engines.py', 'harness-events.cjs', 'harness-output-resume.cjs', 'install-expertise.py', 'install-quick-entry.py', 'local_analysis.py', 'owner_route.py', 'package_helpers.py', 'presentation.py', 'private_search.py', 'prompt.example.txt', 'quota.py', 'quota_knowledge.py', 'reprise_health.py', 'reprise_logs.py', 'reprise', 'run_status.py', 'runtime.py', 'scheduler.py', 'shared_mode.py', 'task_archive.py', 'ux_review_probe.py', 'vault.py', 'verdict-schema.json')
+ASSETS = ('apple_expert.py', 'apple_pilot.py', 'apple_pilot_service.py', 'apple_pilot_transport.py', 'orchestrator_memory.py', 'orchestrator_memory_service.py', 'project_registry.py', 'project_commands.py', 'claude_session_store.py', 'claude_session_observer.py', 'websocket_transport.py', 'cdp_targets.py', 'cdp_targets.json', 'claude_desktop_apply.py', 'claude_quota_log.py', 'claude_quota_banner.py', 'claude_cdp_pipe.py', 'managed_update.py', 'VERSION', 'ironclaw.py', 'install-ux-review.py', 'ironclaw_ssh.py', 'ironclaw_tasks.py', 'ironclaw_connection.py', 'scheduler_service.py', 'harness_integration.py', 'asi1-orchestrator-effort.cjs', 'app_paths.py', 'state_install.py', 'state_setup.py', 'ux_review_setup.py', 'claude_desktop.py', 'claude_desktop_cli.py', 'claude_desktop_quick.py', 'claude_desktop_rpc.py', 'claude_inbox.py', 'claude_expert.py', 'claude_quota.py', 'claude_mcp.py', 'desktop_task_store.py', 'claude_integration.py', 'codex_expert.py', 'codex_expert_mcp.py', 'codex_rpc.py', 'connection.py', 'routing_events.py', 'external_rankings.py', 'openrouter_adapter.py', 'artificial_analysis_adapter.py', 'dashboard.html', 'dashboard.py', 'delegation_store.py', 'delegation_notifications.py', 'delegation_collect.py', 'delegation_reconcile.py', 'desktop_app_probe.py', 'desktop_job_probe.py', 'desktop_mode.py', 'detect.py', 'engine_events.py', 'engines.py', 'harness-events.cjs', 'harness-output-resume.cjs', 'install-expertise.py', 'install-quick-entry.py', 'local_analysis.py', 'owner_route.py', 'package_helpers.py', 'presentation.py', 'private_search.py', 'prompt.example.txt', 'quota.py', 'quota_knowledge.py', 'reprise_health.py', 'reprise_logs.py', 'reprise', 'run_status.py', 'runtime.py', 'scheduler.py', 'shared_mode.py', 'task_archive.py', 'ux_review_probe.py', 'vault.py', 'verdict-schema.json')
 
 ASSETS += ('yaml_contract.py', 'codex_config_update.py',)
+ASSETS += ('siri_inbox_acl.py', 'siri_inbox_model.py', 'siri_inbox_store.py', 'siri_inbox_cli.py')
+ASSETS += ('mcp_transport.py', 'chatgpt_quick.py',)  # mcp_transport partagé (claude_mcp, codex_expert) ; facade dispatch ChatGPT #156.
+ASSETS += ('codex_session_owners.py',)  # Issue #170: read-only multi-CODEX_HOME ownership census.
+ASSETS += ('chatgpt_desktop_pipe.py',)  # #161: isolated explicit CDP pipe probe; not a daemon.
+ASSETS += ('registry_marker.py', 'registry_adopt.py')
+ASSETS += ('approval_delegation.py',)  # #117: inert, operator-only scoped grant registry.
+ASSETS += ('vault_status.py',)  # Noninteractive existing-key verification for the privacy UI.
 ASSETS += ('memory_admin.py',)  # Memory administration packaging; independent of local execution.
 ASSETS += ('memory_integration.py', 'reprise_memory_adapter.py', 'reprise_memory_mcp.py', 'coordinator_jobs.py', 'coordinator_local.py', 'coordinator_candidate.py', 'coordinator_recall.py')
+ASSETS += ('delegation_resume.py',)  # Lot C #239 : moteur de reprise observe-only des délégations (tick).
 # Documentation durable embarquée dans le payload ; résolue depuis la racine du dépôt.
 DOCS = (
     'docs/integrations/claude/CLAUDE-DESKTOP-APPLY.md',
     'docs/runbooks/MANAGED-UPDATE.md',
     'docs/runbooks/SCHEDULER-SERVICE.md',
+    'docs/runbooks/QUOTA-LOCAL-ACCEPTANCE.md',
     'docs/templates/REPRISE-AGENTS.template.md',
     'docs/contracts/CODEX-EXECUTION-CONTRACT.md',
+    'docs/contracts/APPROVALS-CONTRACT.md',
     'docs/templates/ASI1-ORCHESTRATOR.template.md',
     'docs/contracts/ASI1-ORCHESTRATION-CONTRACT.md',
     'docs/contracts/HANDOFF-CONTRACT.md',
@@ -29,6 +39,7 @@ DOCS = (
     'docs/integrations/ironclaw/IRONCLAW-SSH.md',
     'docs/contracts/DELEGATION-PERSISTENCE.md',
     'docs/contracts/QUOTA-KNOWLEDGE.md',
+    'docs/contracts/QUOTA-CONTINUATION-CONTRACT.md',
     'docs/contracts/HARNESS-SUPERVISION-ARCHITECTURE.md',
     'docs/integrations/harness/HARNESS-INTEGRATION.md',
     'docs/contracts/CLARIFICATION-CONTRACT.md',

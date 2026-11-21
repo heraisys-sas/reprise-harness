@@ -85,6 +85,31 @@ class SubmitTests(unittest.TestCase):
                 ironclaw.submit('ssh', self.values, 'x')
         self.assertEqual(ctx.exception.state, 'needs_review')
 
+    def test_multiline_markdown_and_literal_info_are_not_truncated(self):
+        body = '# Diagnostic\n\n- Premier point\n- Texte INFO ou WARN légitime\n\n' \
+               '    INFO block example\n\nFin'
+        with patch.object(ironclaw, '_run', return_value=_Proc(stdout='\n' + body + '\n')):
+            result = ironclaw.submit('ssh', self.values, 'x')
+        self.assertEqual(result['status'], 'finished')
+        self.assertEqual(result['response'], body)
+
+    def test_timestamped_runtime_logs_only_are_removed(self):
+        stdout = ('2026-11-13T12:01:02Z INFO runtime started\n'
+                  '## Réponse\nDétails avec INFO au milieu\n'
+                  '2026-11-13 12:01:03.051 WARN runtime closing\n')
+        with patch.object(ironclaw, '_run', return_value=_Proc(stdout=stdout)):
+            result = ironclaw.submit('ssh', self.values, 'x')
+        self.assertEqual(result['response'], '## Réponse\nDétails avec INFO au milieu')
+
+    def test_logs_only_or_oversized_output_cannot_be_marked_finished(self):
+        for stdout in ('2026-11-13T12:01:02Z INFO runtime started\n',
+                       'a' * (ironclaw.MAX_ANSWER_CHARS + 1)):
+            with self.subTest(size=len(stdout)), \
+                 patch.object(ironclaw, '_run', return_value=_Proc(stdout=stdout)):
+                with self.assertRaises(Unavailable) as caught:
+                    ironclaw.submit('ssh', self.values, 'x')
+            self.assertEqual(caught.exception.state, 'needs_review')
+
     def test_bytes_key_materialized_0600_then_removed(self):
         values = dict(self.values, key=b'\n-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n')
         seen = {}

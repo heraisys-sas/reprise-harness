@@ -473,8 +473,8 @@ final class ApplePilotUI: ObservableObject {
 
     @Published var enabled = false { didSet { preferences?.set(enabled, forKey: StartupPreferences.pilotEnabledKey) } }
     @Published var showMemory = false
-    @Published var projectID = "" { didSet { saveSelection(projectID, key: "ApplePilotProject", uuid: true); invalidateOperationBrowser(); selectPreparationProject(projectID); clearConsentContext(); restoreAnalysisLink() } }
-    @Published var workID = "" { didSet { saveSelection(workID, key: "ApplePilotWork", uuid: true); invalidateOperationBrowser(); clearConsentContext(); restoreAnalysisLink() } }
+    @Published var projectID = "" { didSet { if oldValue != projectID { clearRecallDraft() }; saveSelection(projectID, key: "ApplePilotProject", uuid: true); invalidateOperationBrowser(); selectPreparationProject(projectID); clearConsentContext(); restoreAnalysisLink() } }
+    @Published var workID = "" { didSet { if oldValue != workID { clearRecallDraft() }; saveSelection(workID, key: "ApplePilotWork", uuid: true); invalidateOperationBrowser(); clearConsentContext(); restoreAnalysisLink() } }
     @Published var checkpointID = "" { didSet { saveSelection(checkpointID, key: "ApplePilotCheckpoint", uuid: true) } }
     @Published var skill = "checkpoint-review" { didSet { saveSelection(skill, key: "ApplePilotSkill", uuid: false) } }
     @Published var prompt = ""
@@ -535,18 +535,169 @@ final class ApplePilotUI: ObservableObject {
         browserOperationID = operation; browserOperationKind = kind
         loadPreparation()
     }
-    @Published var recallQuery = ""
+    @Published var recallQuery = "" { didSet { if oldValue != recallQuery { invalidateScopedRecall() } } }
     @Published var recallSelected: Set<String> = [] { didSet { clearRecallPreview() } }
+    struct RecallReference: Hashable, Comparable {
+        let scopeID: String
+        let factID: String
+        static func < (a: Self, b: Self) -> Bool { (a.scopeID, a.factID) < (b.scopeID, b.factID) }
+        var payload: [String: Any] { ["scope_id": scopeID, "fact_id": factID] }
+    }
+    @Published var scopedRecallSelected: Set<RecallReference> = [] { didSet { recallGeneration = UUID(); clearRecallPreview() } }
+    @Published private(set) var recallProjectFacts: [[String: Any]] = []
+    @Published private(set) var recallWorkFacts: [[String: Any]] = []
+    @Published private(set) var recallFactDetail: [String: Any] = [:]
+    @Published private(set) var recallProjectNext: Int?
+    @Published private(set) var recallWorkNext: Int?
+    @Published private(set) var recallWorkStatus = "Non recherché"
+    @Published private(set) var recallSearchStatus = "Aucune recherche effectuée."
+    private var recallGeneration = UUID()
+    private var scopedRecallPending: [String: (String, String, String, UUID, UUID, String, Set<RecallReference>, Int)] = [:]
+    private var scopedRecallDetails: [String: RecallReference] = [:]
+    private var recallProjectOffset = 0
+    private var recallWorkOffset = 0
+    private var scopedPreviewRevision: Int?
+    private func invalidateScopedRecall() {
+        recallGeneration = UUID(); recallProjectFacts = []; recallWorkFacts = []; recallFactDetail = [:]
+        recallProjectNext = nil; recallWorkNext = nil; recallProjectOffset = 0; recallWorkOffset = 0
+        recallSearchStatus = "Recherche à actualiser."; recallWorkStatus = "Non recherché"; clearRecallPreview()
+    }
+    func recallReference(_ fact: [String: Any]) -> RecallReference? {
+        guard let id = fact["id"] as? String, canonical(id),
+              let scope = fact["scope"] as? [String: Any], let scopeID = scope["id"] as? String,
+              canonical(scopeID), Set(scope.keys) == Set(["id", "kind", "subject_id", "project_id", "work_id"]),
+              scope["project_id"] as? String == projectID,
+              scope["subject_id"] is NSNull else { return nil }
+        if scope["kind"] as? String == "project" {
+            guard scopeID == projectID, scope["work_id"] is NSNull else { return nil }
+        } else {
+            guard scope["kind"] as? String == "work", scopeID != projectID,
+                  scope["work_id"] as? String == workID else { return nil }
+        }
+        return RecallReference(scopeID: scopeID, factID: id)
+    }
+    private func scopedRecallRequest(_ op: String, extra: [String: Any]) {
+        guard preparationCanEdit, isAnalysis, canonical(workID), startHost(),
+              let revision = preparationJob["revision"] as? Int else { return }
+        preparationBusy = true
+        var fields: [String: Any] = ["enabled": true, "project_id": projectID,
+            "work_id": workID, "operation_id": preparationOperationID]
+        fields.merge(extra) { _, new in new }
+        let id = request(op, fields: fields)
+        if op == "job_memory_fact", let reference = extra["fact_ref"] as? [String: String],
+           let scope = reference["scope_id"], let fact = reference["fact_id"] {
+            scopedRecallDetails[id] = RecallReference(scopeID: scope, factID: fact)
+        }
+        scopedRecallPending[id] = (projectID, workID, preparationOperationID, operationSelection,
+            recallGeneration, recallQuery, scopedRecallSelected, revision)
+    }
+    func searchScopedRecall(projectOffset: Int = 0, workOffset: Int = 0) {
+        guard !recallQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              recallQuery.utf8.count <= 1024, preparationCanEdit else { return }
+        recallGeneration = UUID(); clearRecallPreview(); recallFactDetail = [:]
+        recallProjectFacts = []; recallWorkFacts = []; recallProjectNext = nil; recallWorkNext = nil
+        recallProjectOffset = projectOffset; recallWorkOffset = workOffset
+        recallSearchStatus = "Recherche en cours…"
+        scopedRecallRequest("job_memory_search", extra: ["query": recallQuery,
+            "project_offset": projectOffset, "work_offset": workOffset])
+    }
+    func nextScopedRecall(project: Bool) {
+        if project, let offset = recallProjectNext { searchScopedRecall(projectOffset: offset, workOffset: recallWorkOffset) }
+        else if !project, let offset = recallWorkNext { searchScopedRecall(projectOffset: recallProjectOffset, workOffset: offset) }
+    }
+    func loadScopedRecall(_ reference: RecallReference) {
+        recallFactDetail = [:]
+        scopedRecallRequest("job_memory_fact", extra: ["fact_ref": reference.payload])
+    }
+    func previewScopedRecall() {
+        guard scopedRecallSelected.count <= 8 else { return }
+        clearRecallPreview()
+        scopedRecallRequest("job_memory_preview_v2", extra: ["fact_refs": scopedRecallSelected.sorted().map { $0.payload }])
+    }
+    var canAttachScopedRecall: Bool {
+        canAttachRecall && scopedPreviewRevision == preparationJob["revision"] as? Int
+            && recallPreview["schema"] as? String == "reprise-memory-selection-v2"
+    }
+    func attachScopedRecall() {
+        guard canAttachScopedRecall, let revision = scopedPreviewRevision, startHost() else { return }
+        preparationBusy = true
+        request("job_memory_attach_v2", fields: ["enabled": true, "project_id": projectID, "work_id": workID,
+            "operation_id": preparationOperationID, "fact_refs": scopedRecallSelected.sorted().map { $0.payload },
+            "snapshot_sha256": recallPreviewSHA256, "selection_id": UUID().uuidString.lowercased(),
+            "expected_revision": revision, "operator_confirmed": true])
+    }
+    private func validRecallContext(_ context: [String: Any]) -> Bool {
+        guard let state = context["work_scope_status"] as? String else { return false }
+        if state == "legacy_store" || state == "not_registered" { return context["work_scope"] is NSNull }
+        guard state == "available", let scope = context["work_scope"] as? [String: Any] else { return false }
+        return recallReference(["id": projectID, "scope": scope])?.scopeID != nil
+            && scope["kind"] as? String == "work"
+    }
+    private func eligibleRecallFact(_ fact: [String: Any], context: [String: Any]) -> Bool {
+        guard let reference = recallReference(fact), let revision = fact["revision"] as? Int, revision > 0 else { return false }
+        return reference.scopeID == projectID || reference.scopeID == (context["work_scope"] as? [String: Any])?["id"] as? String
+    }
+    private func handleScopedRecall(_ object: [String: Any], ident: String, operation: String, result: String) {
+        preparationBusy = false
+        guard let selected = scopedRecallPending.removeValue(forKey: ident),
+              selected.0 == projectID, selected.1 == workID, selected.2 == preparationOperationID,
+              selected.3 == operationSelection, selected.4 == recallGeneration, selected.5 == recallQuery else { return }
+        guard result == "finished", let context = object["recall_context"] as? [String: Any],
+              context["project_id"] as? String == projectID, context["work_id"] as? String == workID,
+              context["operation_id"] as? String == preparationOperationID,
+              context["project_namespace"] as? String == projectID,
+              validRecallContext(context) else {
+            recallSearchStatus = "Lecture mémoire incomplète ou refusée : \(result)."; clearRecallPreview(); return
+        }
+        if operation == "job_memory_search" {
+            guard let sections = object["sections"] as? [String: Any],
+                  let project = sections["project"] as? [String: Any], let work = sections["work"] as? [String: Any],
+                  let projectFacts = project["items"] as? [[String: Any]], let workFacts = work["items"] as? [[String: Any]],
+                  let workState = context["work_scope_status"] as? String,
+                  ["available", "legacy_store", "not_registered"].contains(workState),
+                  projectFacts.count <= 20, workFacts.count <= 20,
+                  projectFacts.allSatisfy({ eligibleRecallFact($0, context: context) && recallReference($0)?.scopeID == projectID }),
+                  workFacts.allSatisfy({ eligibleRecallFact($0, context: context) && recallReference($0)?.scopeID != projectID }),
+                  (workState == "available" || workFacts.isEmpty),
+                  Set(projectFacts.compactMap(recallReference)).count == projectFacts.count,
+                  Set(workFacts.compactMap(recallReference)).count == workFacts.count,
+                  (project["next_offset"] is NSNull || project["next_offset"] as? Int == recallProjectOffset + 20),
+                  (work["next_offset"] is NSNull || work["next_offset"] as? Int == recallWorkOffset + 20) else {
+                recallSearchStatus = "Réponse mémoire incohérente ; recherche incomplète."; return
+            }
+            recallProjectFacts = projectFacts; recallWorkFacts = workFacts
+            recallProjectNext = project["next_offset"] as? Int; recallWorkNext = work["next_offset"] as? Int
+            recallWorkStatus = workState == "available" ? "Mémoire du travail courant" : (workState == "legacy_store" ? "Mémoire v1 : aucun périmètre travail enregistré." : "Aucun périmètre mémoire enregistré pour ce travail.")
+            recallSearchStatus = "Recherche terminée."
+        } else if operation == "job_memory_fact" {
+            guard let expected = scopedRecallDetails.removeValue(forKey: ident),
+                  let fact = object["fact"] as? [String: Any], recallReference(fact) == expected, eligibleRecallFact(fact, context: context) else {
+                recallSearchStatus = "Détail mémoire incohérent."; return
+            }
+            recallFactDetail = fact
+        } else {
+            guard selected.6 == scopedRecallSelected, selected.7 == preparationJob["revision"] as? Int,
+                  let preview = object["memory_preview"] as? [String: Any],
+                  preview["schema"] as? String == "reprise-memory-selection-v2",
+                  preview["project_id"] as? String == projectID, preview["work_id"] as? String == workID,
+                  let facts = preview["facts"] as? [[String: Any]], facts.count == scopedRecallSelected.count,
+                  Set(facts.compactMap(recallReference)) == scopedRecallSelected,
+                  facts.allSatisfy({ eligibleRecallFact($0, context: context) && $0["text"] is String && $0["source"] is [String: Any] && $0["recorded_by"] is [String: Any] && $0["status"] as? String == "asserted" }),
+                  let hash = object["snapshot_sha256"] as? String, hash.count == 64,
+                  hash.allSatisfy({ "0123456789abcdef".contains($0) }) else { clearRecallPreview(); return }
+            recallPreview = preview; recallPreviewSHA256 = hash; scopedPreviewRevision = selected.7; recallAcknowledged = false
+        }
+    }
     @Published var recallAcknowledged = false
     @Published private(set) var recallPreview: [String: Any] = [:]
     @Published private(set) var recallPreviewSHA256 = ""
     private var memoryReadSelections: [String: (String, String, UUID)] = [:]
     private var recallPreviewSelection: [String: (String, String, String, UUID, Set<String>)] = [:]
     private func clearRecallPreview() {
-        recallPreview = [:]; recallPreviewSHA256 = ""; recallAcknowledged = false
+        recallPreview = [:]; recallPreviewSHA256 = ""; recallAcknowledged = false; scopedPreviewRevision = nil
     }
     private func clearRecallDraft() {
-        recallSelected = []; recallQuery = ""; clearRecallPreview()
+        recallSelected = []; scopedRecallSelected = []; recallQuery = ""; invalidateScopedRecall(); clearRecallPreview()
     }
     func searchRecallFacts(offset: Int = 0) {
         guard !recallQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -576,7 +727,7 @@ final class ApplePilotUI: ObservableObject {
     var attachedRecallFacts: [[String: Any]] {
         ((preparationJob["memory_selection"] as? [String: Any])?["snapshot"] as? [String: Any])?["facts"] as? [[String: Any]] ?? []
     }
-    @Published var consentBackend = "codex"
+    @Published var consentBackend = "foundation-models"
     @Published var localMaxSeconds = 60 { didSet { localPlan = [:] } }
     @Published private(set) var localPlan: [String: Any] = [:]
     private var localSelections: [String: [String]] = [:]
@@ -1092,7 +1243,7 @@ final class ApplePilotUI: ObservableObject {
         var values = preferences?.dictionary(forKey: "ApplePilotPreparationOperations") as? [String: String] ?? [:]
         values[projectID] = operation; preferences?.set(values, forKey: "ApplePilotPreparationOperations")
         preparationJob = [:]; localPlan = [:]; consentContext = [:]; consentContextSHA256 = ""
-        consentBackend = isAnalysis ? "foundation-models" : "codex"
+        consentBackend = "foundation-models"
         proposalObjective = ""; proposalAcceptance = ""; proposalConstraints = ""; proposalQuestions = ""
     }
     func showReviewOperation(analysis: Bool) {
@@ -1102,9 +1253,57 @@ final class ApplePilotUI: ObservableObject {
         selectOperation(operation); preparationBusy = true
         request("job_recover", fields: ["enabled": true, "project_id": projectID, "operation_id": operation])
     }
+    private var canPrepareInOpenSession: Bool {
+        sessionOpen && enabled && !busy && !memoryBusy && !preparationBusy && !closing
+            && !cleanupUnconfirmed && !hostTerminating && !operationBrowserBusy
+            && !preparationUncertain && !preparationJournalUnavailable && canonical(workID)
+            && !["local_pending", "local_admitted", "local_running"].contains(preparationJob["status"] as? String ?? "")
+    }
+    /// Allocate a local work identity only for an explicit user action and only
+    /// when there is no existing selection or unassigned checkpoint draft.
+    func prepareGuidedWork() -> Bool {
+        guard (canSwitchReview || canPrepareInOpenSession), canonical(projectID) else { return false }
+        if workID.isEmpty {
+            guard !sessionOpen else { return false }
+            guard knownProjects?.contains(projectID) == true else { return false }
+            guard checkpointDraftWorkID.isEmpty && checkpointID.isEmpty else {
+                preparationStatus = "Un checkpoint ou brouillon existant doit être associé à son travail dans les options avancées."
+                return false
+            }
+            workID = UUID().uuidString.lowercased()
+        }
+        return canonical(workID) && !preparationUncertain && !preparationJournalUnavailable
+    }
+    var canOpenGuided: Bool {
+        enabled && canSelect && canonical(projectID) && knownProjects?.contains(projectID) == true
+            && (workID.isEmpty ? (checkpointDraftWorkID.isEmpty && checkpointID.isEmpty) : canonical(workID))
+            && (checkpointID.isEmpty || canonical(checkpointID)) && validSkills.contains(skill)
+            && !preparationUncertain && !preparationJournalUnavailable
+    }
+    func openGuided() {
+        guard canOpenGuided, prepareGuidedWork() else { return }
+        open()
+    }
+    var canPrepareAnalysis: Bool {
+        (canSwitchReview || canPrepareInOpenSession) && canonical(projectID)
+            && (workID.isEmpty ? (knownProjects?.contains(projectID) == true && checkpointDraftWorkID.isEmpty && checkpointID.isEmpty) : canonical(workID))
+            && analysisOperationID.isEmpty && preparationOperationID.isEmpty
+    }
+    var canStartNewAnalysis: Bool {
+        canSwitchReview && isAnalysis && checkpointDraftWorkID.isEmpty
+            && recallSelected.isEmpty && scopedRecallSelected.isEmpty && recallPreview.isEmpty
+            && (preparationJob["local_execution"] as? [String: Any])?["stage"] as? String == "recorded"
+    }
+    func startNewAnalysis() {
+        guard canStartNewAnalysis else { return }
+        // The previous work and its receipt remain in Jobs; never copy its checkpoint.
+        checkpointID = ""
+        workID = UUID().uuidString.lowercased()
+        preparationStatus = "Nouvelle demande prête ; la précédente reste consultable dans les opérations."
+    }
     func prepareAnalysis() {
-        guard canSwitchReview, canonical(workID), analysisOperationID.isEmpty,
-              let proposal = PreparationAnalysisTemplate.proposal(analysisRequest) else {
+        guard canPrepareAnalysis, let proposal = PreparationAnalysisTemplate.proposal(analysisRequest),
+              prepareGuidedWork(), analysisOperationID.isEmpty else {
             preparationStatus = "Demande requise (1 Kio maximum). Une analyse existante se recharge ; un autre travail permet une autre analyse."
             return
         }
@@ -1385,7 +1584,7 @@ final class ApplePilotUI: ObservableObject {
               var bytes = try? JSONSerialization.data(withJSONObject: payload), bytes.count < 65536 else {
             status = "Requête invalide ou trop volumineuse."
             busy = false
-            if ["job_prepare", "job_recover", "job_revise", "job_authorize", "job_authorize_local", "job_consent_context", "job_memory_preview", "job_local_plan", "job_local_start", "job_local_stop", "job_candidate_import", "job_clarify", "job_clarification_review", "job_memory_attach"].contains(operation) {
+            if ["job_prepare", "job_recover", "job_revise", "job_authorize", "job_authorize_local", "job_consent_context", "job_memory_preview", "job_memory_preview_v2", "job_memory_search", "job_memory_fact", "job_local_plan", "job_local_start", "job_local_stop", "job_candidate_import", "job_clarify", "job_clarification_review", "job_memory_attach", "job_memory_attach_v2"].contains(operation) {
                 preparationBusy = false
                 preparationStatus = "La requête locale n’a pas été envoyée ; conservez la même identité."
             }
@@ -1400,7 +1599,7 @@ final class ApplePilotUI: ObservableObject {
             return ident
         }
         bytes.append(10)
-        if ["job_prepare", "job_recover", "job_revise", "job_authorize", "job_authorize_local", "job_local_start", "job_local_stop", "job_candidate_import", "job_clarify", "job_clarification_review", "job_memory_attach"].contains(operation),
+        if ["job_prepare", "job_recover", "job_revise", "job_authorize", "job_authorize_local", "job_local_start", "job_local_stop", "job_candidate_import", "job_clarify", "job_clarification_review", "job_memory_attach", "job_memory_attach_v2"].contains(operation),
            let project = fields["project_id"] as? String, let preparation = fields["operation_id"] as? String {
             var intent: PreparationIntent?
             do {
@@ -1419,7 +1618,7 @@ final class ApplePilotUI: ObservableObject {
                     guard saveAnalysisLink(PreparationLink(project: project, work: work, analysis: source, mission: preparation)) else {
                         throw PreparationIntentJournal.JournalError.writeFailed
                     }
-                } else if operation == "job_memory_attach" {
+                } else if ["job_memory_attach", "job_memory_attach_v2"].contains(operation) {
                     guard let revision = fields["expected_revision"] as? Int,
                           let hash = fields["snapshot_sha256"] as? String,
                           let work = fields["work_id"] as? String,
@@ -1561,6 +1760,8 @@ final class ApplePilotUI: ObservableObject {
             return
         }
         switch operation {
+        case "job_memory_search", "job_memory_fact", "job_memory_preview_v2":
+            handleScopedRecall(object, ident: ident, operation: operation, result: result)
         case "job_memory_preview":
             preparationBusy = false
             guard let selection = recallPreviewSelection.removeValue(forKey: ident),
@@ -1637,7 +1838,7 @@ final class ApplePilotUI: ObservableObject {
                 clearConsentContext()
                 preparationStatus = "Contexte local indisponible (\(result)) ; consentement bloqué."
             }
-        case "job_prepare", "job_recover", "job_revise", "job_authorize", "job_authorize_local", "job_local_start", "job_local_stop", "job_candidate_import", "job_clarify", "job_clarification_review", "job_memory_attach":
+        case "job_prepare", "job_recover", "job_revise", "job_authorize", "job_authorize_local", "job_local_start", "job_local_stop", "job_candidate_import", "job_clarify", "job_clarification_review", "job_memory_attach", "job_memory_attach_v2":
             guard let context = preparationPending.removeValue(forKey: ident) else { ioFailed(generation: current); return }
             preparationBusy = false
             guard context.project == projectID, context.project == preparationProjectID,
@@ -1689,6 +1890,16 @@ final class ApplePilotUI: ObservableObject {
                     preparationStatus = authorizationBackend(job) == "foundation-models"
                         ? "Consentement Apple local enregistré ; aucune exécution avant validation du manifeste."
                         : "Consentement enregistré ; exécution pas encore disponible. Facturation non vérifiée."
+                }
+                // Read-only technical steps follow only a confirmed, current user action.
+                // Recovery and indeterminate effects never trigger another mutation or inference.
+                if operation == "job_prepare", isAnalysis, !preparationUncertain,
+                   job["status"] as? String == "preparation" {
+                    loadConsentContext()
+                } else if operation == "job_authorize_local", !preparationUncertain,
+                          job["status"] as? String == "consented",
+                          authorizationBackend(job) == "foundation-models" {
+                    planLocalExecution()
                 }
                 if let execution = job["local_execution"] as? [String: Any], !preparationUncertain {
                     let receipt = execution["receipt"] as? [String: Any]
@@ -1969,7 +2180,7 @@ final class ApplePilotUI: ObservableObject {
             memoryUncertain = true
         }
         operationBrowserBusy = false; browserRequests.removeAll()
-        recallPreviewSelection.removeAll(); clearRecallPreview()
+        recallPreviewSelection.removeAll(); scopedRecallPending.removeAll(); scopedRecallDetails.removeAll(); invalidateScopedRecall(); clearRecallPreview()
         operationBrowserStatus = "Lecture interrompue ; rechargez explicitement la liste."
         memoryBusy = false
         mutationPendingID = nil

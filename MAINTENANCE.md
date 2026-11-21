@@ -18,6 +18,7 @@ historiques et passation. Copier son dossier entier permet de la transmettre
 | Contrat d'installation et limites | [INSTALLATION-CONTRACT](docs/contracts/INSTALLATION-CONTRACT.md) |
 | Build autonome, runtime épinglé et artefacts CI | [BUILD-AND-CI](docs/runbooks/BUILD-AND-CI.md) |
 | Updater CLI inspect/plan/apply/verify/cleanup | [MANAGED-UPDATE](docs/runbooks/MANAGED-UPDATE.md) |
+| Clones d'app (ReChatGPT/ReClaude) identité + gel | [APP-CLONES](docs/runbooks/APP-CLONES.md) |
 | Service launchd et preuve du tick | [SCHEDULER-SERVICE](docs/runbooks/SCHEDULER-SERVICE.md) |
 | Profil et options DeepSeek Harness | [HARNESS-INTEGRATION](docs/integrations/harness/HARNESS-INTEGRATION.md) |
 | Connecteur MCP Claude Desktop et attente | [CLAUDE-CONNECTOR](docs/integrations/claude/CLAUDE-CONNECTOR.md) |

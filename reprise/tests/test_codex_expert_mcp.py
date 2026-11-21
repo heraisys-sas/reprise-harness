@@ -14,7 +14,7 @@ import uuid
 from contextlib import redirect_stdout
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from codex_expert_mcp import Bridge, error_payload, main
+from codex_expert_mcp import BACKEND_MODELS, CODEX_CATALOG_TTL, Bridge, error_payload, main
 from test_codex_expert import ID
 
 class RequestCalls:
@@ -24,12 +24,31 @@ class RequestCalls:
         return self.bridge.call(name, args)
 
 
+# Catalogue Codex simulé (#242) : forme normalisée de `model/list`, efforts
+# bas/medium/high pour chaque modèle BACKEND_MODELS['codex'].
+def simulated_codex_catalog(models, *, source='live', error=None):
+    return {'models': [{'model': model, 'displayName': model,
+                        'supportedReasoningEfforts': ['low', 'medium', 'high']}
+                       for model in models],
+            'source': source, 'updated_at': '2026-11-20T15:00:00+00:00', 'error': error}
+
+
 class BridgeTests(RequestCalls, unittest.TestCase):
+    def seed_catalog(self, bridge=None):
+        # #242 : admission dynamique — le cache d'instance sert de catalogue
+        # simulé ; la cleanup empêche une revalidation de remonter au Client réel.
+        bridge = bridge if bridge is not None else self.bridge
+        entry = simulated_codex_catalog(BACKEND_MODELS['codex'])
+        bridge._codex_catalog_cache, bridge._codex_catalog_time = entry, time.monotonic()
+        self.addCleanup(lambda: setattr(bridge, '_codex_catalog_time', None))
+        return entry
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
         self.bridge.program = 'codex'
+        self.seed_catalog()
         self.addCleanup(self.bridge.close)
     def test_implementation_requires_installed_grant_before_admission(self):
         with patch('codex_expert_mcp.review') as review:
@@ -81,6 +100,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         restarted = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', codex_workspace_write=True)
         self.addCleanup(restarted.close)
         restarted.program = 'codex'
+        self.seed_catalog(restarted)
         with patch('codex_expert_mcp.review', return_value=output.copy()) as review:
             restarted.call('reprise_followup', {'request_key':'continue-implementation', 'thread_id':ID, 'backend':'codex', 'question':'Continue'})
             self.assertTrue(review.call_args.kwargs['implementation'])
@@ -117,7 +137,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
 
     def test_protocol_lists_only_bounded_tools(self):
         self.assertIn('tools', self.bridge.dispatch({'method': 'initialize'})['capabilities'])
-        self.assertEqual({item['name'] for item in self.bridge.dispatch({'method': 'tools/list'})['tools']}, {'codex_review','codex_followup','reprise_delegate','reprise_backends','reprise_followup','reprise_resume','reprise_history','reprise_health','reprise_requests','reprise_quotas','reprise_reconcile','approval_list','approval_respond','wait_result'})
+        self.assertEqual({item['name'] for item in self.bridge.dispatch({'method': 'tools/list'})['tools']}, {'codex_review','codex_followup','reprise_delegate','reprise_backends','reprise_followup','reprise_resume','reprise_history','reprise_health','reprise_requests','reprise_quotas','reprise_reconcile','reprise_notifications','approval_list','approval_respond','wait_result'})
     def test_selected_tools_are_filtered_and_cannot_be_called_by_name(self):
         restricted = Bridge(self.temp.name, {}, Path(self.temp.name)/'restricted', allowed_tools=['reprise_backends', 'reprise_requests'])
         self.addCleanup(restricted.close)
@@ -156,6 +176,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
             for _ in range(2): self.call('codex_review', {'question': 'review'})
             other = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
             other.program = 'codex'
+            self.seed_catalog(other)
             try:
                 other.db.execute('INSERT OR REPLACE INTO expert_calls VALUES (?,?,?)', (other.scope, int(time.time()//86400), 999))
                 other.db.commit()
@@ -248,11 +269,36 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         busy = error_payload(BlockingIOError('lock held'))
         self.assertEqual(busy['code'], -32000)
         self.assertEqual(busy['data']['kind'], 'busy')
+        self.assertEqual(busy['data']['reason_code'], 'bridge_busy')
+        self.assertIn('Bridge busy', busy['data']['human_reason'])
         unavailable = error_payload(Unavailable('engine_unavailable', 'Exécutable Codex introuvable.'))
         self.assertEqual(unavailable['code'], -32000)
         self.assertEqual(unavailable['data']['kind'], 'unavailable')
+        self.assertIn('backend unavailable', unavailable['data']['human_reason'])
         # A refused request keeps its own code: the three cases stay machine-distinguishable (#53).
         self.assertNotEqual(busy['code'], error_payload(ValueError('bad args'))['code'])
+
+    def test_unknown_reconcile_request_is_not_found_not_generic_refusal(self):
+        import codex_expert_mcp
+        with self.assertRaises(codex_expert_mcp.RequestNotFound) as caught:
+            self.bridge.call('reprise_reconcile', {'request_key': 'unseen-key-for-reconcile'})
+        error = error_payload(caught.exception)
+        self.assertEqual(error['code'], -32004)
+        self.assertEqual(error['data']['kind'], 'not_found')
+        self.assertIn('not found', error['message'])
+
+    def test_busy_bridge_refuses_before_dispatch_with_reason_code(self):
+        now = time.time()
+        for slot in ('0', '1'):
+            self.bridge.db.execute('INSERT INTO expert_active_turns VALUES (?,?,?,?,?,?)',
+                                   ('codex', slot, None, 'held-%s' % slot, now, now))
+        self.bridge.db.commit()
+        with patch.object(self.bridge, '_call', side_effect=AssertionError('not dispatched')) as dispatch:
+            result = self.call('reprise_delegate', {'question': 'Review', 'kind': 'expertise'})
+        dispatch.assert_not_called()
+        self.assertEqual(result, {'status': 'busy', 'reason_code': 'bridge_busy',
+                                  'automatic_retry': False, 'dispatched': False,
+                                  'reason': 'Bridge busy: one active expertise per state directory; no automatic retry.'})
 
     def test_padded_oversized_followup_rejected_before_budget(self):
         self.bridge.db.execute('INSERT INTO expert_threads VALUES (?,?)', (self.bridge.scope, ID))
@@ -305,6 +351,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
                 self.bridge.limit=20
                 self.call('reprise_delegate',{'kind':kind,'level':level,'question':'Check this contract'})
                 self.assertEqual(review.call_args.kwargs['model'],model)
+                self.assertEqual(review.call_args.kwargs['effort'], 'high' if level == 'deep' else 'medium')
                 self.call('codex_followup',{'thread_id':ID,'question':'Explain'})
                 self.assertEqual(review.call_args.kwargs['model'],model)
                 self.call('reprise_followup', {'backend':'codex','thread_id':ID,'question':'Continue'})
@@ -315,7 +362,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.bridge.claude_program = '/claude'
         self.bridge.claude_subscription_only = True
         for backend, models, target in [
-                ('codex', ('gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'), 'review'),
+                ('codex', BACKEND_MODELS['codex'], 'review'),
                 ('claude-code', ('sonnet', 'opus'), 'claude_review')]:
             for model in models:
                 with self.subTest(backend=backend, model=model), patch(
@@ -325,6 +372,16 @@ class BridgeTests(RequestCalls, unittest.TestCase):
                     self.assertEqual(review.call_args.kwargs['model'], model)
                     self.assertEqual(review.call_args.kwargs['effort'], 'medium')
                     self.assertFalse(result['automatic_fallback'])
+
+    def test_explicit_gpt_6_2_sol_route_is_admitted(self):
+        self.bridge.claude_program = '/claude'
+        self.bridge.claude_subscription_only = True
+        with patch('codex_expert_mcp.review', return_value={'status':'finished'}) as review:
+            result = self.call('reprise_delegate', {
+                'backend':'codex', 'kind':'review', 'question':'Review', 'model':'gpt-6.2-sol'})
+            self.assertEqual(review.call_args.kwargs['model'], 'gpt-6.2-sol')
+            self.assertEqual(review.call_args.kwargs['effort'], 'medium')
+            self.assertFalse(result['automatic_fallback'])
 
     def test_invalid_model_rejected_before_request_or_inference(self):
         cases = [('codex', value) for value in ('unknown', 'sonnet', '', None, [], 1)]
@@ -339,10 +396,35 @@ class BridgeTests(RequestCalls, unittest.TestCase):
             codex.assert_not_called()
             claude.assert_not_called()
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0], 0)
+        # #242 : pour codex l'admission est dynamique — un modèle connu de
+        # #242 : modèle absent du catalogue simulé mais présent dans
+        # BACKEND_MODELS → revalidation forcée (Client appelé une seule fois),
+        # toujours absent → refus, aucune inférence ni insertion.
+        with patch('codex_expert_mcp.review') as codex, patch('codex_expert_mcp.Client') as client:
+            client.return_value.call.side_effect = (
+                lambda method, payload: {'data': [{'model': model} for model in BACKEND_MODELS['codex']]}
+                if method == 'model/list' else {})
+            with self.assertRaisesRegex(ValueError, "not in live catalog"):
+                self.call('reprise_delegate', {
+                    'backend':'codex', 'kind':'review', 'question':'Review', 'model':'ghost-model'})
+            client.assert_called_once()
+            codex.assert_not_called()
+        self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0], 0)
 
     def test_backends_exposes_supported_model_ids_and_schemas(self):
+        # #242 : catalogue injoignable → liste vide (aucun repli statique)…
+        self.bridge._codex_catalog_cache = simulated_codex_catalog([], source='unavailable', error='model/list failed')
         rows = {row['id']: row for row in self.call('reprise_backends', {})['backends']}
-        self.assertEqual(rows['codex']['models'], ['gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'])
+        self.assertEqual(rows['codex']['models'], [])
+        self.assertEqual(rows['codex']['models_source'], 'unavailable')
+        self.assertEqual(rows['codex']['models_error'], 'model/list failed')
+        # …puis catalogue live simulé (cache d'instance) + métadonnées de fraîcheur.
+        self.seed_catalog()
+        rows = {row['id']: row for row in self.call('reprise_backends', {})['backends']}
+        self.assertEqual([item['model'] for item in rows['codex']['models']], list(BACKEND_MODELS['codex']))
+        self.assertEqual(rows['codex']['models_source'], 'live')
+        self.assertEqual(rows['codex']['models_updated_at'], '2026-11-20T15:00:00+00:00')
+        self.assertNotIn('models_error', rows['codex'])
         self.assertEqual(rows['claude-code']['models'], ['sonnet', 'opus'])
         for backend in ('ironclaw', 'claude-desktop', 'autoclaw'):
             self.assertEqual(rows[backend]['models'], [])
@@ -385,6 +467,16 @@ class BridgeTests(RequestCalls, unittest.TestCase):
                     self.call(name, dict(extra, backend='codex', model='gpt-6.1-sol', question='x' * length))
             review.assert_not_called()
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0], 0)
+        # La limite de longueur prime sur l'admission (contrôle ligne 993 avant
+        # l'admission du modèle) : la seed garantit que le refus ne vient pas
+        # du catalogue (#242 : cleanup antirevalidation).
+        self.seed_catalog()
+        with patch('codex_expert_mcp.review') as review:
+            with self.assertRaisesRegex(ValueError, 'Invalid question or arguments'):
+                self.call('reprise_delegate', {'kind':'review', 'backend':'codex',
+                                               'model':'gpt-6.1-sol', 'question':'x' * 12001})
+            review.assert_not_called()
+        self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0], 0)
 
     def test_backends_no_inference_or_budget_consumption(self):
         with patch('codex_expert_mcp.review') as review:
@@ -397,6 +489,61 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         for args in [{'kind':'write','question':'x'},{'kind':'review','level':'ultra','question':'x'}]:
             with self.assertRaises(ValueError):self.call('reprise_delegate',args)
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM expert_calls').fetchone()[0],0)
+
+    def test_backends_reflects_catalog_lineup_change_after_cache_expiry(self):
+        # (a) #242 : line-up modifié servi après expiration du TTL, jamais la liste statique.
+        self.seed_catalog()
+        self.assertEqual([item['model'] for item in self.call('reprise_backends', {})['backends'][0]['models']],
+                         list(BACKEND_MODELS['codex']))
+        lineup = ['gpt-6.1-sol', 'gpt-6-luna']
+        with patch('codex_expert_mcp.Client') as client:
+            client.return_value.call.side_effect = (
+                lambda method, payload: {'data': [{'model': model} for model in lineup]}
+                if method == 'model/list' else {})
+            self.bridge._codex_catalog_time -= CODEX_CATALOG_TTL + 1
+            codex = self.call('reprise_backends', {})['backends'][0]
+            client.assert_called_once()
+        self.assertEqual([item['model'] for item in codex['models']], lineup)
+        self.assertEqual(codex['models_source'], 'live')
+        self.assertNotIn('models_error', codex)
+
+    def test_catalog_failure_refuses_admission_before_request_creation(self):
+        # (b) #242 : model/list en échec → admission refusée avec cause explicite,
+        # aucune insertion ; reprise_backends expose un catalogue vide (pas de repli statique).
+        self.bridge._codex_catalog_cache = None
+        self.bridge._codex_catalog_time = None
+        with patch('codex_expert_mcp.Client') as client:
+            client.return_value.call.side_effect = OSError('proxy spawn failed')
+            with self.assertRaisesRegex(ValueError, 'not in live catalog \\(proxy spawn failed\\)'):
+                self.call('reprise_delegate', {'kind':'review', 'question':'Review', 'model':'gpt-6.1-sol'})
+            self.assertEqual(client.call_count, 2)  # rafraîchissement + revalidation forcée
+        self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0], 0)
+        codex = self.call('reprise_backends', {})['backends'][0]
+        self.assertEqual(codex['models'], [])
+        self.assertEqual(codex['models_source'], 'unavailable')
+        self.assertEqual(codex['models_error'], 'proxy spawn failed')
+
+    def test_unknown_model_revalidated_once_against_live_catalog(self):
+        # (c) #242 : revalidation forcée unique — le modèle apparu au catalogue
+        # live est admis ; toujours inconnu après revalidation → refus.
+        lineup = ['gpt-6.1-sol', 'gpt-6-luna', 'gpt-5.6-terra-new']
+        before = self.bridge.db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0]
+        rpc = lambda method, payload: {'data': [{'model': model} for model in lineup]} \
+            if method == 'model/list' else {}
+        with patch('codex_expert_mcp.review', return_value={'status':'finished'}) as review, \
+                patch('codex_expert_mcp.Client') as client:
+            client.return_value.call.side_effect = rpc
+            self.call('reprise_delegate', {'kind':'review', 'question':'Review', 'model':'gpt-5.6-terra-new'})
+            self.assertEqual(review.call_args.kwargs['model'], 'gpt-5.6-terra-new')
+            client.assert_called_once()
+        with patch('codex_expert_mcp.review') as review, patch('codex_expert_mcp.Client') as client:
+            client.return_value.call.side_effect = rpc
+            with self.assertRaisesRegex(ValueError, 'not in live catalog'):
+                self.call('reprise_delegate', {'kind':'review', 'question':'Review', 'model':'ghost-model'})
+            review.assert_not_called()
+            client.assert_called_once()
+        # Une seule insertion : l'appel admis ; le refus final n'en crée pas.
+        self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0], before + 1)
 
     def test_nonpersistent_thread_is_not_registered(self):
         with patch('codex_expert_mcp.review', return_value={'status':'blocked_permission','thread_id':ID,'resumable':False}):
@@ -492,6 +639,81 @@ class ClaudeDesktopBridgeTests(RequestCalls, unittest.TestCase):
         self.assertEqual(self.bridge.db.execute(
             "SELECT json_extract(result,'$.status') FROM delegation_requests").fetchone()[0], 'engine_unavailable')
 
+    def test_return_channel_unavailable_retries_taskstore_once(self):
+        # Canal de retour None au moment de l'appel : exactement UNE tentative
+        # de reconstruction du TaskStore par appel, avant tout refus.
+        from unittest.mock import MagicMock
+        self.bridge.desktop_tasks = None
+        with patch('codex_expert_mcp.TaskStore') as store, \
+                patch('claude_desktop.review', return_value={'status': 'finished', 'resumable': False}) as review:
+            result = self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
+                                                    'backend': 'claude-desktop'})
+        store.assert_called_once_with(self.bridge.desktop_state, self.bridge.root)
+        self.assertEqual(result['status'], 'finished')
+        review.assert_called_once()
+        # Reconstruction impossible : refus return_channel_unavailable, le refus
+        # persiste a chaque appel. call() execute un preflight + un passage reel,
+        # soit 2 constructions (2 essais) par appel : contract max 2 constructions
+        # par appel (le gate du handler n'en fait qu'une par passage).
+        self.bridge.desktop_tasks = None
+        store.reset_mock()
+        store.side_effect = sqlite3.OperationalError('state unreachable')
+        with patch('codex_expert_mcp.TaskStore', store), \
+                patch('claude_desktop.review') as review:
+            result = self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
+                                                    'backend': 'claude-desktop'})
+            self.assertEqual(store.call_count, 2)
+            self.bridge.desktop_tasks = None
+            store.reset_mock()
+            # Question différente : une demande équivalente incertaine serait
+            # dédupliquée ('indeterminate') sans nouvelle tentative.
+            result2 = self.call('reprise_delegate', {'question': 'Explique autrement', 'kind': 'expertise',
+                                                     'backend': 'claude-desktop'})
+            self.assertEqual(store.call_count, 2)
+        review.assert_not_called()
+        for refused in (result, result2):
+            self.assertEqual(refused['status'], 'return_channel_unavailable')
+            self.assertEqual(refused['backend'], 'claude-desktop')
+            self.assertFalse(refused['automatic_fallback'])
+            self.assertIs(refused['lazy_start_attempted'], False)
+        self.assertEqual(self.bridge.db.execute(
+            "SELECT json_extract(result,'$.status') FROM delegation_requests "
+            "WHERE scope=? AND result LIKE '%return_channel_unavailable%' "
+            "ORDER BY rowid DESC LIMIT 1",
+            (self.bridge.requests.scope,)).fetchone()[0], 'return_channel_unavailable')
+
+    def test_lazy_start_disabled_by_default(self):
+        # Cle delegation_lazy_start absente : AUCUN depart paresseux, le refus
+        # reste inchange ; lazy_start_attempted est present et vaut False.
+        self.bridge.desktop_tasks = None
+        with patch('codex_expert_mcp.TaskStore', side_effect=sqlite3.OperationalError('down')), \
+                patch('claude_desktop.review') as review, \
+                patch('delegation_resume.lazy_start') as lazy:
+            result = self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
+                                                    'backend': 'claude-desktop'})
+        review.assert_not_called()
+        lazy.assert_not_called()
+        self.assertEqual(result['status'], 'return_channel_unavailable')
+        self.assertIs(result['lazy_start_attempted'], False)
+        self.assertNotIn('lazy_start', result)
+
+    def test_call_opportunistic_resume_processes_due_job(self):
+        # Porte opportuniste (lot C #239) : un job du present dans expert.sqlite
+        # est traite pendant un appel call() quelconque (ici un refus de canal
+        # de retour). Receipt inexistant -> 'done' sans contact natif.
+        import delegation_resume
+        import delegation_reconcile
+        self.bridge.desktop_tasks = None
+        delegation_resume.schedule(self.bridge.db, 'opp-req-1', 'codex', str(self.bridge.root),
+                                   due_at=1.0)
+        with patch('delegation_reconcile.reconcile') as reconcile:
+            result = self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
+                                                    'backend': 'claude-desktop'})
+        reconcile.assert_not_called()
+        row = self.bridge.db.execute('SELECT status FROM delegation_resume_jobs WHERE request_key=?',
+                                     ('opp-req-1',)).fetchone()
+        self.assertEqual(row[0], 'done')
+
     def test_delegate_rejects_arbitrary_fields(self):
         with self.assertRaises(ValueError):
             self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
@@ -574,6 +796,8 @@ class CompactReceiptTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state')
         self.bridge.program = 'codex'
+        self.bridge._codex_catalog_cache = simulated_codex_catalog(BACKEND_MODELS['codex'])
+        self.bridge._codex_catalog_time = time.monotonic()
         self.addCleanup(self.bridge.close)
 
     def dispatch(self, name, args, ident=1):
@@ -720,6 +944,42 @@ class CompactReceiptTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.dispatch('reprise_requests', {
                 'request_key': 'key', 'view': 'page', 'acknowledge': True})
+
+class ChatGptStateRenameTests(unittest.TestCase):
+    """Issue #217 : le chemin ChatGPT est nommé --chatgpt-state (répertoire
+    d'état, ledger et TaskStore), --chatgpt-socket n'est qu'un alias déprécié."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
+        self.bridge.program = 'codex'
+        self.bridge._codex_catalog_cache = simulated_codex_catalog(BACKEND_MODELS['codex'])
+        self.bridge._codex_catalog_time = time.monotonic()
+        self.addCleanup(self.bridge.close)
+
+    def test_refusal_names_chatgpt_state(self):
+        # Le Bridge est construit sans chatgpt_socket : le refus backend chatgpt
+        # (Bridge.call reprise_delegate, ligne du refus 'non configuré') doit
+        # nommer la nouvelle option, jamais l'alias déprécié.
+        self.assertIsNone(self.bridge.chatgpt_socket)
+        payload = self.bridge.call('reprise_delegate', {
+            'request_key': str(uuid.uuid4()), 'backend': 'chatgpt',
+            'kind': 'review', 'question': 'Revue'})
+        self.assertEqual(payload['status'], 'engine_unavailable')
+        self.assertIn('--chatgpt-state', payload['reason'])
+        self.assertNotIn('--chatgpt-socket', payload['reason'])
+
+    def test_parser_accepts_legacy_alias(self):
+        # L'alias déprécié reste accepté par le parser : --help rend 0 et
+        # documente la nouvelle option (parse_args sort avant de servir).
+        completed = subprocess.run(
+            [sys.executable, 'reprise/codex_expert_mcp.py', '--project-root', self.temp.name,
+             '--chatgpt-socket', self.temp.name, '--help'],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(completed.returncode, 0)
+        self.assertIn('--chatgpt-state', completed.stdout + completed.stderr)
+
 
 class BridgeFinalizerTests(unittest.TestCase):
     """Le finalizer doit tourner sans close() explicite : pas de méthode liée

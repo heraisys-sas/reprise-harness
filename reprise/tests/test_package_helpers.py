@@ -49,6 +49,10 @@ class PackageHelpersTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'LICENSE'):
                     package(source, root / 'app')
 
+    def test_registry_durability_helpers_are_packaged(self):
+        for name in ('registry_marker.py', 'registry_adopt.py'):
+            self.assertIn(name, ASSETS)
+
     def test_desktop_apply_assets_preserve_current_packaging(self):
         for name in ('claude_desktop_apply.py',
                      'claude_quota_log.py', 'claude_quota_banner.py', 'claude_cdp_pipe.py', 'claude_inbox.py', 'websocket_transport.py', 'claude_session_store.py', 'claude_session_observer.py', 'managed_update.py',
@@ -56,6 +60,8 @@ class PackageHelpersTests(unittest.TestCase):
             self.assertIn(name, ASSETS)
         self.assertTrue(any(path.endswith('/CLAUDE-DESKTOP-APPLY.md') for path in package_helpers.DOCS))
         self.assertIn('docs/runbooks/SCHEDULER-SERVICE.md', package_helpers.DOCS)
+        self.assertIn('approval_delegation.py', ASSETS)
+        self.assertIn('docs/contracts/APPROVALS-CONTRACT.md', package_helpers.DOCS)
 
     def test_moved_payload_runs_without_source_and_keeps_state_outside_bundle(self):
         with tempfile.TemporaryDirectory() as temporary:

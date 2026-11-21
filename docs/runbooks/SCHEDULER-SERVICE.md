@@ -2,9 +2,34 @@
 
 Incrément du 22 octobre 2026, suivi #6/#7. Dans **Intégrations → Planificateur utilisateur Reprise**, inspecter, préparer installation/réparation/mise à jour ou retrait, lire le plan, puis autoriser explicitement son application. L’activation est un choix distinct : elle peut lancer au prochain tick les travaux précédemment autorisés lorsque le mode automatique est actif. Lors d’un remplacement, le service chargé est déchargé ; sans activation cochée, il reste arrêté. Une pause existante n’est jamais modifiée par l’installation ; sa réactivation reste une action séparée dans Reprises.
 
-Le helper `scheduler_service.py` propose `scheduler-service-inspect`, `scheduler-service-plan --action install|remove [--activate] [--interval N]`, `scheduler-service-apply` (plan JSON sur stdin), `scheduler-service-verify` et l’ensure ciblé `scheduler-service-startup`, via `reprise`. Les commandes historiques de développement `install`/`uninstall` sont conservées ; le nouveau parcours graphique utilise exclusivement les opérations gérées.
+Le helper `scheduler_service.py` propose `scheduler-service-inspect`, `scheduler-service-plan --action install|remove [--activate] [--interval N] [--queue-channel preserve|enable|disable]`, `scheduler-service-apply` (plan JSON sur stdin), `scheduler-service-verify` et l’ensure ciblé `scheduler-service-startup`, via `reprise`. Les commandes historiques de développement `install`/`uninstall` sont conservées ; le nouveau parcours graphique utilise exclusivement les opérations gérées.
 
 Au lancement de Reprise, la préférence versionnée peut appeler `scheduler-service-startup`. Cette opération applique une fois l’activation explicitement demandée (`auto_enabled` et `claude_desktop_auto_enabled`), puis préserve les changements ultérieurs. Elle n’initialise jamais un registre absent et n’écrit ni tâche ni fournisseur. Elle peut installer/activer le planificateur seulement pour un état préparé ; un service existant doit avoir manifeste Reprise, plist intact, release courant et registre concordant. Les opérations pendantes, workers actifs, services non gérés ou configurations divergentes sont rapportés sans réparation automatique. Un tick peut traiter les tâches déjà autorisées et dues lorsque les réglages automatiques sont actifs ; les états incertains ne sont jamais rejoués.
+
+### File de continuations Claude — activation explicite (#215)
+
+La continuation `admit_queue_continuation` exige `auto_enabled`,
+`claude_desktop_auto_enabled` et `claude_queue_channel` à true.
+Le canal de file est configuré depuis le plan du service et la case de
+sélection dans l'interface : `preserve` (défaut), `enable` et `disable`.
+Le choix `enable` effectue une écriture SQLite exclusivement après accord
+sur le plan, sous `worker.lock` et transaction `BEGIN IMMEDIATE`.
+Il n'écrase jamais une pause globale ou Claude enregistrée à false.
+Un changement concurrent de préférence invalide le plan ; `preserve`
+n'écrit rien et conserve l'état importé, désactivé ou déjà actif.
+L'inspection expose la valeur effective de `claude_queue_channel`.
+
+Au premier démarrage versionné, seules les préférences d'automatisation
+absentes sont initialisées à true. Un false préexistant sans marqueur est
+désormais conservé (ancienne logique : écrasement de la pause). L'activation
+de launchd et la preuve d'une continuation métier effective restent des
+contrôles indépendants.
+
+## Règle métier quota : tentative native avant perfectionnement des compteurs
+
+Le planificateur est un **déclencheur**, pas un arbitre du quota courant ni de la propriété RPC. L'objectif opérateur est de conserver **tous les travaux interrompus par un quota reconnu**, même si un compteur indique `unknown`, puis de tenter une continuation native dès l'échéance annoncée sur le bon chat. En absence d'échéance, choisir des contrôles bornés (pas une boucle rapide). Un autre Desktop, un socket Codex disponible ou une session simplement lisible ne sont pas une autorisation d'envoi. Les intentions sans adaptateur/owner restent visibles en attente, sans être perdues.
+
+Cette généralisation **n'est pas livrée sur `dev`** : `scheduler.snapshot()` appelle le scanner Codex, plafonné à 100 entrées / 30 jours ; `scheduler.confirmed()` applique encore les restrictions de source, sous-agent et fraîcheur (24 h pour de nouvelles interruptions). La route Claude native reste suivie séparément par #132. Ne pas confondre un tick réussi avec une continuation réelle. Voir [contrat transverse](../contracts/QUOTA-CONTINUATION-CONTRACT.md) et [runbook d'acceptation locale](QUOTA-LOCAL-ACCEPTANCE.md).
 
 ## Configuration et preuves
 

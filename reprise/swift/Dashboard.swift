@@ -74,13 +74,18 @@ struct SettingsHint: View {
 struct RouteLine: View {
     var title: String
     var route: [String: Any]
-    var readyLabel: String
     var fallbackDetail: String
 
+    // Badge derived from the daemon-reported state; no static title ever
+    // claims a route is ready (#229).
     private var badge: (label: String, color: Color) {
         let state = route["state"] as? String ?? ""
         if route["enabled"] as? Bool == true {
-            return state == "prête" || state == "disponible" ? (readyLabel, Color.green) : ("Indisponible", Color.orange)
+            switch state {
+            case "prête", "disponible": return ("Prête", Color.green)
+            case "détectée": return ("Détectée · non vérifiée", Color.orange)
+            default: return ("Indisponible", Color.orange)
+            }
         }
         return ("Désactivée", Color.secondary)
     }
@@ -188,7 +193,7 @@ struct Dashboard: View {
         self.app = app
         _applePilot = StateObject(wrappedValue: ApplePilotUI.make(app: app))
     }
-    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("apple-pilot", "Pilote Apple", "bubble.left.and.text.bubble.right"), ("search", "Recherche", "magnifyingglass"), ("connections", "Connexions", "point.3.connected.trianglepath.dotted"), ("integrations", "Intégrations", "puzzlepiece.extension"), ("health", "Santé post-update", "heart.text.square"), ("privacy", "Confidentialité", "lock.shield")]
+    let sections = [("overview", "Vue d’ensemble", "square.grid.2x2"), ("ecosystem", "Écosystème", "point.3.connected.trianglepath.dotted"), ("sessions", "Sessions", "tray"), ("resumptions", "Reprises", "clock.arrow.circlepath"), ("analysis", "Analyse locale", "sparkles"), ("apple-pilot", "Pilote Apple", "bubble.left.and.text.bubble.right"), ("search", "Recherche", "magnifyingglass"), ("connections", "Connexions", "point.3.connected.trianglepath.dotted"), ("integrations", "Intégrations", "puzzlepiece.extension"), ("health", "Santé post-update", "heart.text.square"), ("privacy", "Confidentialité", "lock.shield")]
     var title: String { sections.first { $0.0 == app.page }?.1 ?? "Reprise" }
     @ViewBuilder var body: some View {
         if app.stateReady {
@@ -245,6 +250,7 @@ struct Dashboard: View {
                     if let error = app.snapshot["error"] as? String { Label(error, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary) }
                     if !app.navigationNote.isEmpty { Label(app.navigationNote, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary) }
                     switch app.page {
+                    case "ecosystem": ecosystem
                     case "sessions": sessions
                     case "resumptions": resumptions
                     case "analysis": analysis
@@ -275,6 +281,7 @@ struct Dashboard: View {
     }
     var subtitle: String {
         switch app.page {
+        case "ecosystem": return "Comprenez les liaisons et ouvrez leur diagnostic."
         case "sessions": return "Distinguez les interruptions récentes des arrêts et de l’historique."
         case "resumptions": return "Les tentatives sont regroupées par cause. Les détails restent accessibles à la demande."
         case "analysis": return "Un second regard sur les comptes rendus, sur votre Mac."
@@ -287,6 +294,118 @@ struct Dashboard: View {
         default: return "L’essentiel de vos sessions, sans les interrompre."
         }
     }
+    private func ecosystemColor(_ level: EcosystemStatus.Level) -> Color {
+        switch level {
+        case .ready: return .green
+        case .attention: return .orange
+        case .problem: return .red
+        }
+    }
+    private func ecosystemLink(_ target: String, symbol: String, value: EcosystemStatus.Value,
+                               action: @escaping () -> Void) -> some View {
+        let color = ecosystemColor(value.level)
+        return HStack(alignment: .center, spacing: 0) {
+            Rectangle().fill(color).frame(width: 24, height: 2).accessibilityHidden(true)
+            Image(systemName: symbol).font(.system(size: 15, weight: .medium))
+                .foregroundStyle(color).frame(width: 32, height: 32)
+                .background(color.opacity(0.1), in: Circle()).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Button(target, action: action).buttonStyle(.link).font(.headline)
+                    Spacer(minLength: 8)
+                    Text(value.label).font(.caption.weight(.semibold)).foregroundStyle(color)
+                        .multilineTextAlignment(.trailing)
+                }
+                Text(value.detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }.padding(.leading, 10)
+        }.accessibilityElement(children: .contain)
+    }
+    private func applicationPresent(_ bundleID: String) -> Bool {
+        if app.running.contains(bundleID) { return true }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+    private func detectedSocket(_ connection: [String: Any]) -> Bool {
+        (connection["candidates"] as? [[String: Any]] ?? []).contains { $0["detected"] as? Bool == true }
+    }
+    private var ironclawConfigured: Bool {
+        let state: URL
+        if let override = ProcessInfo.processInfo.environment["AGENT_RESUME_STATE"], !override.isEmpty {
+            state = URL(fileURLWithPath: (override as NSString).expandingTildeInPath, isDirectory: true)
+        } else if app.usesBundledRuntime {
+            state = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Reprise/state", isDirectory: true)
+        } else {
+            state = app.root.appendingPathComponent("state", isDirectory: true)
+        }
+        return FileManager.default.fileExists(atPath: state.appendingPathComponent("ironclaw-endpoint.json").path)
+    }
+    var ecosystem: some View {
+        let codexMatches = app.testedSocket == app.socketPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let desktopMatches = app.desktopTestedSocket == app.desktopSocketPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let codex = EcosystemStatus.probe(connected: codexMatches ? app.connectionVerified : nil,
+                                          checkedAt: codexMatches ? app.connectionTestedAt : nil)
+        let quick = EcosystemStatus.probe(connected: desktopMatches ? app.desktopConnectionVerified : nil,
+                                          checkedAt: desktopMatches ? app.desktopConnectionTestedAt : nil)
+        let routes = app.desktopConnection["routes"] as? [String: Any] ?? [:]
+        let engines = app.scheduler["engines"] as? [[String: Any]] ?? []
+        let codexCLI = engines.contains { $0["id"] as? String == "codex-cli" && $0["available"] as? Bool == true }
+        let harnessCLI = engines.contains { $0["id"] as? String == "harness-cli" && $0["available"] as? Bool == true }
+        let cdp = EcosystemStatus.cdp(routes["cdp_web"] as? [String: Any] ?? [:], checkedAt: app.desktopRoutesCheckedAt)
+        return VStack(alignment: .leading, spacing: 18) {
+            Surface {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Les couleurs concernent l’observation indiquée : elles ne prouvent ni le chargement des outils par un client, ni la réussite d’une tâche.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack(alignment: .center, spacing: 0) {
+                        VStack(spacing: 8) {
+                            Image(systemName: "arrow.clockwise.circle.fill").font(.title)
+                            Text("Reprise").font(.headline)
+                        }
+                        .frame(width: 84).padding(.vertical, 14)
+                        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                        .accessibilityElement(children: .combine)
+                        Rectangle().fill(Color.secondary.opacity(0.35)).frame(width: 24, height: 2).accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 18) {
+                    if app.scheduler["installed"] as? Bool == true {
+                        ecosystemLink("Planificateur", symbol: "clock.arrow.circlepath", value: EcosystemStatus.scheduler(app.scheduler)) { app.page = "resumptions" }
+                    }
+                    if EcosystemStatus.present(installed: applicationPresent("com.openai.codex"), detected: codexCLI || codex.level == .ready) {
+                        ecosystemLink("Codex", symbol: "terminal", value: codex) { app.connectionTab = "codex"; app.page = "connections" }
+                    }
+                    if EcosystemStatus.present(installed: FileManager.default.fileExists(atPath: app.root.appendingPathComponent("claude_desktop_quick.py").path), detected: detectedSocket(app.desktopConnection)) {
+                        ecosystemLink("Quick Apply · adaptateur", symbol: "bolt.horizontal", value: quick) { app.connectionTab = "quickapply"; app.page = "connections" }
+                    }
+                    if applicationPresent("com.anthropic.claudefordesktop") {
+                        ecosystemLink("Claude Desktop", symbol: "bubble.left.and.bubble.right", value: .init(level: .attention, label: app.running.contains("com.anthropic.claudefordesktop") ? "Application ouverte" : "Application présente", detail: "La connexion du relais et le chargement des outils ne sont pas confirmés.")) { app.connectionTab = "quickapply"; app.page = "connections" }
+                    }
+                    if FileManager.default.fileExists(atPath: app.root.appendingPathComponent("claude_cdp_pipe.py").path), (routes["cdp_web"] as? [String: Any])?["enabled"] as? Bool == true {
+                        ecosystemLink("CDP web · via Quick Apply", symbol: "globe", value: cdp) { app.connectionTab = "quickapply"; app.page = "connections" }
+                    }
+                    if EcosystemStatus.present(installed: applicationPresent("com.deepseek.dsh"), detected: harnessCLI) {
+                        ecosystemLink("Harness · outils MCP", symbol: "hammer", value: .init(level: .attention, label: "Client non vérifié", detail: "L’installation ou l’ouverture de Harness ne confirme pas le chargement des outils.")) { app.page = "integrations" }
+                    }
+                    if applicationPresent("com.zhipuai.autoclaw") {
+                        ecosystemLink("AutoClaw", symbol: "bolt", value: .init(level: .attention, label: "Présent · lien non vérifié", detail: "La présence de l’application ne confirme pas un échange avec Reprise.")) { app.page = "integrations" }
+                    }
+                    if ironclawConfigured && FileManager.default.fileExists(atPath: app.root.appendingPathComponent("ironclaw_connection.py").path) {
+                        ecosystemLink("IronClaw · adaptateur local", symbol: "network", value: .init(level: .attention, label: "Distant non vérifié", detail: "L’adaptateur et sa configuration sont présents ; le service distant n’est pas confirmé.")) { app.connectionTab = "ironclaw"; app.page = "connections" }
+                    }
+                    if FileManager.default.fileExists(atPath: app.root.appendingPathComponent("apple_pilot_service.py").path) && FileManager.default.fileExists(atPath: "/System/Library/Frameworks/FoundationModels.framework") {
+                        ecosystemLink("Pilote Apple · adaptateur", symbol: "sparkles", value: .init(level: .attention, label: applePilot.sessionOpen ? "Session ouverte" : "Session non ouverte", detail: "La disponibilité du modèle et le résultat d’une analyse sont vérifiés séparément.")) { app.page = "apple-pilot" }
+                    }
+                        }
+                        .overlay(alignment: .leading) {
+                            Rectangle().fill(Color.secondary.opacity(0.35)).frame(width: 1)
+                                .padding(.vertical, 20).accessibilityHidden(true)
+                        }
+                    }
+                }
+            }
+            Text("Vert : observation confirmée · Orange : attente ou preuve manquante · Rouge : erreur observée. Les tests de connexion ne lancent pas de modèle.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     var overview: some View {
         VStack(alignment: .leading, spacing: 20) {
             if app.lastRefresh == nil && app.busy {
@@ -725,10 +844,17 @@ struct Dashboard: View {
             ForEach(Array(app.searchResults.enumerated()), id: \.offset) { _, value in Surface { VStack(alignment: .leading, spacing: 8) { Button { app.openSession(value) } label: { Text(value["title"] as? String ?? "Session").font(.headline) }.buttonStyle(.plain).help("Afficher l’application de cette session"); Text((value["provider"] as? String ?? "") + " · " + String((value["id"] as? String ?? "").suffix(8))).font(.caption).foregroundStyle(.secondary); Text(value["text"] as? String ?? "").textSelection(.enabled) } } }
         }
     }
-    // Single "Connexions" tab: an internal picker switches between the two
-    // connection panels (codex-desktop / claude-desktop), freeing the sidebar.
+    // Single "Connexions" tab: an internal picker switches between the three
+    // connection panels (codex-desktop / claude-desktop / ironclaw-ssh), freeing the sidebar.
     var connections: some View {
         VStack(alignment: .leading, spacing: 18) {
+            if let verification = app.integrationVerification,
+               verification["status"] as? String == "verified",
+               verification["update_required"] as? Bool == true {
+                SettingsBanner(ok: false, title: "Mise à jour des connecteurs nécessaire",
+                               detail: "Le pont Harness manque d'outils de délégation ou sa release est périmée. Ouvrez Intégrations, préparez un plan --delegate, puis rechargez Harness.")
+                Button("Examiner l'intégration Harness") { app.page = "integrations" }
+            }
             Picker("Service", selection: Binding(get: { app.connectionTab }, set: { app.connectionTab = $0 })) {
                 Text("codex-desktop").tag("codex")
                 Text("claude-desktop").tag("quickapply")
@@ -756,19 +882,17 @@ struct Dashboard: View {
                 title: app.connection.isEmpty ? "Configuration indisponible" : "Configuration Codex chargée",
                 detail: app.connection.isEmpty ? "Lancez une actualisation pour lire l’état du service."
                     : customSocket ? "Socket personnalisé enregistré. Testez la connexion pour vérifier le service." : "Détection automatique du socket local ou de la CLI ; la configuration seule ne confirme pas la connexion.")
-            SettingsCard(title: "Partage avec Codex Desktop",
+            SettingsCard(title: "Partage des sessions avec Codex Desktop",
                          status: shared["startup_eligible"] as? Bool == true ? "Validé" : "À valider",
                          ok: shared["startup_eligible"] as? Bool == true) {
+                Text("Ce parcours vérifie un chat dans le service partagé. Le transport utilisé par Desktop et la propriété de ses chats ne sont pas déduits de ce seul test.")
+                    .font(.caption).foregroundStyle(.secondary)
                 HStack(spacing: 10) {
                     Button("1. Préparer codexd") { app.sharedAction("prepare") }.disabled(app.sharedBusy)
-                    Button("2. Démarrer l’appli liée") { app.sharedAction("launch") }
-                        .disabled(app.sharedBusy || app.running.contains("com.openai.codex"))
+                    Button("2. Démarrer ReChatGPT") { app.launchReChatGPT() }
+                        .disabled(app.sharedBusy)
                     Spacer()
                     if app.sharedBusy { InlineStatus(busy: true, message: app.sharedNote) }
-                }
-                if app.running.contains("com.openai.codex") {
-                    Label("Desktop est ouvert : fermez-le normalement avant l’étape 2. Reprise reste ouvert.", systemImage: "exclamationmark.triangle")
-                        .font(.caption).foregroundStyle(.orange)
                 }
                 HStack(spacing: 10) {
                     TextField("Identifiant ou lien du chat à vérifier", text: $app.sharedSession).textFieldStyle(.roundedBorder)
@@ -777,12 +901,7 @@ struct Dashboard: View {
                 if !app.sharedNote.isEmpty { InlineStatus(busy: false, message: app.sharedNote) }
                 SettingsHint(
                     text: "Après validation, choisissez le socket et réactivez les reprises depuis leur vue.",
-                    detail: "La vérification confirme que le chat est bien chargé dans Desktop. Vérifiez aussi les outils de Desktop lui-même avant d’activer le lancement automatique. Les reprises restent en pause jusqu’à leur réactivation manuelle.")
-                Toggle("Lancer ce mode à l’ouverture de Reprise", isOn: Binding(get: { app.sharedStartup }, set: { app.setSharedStartup($0) }))
-                    .disabled(app.sharedBusy || (shared["startup_eligible"] as? Bool != true && !app.sharedStartup))
-                SettingsHint(
-                    text: "Disponible seulement après un test réussi avec cette version de Desktop.",
-                    detail: "Une mise à jour de Desktop impose une nouvelle validation. Ce réglage concerne le lancement de Reprise, pas la liste des éléments d’ouverture de macOS.")
+                    detail: "La vérification confirme que le chat est chargé dans le service partagé, sans prouver que Desktop utilise ce même propriétaire. Vérifiez aussi les outils de Desktop avant d’activer le lancement automatique. Contrôlez l’état des reprises après validation.")
                 Divider()
                 HStack(spacing: 10) {
                     Button("Arrêter codexd") { app.sharedAction("stop") }
@@ -848,8 +967,8 @@ struct Dashboard: View {
                          status: (app.quickApplyStartupEnabled || app.desktopStartup) ? "Activation au démarrage" : "Manuel",
                          ok: true) {
                 HStack(spacing: 10) {
-                    Button("1. Démarrer l’appli liée") { app.desktopAction("launch") }.disabled(app.desktopBusy)
-                    Button("2. Démarrer claude-desktopd") { app.desktopAction("start") }.disabled(app.desktopBusy)
+                    Button("Ouvrir ReClaude") { app.desktopAction("launch") }.disabled(app.desktopBusy)
+                    Button("Démarrer claude-desktopd") { app.desktopAction("start") }.disabled(app.desktopBusy)
                     Button("Arrêter claude-desktopd") { app.desktopAction("stop") }.disabled(app.desktopBusy)
                     if app.desktopBusy { InlineStatus(busy: true, message: app.desktopNote) }
                 }
@@ -864,8 +983,8 @@ struct Dashboard: View {
                                     + "\nLe greeting du daemon ne prouve pas que le relais de l’application est connecté.")
                 }
                 SettingsHint(
-                    text: "Les préférences de l’application et du daemon sont indépendantes.",
-                    detail: "Le daemon Quick Apply peut démarrer sans Claude Desktop. Le démarrage de l’application liée ne la ferme ni ne la relance si elle est déjà ouverte. Aucun autre élément d’ouverture macOS n’est modifié.")
+                    text: "Le daemon peut démarrer indépendamment de ReClaude. La livraison des demandes nécessite ensuite un relais connecté.",
+                    detail: "Le démarrage de l’application liée ne la ferme ni ne la relance si elle est déjà ouverte. Aucun autre élément d’ouverture macOS n’est modifié.")
             }
             SettingsCard(title: "Socket de claude-desktopd",
                          status: app.desktopConnectionVerified ? "Testé" : (customSocket ? "Personnalisé" : "Automatique"),
@@ -915,17 +1034,15 @@ struct Dashboard: View {
                          status: "Lecture seule",
                          ok: true) {
                 let routes = app.desktopConnection["routes"] as? [String: Any] ?? [:]
-                RouteLine(title: "Patch natif — principale",
+                RouteLine(title: "Dispatch natif QTi — canal principal",
                           route: routes["native_patch"] as? [String: Any] ?? [:],
-                          readyLabel: "Disponible",
                           fallbackDetail: "Soumission via le socket du daemon claude-desktopd.")
-                RouteLine(title: "CDP web — prête, désactivée par défaut",
+                RouteLine(title: "CDP externe — canal optionnel historique",
                           route: routes["cdp_web"] as? [String: Any] ?? [:],
-                          readyLabel: "Prête",
                           fallbackDetail: "Aucune cible CDP activée ; activation par configuration uniquement.")
                 SettingsHint(
-                    text: "L’activation de la route CDP web se fait par configuration ; cette fenêtre reflète seulement l’état réel.",
-                    detail: "Le patch natif passe par le socket du daemon claude-desktopd. La route CDP web n’est proposée que si une cible CDP est activée en configuration ; aucun bouton d’activation ici, l’état affiché est celui lu du daemon.")
+                    text: "L’activation de la route CDP externe se fait par configuration ; cette fenêtre reflète seulement l’état réel.",
+                    detail: "Le dispatch natif QTi passe par le socket du daemon claude-desktopd. La route CDP externe n’est proposée que si une cible CDP est activée en configuration ; aucun bouton d’activation ici, l’état affiché est celui lu du daemon. La route ChatGPT CDP pipe est un mécanisme distinct.")
             }
             SettingsCard(title: "Soumission Quick Apply",
                          status: "Aucune autorisation requise",
@@ -936,19 +1053,36 @@ struct Dashboard: View {
             }
         }
     }
-    var healthReviewItems: [String] {
+    var healthActions: [(text: String, page: String?, tab: String?)] {
         let features = app.health["quick_entry_features"] as? [String: Any] ?? [:]
         let claude = (features["anomalies"] as? [String: Any])?["anomalies"] as? [[String: Any]] ?? []
         let codex = app.health["codex_anomalies"] as? [[String: Any]] ?? []
-        var items = app.health["actions_for_human"] as? [String] ?? []
-        for (source, anomalies) in [("Claude Desktop", claude), ("Codex", codex)] {
+        var items: [(text: String, page: String?, tab: String?)] = []
+        for action in app.health["actions_for_human"] as? [String] ?? [] {
+            let nav = healthNavigation(action)
+            items.append((action, nav.page, nav.tab))
+        }
+        for (source, anomalies, page, tab) in [("Claude Desktop", claude, "connections", "quickapply"),
+                                               ("Codex", codex, "connections", "codex")] {
             for anomaly in anomalies {
                 let component = anomaly["component"] as? String ?? "Composant"
                 let detail = anomaly["detail"] as? String ?? "Anomalie à examiner"
-                items.append(source + " — " + component + " : " + detail)
+                items.append((source + " — " + component + " : " + detail, page, tab))
             }
         }
         return items
+    }
+
+    func healthNavigation(_ text: String) -> (page: String?, tab: String?) {
+        let lowered = text.lowercased()
+        if lowered.contains("harness") { return ("integrations", nil) }
+        if lowered.contains("claude") { return ("connections", "quickapply") }
+        if lowered.contains("codex") { return ("connections", "codex") }
+        return (nil, nil)
+    }
+
+    var healthReviewItems: [String] {
+        healthActions.map { $0.text }
     }
     var health: some View {
         let versions = app.health["versions"] as? [String: Any] ?? [:]
@@ -966,6 +1100,12 @@ struct Dashboard: View {
             ? (app.healthCheckedAt == nil ? "Santé indisponible · contrôle requis" : "Santé périmée · nouveau contrôle requis")
             : (actionCount == 0 ? "✓ Sain · aucun élément à examiner" : "⚠ \(actionCount) élément(s) à examiner")
         return VStack(alignment: .leading, spacing: 18) {
+            if let check = app.integrationVerification,
+               check["status"] as? String == "verified",
+               check["update_required"] as? Bool == true {
+                SettingsBanner(ok: false, title: "Mise à jour des connecteurs nécessaire",
+                               detail: "Le contrôle Harness signale une délégation absente ou une release dépassée. Corriger dans Intégrations et recharger le client.")
+            }
             SettingsBanner(
                 ok: verified && actionCount == 0,
                 title: verified ? (actionCount == 0 ? "Tout est sain" : "\(actionCount) élément(s) à examiner")
@@ -974,29 +1114,44 @@ struct Dashboard: View {
                     ? "Aucune action nécessaire après la dernière mise à jour."
                     : app.healthCheckedAt.map { "Dernier contrôle réussi : " + localDateTime($0) + "." } ?? "Aucun contrôle vérifié pour l’instant.")
             SettingsCard(title: "Relancer Reprise",
-                         status: app.chainSupported ? "Disponible" : "Indisponible",
-                         ok: app.chainSupported) {
+                         status: "Disponible",
+                         ok: true) {
                 HStack(spacing: 10) {
-                    Button("Relancer Reprise") { app.restartChain() }.disabled(app.chainBusy || !app.chainSupported)
+                    Button("Relancer Reprise") { app.relaunchApp() }.disabled(app.relaunchBusy)
+                    if app.chainSupported {
+                        Button("Relance par script (dev)") { app.restartChain() }.disabled(app.chainBusy)
+                    }
                     Spacer()
-                    if app.chainBusy { InlineStatus(busy: true, message: app.chainNote) }
+                    if app.relaunchBusy || app.chainBusy {
+                        InlineStatus(busy: true, message: app.relaunchNote.isEmpty ? app.chainNote : app.relaunchNote)
+                    }
                 }
-                if !app.chainNote.isEmpty { InlineStatus(busy: false, message: app.chainNote) }
+                if !app.relaunchNote.isEmpty { InlineStatus(busy: false, message: app.relaunchNote) }
+                if app.chainSupported && !app.chainNote.isEmpty { InlineStatus(busy: false, message: app.chainNote) }
                 SettingsHint(
-                    text: "Les applications liées et codexd ne sont pas arrêtés de force.",
-                    detail: app.chainSupported
-                        ? "La commande lance le script de relance. Celui-ci peut exiger une archive runtime ; il ne redémarre jamais codexd. Consultez le résultat affiché pour confirmer l’opération."
-                        : "La relance par script est indisponible dans cette distribution (runtime embarqué ou script absent).")
+                    text: "L’interface redémarre ; les applications liées, codexd et le scheduler ne sont pas arrêtés.",
+                    detail: "La relance recrée le processus de l’app depuis son bundle — disponible dans toutes les distributions. La relance par script reste réservée aux lancements de développement (archive runtime).")
             }
             SettingsCard(title: "Éléments à examiner",
                          status: verified ? (actionCount == 0 ? "Rien à faire" : "\(actionCount) point(s)") : "Non vérifié",
                          ok: verified && actionCount == 0) {
+                let actions = healthActions
                 if actions.isEmpty {
                     Text(verified ? "Rien à examiner pour l’instant." : "Aucune conclusion possible sans contrôle vérifié.")
                         .font(.callout).foregroundStyle(.secondary)
                 } else {
                     ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
-                        Label(action, systemImage: "hand.point.right").font(.callout)
+                        HStack(spacing: 8) {
+                            Label(action.text, systemImage: "hand.point.right").font(.callout)
+                            Spacer()
+                            if let page = action.page {
+                                Button("Ouvrir") {
+                                    if let tab = action.tab { app.connectionTab = tab }
+                                    app.page = page
+                                }
+                                .controlSize(.small)
+                            }
+                        }
                     }
                 }
                 if !relaunch.isEmpty || !stale.isEmpty {
@@ -1054,13 +1209,18 @@ struct Dashboard: View {
                 if !anomalies.isEmpty {
                     Divider()
                     ForEach(Array(anomalies.enumerated()), id: \.offset) { _, a in
-                        Label((a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
-                            .font(.callout).foregroundStyle(.orange)
+                        HStack(spacing: 8) {
+                            Label((a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
+                                .font(.callout).foregroundStyle(.orange)
+                            Spacer()
+                            Button("Ouvrir") { app.connectionTab = "quickapply"; app.page = "connections" }
+                                .controlSize(.small)
+                        }
                     }
                 }
                 SettingsHint(
                     text: "La synthèse Apple Intelligence se trouve dans Analyse locale.",
-                    detail: "La présence de ces composants est vérifiée de façon déterministe, sans inférence. Elle ne prouve pas qu’une soumission aboutira : Desktop doit être ouvert et les autorisations macOS accordées.")
+                    detail: "La présence des composants ne prouve pas qu’une soumission aboutira. Vérifiez la connexion au daemon claude-desktopd, la disponibilité du relais ReClaude et, séparément, les preuves de livraison et de traitement (« arrivé ≠ traité »).")
             }
             SettingsCard(title: "Codex · interaction avec Reprise",
                          status: codexChecks.isEmpty ? "Aucun relevé" : "Vérifié",
@@ -1076,34 +1236,60 @@ struct Dashboard: View {
                 if !codexAnomalies.isEmpty {
                     Divider()
                     ForEach(Array(codexAnomalies.enumerated()), id: \.offset) { _, a in
-                        Label((a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
-                            .font(.callout).foregroundStyle(.orange)
+                        HStack(spacing: 8) {
+                            Label((a["detail"] as? String ?? "") + " — " + (a["component"] as? String ?? ""), systemImage: "exclamationmark.triangle")
+                                .font(.callout).foregroundStyle(.orange)
+                            Spacer()
+                            Button("Ouvrir") { app.connectionTab = "codex"; app.page = "connections" }
+                                .controlSize(.small)
+                        }
                     }
                 }
             }
         }
     }
     var privacy: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            SettingsCard(title: "Chiffrement local",
-                         status: "Chiffré", ok: true) {
+        let keyStatus = app.vaultAvailability["status"] as? String ?? "not_verified"
+        let keyLabel = app.vaultAccessVerified ? "Clé accessible"
+            : keyStatus == "unavailable" ? "Clé indisponible"
+            : keyStatus == "error" ? "Contrôle impossible"
+            : keyStatus == "verified" ? "Contrôle périmé" : "Non vérifié"
+        return VStack(alignment: .leading, spacing: 18) {
+            SettingsCard(title: "Chiffrement local · mécanisme et preuve",
+                         status: keyLabel, ok: app.vaultAccessVerified) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Label("AES-256-GCM (CryptoKit), clé dans le Trousseau macOS", systemImage: "lock.shield")
-                    Label("Aucune publication dans Spotlight", systemImage: "eye.slash")
-                    Label("Traitement Apple Intelligence sur l’appareil", systemImage: "desktopcomputer")
-                    Label("Purge quotidienne après sept jours", systemImage: "calendar")
+                    Label("AES-256-GCM (CryptoKit) : mécanisme prévu pour les caches locaux", systemImage: "lock.shield")
+                    Label("Clé conservée dans le Trousseau macOS : disponibilité vérifiée séparément", systemImage: "key")
+                    Label("Aucune publication dans Spotlight par Reprise", systemImage: "eye.slash")
+                    Label("Traitement Apple sur l’appareil lorsqu’une route locale est sélectionnée", systemImage: "desktopcomputer")
+                    Label("Purge du cache prévue après sept jours", systemImage: "calendar")
+                    HStack {
+                        Button("Vérifier la clé sans autorisation") { app.checkVaultAvailability() }
+                            .disabled(app.vaultChecking || app.vaultBusy)
+                        if app.vaultChecking { ProgressView().controlSize(.small) }
+                    }
+                    if let checkedAt = app.vaultAvailabilityCheckedAt {
+                        Text("Source : contrôle non interactif de la clé existante · " + localDateTime(checkedAt))
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("Aucun contrôle récent de disponibilité de la clé.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    SettingsHint(
+                        text: "Clé accessible ne signifie pas index vérifié.",
+                        detail: "Ce contrôle ne crée pas de clé, ne déchiffre pas l’index et ne vérifie ni le contenu des caches, ni l’effacement, ni les fichiers des applications tierces.")
                 }.font(.callout)
             }
             SettingsCard(title: "Cache de recherche",
-                         status: app.searching ? "En cours" : "Prêt", ok: true) {
+                         status: app.searching ? "Opération en cours" : "État non vérifié", ok: false) {
                 HStack(spacing: 10) {
                     Button("Vider l’index") { app.clearIndex() }.disabled(app.searching)
                     if app.searching { ProgressView().controlSize(.small) }
                 }
                 if app.searchNote.contains("Index vidé") { InlineStatus(busy: false, message: app.searchNote) }
                 SettingsHint(
-                    text: "La recherche suivante reconstruit les éléments récents.",
-                    detail: "Le cache ne contient que des données dérivées : les sessions, leurs journaux et les fichiers des autres applications ne sont pas modifiés par cette action.")
+                    text: "L’existence et le contenu de l’index ne sont pas vérifiés ici.",
+                    detail: "La recherche suivante peut reconstruire les éléments récents. Les sessions, journaux et fichiers des autres applications ne sont pas modifiés par la purge de ce cache.")
             }
             SettingsCard(title: "Accès au Trousseau",
                          status: app.vaultBusy ? "Autorisation…" : "À la demande", ok: true) {
@@ -1116,8 +1302,9 @@ struct Dashboard: View {
             }
             SettingsHint(
                 text: "Le chiffrement ne couvre ni les journaux du planificateur ni ses archives.",
-                detail: "Le chiffrement concerne l’index de recherche et le cache d’analyse. Les instructions du planificateur, ses journaux et ses archives ZIP ne sont pas chiffrés par ce mécanisme. Les sources des autres applications restent inchangées.")
+                detail: "Les caches de recherche et d’analyse utilisent le mécanisme AES-GCM. La disponibilité d’une clé ne prouve pas qu’un cache particulier soit actuellement chiffré. Les instructions du planificateur, ses journaux et ses archives ZIP ne sont pas couverts ; les sources des applications tierces restent inchangées.")
         }
+        .onAppear { app.checkVaultAvailability() }
     }
     func empty(_ title: String, icon: String, detail: String) -> some View {
         VStack(spacing: 12) { Image(systemName: icon).font(.system(size: 36, weight: .light)).foregroundStyle(.secondary); Text(title).font(.title3.weight(.semibold)); Text(detail).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 380) }.frame(maxWidth: .infinity).padding(.vertical, 44)
@@ -1156,7 +1343,7 @@ struct Dashboard: View {
     }
 
     // Attention count per sidebar section, so the user sees where to act
-    // without visiting all 9 tabs.
+    // without visiting every sidebar section.
     func sidebarBadge(_ section: String) -> Int? {
         switch section {
         case "sessions": return app.attention.count

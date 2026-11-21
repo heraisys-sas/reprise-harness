@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import stat
 import sys
 import subprocess
 import tempfile
@@ -28,6 +29,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.base = Path(temporary.name).resolve()
+        self.addCleanup(integration._restore_directory_writes, self.base)
         self.app = self.base / 'Movable Reprise.app'
         self.root = package_helpers.package(SOURCE, self.app)
         runtime = self.root.parent / 'runtime'
@@ -62,6 +64,15 @@ class HarnessIntegrationTests(unittest.TestCase):
     def plan(self, action='install', delegate=False):
         return integration.plan(self.root, self.home, 'desktop', self.project, action, delegate)
 
+    def test_new_delegate_plan_propagates_chatgpt_state_without_claiming_transport(self):
+        files, _, manifest = integration.desired(
+            self.root, self.home, 'desktop', self.project, 'install', delegate=True)
+        self.assertEqual(manifest['chatgpt_state'],
+                         str(integration.state_location(self.root, 'chatgpt-state').absolute()))
+        self.assertIn('--chatgpt-state', files[self.config])
+        self.assertIn('reprise_delegate', files[self.config])
+        self.assertNotIn('--chatgpt-socket', files[self.config])
+
     def test_yaml_integrity_and_identity(self):
         helpers, runtime, before = integration.bundle_info(self.root)
         yaml_file = helpers / 'vendor/yaml/reader.py'
@@ -91,6 +102,219 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertEqual(before, integration.tree_files(release))
         shutil.rmtree(helpers / 'vendor/yaml')
         integration.bundle_info(self.root)  # legacy payload without YAML remains valid
+
+    def test_published_release_is_readonly_and_reusable(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        integration.stage_release(helpers, runtime, release)
+        evidence = json.loads((release / 'release.json').read_text())
+        self.assertEqual(evidence['format'], 2)
+        self.assertEqual(evidence['immutability'], 'posix-readonly-v1')
+        self.assertIn('Contents/Resources/runtime', evidence['directories'])
+        for entry in [release, *release.rglob('*')]:
+            if not entry.is_symlink():
+                self.assertFalse(stat.S_IMODE(entry.stat().st_mode) & 0o222, str(entry))
+        integration.release_check(release)
+        integration.stage_release(helpers, runtime, release)
+        python = release / 'Contents/Resources/runtime/bin/python3'
+        previous = stat.S_IMODE(python.stat().st_mode)
+        python.chmod(previous | stat.S_IWUSR)
+        try:
+            with self.assertRaisesRegex(ValueError, 'modifiable'):
+                integration.release_check(release)
+        finally:
+            python.chmod(previous)
+        integration.release_check(release)
+
+    def test_legacy_release_format_remains_readable_without_chmod(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        integration.stage_release(helpers, runtime, release)
+        evidence_path = release / 'release.json'
+        evidence = json.loads(evidence_path.read_text())
+        evidence['format'] = 1
+        del evidence['immutability']
+        evidence_path.chmod(0o600)
+        evidence_path.write_text(json.dumps(evidence))
+        python = release / 'Contents/Resources/runtime/bin/python3'
+        python.chmod(0o700)
+        integration.release_check(release)
+        self.assertTrue(stat.S_IMODE(python.stat().st_mode) & stat.S_IWUSR)
+
+    def test_runtime_apfs_clone_success_fallback_and_fail_closed(self):
+        import ctypes
+        from types import SimpleNamespace
+
+        source = self.base / 'large.bin'
+        source.write_bytes(b'copy-on-write-fixture' * 8192)
+        tiny = self.base / 'tiny.bin'
+        tiny.write_bytes(b'fixture')
+        staging = self.base / 'destination'
+        staging.mkdir()
+        calls = []
+
+        class Clone:
+            argtypes = None
+            restype = None
+            behavior = 'clone'
+
+            def __call__(self, src, dst, flags):
+                calls.append((src, dst, flags))
+                if self.behavior == 'clone':
+                    Path(os.fsdecode(dst)).write_bytes(Path(os.fsdecode(src)).read_bytes())
+                    return 0
+                if self.behavior == 'partial':
+                    Path(os.fsdecode(dst)).write_bytes(b'incomplete')
+                ctypes.set_errno(13 if self.behavior == 'denied' else 18)
+                return -1
+
+        clone = Clone()
+        with patch.object(integration.sys, 'platform', 'darwin'), \
+             patch('ctypes.CDLL', return_value=SimpleNamespace(clonefile=clone)):
+            copy = integration._runtime_copy_function(self.base, staging)
+        small_out = staging / 'small'
+        copy(tiny, small_out)
+        self.assertEqual(small_out.read_bytes(), tiny.read_bytes())
+        self.assertEqual(calls, [])
+        cloned = staging / 'cloned'
+        copy(source, cloned)
+        self.assertEqual(cloned.read_bytes(), source.read_bytes())
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][2], 0)
+
+        clone.behavior = 'unsupported'
+        fallback = staging / 'fallback'
+        copy(source, fallback)
+        self.assertEqual(fallback.read_bytes(), source.read_bytes())
+        clone.behavior = 'partial'
+        with self.assertRaisesRegex(ValueError, 'incomplet'):
+            copy(source, staging / 'partial')
+        clone.behavior = 'denied'
+        with self.assertRaises(PermissionError):
+            copy(source, staging / 'denied')
+
+    def test_staged_root_remains_writable_for_macos_rename(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        rename = Path.rename
+        visited = []
+
+        def verify_root(path, target):
+            if target == release:
+                visited.append(True)
+                self.assertTrue(stat.S_IMODE(path.stat().st_mode) & stat.S_IWUSR)
+                self.assertFalse(stat.S_IMODE((path / 'Contents/Resources/runtime').stat().st_mode) & 0o222)
+            return rename(path, target)
+
+        with patch.object(Path, 'rename', verify_root):
+            integration.stage_release(helpers, runtime, release)
+        self.assertEqual(visited, [True])
+        self.assertFalse(stat.S_IMODE(release.stat().st_mode) & 0o222)
+        integration.release_check(release)
+
+    def test_failed_final_seal_blocks_release_reuse(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        chmod = Path.chmod
+
+        def fail_final(path, mode):
+            if path == release:
+                raise OSError('synthetic final seal failure')
+            return chmod(path, mode)
+
+        with patch.object(Path, 'chmod', fail_final):
+            with self.assertRaisesRegex(OSError, 'final seal failure'):
+                integration.stage_release(helpers, runtime, release)
+        self.assertTrue(release.exists())
+        with self.assertRaisesRegex(ValueError, 'modifiable'):
+            integration.release_check(release)
+
+    def test_failed_publication_removes_sealed_staging_tree(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        original_rename = Path.rename
+
+        def fail_publish(path, target):
+            if target == release:
+                raise OSError('synthetic failure after sealing')
+            return original_rename(path, target)
+
+        with patch.object(Path, 'rename', fail_publish):
+            with self.assertRaisesRegex(OSError, 'after sealing'):
+                integration.stage_release(helpers, runtime, release)
+        self.assertFalse(release.exists())
+        self.assertEqual(list(release.parent.glob('.release-*')), [])
+
+    def test_scoped_readonly_release_diagnosis_of_unexpected_pycache(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        integration.stage_release(helpers, runtime, release)
+        self.assertEqual(integration.diagnose_release(release)['status'], 'clean')
+
+        runtime_target = release / 'Contents/Resources/runtime'
+        previous_mode = stat.S_IMODE(runtime_target.stat().st_mode)
+        runtime_target.chmod(previous_mode | stat.S_IWUSR)
+        cache_directory = runtime_target / '__pycache__'
+        cache_directory.mkdir()
+        cache_directory.chmod(0o500)
+        runtime_target.chmod(previous_mode)
+        empty = integration.diagnose_release(release)
+        self.assertEqual(empty['status'], 'drift')
+        self.assertTrue(empty['directory_inventory'])
+        self.assertEqual(empty['new_runtime_cache_dirs']['examples'],
+                         ['Contents/Resources/runtime/__pycache__'])
+        self.assertEqual(empty['new_runtime_cache']['count'], 0)
+        self.assertEqual(empty['writable']['count'], 0)
+        with self.assertRaisesRegex(ValueError, 'Arborescence'):
+            integration.release_check(release)
+
+        runtime_target.chmod(previous_mode | stat.S_IWUSR)
+        cache_directory.chmod(0o700)
+        cache = cache_directory / 'unexpected.pyc'
+        cache.write_bytes(b'not executable bytecode')
+        snapshot = integration.tree_files(release)
+        reported = integration.diagnose_release(release)
+        self.assertEqual(reported['status'], 'drift')
+        self.assertEqual(reported['new_runtime_cache']['count'], 1)
+        self.assertEqual(reported['new_runtime_cache_dirs']['count'], 1)
+        self.assertEqual(reported['new_runtime_cache']['examples'],
+                         ['Contents/Resources/runtime/__pycache__/unexpected.pyc'])
+        self.assertGreaterEqual(reported['writable']['count'], 1)
+        self.assertEqual(integration.tree_files(release), snapshot)
+
+        with patch.object(integration, 'tree_files', side_effect=FileNotFoundError('vanished')):
+            self.assertEqual(integration.diagnose_release(release)['status'], 'unstable')
+
+    def test_scoped_diagnosis_cli_exits_nonzero_on_drift(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        integration.stage_release(helpers, runtime, release)
+        buffer = io.StringIO()
+        command = ['harness-integration-release-diagnose', '--release', str(release)]
+        with patch.object(integration.os, 'umask'), redirect_stdout(buffer):
+            self.assertEqual(integration.main(self.root, command), 0)
+        self.assertEqual(json.loads(buffer.getvalue())['status'], 'clean')
+
+        release.chmod(0o700)  # Synthetic mode drift only.
+        buffer = io.StringIO()
+        with patch.object(integration.os, 'umask'), redirect_stdout(buffer):
+            self.assertEqual(integration.main(self.root, command), 2)
+        self.assertEqual(json.loads(buffer.getvalue())['status'], 'drift')
+
+    def test_scoped_diagnosis_public_reprise_entrypoint_is_readonly(self):
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        integration.stage_release(helpers, runtime, release)
+        before = integration.tree_files(release)
+        env = dict(os.environ, HOME=str(self.base), PYTHONDONTWRITEBYTECODE='1')
+        env.pop('AGENT_RESUME_STATE', None)
+        proc = subprocess.run(
+            [sys.executable, '-B', str(SOURCE / 'reprise'),
+             'harness-integration-release-diagnose', '--release', str(release)],
+            env=env, text=True, capture_output=True, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)['status'], 'clean')
+        self.assertEqual(integration.tree_files(release), before)
 
     def test_yaml_symlink_is_refused(self):
         yaml_file = self.root / 'vendor/yaml/reader.py'
@@ -203,12 +427,24 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertNotIn('--codex-workspace-write', self.config.read_text())
         self.assertFalse(integration.inspect(self.home, 'desktop')['codex_workspace_write'])
 
+    def test_deprecated_bare_names_are_routed_with_warning(self):
+        # Issue #160 : les anciens noms nus restent acceptés (avertissement stderr, comportement identique).
+        absent = self.base / 'never-initialized-state-alias'
+        environment = dict(os.environ, AGENT_RESUME_STATE=str(absent), PYTHONDONTWRITEBYTECODE='1')
+        command = [sys.executable, str(SOURCE / 'reprise'), 'integration-inspect', '--home', str(self.home)]
+        result = subprocess.run(command, capture_output=True, text=True, env=environment)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['profiles'], ['desktop', 'other'])
+        self.assertIn('déprécié', result.stderr)
+        self.assertIn('#160', result.stderr)
+        self.assertIn('harness-integration-inspect', result.stderr)
+
     def test_cli_reinstallation_without_workspace_write_flag_revokes_grant(self):
         self.install(delegate=True, codex_workspace_write=True)
         output = io.StringIO()
         with redirect_stdout(output):
             status = integration.main(self.root, [
-                'integration-plan', '--home', str(self.home), '--profile', 'desktop',
+                'harness-integration-plan', '--home', str(self.home), '--profile', 'desktop',
                 '--project', str(self.project), '--action', 'install', '--delegate'])
         self.assertEqual(status, 0, output.getvalue())
         result = json.loads(output.getvalue())
@@ -355,6 +591,60 @@ class HarnessIntegrationTests(unittest.TestCase):
         integration.apply(self.root, proposed)
         self.assertIn('--codex-workspace-write', self.config.read_text())
         self.assertTrue(integration.inspect(self.home, 'desktop')['codex_workspace_write'])
+
+    def legacy_block(self, transform=lambda entries: entries):
+        text = self.config.read_text()
+        match = re.search(r'^- insert: (\[.*\])$', text, re.M)
+        entries = transform(json.loads(match.group(1)))
+        base = text[:text.index(integration.START)]
+        return base + integration.START + '\n- insert: ' + json.dumps(entries, ensure_ascii=False) + '\n' + integration.END + '\n'
+
+    def with_legacy_args(self, entries, extra=('--chatgpt-socket', 'chatgpt.sock')):
+        return [{**entry, 'config': {**entry['config'],
+                 'args': entry['config']['args'] + list(extra)}}
+                if entry.get('id') == 'reprise-codex-expert' else entry for entry in entries]
+
+    def test_legacy_chatgpt_socket_args_are_migrated_explicitly(self):
+        self.install()
+        self.config.write_text(self.legacy_block(lambda entries: self.with_legacy_args(entries)))
+        proposed = self.plan()
+        self.assertTrue(proposed['legacy_migration'])
+        self.assertEqual(proposed['removed_legacy_params'], ['--chatgpt-socket', 'chatgpt.sock'])
+        self.assertTrue(proposed['block_reconciled'])
+        integration.apply(self.root, proposed)
+        text = self.config.read_text()
+        self.assertNotIn('--chatgpt-socket', text)
+        self.assertNotIn('chatgpt.sock', text)
+        self.assertNotIn('- insert:\n', text)
+        manifest = json.loads((self.managed / 'managed.json').read_text())
+        self.assertEqual(manifest['legacy_removed_params'], proposed['removed_legacy_params'])
+        self.assertEqual(self.plan()['changes'], [])
+        probe = self.bridge_probe()
+        with patch.object(integration.subprocess, 'run', return_value=probe):
+            self.assertEqual(integration.verify(self.home, 'desktop', self.root)['status'], 'verified')
+
+    def test_legacy_migration_refused_with_additional_divergence(self):
+        self.install()
+        def transform(entries):
+            entries = self.with_legacy_args(entries)
+            for entry in entries:
+                if entry.get('id') == 'reprise-codex-expert':
+                    entry['config']['toolCallTimeoutMs'] = 630001
+            return entries
+        self.config.write_text(self.legacy_block(transform))
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, 'personnalisé'):
+            self.plan()
+        self.assertEqual(self.snapshot(), before)
+
+    def test_legacy_migration_backup_is_private(self):
+        self.install()
+        self.config.write_text(self.legacy_block(lambda entries: self.with_legacy_args(entries)))
+        result = integration.apply(self.root, self.plan())
+        backup = Path(result['backup']) / 'cordis.patch.yml'
+        self.assertTrue(backup.is_file())
+        self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+        self.assertIn('--chatgpt-socket', backup.read_text())
 
     def test_real_block_change_is_refused_not_reconciled(self):
         self.install()
@@ -520,7 +810,8 @@ class HarnessIntegrationTests(unittest.TestCase):
         with patch.object(integration.subprocess, 'run', side_effect=AssertionError('no inference')):
             self.install(delegate=True)
         manifest = json.loads((self.managed / 'managed.json').read_text())
-        self.assertEqual(manifest['tools'], list(integration.OBSERVE + integration.DELEGATE + (integration.APPROVAL_RESPOND,)))
+        self.assertEqual(manifest['tools'], list(integration.OBSERVE + integration.DELEGATE))
+        self.assertNotIn('approval_respond', manifest['tools'])  # #117 T2a : exposition automatique retirée
         self.assertIn('reprise_followup', (self.managed / 'skills/reprise-delegation/SKILL.md').read_text())
         deployed = self.managed / 'skills/reprise-delegation/REPRISE-AGENTS.template.md'
         self.assertEqual(deployed.read_bytes(), (SOURCE.parent / 'docs/templates/REPRISE-AGENTS.template.md').read_bytes())
@@ -554,7 +845,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'journal modifié'):
             integration.apply(self.root, proposed)
         self.assertEqual(self.snapshot(), before)
-        response = subprocess.run([sys.executable, str(SOURCE / 'reprise'), 'integration-apply'],
+        response = subprocess.run([sys.executable, str(SOURCE / 'reprise'), 'harness-integration-apply'],
                                   input=json.dumps({'plan': proposed}), text=True, capture_output=True,
                                   env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'), timeout=30)
         self.assertNotEqual(response.returncode, 0)
@@ -577,7 +868,7 @@ class HarnessIntegrationTests(unittest.TestCase):
     def test_cli_inspect_does_not_initialize_state(self):
         absent = self.base / 'never-initialized-state'
         environment = dict(os.environ, AGENT_RESUME_STATE=str(absent), PYTHONDONTWRITEBYTECODE='1')
-        command = [sys.executable, str(SOURCE / 'reprise'), 'integration-inspect', '--home', str(self.home)]
+        command = [sys.executable, str(SOURCE / 'reprise'), 'harness-integration-inspect', '--home', str(self.home)]
         result = subprocess.run(command, capture_output=True, text=True, env=environment, check=True)
         self.assertEqual(json.loads(result.stdout)['profiles'], ['desktop', 'other'])
         self.assertFalse(absent.exists())
@@ -585,7 +876,7 @@ class HarnessIntegrationTests(unittest.TestCase):
     def bridge_probe(self, delegate=False, legacy=False):
         self.install(delegate=delegate)
         tools = []
-        for name in sorted(integration.OBSERVE + ((integration.DELEGATE + (integration.APPROVAL_RESPOND,)) if delegate else ())):
+        for name in sorted(integration.OBSERVE + (integration.DELEGATE if delegate else ())):
             properties = {}
             if not legacy:
                 if name == 'reprise_requests':
@@ -619,10 +910,27 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertTrue(all(result['bridge_capabilities']['result_transport'].values()))
         self.assertEqual(result['levels']['integration_loaded'], 'unknown')
         self.assertEqual(result['bridge_capabilities']['client_loaded'], 'unknown')
+        self.assertEqual(result['bridge_capabilities']['delegation']['mode'], 'delegate')
+        self.assertTrue(result['bridge_capabilities']['delegation']['configured'])
+        self.assertTrue(result['bridge_capabilities']['delegation']['advertised'])
+        self.assertEqual(result['missing_delegation_tools'], [])
         requests = [json.loads(line) for line in run.call_args.kwargs['input'].splitlines()]
         self.assertEqual([item['method'] for item in requests],
                          ['initialize', 'notifications/initialized', 'tools/list'])
         self.assertEqual(self.snapshot(self.state), before)
+
+    def test_verify_flags_observe_only_bridge_even_with_current_release(self):
+        probe = self.bridge_probe(delegate=False)
+        with patch.object(integration.subprocess, 'run', return_value=probe):
+            result = integration.verify(self.home, 'desktop', self.root)
+        self.assertEqual(result['status'], 'verified')
+        self.assertEqual(result['selected_release']['status'], 'current')
+        self.assertTrue(result['update_required'])
+        self.assertEqual(result['bridge_capabilities']['delegation']['mode'], 'observe_only')
+        self.assertFalse(result['bridge_capabilities']['delegation']['configured'])
+        self.assertFalse(result['bridge_capabilities']['delegation']['advertised'])
+        self.assertEqual(set(result['missing_delegation_tools']), set(integration.DELEGATE))
+        self.assertEqual(result['levels']['client_tools_discovered'], 'unknown')
 
     def test_verify_detects_legacy_tools_even_with_matching_release_identity(self):
         probe = self.bridge_probe(delegate=True, legacy=True)
@@ -650,7 +958,8 @@ class HarnessIntegrationTests(unittest.TestCase):
                 patch.object(integration, 'bundle_info', side_effect=FileNotFoundError('fixture')):
             result = integration.verify(self.home, 'desktop', self.root)
         self.assertEqual(result['selected_release']['status'], 'unknown')
-        self.assertFalse(result['update_required'])
+        self.assertTrue(result['update_required'])
+        self.assertEqual(set(result['missing_delegation_tools']), set(integration.DELEGATE))
         self.assertEqual(result['levels']['integration_loaded'], 'unknown')
 
     @unittest.skipUnless(os.environ.get('REPRISE_TEST_RUNTIME_ARCHIVE'), 'Pinned local runtime archive required')
@@ -663,6 +972,20 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.root = moved / 'Contents/Resources/helpers'
         state_before = self.snapshot(self.state)
         proposed = self.install()
+        release = Path(proposed['release'])
+        before_probe = integration.tree_files(release)
+        interpreter = release / 'Contents/Resources/runtime/bin/python3'
+        # Probe direct sans -B ni PYTHONDONTWRITEBYTECODE : aucune écriture
+        # tolérée dans les encodings/stdlib d'une release déjà publiée.
+        probe_env = {key: value for key, value in os.environ.items()
+                     if not key.startswith(('PYTHON', 'DYLD_')) and key != 'AGENT_RESUME_STATE'}
+        probe_env['HOME'] = str(self.base)
+        probe = subprocess.run([str(interpreter), '-I', '-c',
+                                'import encodings,json,sqlite3,tomllib,pathlib,urllib.request; print("ok")'],
+                               env=probe_env, capture_output=True, text=True, timeout=30, check=True)
+        self.assertEqual(probe.stdout.strip(), 'ok')
+        integration.release_check(release)
+        self.assertEqual(integration.tree_files(release), before_probe)
         config = self.config.read_text()
         self.assertNotIn(str(SOURCE), config)
         self.assertNotIn(str(moved), config)

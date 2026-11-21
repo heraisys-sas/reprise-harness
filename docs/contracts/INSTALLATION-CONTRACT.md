@@ -36,6 +36,19 @@ Les données durables vont dans `~/Library/Application Support/Reprise/`, sépar
 
 L’import des états existants est explicite, sauvegardé et vérifié : conserver identités, résultats non réclamés et barrières de tentatives incertaines. Prévoir compatibilité app/helpers/schémas SQLite, sauvegarde cohérente (y compris WAL) et récupération après mise à jour interrompue. Ne pas proposer de rétrogradation d’un binaire sur un schéma incompatible ; restauration seulement avec compatibilité vérifiée et sans effacer des travaux nouveaux.
 
+### Clones d'app (ReChatGPT/ReClaude)
+
+Les clones à identité propre et version gelée sont des artefacts gérés du même
+moule (inspect/plan/apply/verify) décrits dans
+[APP-CLONES-CONTRACT](APP-CLONES-CONTRACT.md) et opérés via le
+[runbook APP-CLONES](../runbooks/APP-CLONES.md) (CLI `app_clones.py`, manifeste
+`~/Library/Application Support/Reprise/app-clones.json`). Ils vivent dans
+`~/Applications`, ne dépendent d’aucun chemin de clone dans le paquet (le
+holder résout la copie au démarrage), et leur branchement comme composant
+natif `managed_update` accompagne la release v0.1.20. L’originale
+`/Applications` reste l’app à mettre à jour normalement ; le clone est gelé et
+se rafraîchit par re-clone/patch documenté.
+
 ## Contrat commun des adaptateurs
 
 | Opération | Garantie |
@@ -182,7 +195,7 @@ Le déploiement Reprise doit aussi proposer son point d’entrée MCP au harness
 
 ## Organisation et configuration des dépôts — 24/10
 
-L’onglet Dépôts (#57) doit guider la configuration du dépôt et appliquer un plan explicite lorsque les droits le permettent. Les rôles hyperviseur, référent technique principal et worker sont configurables selon [HARNESS-ROLES-CONTRACT.md](HARNESS-ROLES-CONTRACT.md). Même contrat pour nouvelles sessions sans boucle et archivage proposé ; aucune de ces capacités n’est annoncée installée par cette documentation.
+L’onglet « Dépôts » attendu par #57 (rouvert le 12/11 : la fonctionnalité n’est pas livrée, voir l’issue) doit guider la configuration du dépôt et appliquer un plan explicite lorsque les droits le permettent. Les rôles hyperviseur, référent technique principal et worker sont configurables selon [HARNESS-ROLES-CONTRACT.md](HARNESS-ROLES-CONTRACT.md). Même contrat pour nouvelles sessions sans boucle et archivage proposé ; aucune de ces capacités n’est annoncée installée par cette documentation.
 
 
 ## Remplacement explicite du seul bundle app sans sauvegarde

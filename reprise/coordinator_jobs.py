@@ -14,6 +14,7 @@ import uuid
 
 import orchestrator_memory
 import vault
+import registry_marker
 
 PURPOSE = 'coordinator-jobs-v1'
 VERSION = 1
@@ -153,12 +154,17 @@ class Jobs:
         finally:
             os.close(root)
 
+    def adopt_legacy_registry(self):
+        """Operator-only adoption under lock; preserve ciphertext and receipts."""
+        with self._store(adopt_legacy=True):
+            return {'status': 'adopted'}
+
     def _project(self, project_id):
         # Same read-only project lookup as Memory; project ID alone is not a grant.
         return orchestrator_memory.Memory._project(self, project_id)
 
     @contextlib.contextmanager
-    def _store(self, *, write=False, durable=False, commit_guard=None):
+    def _store(self, *, write=False, durable=False, commit_guard=None, adopt_legacy=False):
         root = os.open(self.state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         folder = lock = None
         try:
@@ -209,6 +215,15 @@ class Jobs:
                 if (not isinstance(data, dict) or set(data) != {'version', 'jobs'} or data['version'] != VERSION
                         or not isinstance(data['jobs'], list) or len(data['jobs']) > MAX_JOBS):
                     raise ValueError('Unsupported or corrupt jobs store')
+            registry_state = registry_marker.status(
+                folder, snapshot_exists=fd is not None, check_file=_file)
+            if adopt_legacy:
+                if registry_state == 'new':
+                    raise ValueError('No existing legacy jobs to adopt')
+                if registry_state == 'legacy':
+                    registry_marker.mark(folder, check_file=_file)
+            elif write and registry_state == 'legacy':
+                raise registry_marker.LegacyRegistry('Explicit legacy jobs adoption required')
             before = _json(data)
             yield data
             if write and _json(data) != before:
@@ -225,6 +240,8 @@ class Jobs:
                         stream.write(encrypted); stream.flush(); os.fsync(stream.fileno())
                     # Source guard is entered only after crypto and temp-file sync.
                     with commit_guard() if commit_guard else contextlib.nullcontext():
+                        if registry_state == 'new':
+                            registry_marker.mark(folder, check_file=_file)
                         os.replace(name, 'jobs.enc', src_dir_fd=folder, dst_dir_fd=folder)
                         try:
                             os.fsync(folder)
@@ -251,7 +268,7 @@ class Jobs:
         """
         project, work = _uuid(project_id), _uuid(work_id)
         try:
-            response = subprocess.run([sys.executable, '-I', '-c', orchestrator_memory._REGISTRY_PROBE],
+            response = subprocess.run([sys.executable, '-I', '-B', '-c', orchestrator_memory._REGISTRY_PROBE],
                 input=_json({'state': str(self.state), 'project_id': project, 'include_root': True}),
                 text=True, capture_output=True, timeout=5, check=False)
             found = json.loads(response.stdout)
@@ -353,6 +370,9 @@ class Jobs:
                             or consent.get('clarifications_sha256') != clarifications_sha):
                         raise ValueError('Execution manifest mismatch')
                 if 'memory_selection' in row:
+                    import coordinator_local
+                    if snapshot.get('prompt_format') != coordinator_local.analysis_format(row):
+                        raise ValueError('Execution manifest mismatch')
                     memory_sha = hashlib.sha256(_json(row['memory_selection']['snapshot']).encode()).hexdigest()
                     if snapshot.get('memory_snapshot_sha256') != memory_sha or consent.get('memory_snapshot_sha256') != memory_sha:
                         raise ValueError('Execution manifest mismatch')
@@ -515,26 +535,33 @@ class Jobs:
             return self._public(row)
 
     def attach_memory(self, project_id, operation_id, *, snapshot, selection_id,
-                      snapshot_sha256, expected_revision, work_id, fact_ids):
+                      snapshot_sha256, expected_revision, work_id, fact_ids=None, fact_refs=None):
         import coordinator_recall as recall
         from delegation_store import digest
         project, operation, work, mutation = map(_uuid, (project_id, operation_id, work_id, selection_id))
-        snapshot = recall.validate(snapshot)
+        snapshot = recall.validate_selection(snapshot)
+        if snapshot['schema'] == recall.SCHEMA_V2:
+            if fact_ids is not None or fact_refs != recall.snapshot_references(snapshot):
+                raise ValueError('Memory selection identity mismatch')
+            reference_identity = {'fact_refs': fact_refs}
+        else:
+            if fact_refs is not None or not isinstance(fact_ids, list) or sorted(fact_ids) != [fact['id'] for fact in snapshot['facts']]:
+                raise ValueError('Memory selection identity mismatch')
+            reference_identity = {'fact_ids': fact_ids}
         if (type(expected_revision) is not int or expected_revision < 0
                 or snapshot['project_id'] != project or snapshot['work_id'] != work
-                or digest(snapshot) != snapshot_sha256
-                or sorted(fact_ids) != [fact['id'] for fact in snapshot['facts']]):
+                or digest(snapshot) != snapshot_sha256):
             raise ValueError('Memory selection identity mismatch')
         self.consent_context(project, work)
         identity = {'selection_id': mutation, 'snapshot_sha256': snapshot_sha256,
-                    'expected_revision': expected_revision, 'work_id': work, 'fact_ids': fact_ids}
+                    'expected_revision': expected_revision, 'work_id': work, **reference_identity}
         with self._store(write=True) as data:
             row = next((row for row in data['jobs'] if row['project_id'] == project
                         and row.get('operation_id') == operation), None)
             if row is None: raise ValueError('Job not found')
             previous = row.get('memory_selection')
             if previous and previous['selection_id'] == mutation:
-                if {key: previous[key] for key in identity} != identity:
+                if {key: previous.get(key) for key in identity} != identity:
                     raise ValueError('Memory selection identity conflict')
                 return self._public(row)
             if row['status'] != 'preparation': raise ValueError('Mission locked')

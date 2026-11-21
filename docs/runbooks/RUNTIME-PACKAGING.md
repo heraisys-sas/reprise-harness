@@ -51,6 +51,30 @@ Aucune application lancée, aucun service redémarré, aucune migration de donn�
 
 Le bundle dispose d’un parcours exclusif de création/import explicite des états, sans commande manuelle, fondé sur `state-status`, `state-plan` et `state-apply`. Il utilise ce runtime sans ouvrir de registre avant choix, plan et confirmation. Le paquet de helpers inclut `state_setup.py` ; `StateSetup.swift` est compilé dans Reprise. Les prérequis et refus du runtime restent visibles sur cet écran. Parcours compilé et backend testé, sans lancement GUI : voir [le contrat](../contracts/INSTALLATION-CONTRACT.md#quatrième-incrément-d1--préparation-graphique-des-états).
 
+## Releases MCP en lecture seule (issue #162)
+
+Lors d'une **nouvelle** publication Harness/scheduler/ChatGPT, `stage_release()` retire les bits POSIX d'écriture des fichiers et sous-répertoires du payload avant le renommage atomique. Sur macOS, la racine du staging doit rester inscriptible pendant le renommage ; elle est verrouillée immédiatement après le renommage, avant toute confirmation de publication. Une interruption entre ces deux étapes laisse une release refusée par `release_check()` (format 2), jamais considérée comme installée. Le manifeste `release.json` de format 2 porte `immutability: posix-readonly-v1`; `release_check()` vérifie à la fois les empreintes strictes et l'absence de bits d'écriture. Le runtime, les helpers et les exécutables restent lisibles et exécutables. Les états, sockets, journaux et caches fonctionnels restent hors release.
+
+Les releases de format 1 déjà installées sont vérifiées par leurs empreintes historiques et **ne sont ni modifiées ni converties à chaud**. Pour appliquer cette protection à une release ancienne, préparer et activer une nouvelle publication avec un changement d'identité vérifié ; ne pas supprimer une release tenue par un processus actif. Les permissions POSIX réduisent les écritures accidentelles, mais ne constituent pas une barrière de sécurité contre leur propriétaire (qui peut refaire `chmod`). Une purge explicite doit réautoriser l'écriture sur les répertoires avant suppression ; aucun nettoyage automatique d'une release active n'est effectué.
+
+Le code de Reprise doit être inventorié depuis Git (`git ls-files`) plutôt que via `find` dans `Application Support/Reprise/integration-releases` : la stdlib distribuée n'appartient pas au corpus source de l'agent.
+
+## Diagnostic ciblé d'une release MCP (issue #162)
+
+La commande ci-dessous réalise **uniquement des lectures** sur une release explicitement nommée : elle compare le contenu à `release.json` (formats 1 et 2), relève les permissions inattendues en format 2 et distingue les fichiers et **répertoires vides** `__pycache__` nouvellement créés sans parcourir les autres releases. Les nouvelles releases de format 2 enregistrent les chemins des répertoires ; les anciennes restent lisibles sans cette information (champ `directory_inventory: false`). Aucun `find` global, aucune suppression ni exécution du Python empaqueté. Les listes de chemins sont plafonnées à 30 exemples, les nombres exacts sont conservés.
+
+```sh
+python3 -B reprise/reprise harness-integration-release-diagnose --release "/chemin/autorisé/integration-releases/EMPREINTE"
+```
+
+Le code retour est 0 pour `clean`, 2 pour `drift` (y compris mode inscriptible), et 1 pour un refus de lecture. Un état `unstable` (entrée disparue en cours d'inventaire) renvoie 2 ; **il ne prouve pas** quel processus a créé ou supprimé le fichier. Les empreintes du manifeste restent une comparaison locale, non une signature indépendante. Le message externe `PRISTINE: False` n'est pas attribué à cette commande sans trace de son producteur.
+
+## Copies CoW APFS des releases (issue #162)
+
+La copie de la bibliothèque Python effectuée dans `stage_release()` tente `clonefile(2)` uniquement sur macOS, pour les fichiers réguliers d'au moins 64 Kio et lorsque la source et le staging résident sur le même volume. Une plateforme non macOS, des volumes distincts ou un refus `ENOTSUP`/`EXDEV`/`ENOSYS` conservent `shutil.copy2`. Les autres refus (permissions, erreur d'E/S, destination existante) restent des échecs, jamais masqués. Les liens symboliques sont conservés par `copytree(symlinks=True)` et les manifestes vérifient toujours les octets livrés. Il n'y a **aucun hardlink entre releases**.
+
+Le clonage CoW partage des blocs de stockage mais produit des fichiers logiquement indépendants. Le gain de temps et d'espace physique doit être mesuré sur le volume APFS réel avant d'être revendiqué ; les tests de contrat ne valent pas benchmark.
+
 ## Déploiement géré du pont Harness
 
 L’onglet Intégrations copie le payload et ce runtime dans un release versionné indépendant du bundle, au voisinage de l’état préparé. Le profil MCP vise ce release plutôt que le bundle mobile ; le retrait garde releases et données. Copie altérée refusée par empreintes, aucun téléchargement/installation Python supplémentaire. La validation directe du pont a fonctionné après déplacement puis suppression du bundle source sur fixtures ; elle ne vaut pas chargement du client. Voir [HARNESS-INTEGRATION.md](../integrations/harness/HARNESS-INTEGRATION.md).

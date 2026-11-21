@@ -226,11 +226,54 @@ class DaemonDispatchTests(unittest.TestCase):
         self.assertEqual(result['stage'], 'envoyé')
         self.assertIs(result['click_observed'], True)
         self.assertTrue(result['admission_only'])
-        # prompt inserted once via the event-driven _insert primitive; single attach, no cold-start retarget
-        self.assertIn((fake.pipe, prompt.strip()), patched_apply_module.insert_calls)
+        # pointer inserted once via the event-driven _insert primitive (#155);
+        # single attach, no cold-start retarget
+        self.assertIn((fake.pipe, claude_desktop_quick.task_pointer(key).strip()),
+                      patched_apply_module.insert_calls)
         self.assertEqual(fake.pipe.pick_attempts, 1)
         self.assertNotIn(('Target.createTarget', {'url': 'https://claude.ai/chat/' + CHAT_ID}), fake.pipe.calls)
         self.assertEqual(fake.terminated, [])  # success preserves the daemon-owned Chrome
+
+    def test_dispatch_pushes_pointer_not_full_prompt(self):
+        # #155: the composer receives the short get_task pointer only; the
+        # full prompt stays in the TaskStore as get_task's single source.
+        prompt = 'Consigne complète qui ne doit PAS aller dans le composeur'
+        self.patch_apply(
+            state_sequence=[composer_state(), composer_state(text_sha256=None)],
+            dispatch_outcome=claude_desktop_apply._result('envoyé', ok=True,
+                                                          dispatch_attempted=True, click_observed=True))
+        self.patch_cdp()
+        endpoint = self.endpoint()
+        key = self.admit(endpoint, prompt)
+        result = endpoint.call('quick_entry/dispatch', {'request_key': key})
+        self.assertTrue(result['dispatch_ok'])
+        inserted = [text for _, text in patched_apply_module.insert_calls]
+        self.assertEqual(inserted, [claude_desktop_quick.task_pointer(key).strip()])
+        self.assertIn(json.dumps(key), inserted[0])
+        self.assertNotIn(prompt, inserted[0])
+        # get_task still returns the full prompt
+        claimed = endpoint.tasks.claim(key, 'claim-pointer')
+        self.assertEqual(claimed["prompt"], prompt)
+
+    def test_submit_delegation_relays_pointer_but_admits_full_prompt(self):
+        # #155: the durable submission record (what the relay driver turns into
+        # a chat message) carries the pointer; the TaskStore keeps the full
+        # prompt as get_task's single source.
+        self.patch_apply(state_sequence=[composer_state()])
+        self.patch_cdp()
+        endpoint = self.endpoint()
+        key = str(uuid.uuid4())
+        endpoint.submit({'request_key': key, 'prompt': 'Consigne delegation',
+                         'chatId': CHAT_ID, 'purpose': 'delegation'})
+        row = endpoint.db.execute(
+            'SELECT payload FROM quick_submissions WHERE scope=?',
+            (endpoint.scope,)).fetchone()
+        delivered = json.loads(row[0])
+        self.assertEqual(delivered['text'].strip(),
+                         claude_desktop_quick.task_pointer(key).strip())
+        self.assertIn(json.dumps(key), delivered['text'])
+        self.assertNotIn('Consigne delegation', delivered['text'])
+        self.assertEqual(endpoint.tasks.claim(key, "claim-same")["prompt"], "Consigne delegation")
 
     def test_dispatch_cold_start_creates_target_then_attaches(self):
         prompt = 'Démarrage à froid'

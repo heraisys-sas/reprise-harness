@@ -129,6 +129,59 @@ class PatchRestoreTests(unittest.TestCase):
         self.assertNotIn(desktop_patch.MARKER, desktop_patch._chunk_text(raw, header_size, entry))
         self.assertFalse(desktop_patch.BACKUP.exists())
 
+    def test_restore_recovers_pristine_bundle_id(self):
+        import plistlib
+        plist = {'CFBundleIdentifier': desktop_patch.ORIGINAL_BUNDLE_ID,
+                 'CFBundleShortVersionString': '9.9.9',
+                 'ElectronAsarIntegrity': {'Resources/app.asar': {
+                     'algorithm': 'SHA256', 'hash': 'x'}}}
+        with open(self.app / 'Contents' / 'Info.plist', 'wb') as handle:
+            plistlib.dump(plist, handle)
+        with unittest.mock.patch.object(desktop_patch, 'desktop_running', return_value=False):
+            desktop_patch.patch(app=self.app)
+        with open(self.app / 'Contents' / 'Info.plist', 'rb') as handle:
+            self.assertEqual(plistlib.load(handle)['CFBundleIdentifier'], desktop_patch.COPY_BUNDLE_ID)
+        with unittest.mock.patch.object(desktop_patch, 'desktop_running', return_value=False):
+            desktop_patch.restore(app=self.app)
+        with open(self.app / 'Contents' / 'Info.plist', 'rb') as handle:
+            self.assertEqual(plistlib.load(handle)['CFBundleIdentifier'],
+                             desktop_patch.ORIGINAL_BUNDLE_ID)
+
+    def test_restore_managed_clone_uses_official_identity(self):
+        import app_clones
+        import plistlib
+
+        self._write_plist()
+        source = self.app
+        target = source.parent / 'ReClaude.app'
+        with open(source / 'Contents/Info.plist', 'rb') as handle:
+            plist = plistlib.load(handle)
+        plist.update(CFBundleName='Claude',
+                     CFBundleIdentifier=desktop_patch.ORIGINAL_BUNDLE_ID)
+        with open(source / 'Contents/Info.plist', 'wb') as handle:
+            plistlib.dump(plist, handle)
+        app_clones._clone_source(source, target)
+        app_clones._set_identity(target, {
+            'kind': 'patched', 'source': source, 'display_name': 'ReClaude',
+            'bundle_id': desktop_patch.COPY_BUNDLE_ID})
+        with unittest.mock.patch.object(desktop_patch, 'desktop_running', return_value=False), \
+             unittest.mock.patch.object(desktop_patch, '_should_unlink_socket', return_value=False):
+            desktop_patch.patch(app=target)
+            with open(desktop_patch._paths(target)['plist_backup'], 'rb') as handle:
+                self.assertEqual(plistlib.load(handle)['CFBundleIdentifier'],
+                                 desktop_patch.COPY_BUNDLE_ID)
+            desktop_patch.restore(app=target)
+        with open(target / 'Contents/Info.plist', 'rb') as handle:
+            self.assertEqual(plistlib.load(handle)['CFBundleIdentifier'],
+                             desktop_patch.ORIGINAL_BUNDLE_ID)
+        raw, tree, header_size, _ = desktop_patch.read_asar_raw(
+            (target / 'Contents/Resources/app.asar').read_bytes())
+        self.assertNotIn(desktop_patch.MARKER, desktop_patch._chunk_text(
+            raw, header_size, desktop_patch._chunk_entry(tree)))
+        with open(source / 'Contents/Info.plist', 'rb') as handle:
+            self.assertEqual(plistlib.load(handle)['CFBundleIdentifier'],
+                             desktop_patch.ORIGINAL_BUNDLE_ID)
+
     def test_patch_refuses_when_anchors_missing(self):
         self._write_plist()
         tree, blobs = make_tree()

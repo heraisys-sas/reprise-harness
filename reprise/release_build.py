@@ -7,6 +7,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+
+import package_runtime
 from yaml_contract import YAML_FILES, yaml_hashes
 
 ROOT = Path(__file__).resolve().parent
@@ -96,6 +98,41 @@ def smoke(app):
             json.loads(result.stdout)
 
 
+_DRIFT_PROBE = ('import sys,platform,json,sqlite3,ssl,hashlib,zlib,bz2,lzma,ctypes,fcntl,socket\n'
+                'assert sys.dont_write_bytecode\n'
+                'assert sqlite3.connect(":memory:").execute("select 1").fetchone() == (1,)\n'
+                'print(json.dumps({"status": "ok"}))\n')
+
+
+def _diff_inventories(before, after):
+    return sorted({*before, *after} - {k for k in before.keys() & after.keys() if before[k] == after[k]})
+
+
+def _drift_probe(app):
+    python = app / 'Contents/Resources/runtime/bin/python3'
+    # Aucun garde-fou environnemental : le probe doit prouver que -B suffit seul.
+    with tempfile.TemporaryDirectory(prefix='reprise-drift-') as folder:
+        env = {k: v for k, v in os.environ.items() if not k.startswith(('PYTHON', 'DYLD_')) and k != 'AGENT_RESUME_STATE'}
+        env.update(HOME=folder, AGENT_RESUME_STATE=str(Path(folder) / 'state'))
+        result = subprocess.run([str(python), '-I', '-B', '-c', _DRIFT_PROBE],
+                                env=env, capture_output=True, text=True, check=True, timeout=30)
+    return json.loads(result.stdout)
+
+
+def verify_no_drift(app, root=ROOT):
+    app = Path(app).resolve()
+    package_runtime.metadata(app)
+    before = bundle_files(app)
+    before.pop('Contents/Resources/build-evidence.json', None)
+    _drift_probe(app)
+    package_runtime.metadata(app)
+    after = bundle_files(app)
+    after.pop('Contents/Resources/build-evidence.json', None)
+    drift = _diff_inventories(before, after)
+    if drift:
+        raise ValueError('Dérive du bundle après lancement du runtime : ' + ', '.join(drift))
+
+
 def build(archive, root=ROOT):
     archive = Path(archive).expanduser().resolve(strict=True)
     source = inputs(root)
@@ -105,6 +142,7 @@ def build(archive, root=ROOT):
     app = destination / 'Reprise.app'
     if destination.exists():
         check(app, root)
+        verify_no_drift(app, root)
         return app
     with tempfile.TemporaryDirectory(prefix='reprise-build-') as folder:
         stage = Path(folder) / 'source'
@@ -123,6 +161,8 @@ def build(archive, root=ROOT):
         produced.rename(moved)
         smoke(moved)
         subprocess.run(['python3', str(stage / 'native_contract.py'), str(moved)], check=True)
+        # Une dérive pendant smoke() doit bloquer la publication.
+        verify_no_drift(moved, root)
         if inputs(root) != source:
             raise ValueError('Sources modifiées pendant la compilation ; build non publié.')
         evidence = {'format': 1, 'inputs': source, 'source_sha256': identity(source),
@@ -154,7 +194,7 @@ def main():
     sub = parser.add_subparsers(dest='action', required=True)
     b = sub.add_parser('build')
     b.add_argument('--runtime-archive', required=True)
-    for action in ('check', 'open'):
+    for action in ('check', 'open', 'verify-no-drift'):
         sub.add_parser(action).add_argument('--app')
     args = parser.parse_args()
     try:
@@ -164,6 +204,8 @@ def main():
             app = Path(args.app) if args.app else ROOT / 'builds' / identity(inputs(ROOT)) / 'Reprise.app'
             if args.action == 'open':
                 launch(app)
+            elif args.action == 'verify-no-drift':
+                verify_no_drift(app)
             else:
                 check(app)
         print(json.dumps({'status': 'ready', 'app': str(app)}))

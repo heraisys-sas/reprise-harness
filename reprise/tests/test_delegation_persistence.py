@@ -7,18 +7,30 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from codex_expert_mcp import Bridge
+from codex_expert_mcp import BACKEND_MODELS, Bridge
 from claude_desktop_quick import Endpoint, serve, _serve_owned
 from delegation_store import Store
 from support_clock import FakeClock
 from ux_review_probe import Probe
 
 ID = '12345678-1234-1234-1234-123456789abc'
+
+
+def seed_catalog(bridge):
+    # #242 : admission dynamique codex — chaque bridge de test sème un
+    # catalogue live simulé (comportement de refus hors catalogue inchangé).
+    bridge._codex_catalog_cache = {
+        'models': [{'model': model, 'displayName': model,
+                    'supportedReasoningEfforts': ['low', 'medium', 'high']}
+                   for model in BACKEND_MODELS['codex']],
+        'source': 'live', 'updated_at': '2026-11-20T15:00:00+00:00', 'error': None}
+    bridge._codex_catalog_time = time.monotonic()
 
 
 class DurableTests(unittest.TestCase):
@@ -31,6 +43,7 @@ class DurableTests(unittest.TestCase):
     def bridge(self):
         bridge = Bridge(self.root, {}, self.state, daily_limit=0)
         bridge.program = 'codex'
+        seed_catalog(bridge)
         self.addCleanup(bridge.close)
         return bridge
 
@@ -195,6 +208,7 @@ class DurableTests(unittest.TestCase):
     def test_oversized_implementation_result_is_bounded_like_any_full_result(self):
         bridge = Bridge(self.root, {}, self.state, daily_limit=0, codex_workspace_write=True)
         bridge.program = 'codex'
+        seed_catalog(bridge)
         self.addCleanup(bridge.close)
         reply = {'status': 'finished', 'response': 'é' * 60000, 'thread_id': 'impl-thread'}
         with patch('codex_expert_mcp.review', return_value=reply):
@@ -240,6 +254,7 @@ class DurableTests(unittest.TestCase):
         def worker():
             active = Bridge(self.root, {}, self.state)
             active.program = 'codex'
+            seed_catalog(active)
             try:
                 return active.call('reprise_delegate', self.args())
             finally:
@@ -248,6 +263,11 @@ class DurableTests(unittest.TestCase):
             future = pool.submit(worker)
             try:
                 self.assertTrue(entered.wait(5))
+                # Capacité codex = 2 slots : l'expertise active tient '0',
+                # on occupe '1' pour éprouver le refus d'admission pré-dispatch.
+                with bridge.db:
+                    bridge.db.execute("INSERT INTO expert_active_turns VALUES ('codex','1',NULL,'held-two',?,?)",
+                                      (time.time(), time.time()))
                 self.assertEqual(bridge.call('reprise_requests', {'request_key': 'one'})['state'], 'indeterminate')
                 self.assertEqual(bridge.call('reprise_delegate', self.args('two'))['status'], 'busy')
                 self.assertEqual(probe.call('submit_result', {'job_id': task['job_id'], 'attempt_id': task['attempt_id'], 'analysis': 'late result'})['status'], 'accepted')
@@ -271,6 +291,45 @@ class DurableTests(unittest.TestCase):
             results = list(pool.map(lambda _: worker(), range(2)))
         self.assertEqual(sum(result is None for result in results), 1)
         self.assertEqual(next(result for result in results if result)['status'], 'indeterminate')
+
+    def test_open_caller_transaction_cannot_commit_on_begin_or_claim(self):
+        # Both file and in-memory SQLite must preserve the caller's transaction.
+        for target in (':memory:', str(self.root / 'fresh-tx.sqlite')):
+            with self.subTest(target=target):
+                db = sqlite3.connect(target)
+                try:
+                    store = Store(db, 'project')
+                    db.execute('CREATE TABLE caller_state(note TEXT NOT NULL)')
+                    db.execute("INSERT INTO caller_state VALUES ('uncommitted')")
+                    self.assertTrue(db.in_transaction)
+                    with self.assertRaisesRegex(sqlite3.OperationalError, 'Active caller transaction'):
+                        store.begin('first', {'question': 'A'})
+                    self.assertTrue(db.in_transaction)
+                    self.assertEqual(store.lookup({'request_key': 'first'})['status'], 'not_found')
+                    db.rollback()
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM caller_state').fetchone()[0], 0)
+
+                    self.assertIsNone(store.begin('first', {'question': 'A'}))
+                    store.attach('first', {'phase': 'active', 'thread_id': ID, 'turn_id': 'turn-1'})
+                    db.execute("INSERT INTO caller_state VALUES ('second')")
+                    self.assertTrue(db.in_transaction)
+                    before = store.phase('first')['owner']
+                    # Pure reads, including paginated receipt views, cannot commit.
+                    self.assertEqual(store.lookup({'request_key': 'first'})['state'], 'running')
+                    self.assertEqual(store.lookup({'request_key': 'first', 'view': 'receipt'})['state'], 'running')
+                    with self.assertRaisesRegex(sqlite3.OperationalError, 'Active caller transaction'):
+                        store.lookup({'request_key': 'first', 'acknowledge': True})
+                    with self.assertRaisesRegex(sqlite3.OperationalError, 'Active caller transaction'):
+                        store.claim('first', 'local:42')
+                    self.assertTrue(db.in_transaction)
+                    self.assertEqual(store.phase('first')['owner'], before)
+                    db.rollback()
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM caller_state').fetchone()[0], 0)
+
+                    self.assertEqual(store.claim('first', 'local:42'), 'owned')
+                    self.assertEqual(store.phase('first')['owner'], 'local:42')
+                finally:
+                    db.close()
 
     def test_scope_isolation(self):
         db = sqlite3.connect(self.root/'requests.sqlite')
@@ -432,6 +491,7 @@ class DurableTests(unittest.TestCase):
     def test_desktop_receipt_remains_admission_only_after_recovery(self):
         bridge = Bridge(self.root, {}, self.state, daily_limit=0, desktop_socket='/private/tmp/quick.sock')
         bridge.program = 'codex'
+        seed_catalog(bridge)
         self.addCleanup(bridge.close)
         with patch('codex_expert_mcp.claude_desktop.review', return_value={'status': 'finished', 'response': None}):
             bridge.call('reprise_delegate', self.args(backend='claude-desktop'))

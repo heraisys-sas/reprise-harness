@@ -26,6 +26,11 @@ if len(sys.argv) > 1 and sys.argv[1] in ('memory-inspect', 'memory-migration-pla
     import memory_admin
     sys.exit(memory_admin.main(Path(__file__).resolve().parent, sys.argv[1:]))
 
+if len(sys.argv) > 1 and sys.argv[1] in ('approval-delegation-grant', 'approval-delegation-list', 'approval-delegation-revoke'):
+    import approval_delegation
+    operation = sys.argv[1].removeprefix('approval-delegation-')
+    sys.exit(approval_delegation.main(Path(__file__).resolve().parent, [operation, *sys.argv[2:]]))
+
 if len(sys.argv) > 1 and sys.argv[1] in ('ironclaw-inspect', 'ironclaw-configure', 'ironclaw-probe', 'ironclaw-submit', 'ironclaw-poll', 'ironclaw-result', 'ironclaw-requests', 'ironclaw-reconcile', 'ironclaw-followup', 'ironclaw-fail'):
     import ironclaw_connection
     sys.exit(ironclaw_connection.main(Path(__file__).resolve().parent, sys.argv[1:]))
@@ -33,6 +38,14 @@ if len(sys.argv) > 1 and sys.argv[1] in ('ironclaw-inspect', 'ironclaw-configure
 if len(sys.argv) > 1 and sys.argv[1] in ('claude-sessions-status', 'claude-observer-config', 'claude-observer-restore-default', 'claude-session-register', 'claude-session-remove'):
     import claude_session_observer
     sys.exit(claude_session_observer.main(Path(__file__).resolve().parent, sys.argv[1:]))
+
+if len(sys.argv) > 1 and sys.argv[1] == 'vault-check':
+    if len(sys.argv) != 2:
+        sys.exit('Usage: reprise vault-check')
+    import vault_status
+    # Noninteractive, existing-key-only check: never create a key or write data.
+    print(json.dumps(vault_status.inspect(), ensure_ascii=False))
+    sys.exit(0)
 
 if len(sys.argv) > 1 and sys.argv[1] == 'vault-authorize':
     if len(sys.argv) != 2:
@@ -70,6 +83,7 @@ if len(sys.argv) > 1 and sys.argv[1].startswith('claude-integration-'):
     import claude_integration
     sys.exit(claude_integration.main(Path(__file__).resolve().parent, sys.argv[1:]))
 
+
 if len(sys.argv) > 1 and sys.argv[1] in ('claude-inbox-list', 'claude-inbox-read', 'claude-inbox-ack'):
     import claude_inbox
     operation = {'claude-inbox-list': 'list', 'claude-inbox-read': 'read',
@@ -81,9 +95,15 @@ if len(sys.argv) > 1 and sys.argv[1].startswith('scheduler-service-'):
     import scheduler_service
     sys.exit(scheduler_service.main(Path(__file__).resolve().parent, sys.argv[1:]))
 
-if len(sys.argv) > 1 and sys.argv[1] in ('integration-inspect', 'integration-plan', 'integration-reconcile-plan', 'integration-apply', 'integration-verify'):
+if len(sys.argv) > 1 and sys.argv[1] in ('harness-integration-inspect', 'harness-integration-plan', 'harness-integration-reconcile-plan', 'harness-integration-apply', 'harness-integration-verify', 'harness-integration-release-diagnose'):
     import harness_integration
     sys.exit(harness_integration.main(Path(__file__).resolve().parent, sys.argv[1:]))
+
+if len(sys.argv) > 1 and sys.argv[1] in ('integration-inspect', 'integration-plan', 'integration-reconcile-plan', 'integration-apply', 'integration-verify'):
+    # Alias déprécié (#160) : la famille harness suit désormais codex-integration-*/claude-integration-*.
+    print("Avertissement : '%s' est déprécié (#160), utiliser 'harness-%s'." % (sys.argv[1], sys.argv[1]), file=sys.stderr)
+    import harness_integration
+    sys.exit(harness_integration.main(Path(__file__).resolve().parent, ['harness-' + sys.argv[1], *sys.argv[2:]]))
 
 if len(sys.argv) > 1 and sys.argv[1] in ('state-status', 'state-plan', 'state-apply'):
     import state_setup
@@ -112,10 +132,10 @@ LABEL = 'local.agent-resume'
 def share_files():
     from package_helpers import ASSETS, DOCS
     from yaml_contract import YAML_FILES
-    extra = ('claude_session_store.py', 'claude_session_observer.py', 'websocket_transport.py', 'app_paths.py', 'package_helpers.py', 'reprise', 'VERSION', 'scheduler.py', 'presentation.py', 'connection.py', 'shared_mode.py', 'quota.py', 'quota_knowledge.py', 'delegation_store.py', 'run_status.py', 'runtime.py', 'engines.py', 'engine_events.py', 'routing_events.py', 'external_rankings.py', 'openrouter_adapter.py', 'artificial_analysis_adapter.py', 'codex_rpc.py', 'owner_route.py', 'task_archive.py', 'codex_expert.py', 'claude_expert.py', 'claude_quota.py', 'claude_quota_banner.py', 'claude_mcp.py', 'desktop_task_store.py', 'claude_integration.py', 'codex_expert_mcp.py', 'install-expertise.py', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'restart-chain', 'claude_desktop.py', 'claude_desktop_quick.py', 'claude_desktop_rpc.py', 'claude_desktop_cli.py', 'desktop_mode.py', 'reprise_logs.py', 'reprise_health.py', 'FoundationExplain.swift', 'install-quick-entry.py', 'ux_review_probe.py', 'harness-events.cjs', 'asi1-orchestrator-effort.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py')
+    extra = ('claude_session_store.py', 'claude_session_observer.py', 'websocket_transport.py', 'app_paths.py', 'package_helpers.py', 'reprise', 'VERSION', 'scheduler.py', 'presentation.py', 'connection.py', 'shared_mode.py', 'quota.py', 'quota_knowledge.py', 'delegation_store.py', 'delegation_notifications.py', 'run_status.py', 'runtime.py', 'engines.py', 'engine_events.py', 'routing_events.py', 'external_rankings.py', 'openrouter_adapter.py', 'artificial_analysis_adapter.py', 'codex_rpc.py', 'owner_route.py', 'task_archive.py', 'codex_expert.py', 'claude_expert.py', 'claude_quota.py', 'claude_quota_banner.py', 'claude_mcp.py', 'desktop_task_store.py', 'claude_integration.py', 'codex_expert_mcp.py', 'install-expertise.py', 'README.md', 'prompt.example.txt', 'dashboard.py', 'dashboard.html', 'detect.py', 'Native.swift', 'Dashboard.swift', 'native-install', 'restart-chain', 'claude_desktop.py', 'claude_desktop_quick.py', 'claude_desktop_rpc.py', 'claude_desktop_cli.py', 'desktop_mode.py', 'reprise_logs.py', 'reprise_health.py', 'FoundationExplain.swift', 'install-quick-entry.py', 'ux_review_probe.py', 'harness-events.cjs', 'asi1-orchestrator-effort.cjs', 'local_analysis.py', 'verdict-schema.json', 'Embedding.swift', 'private_search.py', 'Vault.swift', 'vault.py')
     build = ('native_contract.py', 'package_runtime.py', 'StateSetup.swift',
              'Integrations.swift', 'SchedulerService.swift', 'IronClawConnection.swift',
-             'ApplePilotUI.swift', 'ApplePilotView.swift', 'release_build.py', 'relaunch',
+             'ApplePilotUI.swift', 'ApplePilotView.swift', 'EcosystemStatus.swift', 'release_build.py', 'relaunch',
              'python-runtime.lock.json', 'PYTHON-THIRD-PARTY-NOTICES.txt')
     yaml = tuple('vendor/yaml/' + name for name in YAML_FILES)
     docs = tuple(DOCS) + ('ROADMAP.md',)
@@ -283,6 +303,7 @@ def main():
     sub.add_parser('health-watch')
     sub.add_parser('desktop-status')
     sub.add_parser('desktop-launch')
+    sub.add_parser('rechatgpt-launch')
     server = sub.add_parser('desktop-server-start')
     server.add_argument('--socket')
     sub.add_parser('desktop-server-stop')
@@ -382,6 +403,9 @@ def main():
     elif args.action == 'desktop-launch':
         import desktop_mode
         print(json.dumps(desktop_mode.launch(), ensure_ascii=False))
+    elif args.action == 'rechatgpt-launch':
+        import chatgpt_desktop_pipe
+        print(json.dumps(chatgpt_desktop_pipe.launch_rechatgpt(), ensure_ascii=False))
     elif args.action == 'desktop-server-start':
         import desktop_mode
         print(json.dumps(desktop_mode.start(socket=args.socket), ensure_ascii=False))
@@ -581,6 +605,17 @@ def main():
             with db:
                 scheduler.put(db, 'claude_queue_last', {'status': 'unavailable', 'checked_at': dt.datetime.now().timestamp(), 'error': type(error).__name__})
         run_due(db, executable)
+        # Reprise automatique des délégations (lot C #239) : observe-only, jamais
+        # de re-dispatch ; kill-switch delegation_resume_enabled, trace sur la
+        # clé scheduler 'delegation_resume', ne lève jamais.
+        try:
+            import delegation_resume
+            summary = delegation_resume.run_due(db)
+            with db:
+                scheduler.put(db, 'delegation_resume', dict(summary, checked_at=dt.datetime.now().timestamp()))
+        except Exception as error:
+            with db:
+                scheduler.put(db, 'delegation_resume', {'status': 'error', 'checked_at': dt.datetime.now().timestamp(), 'error': type(error).__name__ + ': ' + str(error)})
         try:
             cleanup(STATE)
         except (ValueError, OSError, sqlite3.Error):

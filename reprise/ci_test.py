@@ -1,9 +1,11 @@
 """Run deterministic unittest fixtures with a disposable HOME, never user state."""
 import argparse
 import concurrent.futures
+import fcntl
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -73,43 +75,50 @@ def parse_shard_args(parser, args):
 
 
 def pinned_interpreter():
-    """Interpréteur du runtime épinglé pour les tests locaux.
+    """Verified CPython from CI's explicit archive or the local cache.
 
-    Sources, par priorité : $REPRISE_TEST_PYTHON explicite, puis l'archive du
-    runtime déjà en cache (`~/Library/Caches/Reprise/python/…`) — vérifiée par
-    sha256 et extraite une fois dans .runtime-py/. Le binaire épinglé sert
-    alors à exécuter les tests ET est exposé via REPRISE_TEST_RUNTIME_ARCHIVE
-    (les tests marqués skip si l'archive manque tournent aussi en local).
-    Retour : (chemin python, dict d'environnement) — (sys.executable, {}) en
-    repli silencieux.
+    REPRISE_TEST_PYTHON is an explicit interpreter override. An explicit
+    REPRISE_TEST_RUNTIME_ARCHIVE must be valid; it never silently falls back
+    to the runner's Python. Without either, local tests may use sys.executable.
     """
     override = os.environ.get('REPRISE_TEST_PYTHON')
     if override:
         return override, {}
-    archive = Path.home() / 'Library/Caches/Reprise/python'
-    if not archive.is_dir():
-        return sys.executable, {}
+    explicit = os.environ.get('REPRISE_TEST_RUNTIME_ARCHIVE')
     lock = json.loads(LOCK.read_text())
     machine = platform.machine()
     target = lock['targets'].get(machine)
     if target is None:
+        if explicit:
+            raise ValueError('Architecture non prise en charge par le runtime CI épinglé.')
         return sys.executable, {}
-    archive_path = archive / f"cpython-{lock['python_version']}-{lock['release']}-{machine}.tar.gz"
-    if not archive_path.is_file():
-        return sys.executable, {}
+    if explicit:
+        archive_path = Path(explicit).expanduser().resolve(strict=True)
+    else:
+        archive_path = (Path.home() / 'Library/Caches/Reprise/python'
+                        / f"cpython-{lock['python_version']}-{lock['release']}-{machine}.tar.gz")
+        if not archive_path.is_file():
+            return sys.executable, {}
+
+    import package_runtime
+    package_runtime.verify_archive(archive_path, target['sha256'])
+    INTERP_CACHE.mkdir(parents=True, exist_ok=True)
     interp_root = INTERP_CACHE / f"interp-{target['sha256'][:12]}"
-    binary = next(iter(interp_root.glob('*/bin/python3')), None)
-    if binary is None:
-        import package_runtime
-        package_runtime.verify_archive(archive_path, target['sha256'])
-        if interp_root.exists():
-            import shutil
-            shutil.rmtree(interp_root)
-        package_runtime.safe_extract(archive_path, interp_root)
-        # L'archive install_only contient un dossier racine 'python/'.
-        binary = next(p for p in interp_root.glob('*/bin/python3'))
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.write_text(archive_path.name + '\n')
+    binary = interp_root / 'python/bin/python3'
+    stamp = interp_root / '.archive-sha256'
+    # Multiple local ci_test invocations must not delete each other's cache.
+    with (INTERP_CACHE / '.extract.lock').open('a+') as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        valid = (stamp.is_file() and stamp.read_text().strip() == target['sha256']
+                 and binary.is_file() and os.access(binary, os.X_OK)
+                 and binary.resolve().is_relative_to(interp_root.resolve()))
+        if not valid:
+            if interp_root.exists():
+                shutil.rmtree(interp_root)
+            package_runtime.safe_extract(archive_path, interp_root)
+            if not binary.is_file() or not os.access(binary, os.X_OK):
+                raise ValueError('Interpréteur extrait absent ou non exécutable.')
+            stamp.write_text(target['sha256'] + '\n')
     return str(binary), {'REPRISE_TEST_RUNTIME_ARCHIVE': str(archive_path)}
 
 
@@ -202,7 +211,10 @@ def main():
                 print(f'Shard {index}/{count} vide : aucun module de test affecté.')
                 return 2
             print(f'Shard {index}/{count} : {len(modules)} modules')
-            command = [sys.executable, '-B', '-m', 'unittest', *modules, '-q',
+            python, extra_env = pinned_interpreter()
+            env.update(extra_env)
+            print(f'Interpréteur tests : {python}')
+            command = [python, '-B', '-m', 'unittest', *modules, '-q',
                        '--durations', str(TOP_DURATIONS)]
         # module names are discovery-style top-level names ('test_x'): run from the tests dir
         return subprocess.run(command, env=env, cwd=str(TESTS_DIR)).returncode
