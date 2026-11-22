@@ -434,9 +434,9 @@ def census(transport):
             'document_ready': result.get('ready')}
 
 
-def inspect(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT, name='default'):
+def inspect(binary=None, profile_root=DEFAULT_PROFILE_ROOT, name='default'):
     profile = profile_path(profile_root, name)
-    binary = Path(binary).expanduser().absolute()
+    binary = resolve_binary(binary, name)
     lock = profile.parent / ('.' + name + '.cdp-pipe.lock')
     return {'status': 'inspect_only', 'transport': 'cdp-pipe',
             'binary_present': binary.is_file() and os.access(binary, os.X_OK),
@@ -445,7 +445,7 @@ def inspect(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT, name='defa
             'launch_attempted': False, 'operator_app_touched': False}
 
 
-def probe(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT, name='default'):
+def probe(binary=None, profile_root=DEFAULT_PROFILE_ROOT, name='default'):
     """Launch and stop our own child, never adopt or signal the operator app.
 
     A second-instance event in Electron could still affect the operator UI;
@@ -453,7 +453,7 @@ def probe(binary=DEFAULT_BINARY, profile_root=DEFAULT_PROFILE_ROOT, name='defaul
     be validated on a real Mac before claiming operator isolation.
     """
     profile = profile_path(profile_root, name)
-    binary = Path(binary).expanduser().absolute()
+    binary = resolve_binary(binary, name)
     if binary.is_symlink() or not binary.is_file() or not os.access(binary, os.X_OK):
         return {'status': 'binary_unavailable', 'ready': False, 'launch_attempted': False}
     _private_directory(profile.parent)
@@ -1906,7 +1906,9 @@ def main(argv=None):
         obj = sub.add_parser(cmd)
         obj.add_argument('--profile', default='default' if cmd != 'serve' else 'dedicated')
         obj.add_argument('--profile-root', type=Path, default=DEFAULT_PROFILE_ROOT)
-        obj.add_argument('--binary', type=Path, default=DEFAULT_BINARY)
+        # Resolved at usage time (resolve_binary): None keeps the clone
+        # preference alive for the dedicated profile (#254).
+        obj.add_argument('--binary', type=Path, default=None)
         if cmd == 'send':
             obj.add_argument('--prompt-file', help="UTF-8 file or '-' for stdin")
             obj.add_argument('--request-key', help='Stable request identity; default hashes the prompt')

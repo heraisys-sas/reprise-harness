@@ -371,6 +371,52 @@ class TestReChatGPTLaunch(unittest.TestCase):
         launch.assert_not_called()
 
 
+class TestServeBinaryResolution254(unittest.TestCase):
+    """#254: the serve route resolves the clone for the dedicated profile.
+
+    launch_cdp_process fails fast (OSError) so serve() returns
+    'refused'/'launch_failed' and the captured call reveals the chosen binary.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+        self.root = self.base / 'profiles'
+        self.default = self.base / 'ChatGPT'
+        self.clone = self.base / 'ReChatGPT'
+        for binary in (self.default, self.clone):
+            binary.write_text('#!/bin/sh\nexit 0\n')
+            binary.chmod(0o700)
+
+    def _serve_chosen_binary(self, binary, name, clone=None):
+        with mock.patch.object(adapter, 'DEFAULT_BINARY', self.default), \
+             mock.patch.object(adapter, 'RECHATGPT_BINARY',
+                               self.clone if clone is None else clone), \
+             mock.patch.object(adapter, 'launch_cdp_process',
+                               side_effect=OSError('offline')) as launch:
+            result = adapter.serve(binary=binary, profile_root=self.root, name=name)
+        self.assertEqual(result, {'status': 'refused', 'reason': 'launch_failed'})
+        return launch.call_args.args[0]
+
+    def test_dedicated_prefers_clone_when_present(self):
+        self.assertEqual(self._serve_chosen_binary(None, 'dedicated'), self.clone)
+
+    def test_dedicated_falls_back_to_default_without_clone(self):
+        self.assertEqual(self._serve_chosen_binary(None, 'dedicated',
+                                                   clone=self.base / 'absent'),
+                         self.default)
+
+    def test_explicit_binary_wins_over_clone(self):
+        explicit = self.base / 'Explicit'
+        explicit.write_text('#!/bin/sh\nexit 0\n')
+        explicit.chmod(0o700)
+        self.assertEqual(self._serve_chosen_binary(explicit, 'dedicated'), explicit)
+
+    def test_non_dedicated_uses_default_even_with_clone(self):
+        self.assertEqual(self._serve_chosen_binary(None, 'default'), self.default)
+
+
 class TestGenericPipeLauncher(unittest.TestCase):
     def test_real_fd_3_4_echo(self):
         """Run intrusive fd3/4 wiring in a bounded *separate* test process.
