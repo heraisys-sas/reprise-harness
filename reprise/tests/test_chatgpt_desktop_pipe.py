@@ -539,7 +539,8 @@ class TestGuardedSend(unittest.TestCase):
         self.binary.chmod(0o700)
 
     def fake(self, *, first=None, staged=None, click=None, body=None, after=None,
-             sse=None, observer=True, quiet_ms=None, enter=None):
+             sse=None, observer=True, quiet_ms=None, enter=None, mode=None,
+             menu=None):
         transport = mock.MagicMock()
         transport.drain_notifications.return_value = sse if sse is not None else []
         first = first if first is not None else {'status': 'ready'}
@@ -556,7 +557,70 @@ class TestGuardedSend(unittest.TestCase):
                         'Réponse terminée')
         quiet_ms_default = adapter.STREAM_QUIET_MS
         clicked = {'done': False}
-        states = {'poll': 0}
+        states = {'poll': 0, 'mode_read': 0, 'menu_poll': 0}
+
+        # Issue #248 LOT 2: answers for the mode-selector evaluations. Default
+        # is an already-active ChatGPT trigger (zero clicks). A list feeds the
+        # mode evaluations in call order (probe, trigger click, item click,
+        # re-probe); shorthand strings expand to probe answers.
+        mode = mode if mode is not None else 'chatgpt'
+
+        def mode_answer(value):
+            if isinstance(value, Exception):
+                raise value
+            if callable(value):
+                value = value(states['mode_read'])
+            if isinstance(value, str):
+                if value == 'chatgpt':
+                    return {'state': 'ChatGPT',
+                            'candidates': [{'tag': 'button', 'text': 'ChatGPT',
+                                            'aria_expanded': 'false',
+                                            'data_state': 'closed',
+                                            'rect': {'x': 62, 'y': 53,
+                                                     'w': 84, 'h': 32}}]}
+                if value == 'codex':
+                    return {'state': 'Codex',
+                            'candidates': [{'tag': 'button', 'text': 'Codex',
+                                            'aria_expanded': 'false',
+                                            'data_state': 'closed',
+                                            'rect': {'x': 62, 'y': 53,
+                                                     'w': 84, 'h': 32}}]}
+                if value == 'missing':
+                    return {'state': None, 'candidates': []}
+                if value == 'ambiguous':
+                    return {'state': 'ChatGPT',
+                            'candidates': [{'tag': 'button', 'text': 'ChatGPT'},
+                                           {'tag': 'button', 'text': 'Codex'}]}
+                if value == 'unknown':
+                    return {'state': 'Turbo',
+                            'candidates': [{'tag': 'button', 'text': 'Turbo'}]}
+            return value
+
+        def next_mode():
+            value = mode
+            if isinstance(mode, list):
+                value = mode[min(states['mode_read'], len(mode) - 1)]
+            states['mode_read'] += 1
+            return mode_answer(value)
+
+        # Issue #248 correctif 2: menu-poll answers come from a stream of
+        # their own, independent of the mode stream. Default: the Radix menu
+        # is open on the first probe (one single menu evaluate per switch).
+        menu = menu if menu is not None else {'open': True,
+                                              'sample': {'items': 2,
+                                                         'popper_present': True,
+                                                         'popper_text': 'ChatGPT Codex'}}
+
+        def next_menu():
+            value = menu
+            if isinstance(value, list):
+                value = value[min(states['menu_poll'], len(value) - 1)]
+            states['menu_poll'] += 1
+            if isinstance(value, Exception):
+                raise value
+            if callable(value):
+                return value(states['menu_poll'])
+            return value
 
         def body_text():
             if isinstance(body, Exception):
@@ -597,6 +661,14 @@ class TestGuardedSend(unittest.TestCase):
                 return probe | (rendered if isinstance(rendered, dict) else {'text': rendered})
             if '__reprise_observer' in expression:
                 return 'armed' if observer else None
+            if '__reprise_mode_probe' in expression:
+                return next_mode()
+            if '__reprise_mode_trigger' in expression:
+                return next_mode()
+            if '__reprise_mode_menu' in expression:
+                return next_menu()
+            if '__reprise_mode_item' in expression:
+                return next_mode()
             raise AssertionError('Unexpected Runtime.evaluate')
 
         def respond_call(method, params):
@@ -1557,6 +1629,274 @@ class TestHolderDiag248(unittest.TestCase):
         self.assertLessEqual(len(encoded), adapter.DIAG_MAX_BYTES)
         self.assertTrue(result['diag']['truncated'])
         self.assertLess(len(result['diag']['candidates']), 200)
+
+
+class TestChatGptMode248(TestGuardedSend):
+    """Issue #248 LOT 2: the pure ChatGPT mode is verified before any send."""
+
+    def codex_probe(self):
+        return {'state': 'Codex',
+                'candidates': [{'tag': 'button', 'text': 'Codex',
+                                'aria_expanded': 'false',
+                                'data_state': 'closed'}]}
+
+    def chatgpt_probe(self):
+        return {'state': 'ChatGPT',
+                'candidates': [{'tag': 'button', 'text': 'ChatGPT',
+                                'aria_expanded': 'false',
+                                'data_state': 'closed'}]}
+
+    def menu_open(self):
+        return {'open': True,
+                'sample': {'items': 2, 'popper_present': True,
+                           'popper_text': 'ChatGPT Codex'}}
+
+    def menu_closed(self):
+        return {'open': False, 'sample': {'items': 0, 'popper_present': False,
+                                          'popper_text': None}}
+
+    def expressions(self, transport):
+        return [call.args[0] for call in transport.evaluate.call_args_list]
+
+    def test_already_chatgpt_answers_verified_without_clicks(self):
+        transport = mock.MagicMock()
+        transport.evaluate.return_value = self.chatgpt_probe()
+        result = adapter.ensure_chatgpt_mode(transport)
+        self.assertEqual(result, {'verified': True, 'mode': 'ChatGPT'})
+        transport.evaluate.assert_called_once_with(adapter.MODE_PROBE)
+
+    def test_codex_switch_clicks_trigger_then_item_then_rereads(self):
+        transport = mock.MagicMock()
+        transport.evaluate.side_effect = [
+            self.codex_probe(), {'clicked': True}, self.menu_open(),
+            {'clicked': True}, self.chatgpt_probe()]
+        result = adapter.ensure_chatgpt_mode(transport)
+        self.assertEqual(result, {'verified': True, 'mode': 'ChatGPT'})
+        calls = self.expressions(transport)
+        self.assertEqual(len(calls), 5)
+        self.assertIn('__reprise_mode_trigger', calls[1])
+        self.assertIn('__reprise_mode_menu', calls[2])
+        self.assertIn('__reprise_mode_item', calls[3])
+        self.assertEqual(calls[4], adapter.MODE_PROBE)
+
+    def test_sidebar_chip_mentioning_codex_does_not_block_switch(self):
+        # Live receipt (#248): a sidebar chip "Trouver une skill UX/UI pour
+        # Codex" shares the page with the real trigger; a substring filter
+        # turned it into a false selector_ambiguous refusal. Exact mode
+        # labels only: the chip is ignored and the switch proceeds.
+        chip = {'tag': 'button', 'text': 'Trouver une skill UX/UI pour Codex',
+                'rect': {'x': 92, 'y': 813, 'w': 204, 'h': 20}}
+        codex_with_chip = {'state': 'Codex',
+                           'candidates': [self.codex_probe()['candidates'][0],
+                                          chip]}
+        transport = mock.MagicMock()
+        transport.evaluate.side_effect = [
+            codex_with_chip, {'clicked': True}, self.menu_open(),
+            {'clicked': True}, self.chatgpt_probe()]
+        result = adapter.ensure_chatgpt_mode(transport)
+        self.assertEqual(result, {'verified': True, 'mode': 'ChatGPT'})
+        calls = self.expressions(transport)
+        self.assertEqual(len(calls), 5)
+
+    def test_chip_mentioning_codex_alone_is_not_a_codex_trigger(self):
+        # Defense in depth: even if a non-exact list reaches classify()
+        # (stale probe answer), the chip is never treated as the Codex
+        # trigger — fail closed without any click.
+        chip = {'tag': 'button', 'text': 'Trouver une skill UX/UI pour Codex',
+                'rect': {'x': 92, 'y': 813, 'w': 204, 'h': 20}}
+        transport = mock.MagicMock()
+        transport.evaluate.return_value = {'state': chip['text'],
+                                           'candidates': [chip]}
+        result = adapter.ensure_chatgpt_mode(transport)
+        self.assertFalse(result['verified'])
+        self.assertEqual(result['reason'], 'unknown_state')
+        calls = self.expressions(transport)
+        self.assertTrue(all('__reprise_mode_trigger' not in call
+                            for call in calls))
+
+    def test_missing_selector_refuses_without_clicks(self):
+        transport = mock.MagicMock()
+        transport.evaluate.return_value = {'state': None, 'candidates': []}
+        result = adapter.ensure_chatgpt_mode(transport)
+        self.assertFalse(result['verified'])
+        self.assertEqual(result['reason'], 'selector_missing')
+        self.assertEqual(result['diag']['candidates'], [])
+        self.assertEqual(self.expressions(transport),
+                         [adapter.MODE_PROBE, adapter.MODE_PROBE])
+
+    def test_ambiguous_selector_refuses_with_bounded_candidates(self):
+        candidates = [{'tag': 'button', 'text': 'ChatGPT'},
+                      {'tag': 'button', 'text': 'Codex'}]
+        transport = mock.MagicMock()
+        transport.evaluate.return_value = {'state': 'ChatGPT',
+                                           'candidates': candidates}
+        result = adapter.ensure_chatgpt_mode(transport)
+        self.assertFalse(result['verified'])
+        self.assertEqual(result['reason'], 'selector_ambiguous')
+        self.assertEqual(result['diag']['candidates'], candidates)
+        self.assertFalse(result['diag']['truncated'])
+        self.assertEqual(self.expressions(transport),
+                         [adapter.MODE_PROBE, adapter.MODE_PROBE])
+
+    def test_unknown_state_refuses_without_clicks(self):
+        transport = mock.MagicMock()
+        transport.evaluate.return_value = {
+            'state': 'Turbo',
+            'candidates': [{'tag': 'button', 'text': 'Turbo'}]}
+        result = adapter.ensure_chatgpt_mode(transport)
+        self.assertFalse(result['verified'])
+        self.assertEqual(result['reason'], 'unknown_state')
+        self.assertEqual(self.expressions(transport),
+                         [adapter.MODE_PROBE, adapter.MODE_PROBE])
+
+    def test_trigger_click_failure_refuses_click_no_change(self):
+        transport = mock.MagicMock()
+        transport.evaluate.side_effect = [
+            self.codex_probe(), {'clicked': False, 'reason': 'trigger_not_unique'},
+            self.codex_probe()]
+        result = adapter.ensure_chatgpt_mode(transport)
+        self.assertFalse(result['verified'])
+        self.assertEqual(result['reason'], 'click_no_change')
+        calls = self.expressions(transport)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all('__reprise_mode_item' not in call
+                            for call in calls[1:]))
+
+    def test_item_click_failure_refuses_click_no_change(self):
+        transport = mock.MagicMock()
+        transport.evaluate.side_effect = [
+            self.codex_probe(), {'clicked': True}, self.menu_open(),
+            {'clicked': False, 'reason': 'item_not_unique'},
+            self.codex_probe()]
+        result = adapter.ensure_chatgpt_mode(transport)
+        self.assertFalse(result['verified'])
+        self.assertEqual(result['reason'], 'click_no_change')
+        calls = self.expressions(transport)
+        self.assertEqual(len(calls), 5)
+        self.assertIn('__reprise_mode_item', calls[3])
+
+    def test_reread_still_codex_refuses_click_no_change(self):
+        transport = mock.MagicMock()
+        transport.evaluate.side_effect = [
+            self.codex_probe(), {'clicked': True}, self.menu_open(),
+            {'clicked': True}, self.codex_probe(), self.codex_probe()]
+        result = adapter.ensure_chatgpt_mode(transport)
+        self.assertFalse(result['verified'])
+        self.assertEqual(result['reason'], 'click_no_change')
+        self.assertEqual(result['diag']['candidates'],
+                         self.codex_probe()['candidates'])
+        self.assertEqual(transport.evaluate.call_count, 6)
+
+    def test_menu_opens_on_a_later_poll_and_switch_succeeds(self):
+        # Correctif 2 (#248): the Radix menu may not be listed on the first
+        # poll; a later probe inside the bounded window completes the switch.
+        transport = mock.MagicMock()
+        transport.evaluate.side_effect = [
+            self.codex_probe(), {'clicked': True}, self.menu_closed(),
+            self.menu_open(), {'clicked': True}, self.chatgpt_probe()]
+        with mock.patch.object(adapter.time, 'sleep') as fake_sleep:
+            result = adapter.ensure_chatgpt_mode(transport)
+        self.assertEqual(result, {'verified': True, 'mode': 'ChatGPT'})
+        calls = self.expressions(transport)
+        self.assertEqual(len(calls), 6)
+        self.assertIn('__reprise_mode_menu', calls[2])
+        self.assertIn('__reprise_mode_menu', calls[3])
+        self.assertIn('__reprise_mode_item', calls[4])
+        fake_sleep.assert_called_once_with(adapter.MENU_POLL_INTERVAL_S)
+
+    def test_menu_never_opened_refuses_menu_not_opened_without_item_click(self):
+        # Correctif 2 (#248): if the Radix menu never opens within the bounded
+        # window, refuse menu_not_opened — no item click is attempted, and the
+        # diagnostic carries the bounded menu sample for the receipt.
+        transport = mock.MagicMock()
+        transport.evaluate.side_effect = [
+            self.codex_probe(), {'clicked': True},
+            self.menu_closed(), self.menu_closed(), self.menu_closed(),
+            self.codex_probe()]
+        clock = {'now': 0.0}
+        with mock.patch.object(adapter.time, 'monotonic',
+                               side_effect=lambda: clock['now']), \
+                mock.patch.object(
+                    adapter.time, 'sleep',
+                    side_effect=lambda _s: clock.update(
+                        {'now': clock['now'] + 0.3})):
+            result = adapter.ensure_chatgpt_mode(transport)
+        self.assertFalse(result['verified'])
+        self.assertEqual(result['reason'], 'menu_not_opened')
+        self.assertEqual(result['diag']['menu'], self.menu_closed()['sample'])
+        calls = self.expressions(transport)
+        self.assertEqual(len(calls), 6)
+        self.assertEqual(calls[0], adapter.MODE_PROBE)
+        self.assertTrue(all('__reprise_mode_menu' in call
+                            for call in calls[2:5]))
+        self.assertTrue(all('__reprise_mode_item' not in call
+                            for call in calls))
+        self.assertEqual(calls[5], adapter.MODE_PROBE)
+
+    def test_evaluate_error_refuses_cdp_error(self):
+        transport = mock.MagicMock()
+        transport.evaluate.side_effect = TimeoutError('pipe closed')
+        result = adapter.ensure_chatgpt_mode(transport)
+        self.assertEqual(result, {'verified': False, 'reason': 'cdp_error',
+                                  'detail': 'TimeoutError', 'diag': None})
+
+    def test_non_dict_probe_answer_refuses_cdp_error(self):
+        transport = mock.MagicMock()
+        transport.evaluate.return_value = 'garbage'
+        result = adapter.ensure_chatgpt_mode(transport)
+        self.assertEqual(result['reason'], 'cdp_error')
+        self.assertEqual(result['detail'], 'ValueError')
+        self.assertIsNone(result['diag'])
+
+    def test_holder_send_confirms_with_mode_and_mode_verified(self):
+        transport = self.fake()
+        result = self.invoke(transport, request='req-248-mode-ok')
+        self.assertEqual(result['status'], 'confirmed')
+        self.assertEqual(result['mode'], 'ChatGPT')
+        self.assertTrue(result['mode_verified'])
+
+    def test_holder_codex_switch_confirms_after_mode_change(self):
+        transport = self.fake(mode=['codex', {'clicked': True},
+                                    {'clicked': True}, 'chatgpt'])
+        result = self.invoke(transport, request='req-248-mode-switch')
+        self.assertEqual(result['status'], 'confirmed')
+        self.assertEqual(result['mode'], 'ChatGPT')
+        self.assertTrue(result['mode_verified'])
+        calls = self.expressions(transport)
+        self.assertTrue(any('__reprise_mode_trigger' in call for call in calls))
+        self.assertTrue(any('__reprise_mode_menu' in call for call in calls))
+        self.assertTrue(any('__reprise_mode_item' in call for call in calls))
+
+    def test_holder_mode_refusal_never_dispatches(self):
+        scenarios = {
+            'selector_missing': {'mode': 'missing'},
+            'selector_ambiguous': {'mode': 'ambiguous'},
+            'unknown_state': {'mode': 'unknown'},
+            'click_no_change': {'mode': ['codex', {'clicked': True},
+                                         {'clicked': True}, 'codex']},
+            'menu_not_opened': {'mode': ['codex', {'clicked': True},
+                                         'codex'],
+                                'menu': {'open': False,
+                                         'sample': {'items': 0,
+                                                    'popper_present': False,
+                                                    'popper_text': None}}},
+            'cdp_error': {'mode': TimeoutError('pipe closed')},
+        }
+        for reason, scenario in scenarios.items():
+            with self.subTest(reason=reason):
+                transport = self.fake(mode=scenario['mode'],
+                                      menu=scenario.get('menu'))
+                result = self.invoke(transport, request='req-248-mode-refusal')
+                self.assertEqual(result['status'], 'refused')
+                self.assertEqual(result['reason'], reason)
+                self.assertNotIn('dispatch_action', result)
+                self.assertNotIn('mode', result)
+                self.assertNotIn('mode_verified', result)
+                self.assertIsNone(result.get('prompt_sha256'))
+                transport.insert_text.assert_not_called()
+                sent = self.expressions(transport)
+                self.assertFalse(any('return focusUniqueComposer(' in call
+                                     for call in sent))
 
 
 if __name__ == '__main__':
