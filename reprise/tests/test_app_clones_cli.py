@@ -85,5 +85,28 @@ class CloneCliDispatchTests(unittest.TestCase):
         main_mock.assert_called_once_with(['apply', 'rechatgpt'])
 
 
+class VerifyFrozenTests(unittest.TestCase):
+    """verify() n'exige un gel que pour kind='clone' (#256)."""
+
+    def run_verify(self, kind):
+        state = {'app': {
+            'present': True, 'kind': kind, 'issues': [],
+            'target_version': '1.2.3',
+        }}
+        with patch.object(app_clones, 'inventory', return_value=state), \
+             patch.object(app_clones, '_load_manifest', return_value={'clones': {}}):
+            return app_clones.verify()
+
+    def test_patched_app_without_freeze_is_not_not_frozen(self):
+        outcome = self.run_verify('patched')
+        self.assertEqual(outcome['clones']['app']['problems'], [])
+        self.assertTrue(outcome['clones']['app']['ok'])
+
+    def test_clone_without_freeze_still_flagged_not_frozen(self):
+        outcome = self.run_verify('clone')
+        self.assertEqual(outcome['clones']['app']['problems'], ['not_frozen'])
+        self.assertFalse(outcome['clones']['app']['ok'])
+
+
 if __name__ == '__main__':
     unittest.main()

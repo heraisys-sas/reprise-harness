@@ -304,7 +304,9 @@ def verify(home=CLONES_HOME, *, specs=None, manifest_path=MANIFEST_PATH,
     for name, row in state.items():
         problems = list(row['issues'])
         frozen = manifest['clones'].get(name)
-        if row['present'] and frozen is None:
+        # Le gel (manifeste) ne concerne que kind='clone' (#256) : une app
+        # patched saine est volontairement re-signée à chaque montée Desktop.
+        if row['present'] and frozen is None and row['kind'] == 'clone':
             problems.append('not_frozen')
         if frozen is not None and row['present'] and \
                 frozen.get('version') not in (row['target_version'], None):
