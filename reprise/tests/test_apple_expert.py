@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import apple_expert
+import codex_expert_mcp
 from codex_expert_mcp import Bridge
 
 
@@ -16,6 +17,12 @@ class AppleExpertTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        # #253 : reprise_backends consulte le catalogue codex (live ou
+        # last-known) — isoler CATALOG_PATH pour ne jamais toucher le fichier
+        # opérateur réel (~ codexd vivant → écriture ; codexd down → lecture).
+        catalog_patcher = patch.object(codex_expert_mcp, 'CATALOG_PATH', self.root / 'codex-models.json')
+        catalog_patcher.start()
+        self.addCleanup(catalog_patcher.stop)
         self.bridge = Bridge(self.root, {}, self.root / 'state')
         self.addCleanup(self.bridge.close)
         self.args = {'request_key': 'apple-1', 'kind': 'review', 'question': 'Analyse',
