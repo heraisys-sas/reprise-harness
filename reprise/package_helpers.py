@@ -21,6 +21,7 @@ ASSETS += ('vault_status.py',)  # Noninteractive existing-key verification for t
 ASSETS += ('memory_admin.py',)  # Memory administration packaging; independent of local execution.
 ASSETS += ('memory_integration.py', 'reprise_memory_adapter.py', 'reprise_memory_mcp.py', 'coordinator_jobs.py', 'coordinator_local.py', 'coordinator_candidate.py', 'coordinator_recall.py')
 ASSETS += ('delegation_resume.py',)  # Lot C #239 : moteur de reprise observe-only des délégations (tick).
+ASSETS += ('app_clones.py',)  # #255 : pilotage UI des clones d'app (clone-inspect/plan/apply/verify).
 # Documentation durable embarquée dans le payload ; résolue depuis la racine du dépôt.
 DOCS = (
     'docs/integrations/claude/CLAUDE-DESKTOP-APPLY.md',
