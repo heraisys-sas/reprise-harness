@@ -973,8 +973,11 @@ class ChatGptStateRenameTests(unittest.TestCase):
     def test_parser_accepts_legacy_alias(self):
         # L'alias déprécié reste accepté par le parser : --help rend 0 et
         # documente la nouvelle option (parse_args sort avant de servir).
+        # Chemin absolu : les shards CI (#257) lancent les tests avec
+        # cwd = reprise/tests/, où le chemin relatif reprise/... est inexistant.
+        script = str(Path(__file__).parents[1] / 'codex_expert_mcp.py')
         completed = subprocess.run(
-            [sys.executable, 'reprise/codex_expert_mcp.py', '--project-root', self.temp.name,
+            [sys.executable, script, '--project-root', self.temp.name,
              '--chatgpt-socket', self.temp.name, '--help'],
             capture_output=True, text=True, timeout=30)
         self.assertEqual(completed.returncode, 0)
