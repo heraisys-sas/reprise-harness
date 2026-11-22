@@ -151,6 +151,203 @@ RENDERER_PROBE = """(() => ({
                     return r.width >= 80 && r.height >= 12 && !e.disabled && !e.readOnly; }).length
 }))()"""
 
+# Read-only probe of the top-left mode selector trigger (Radix menu trigger,
+# per live diag evidence: text "Codex", aria-expanded, data-state). Never a
+# toggle: switching requires trigger click + menu item click + re-read.
+MODE_PROBE = r"""(() => { /* __reprise_mode_probe */
+  const candidates = [];
+  const controls = [...document.querySelectorAll(
+    'button, [role="button"], [role="tab"], [role="radio"]')];
+  for (const e of controls) {
+    const r = e.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) continue;
+    const style = getComputedStyle(e);
+    if (style.display === 'none' || style.visibility === 'hidden') continue;
+    const text = (e.innerText || e.getAttribute('aria-label') || '')
+      .replace(/\s+/g, ' ').trim();
+    const label = text.toLowerCase();
+    if (label !== 'chatgpt' && label !== 'codex') continue;
+    candidates.push({
+      tag: e.tagName.toLowerCase(), text: text.slice(0, 80),
+      aria_expanded: e.getAttribute('aria-expanded'),
+      data_state: e.getAttribute('data-state'),
+      rect: {x: Math.round(r.x), y: Math.round(r.y),
+             w: Math.round(r.width), h: Math.round(r.height)}
+    });
+    if (candidates.length >= 20) break;
+  }
+  return {state: candidates.length ? candidates[0].text : null, candidates};
+})()"""
+
+# Realistic pointer sequence for the mode clicks: the Radix menu opens on
+# pointerdown, and a plain el.click() dispatches no pointer events — the
+# trigger reported "clicked" yet the menu stayed closed (live receipt #248,
+# dispatch chatgpt-mode-248-live-a2). Coordinates sit at the element center,
+# with an el.click() fallback when PointerEvent is unavailable.
+_POINTER_FIRE = r"""  const r = target.getBoundingClientRect();
+  const base = {bubbles: true, cancelable: true, composed: true,
+                clientX: r.x + r.width / 2, clientY: r.y + r.height / 2,
+                button: 0};
+  if (typeof PointerEvent === 'function') {
+    const pointer = {...base, pointerId: 1, isPrimary: true,
+                     pointerType: 'mouse'};
+    target.dispatchEvent(new PointerEvent('pointerdown', pointer));
+    target.dispatchEvent(new MouseEvent('mousedown', base));
+    target.dispatchEvent(new PointerEvent('pointerup', pointer));
+    target.dispatchEvent(new MouseEvent('mouseup', base));
+    target.dispatchEvent(new MouseEvent('click', base));
+  } else {
+    target.click();
+  }
+"""
+
+# Bounded click sequence for the mode switch, evaluated (never CDP input
+# methods): click the trigger, wait (bounded poll) for the Radix menu to
+# open, then pick the menu item containing ChatGPT. Page-wide surfaces
+# (probe, trigger) match the EXACT mode label: a sidebar chip like "Trouver
+# une skill UX/UI pour Codex" (live receipt, #248) must never count as a
+# candidate or a click target. The menu item stays on the substring match:
+# it is role-scoped (menuitem/option) and the mandatory re-read verifies
+# the outcome either way.
+MODE_TRIGGER_CLICK = (r"""(() => { /* __reprise_mode_trigger */
+  const triggers = [...document.querySelectorAll('button, [role="button"]')]
+    .filter(e => {
+      const text = (e.innerText || e.getAttribute('aria-label') || '')
+        .replace(/\s+/g, ' ').trim().toLowerCase();
+      return text === 'codex';
+    });
+  if (triggers.length !== 1) return {clicked: false, reason: 'trigger_not_unique'};
+  const target = triggers[0];
+""" + _POINTER_FIRE + r"""  return {clicked: true};
+})()""")
+
+MODE_ITEM_CLICK = (r"""(() => { /* __reprise_mode_item */
+  const items = [...document.querySelectorAll('[role="menuitem"], [role="option"]')]
+    .filter(e => /chatgpt/i.test((e.innerText || '').replace(/\s+/g, ' ').trim()));
+  if (items.length !== 1) return {clicked: false, reason: 'item_not_unique'};
+  const target = items[0];
+""" + _POINTER_FIRE + r"""  return {clicked: true};
+})()""")
+
+# Bounded poll after the trigger click: the Radix menu renders in a popper
+# wrapper and its items may mount a tick after pointerdown. open=false with
+# a bounded popper sample feeds the menu_not_opened refusal diag.
+MODE_MENU_PROBE = r"""(() => { /* __reprise_mode_menu */
+  const items = [...document.querySelectorAll(
+    '[role="menuitem"], [role="option"], '
+    + '[data-radix-popper-content-wrapper] [role="menuitem"], '
+    + '[data-radix-popper-content-wrapper] [role="option"]')];
+  const wrapper = document.querySelector('[data-radix-popper-content-wrapper]');
+  const sample = {
+    items: items.length,
+    popper_present: !!wrapper,
+    popper_text: wrapper
+      ? wrapper.textContent.replace(/\s+/g, ' ').trim().slice(0, 300) : null
+  };
+  return {open: items.length > 0, sample};
+})()"""
+
+MENU_OPEN_TIMEOUT_S = 0.45
+MENU_POLL_INTERVAL_S = 0.1
+
+
+def ensure_chatgpt_mode(transport):
+    """Verify (or switch to) pure ChatGPT mode before any irreversible send.
+
+    Reuses the diag conventions: read the trigger state, click through the
+    Radix menu when Codex is active (bounded poll for the menu to open),
+    then RE-READ; only a positive re-read authorizes the send. Any doubt is
+    a refusal carrying bounded candidates.
+    """
+    def read():
+        result = transport.evaluate(MODE_PROBE)
+        if not isinstance(result, dict):
+            raise ValueError('invalid_mode_probe')
+        return result
+
+    def refusal(reason, extra=None):
+        try:
+            diag = _bounded_diag(read())
+            if extra:
+                diag.update(extra)
+        except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+            diag = None
+        return {'verified': False, 'reason': reason, 'diag': diag}
+
+    def menu_poll():
+        """Wait (bounded) for the Radix menu to open after the trigger click."""
+        deadline = time.monotonic() + MENU_OPEN_TIMEOUT_S
+        while True:
+            result = transport.evaluate(MODE_MENU_PROBE)
+            if isinstance(result, dict) and result.get('open'):
+                return result
+            if time.monotonic() >= deadline:
+                return result if isinstance(result, dict) else None
+            time.sleep(MENU_POLL_INTERVAL_S)
+
+    def classify(result):
+        """Trust the probe's already-filtered candidate list; fail closed."""
+        candidates = result.get('candidates')
+        if not isinstance(candidates, list) or not candidates:
+            return None, 'selector_missing', None
+        # Defense in depth (#248 live evidence): decide only on candidates
+        # whose text IS the mode label, so a substring mention ("Trouver une
+        # skill UX/UI pour Codex") can never create a false ambiguity. With
+        # no exact label, keep the raw list so the fail-closed reasons below
+        # (missing/ambiguous/unknown) stay meaningful.
+        exact = [entry for entry in candidates
+                 if isinstance(entry, dict) and
+                 str(entry.get('text', '')).strip().lower()
+                 in ('chatgpt', 'codex')]
+        if exact:
+            candidates = exact
+        if len(candidates) > 1:
+            return None, 'selector_ambiguous', None
+        entry = candidates[0]
+        text = str(entry.get('text', '')).strip() if isinstance(entry, dict) else ''
+        label = text.lower()
+        if label == 'chatgpt':
+            return 'ChatGPT', None, text
+        if label == 'codex':
+            return 'Codex', None, text
+        return None, 'unknown_state', text
+
+    try:
+        first = read()
+        mode_name, problem, _text = classify(first)
+        if problem:
+            return refusal(problem)
+        if mode_name == 'ChatGPT':
+            return {'verified': True, 'mode': 'ChatGPT'}
+        trigger = transport.evaluate(MODE_TRIGGER_CLICK)
+        if not isinstance(trigger, dict) or not trigger.get('clicked'):
+            return refusal('click_no_change')
+        # Live dispatch lesson (#248, chatgpt-mode-248-live-a2): a synthetic
+        # click does not open the Radix menu; after the pointer-sequence
+        # trigger click, poll briefly for the menu items before picking one.
+        menu = menu_poll()
+        if not isinstance(menu, dict) or not menu.get('open'):
+            return refusal('menu_not_opened',
+                           {'menu': menu.get('sample')
+                            if isinstance(menu, dict) else None})
+        item = transport.evaluate(MODE_ITEM_CLICK)
+        if not isinstance(item, dict) or not item.get('clicked'):
+            return refusal('click_no_change')
+        second = read()
+        mode_name, problem, _text = classify(second)
+        if mode_name == 'ChatGPT':
+            return {'verified': True, 'mode': 'ChatGPT'}
+        if problem in ('selector_missing', 'unknown_state'):
+            return refusal('click_no_change')
+        return refusal(problem or 'click_no_change')
+    except (TimeoutError, EOFError, RuntimeError, OSError, ValueError) as exc:
+        try:
+            diag = _bounded_diag(read())
+        except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+            diag = None
+        return {'verified': False, 'reason': 'cdp_error',
+                'detail': type(exc).__name__, 'diag': diag}
+
 
 def profile_path(root, name):
     """Resolve a named isolated profile without following existing symlinks."""
@@ -1476,7 +1673,17 @@ def _holder_dispatch(runtime, binary, profile, payload):
             time.sleep(0.5)
         if not ready:
             return _send_receipt() | {'reason': 'holder_not_ready'}
-    return _dispatch(transport, prompt, profile, request_key, _send_receipt())
+    # Issue #248 LOT 2: pure ChatGPT mode is verified (or switched to) before
+    # any irreversible send; without a positive re-read, never dispatch.
+    receipt = _send_receipt()
+    mode = ensure_chatgpt_mode(transport)
+    if not mode.get('verified'):
+        receipt.update(reason=mode.get('reason') or 'unknown_state',
+                       mode_diag=mode.get('diag'))
+        return receipt
+    receipt['mode'] = mode['mode']
+    receipt['mode_verified'] = True
+    return _dispatch(transport, prompt, profile, request_key, receipt)
 
 
 def _close_secondary_pages(transport):

@@ -39,6 +39,37 @@ l'originale, placée dans `~/Applications`, avec :
 - **Le holder dédie sa binaire au clone** : `chatgpt_desktop_pipe.py`
   résout `~/Applications/ReChatGPT.app/.../ChatGPT` pour le profil
   `dedicated` quand la copie existe (sinon `/Applications/ChatGPT.app`).
+- **Le mode ChatGPT pur est vérifié avant tout dispatch (#248)** : avant
+  l'envoi irréversible, le holder relit le sélecteur de mode en haut à
+  gauche et, si « Codex » est actif, bascule vers « ChatGPT » puis **relit**
+  ; le reçu ne porte `mode: "ChatGPT"` et `mode_verified: true` qu'après
+  une relecture positive. Sans preuve positive (sélecteur absent, ambigu,
+  état inconnu, clic sans effet, erreur CDP), l'envoi est refusé — jamais
+  de `_dispatch` — et le reçu emporte la raison précise et les candidats
+  DOM observés (borne 8 Kio). Ne comptent comme candidats que les éléments
+  dont le texte **est exactement** « ChatGPT » ou « Codex »
+  (insensible à la casse) : une simple mention comme la puce latérale
+  « Trouver une skill UX/UI pour Codex » (reçu live) n'est ni un candidat
+  ni une cible de clic — sonde, clic déclencheur et détection du mode
+  appliquent ce libellé exact, `classify()` le re-filtre en défense
+  complémentaire.
+- **Bascule de mode : séquence pointeur + poll borné du menu (#248,
+  correctif 2)** : le menu Radix du sélecteur ignore un `click` synthétique
+  (reçu live `chatgpt-mode-248-live-a2`) — le clic déclencheur et le clic
+  sur l'item simulent une séquence pointeur complète
+  (`pointerdown`/`mousedown`/`pointerup`/`mouseup`/`click`, bouton 0, centre
+  du rect, repli `el.click()` sans `PointerEvent`). Après le clic
+  déclencheur, une sonde bornée (0,45 s max, pas de 0,1 s) attend
+  l'ouverture du menu (`[role=menuitem]`/`[role=option]`, y compris sous le
+  wrapper Radix) ; menu non ouvert = refus dédié `menu_not_opened`
+  (distincte de `click_no_change`, réservée au clic sans effet et à la
+  relecture inchangée), le reçu emportant un échantillon borné du
+  menu/popper.
+- **Respawn du holder après bascule de mode** : si le holder tombe entre
+  deux dispatchs, le relancer proprement — SIGTERM du processus `serve`,
+  fermeture du Chrome dédié associé (profil `dedicated`), puis relance
+  `python3 chatgpt_desktop_pipe.py serve --profile dedicated`. Jamais de
+  Chrome partagé avec un usage manuel (conflit de verrou singleton).
 - Divergence de versions admise : si l'originale avance, le clone reste
   gelé ; une refonte DOM peut nécessiter un recalage sélecteurs (leçon
   #226) visible dans les reçus (`selectors_stale`).
