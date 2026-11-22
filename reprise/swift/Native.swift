@@ -79,6 +79,12 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var integrationProfiles: [String] = []
     @Published var appClones: [[String: Any]] = []
     @Published var appClonesMessage = ""
+    @Published var cloneActionBusy = ""
+    @Published var cloneResult: [String: Any] = [:]
+    @Published var cloneResultAction = ""
+    @Published var cloneResultAt: Date? = nil
+    @Published var clonePlanShown: [String: Any]? = nil
+    @Published var cloneMessage = ""
     @Published var relaunchNote = ""
     @Published var relaunchBusy = false
 
@@ -674,6 +680,53 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                 }
             }()
             self.refresh()
+        }
+    }
+    func cloneInspect() {
+        cloneReadCommand("clone-inspect", action: "inspect", label: "Inspection")
+    }
+    func clonePlan() {
+        cloneReadCommand("clone-plan", action: "plan", label: "Plan")
+    }
+    func cloneVerify() {
+        cloneReadCommand("clone-verify", action: "verify", label: "Vérification")
+    }
+    private func cloneReadCommand(_ command: String, action: String, label: String) {
+        guard cloneActionBusy.isEmpty else { return }
+        cloneActionBusy = action
+        perform([command]) { result in
+            self.cloneActionBusy = ""
+            guard let result = result else {
+                self.cloneResultAction = label
+                self.cloneResult = [:]
+                self.cloneResultAt = Date()
+                self.cloneMessage = "Commande \(command) non confirmée. Aucun nouvel essai automatique."
+                return
+            }
+            self.cloneMessage = ""
+            self.cloneResult = result
+            self.cloneResultAction = label
+            self.cloneResultAt = Date()
+            if action == "plan" { self.clonePlanShown = result }
+        }
+    }
+    func cloneApply(names: [String]) {
+        guard cloneActionBusy.isEmpty, !names.isEmpty, clonePlanShown != nil else { return }
+        cloneActionBusy = "apply"
+        var args = ["clone-apply"]
+        args.append(contentsOf: names)
+        perform(args) { result in
+            self.cloneActionBusy = ""
+            self.cloneResultAction = "Application"
+            if let result = result {
+                self.cloneResult = result
+                self.cloneMessage = ""
+            } else {
+                self.cloneResult = [:]
+                self.cloneMessage = "Application non confirmée. Aucun nouvel essai automatique."
+            }
+            self.cloneResultAt = Date()
+            self.loadAppClones()
         }
     }
     func checkVaultAvailability() {
