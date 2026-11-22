@@ -805,6 +805,15 @@ extension App {
 
 struct Integrations: View {
     @ObservedObject var app: App
+    @State private var cloneApplyCandidate = ""
+    @State private var cloneApplyOffered = false
+    var cloneCommandsReady: Bool { app.stateReady && !app.setupBusy && app.runtimeError == nil }
+    var cloneApplyReady: Bool { cloneCommandsReady && app.clonePlanShown != nil && app.cloneActionBusy.isEmpty }
+    func requestCloneApply(_ clone: [String: Any]) {
+        guard let name = clone["name"] as? String, !name.isEmpty else { return }
+        cloneApplyCandidate = name
+        cloneApplyOffered = true
+    }
     var hasProfile: Bool { !app.integrationProfile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     func path(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) { Text(label).font(.caption).foregroundStyle(.secondary); Text(value.isEmpty ? "Non choisi" : value).textSelection(.enabled) }
@@ -884,19 +893,48 @@ struct Integrations: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Button("Actualiser") { app.loadAppClones() }
-                        Text(app.appClonesMessage).font(.caption).foregroundStyle(.secondary)
+                        Button("Inspecter") { app.cloneInspect() }
+                        Button("Plan") { app.clonePlan() }
+                        Button("Vérifier") { app.cloneVerify() }
+                    }.disabled(!cloneCommandsReady || !app.cloneActionBusy.isEmpty)
+                    if !app.cloneActionBusy.isEmpty {
+                        Text("Action clone en cours : \(app.cloneActionBusy)…").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text(app.appClonesMessage).font(.caption).foregroundStyle(.secondary)
+                    if !app.cloneMessage.isEmpty {
+                        Text(app.cloneMessage).font(.caption).foregroundStyle(.orange)
+                    }
+                    if let plan = app.clonePlanShown {
+                        Text("Plan courant — à relire avant toute application :").font(.caption).foregroundStyle(.secondary)
+                        Text(planDetail(plan)).font(.caption).textSelection(.enabled)
                     }
                     if app.appClones.isEmpty {
                         Text("Aucun manifeste de clone lu (app-clones.json). La CLI gérée : app_clones.py inspect/plan/apply/verify.")
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
                         ForEach(app.appClones.indices, id: \.self) { index in
-                            CloneRow(clone: app.appClones[index])
+                            CloneRow(clone: app.appClones[index],
+                                     applyReady: cloneApplyReady,
+                                     applyPending: app.cloneActionBusy == "apply",
+                                     onApply: { requestCloneApply(app.appClones[index]) })
                         }
                         Text("Auto-update du clone désactivé par contrat ; l’originale /Applications reste pristine et se met à jour normalement.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                    if let at = app.cloneResultAt {
+                        Text("Dernier résultat \(app.cloneResultAction) (\(IntegrationDateTime.string(from: at))) :")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text(planDetail(app.cloneResult)).font(.caption).textSelection(.enabled)
+                    }
                 }.padding(6)
+                .confirmationDialog("Appliquer le plan à \(cloneApplyCandidate) ?", isPresented: $cloneApplyOffered, titleVisibility: .visible) {
+                    Button("Appliquer \(cloneApplyCandidate)", role: .destructive) {
+                        app.cloneApply(names: [cloneApplyCandidate])
+                    }
+                    Button("Annuler", role: .cancel) {}
+                } message: {
+                    Text("Le clone est recréé depuis l’original : identité du bundle modifiée (bundle_id, nom affiché), signature ad hoc, auto-update coupé, version gelée dans le manifeste. Si le clone est en cours d’exécution, l’opération est refusée. L’original /Applications reste pristine.")
+                }
             }.onAppear { app.loadAppClones() }
             SettingsCard(title: "Profil Harness",
                          status: hasProfile ? "Profil : " + app.integrationProfile : "Aucun profil",
@@ -1325,14 +1363,20 @@ struct Integrations: View {
 
 private struct CloneRow: View {
     let clone: [String: Any]
+    let applyReady: Bool
+    let applyPending: Bool
+    let onApply: () -> Void
     private let name: String
     private let bundleID: String
     private let frozenVersion: String
     private let upstreamVersion: String
     private let issues: [String]
 
-    init(clone: [String: Any]) {
+    init(clone: [String: Any], applyReady: Bool, applyPending: Bool, onApply: @escaping () -> Void) {
         self.clone = clone
+        self.applyReady = applyReady
+        self.applyPending = applyPending
+        self.onApply = onApply
         self.name = clone["name"] as? String ?? ""
         self.bundleID = clone["bundle_id"] as? String ?? ""
         self.frozenVersion = clone["frozen_version"] as? String ?? ""
@@ -1357,6 +1401,15 @@ private struct CloneRow: View {
             Text(summary)
                 .font(.caption)
                 .foregroundStyle(issues.isEmpty ? Color.secondary : Color.orange)
+            HStack(spacing: 8) {
+                Button("Appliquer…") { onApply() }
+                    .disabled(!applyReady)
+                if applyPending {
+                    Text("Application en cours…").font(.caption).foregroundStyle(.secondary)
+                } else if !applyReady {
+                    Text("Lancez d’abord Plan, puis appliquez.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
         }
     }
 }
