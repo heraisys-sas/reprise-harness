@@ -108,6 +108,11 @@ def error_payload(exc):
                      'human_reason': messages[kind], 'error': detail}}
 
 BACKEND_MODELS = {
+    # Déprécié (#253) : la lineup codex vit uniquement dans le catalogue
+    # dynamique (live ou last-known persisté). Cette clé n'est plus lue par
+    # le code de production — elle n'est conservée que pour les imports des
+    # tests existants (test_expert_active_turns, test_delegation_persistence),
+    # PAS comme catalogue.
     'codex': ('gpt-6.2-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra', 'gpt-5.6-terra'),
     'claude-code': ('sonnet', 'opus'),
     'ironclaw': (),
@@ -116,14 +121,20 @@ BACKEND_MODELS = {
     'foundation-models': ('system',),
 }
 RETURN_MODES = {'type': 'string', 'enum': ['full', 'receipt'], 'default': 'full'}
-# Catalogue de modèles Codex dynamique (#242) : préférences ordonnées résolues contre le
-# catalogue live `model/list` ; aucune substitution silencieuse hors catalogue.
+# Catalogue de modèles Codex dynamique (#242, #253) : préférences ordonnées
+# résolues contre le catalogue (live ou last-known) — ce sont des préférences
+# de routage, PAS un catalogue de modèles ; aucune substitution silencieuse
+# hors catalogue.
 CODEX_ROUTE_PREFERENCES = {
     'deep': ('gpt-6-astra', 'gpt-5.6-terra', 'gpt-6.1-sol'),
     'batch': ('gpt-6-luna', 'gpt-5.6-terra', 'gpt-6.1-sol'),
     'default': ('gpt-6.1-sol', 'gpt-6-luna', 'gpt-5.6-terra'),
 }
 CODEX_CATALOG_TTL = 30.0
+CODEX_CATALOG_VERSION = 1
+# Persistance last-known-good du catalogue codex (#253), même convention que
+# MANIFEST_PATH d'app_clones.py ; écriture atomique à la sauvegarde live.
+CATALOG_PATH = Path.home() / 'Library/Application Support/Reprise/codex-models.json'
 CODEX_EFFORT_PREFERENCES = {'deep': 'high', 'batch': 'medium', 'default': 'medium'}
 INFERENCE_TOOLS = ('reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup')
 # Lot C (#238) : capacité du slot Codex ; les singletons physiques restent mono-slot.
@@ -393,8 +404,9 @@ class Bridge:
         routing_events.seed_local(self.db)
         self.db.commit()
         self.requests = Store(self.db, str(self.root))
-        # Catalogue de modèles Codex dynamique (#242) : cache TTL strictement par instance,
-        # sans repli statique ni fichier persistant.
+        # Catalogue de modèles Codex dynamique (#242, #253) : cache TTL strictement
+        # par instance ; repli last-known uniquement via le fichier CATALOG_PATH
+        # (écrit en live, jamais réécrit depuis un contenu last-known).
         self._codex_catalog_cache = None
         self._codex_catalog_time = None
         self._release_terminal_slots()
@@ -435,12 +447,16 @@ class Bridge:
             chatgpt.close()
 
     def _codex_catalog(self, force=False):
-        """Catalogue de modèles Codex live (#242) : (`model/list` via le proxy RPC).
+        """Catalogue de modèles Codex (#242, #253) : `model/list` via le proxy RPC.
 
-        Cache TTL 30 s strictement par instance Bridge. Aucun repli statique :
-        en cas d'échec de rafraîchissement, le cache est invalidé et `source`
-        vaut 'unavailable' avec `models` vide — un modèle last-known-good
-        n'est jamais admis après un rafraîchissement raté.
+        Cache TTL 30 s strictement par instance Bridge. Succès live → écriture
+        du fichier last-known-good (`CATALOG_PATH`, atomique) ; un échec
+        d'écriture est journalisé dans `error` sans invalider le catalogue
+        live. Échec live → chargement du fichier : lisible avec au moins un
+        modèle valide → `source='last_known'` (models et updated_at du
+        fichier, erreur live préservée) ; absent/corrompu/vide →
+        `source='unavailable'`, models vide. Le fichier n'est jamais réécrit
+        depuis un contenu last-known (pas de réécriture circulaire).
         """
         now = time.monotonic()
         if not force and self._codex_catalog_cache is not None \
@@ -467,16 +483,57 @@ class Bridge:
         finally:
             if client is not None:
                 client.close()
-        entry = {'models': models, 'source': 'live' if models else 'unavailable',
-                 'updated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'error': error}
+        if models:
+            error = self._codex_catalog_save(models) or error
+            entry = {'models': models, 'source': 'live',
+                     'updated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'error': error}
+        else:
+            entry = self._codex_catalog_load(error) or {
+                'models': [], 'source': 'unavailable',
+                'updated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'error': error}
         self._codex_catalog_cache, self._codex_catalog_time = entry, now
         return entry
 
+    @staticmethod
+    def _codex_catalog_save(models):
+        """Écriture atomique last-known-good (#253) ; retourne None ou un message d'erreur."""
+        try:
+            CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            tmp = CATALOG_PATH.with_name(CATALOG_PATH.name + '.tmp')
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+                json.dump({'models': models,
+                           'updated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                           'version': CODEX_CATALOG_VERSION}, handle, ensure_ascii=False, indent=1)
+            os.replace(tmp, CATALOG_PATH)
+        except OSError as exc:
+            return f'catalog persistence failed: {exc}'
+        return None
+
+    @staticmethod
+    def _codex_catalog_load(live_error=None):
+        """Chargement last-known-good (#253) ; None si absent, corrompu ou sans modèle valide."""
+        try:
+            with open(CATALOG_PATH, 'r', encoding='utf-8') as handle:
+                data = json.load(handle)
+            models = [item for item in (data.get('models') or [])
+                      if isinstance(item, dict) and isinstance(item.get('model'), str) and item['model']]
+        except (OSError, ValueError):
+            return None
+        if not models:
+            return None
+        return {'models': models, 'source': 'last_known',
+                'updated_at': data.get('updated_at'), 'error': live_error}
+
     def _codex_admit_model(self, catalog, model):
-        """Admission stricte d'un modèle codex explicite contre le catalogue live.
+        """Admission d'un modèle codex explicite contre le catalogue (#242, #253).
 
         Modèle absent d'un cache valide → revalidation forcée unique ; toujours
-        absent → ValueError AVANT toute création de requête ou insertion en base.
+        absent → ValueError AVANT toute création de requête ou insertion en
+        base. Compromis #253 : contre un catalogue last-known, un modèle
+        explicite de l'opérateur est admis alors que le compte actuel peut ne
+        plus l'autoriser — le dispatch échouera alors clairement avec
+        `engine_unavailable` au moment de l'inférence.
         """
         if not isinstance(model, str) or not model:
             raise ValueError('Unknown or unsupported model for backend codex')
@@ -489,13 +546,14 @@ class Bridge:
                                  + (f' ({catalog["error"]})' if catalog['error'] else ''))
 
     def _codex_route(self, catalog, preference):
-        """Résolution ordonnée d'une route codex contre le catalogue live (#242).
+        """Résolution ordonnée d'une route codex contre le catalogue (#242, #253).
 
         Premier candidat présent dans le catalogue ; effort prescrit validé
         contre `supportedReasoningEfforts` (repli medium, sinon le plus bas) ;
+        accepte les sources 'live' et 'last_known', refuse 'unavailable' ;
         aucun candidat présent → ValueError, jamais de substitution silencieuse.
         """
-        if catalog['source'] != 'live':
+        if catalog['source'] not in ('live', 'last_known'):
             raise ValueError(f'Codex model catalog unavailable: {catalog["error"] or "model/list failed"}')
         available = {item['model']: item for item in catalog['models']}
         for candidate in CODEX_ROUTE_PREFERENCES[preference]:
@@ -1000,7 +1058,8 @@ class Bridge:
             raise ValueError('Unknown expertise backend')
         if 'model' in args:
             if backend == 'codex':
-                # Admission dynamique (#242) : source de vérité = catalogue live.
+                # Admission dynamique (#242, #253) : source de vérité = catalogue
+                # live ou last-known persisté ; jamais de liste figée.
                 self._codex_admit_model(self._codex_catalog(), args['model'])
             elif not isinstance(args['model'], str) or args['model'] not in BACKEND_MODELS[backend]:
                 raise ValueError(f'Unknown or unsupported model for backend {backend}')
@@ -1058,7 +1117,8 @@ class Bridge:
                 routing.setdefault('effort', 'medium')
         if backend == 'codex' and routing.get('model'):
             # Validation du modèle codex FINAL résolu (argument explicite ou route
-            # restaurée d'expert_routes) : refus avant toute insertion en base (#242).
+            # restaurée d'expert_routes) contre le catalogue live ou last-known :
+            # refus avant toute insertion en base (#242, #253).
             self._codex_admit_model(self._codex_catalog(), routing['model'])
         policy = {}
         for source, target in (('wait_seconds', 'wait_timeout'), ('execution_seconds', 'execution_deadline'),

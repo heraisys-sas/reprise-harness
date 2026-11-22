@@ -14,8 +14,12 @@ import uuid
 from contextlib import redirect_stdout
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from codex_expert_mcp import BACKEND_MODELS, CODEX_CATALOG_TTL, Bridge, error_payload, main
+from codex_expert_mcp import CODEX_CATALOG_TTL, Bridge, error_payload, main
 from test_codex_expert import ID
+
+# #253 : BACKEND_MODELS ne porte plus la lineup codex figée — les tests
+# simulent le catalogue live avec une lineup locale équivalente.
+CODEX_TEST_MODELS = ('gpt-6.2-sol', 'gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra', 'gpt-5.6-terra')
 
 class RequestCalls:
     def call(self, name, args):
@@ -25,7 +29,7 @@ class RequestCalls:
 
 
 # Catalogue Codex simulé (#242) : forme normalisée de `model/list`, efforts
-# bas/medium/high pour chaque modèle BACKEND_MODELS['codex'].
+# bas/medium/high pour chaque modèle de la lineup de test.
 def simulated_codex_catalog(models, *, source='live', error=None):
     return {'models': [{'model': model, 'displayName': model,
                         'supportedReasoningEfforts': ['low', 'medium', 'high']}
@@ -38,7 +42,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         # #242 : admission dynamique — le cache d'instance sert de catalogue
         # simulé ; la cleanup empêche une revalidation de remonter au Client réel.
         bridge = bridge if bridge is not None else self.bridge
-        entry = simulated_codex_catalog(BACKEND_MODELS['codex'])
+        entry = simulated_codex_catalog(CODEX_TEST_MODELS)
         bridge._codex_catalog_cache, bridge._codex_catalog_time = entry, time.monotonic()
         self.addCleanup(lambda: setattr(bridge, '_codex_catalog_time', None))
         return entry
@@ -46,6 +50,11 @@ class BridgeTests(RequestCalls, unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
+        # #253 : le fichier last-known-good est isolé du vrai chemin utilisateur.
+        self.catalog_path = Path(self.temp.name)/'codex-models.json'
+        catalog_patcher = patch('codex_expert_mcp.CATALOG_PATH', self.catalog_path)
+        catalog_patcher.start()
+        self.addCleanup(catalog_patcher.stop)
         self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
         self.bridge.program = 'codex'
         self.seed_catalog()
@@ -362,7 +371,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.bridge.claude_program = '/claude'
         self.bridge.claude_subscription_only = True
         for backend, models, target in [
-                ('codex', BACKEND_MODELS['codex'], 'review'),
+                ('codex', CODEX_TEST_MODELS, 'review'),
                 ('claude-code', ('sonnet', 'opus'), 'claude_review')]:
             for model in models:
                 with self.subTest(backend=backend, model=model), patch(
@@ -396,13 +405,13 @@ class BridgeTests(RequestCalls, unittest.TestCase):
             codex.assert_not_called()
             claude.assert_not_called()
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0], 0)
-        # #242 : pour codex l'admission est dynamique — un modèle connu de
-        # #242 : modèle absent du catalogue simulé mais présent dans
-        # BACKEND_MODELS → revalidation forcée (Client appelé une seule fois),
-        # toujours absent → refus, aucune inférence ni insertion.
+        # #242 : pour codex l'admission est dynamique — modèle absent du
+        # catalogue simulé mais présent dans la lineup de test → revalidation
+        # forcée (Client appelé une seule fois), toujours absent → refus,
+        # aucune inférence ni insertion.
         with patch('codex_expert_mcp.review') as codex, patch('codex_expert_mcp.Client') as client:
             client.return_value.call.side_effect = (
-                lambda method, payload: {'data': [{'model': model} for model in BACKEND_MODELS['codex']]}
+                lambda method, payload: {'data': [{'model': model} for model in CODEX_TEST_MODELS]}
                 if method == 'model/list' else {})
             with self.assertRaisesRegex(ValueError, "not in live catalog"):
                 self.call('reprise_delegate', {
@@ -421,7 +430,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         # …puis catalogue live simulé (cache d'instance) + métadonnées de fraîcheur.
         self.seed_catalog()
         rows = {row['id']: row for row in self.call('reprise_backends', {})['backends']}
-        self.assertEqual([item['model'] for item in rows['codex']['models']], list(BACKEND_MODELS['codex']))
+        self.assertEqual([item['model'] for item in rows['codex']['models']], list(CODEX_TEST_MODELS))
         self.assertEqual(rows['codex']['models_source'], 'live')
         self.assertEqual(rows['codex']['models_updated_at'], '2026-11-20T15:00:00+00:00')
         self.assertNotIn('models_error', rows['codex'])
@@ -494,7 +503,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         # (a) #242 : line-up modifié servi après expiration du TTL, jamais la liste statique.
         self.seed_catalog()
         self.assertEqual([item['model'] for item in self.call('reprise_backends', {})['backends'][0]['models']],
-                         list(BACKEND_MODELS['codex']))
+                         list(CODEX_TEST_MODELS))
         lineup = ['gpt-6.1-sol', 'gpt-6-luna']
         with patch('codex_expert_mcp.Client') as client:
             client.return_value.call.side_effect = (
@@ -544,6 +553,96 @@ class BridgeTests(RequestCalls, unittest.TestCase):
             client.assert_called_once()
         # Une seule insertion : l'appel admis ; le refus final n'en crée pas.
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0], before + 1)
+
+    def write_catalog_file(self, data):
+        self.catalog_path.write_text(json.dumps(data), encoding='utf-8')
+
+    def test_live_catalog_persists_last_known_file_issue_253(self):
+        # (a) #253 : succès live → source 'live' ET écriture du fichier
+        # last-known-good ; un échec d'écriture est journalisé sans invalider le live.
+        lineup = ['gpt-6.1-sol', 'gpt-6-luna']
+        with patch('codex_expert_mcp.Client') as client:
+            client.return_value.call.side_effect = (
+                lambda method, payload: {'data': [{'model': model,
+                                                   'displayName': model,
+                                                   'supportedReasoningEfforts': [
+                                                       {'reasoningEffort': 'medium'}]}
+                                                  for model in lineup]}
+                if method == 'model/list' else {})
+            entry = self.bridge._codex_catalog(force=True)
+        self.assertEqual(entry['source'], 'live')
+        self.assertEqual([item['model'] for item in entry['models']], lineup)
+        self.assertIsNone(entry['error'])
+        data = json.loads(self.catalog_path.read_text(encoding='utf-8'))
+        self.assertEqual([item['model'] for item in data['models']], lineup)
+        self.assertEqual(data['version'], 1)
+        self.assertTrue(data['updated_at'].endswith('+00:00'))
+        # Échec d'écriture (parent non répertoire) → live conservé, erreur journalisée.
+        blocker = Path(self.temp.name)/'blocker'
+        blocker.write_text('x')
+        with patch('codex_expert_mcp.Client') as client, \
+                patch('codex_expert_mcp.CATALOG_PATH', blocker/'codex-models.json'):
+            client.return_value.call.side_effect = (
+                lambda method, payload: {'data': [{'model': model} for model in lineup]}
+                if method == 'model/list' else {})
+            entry = self.bridge._codex_catalog(force=True)
+        self.assertEqual(entry['source'], 'live')
+        self.assertIn('catalog persistence failed', entry['error'])
+
+    def test_last_known_fallback_when_live_fails_issue_253(self):
+        # (b) #253 : codexd indisponible + fichier lisible → source 'last_known',
+        # models/updated_at du fichier, erreur live préservée, route résolue,
+        # fichier JAMAIS réécrit depuis le contenu last-known.
+        stale = {'models': [{'model': 'gpt-6.1-sol', 'displayName': 'Sol',
+                             'supportedReasoningEfforts': ['low', 'medium', 'high']},
+                            {'model': 'gpt-6-luna', 'displayName': 'Luna',
+                             'supportedReasoningEfforts': ['low', 'medium', 'high']}],
+                 'updated_at': '2026-11-20T15:00:00+00:00', 'version': 1}
+        self.write_catalog_file(stale)
+        before = self.catalog_path.read_bytes()
+        with patch('codex_expert_mcp.Client', side_effect=ValueError('codexd down')):
+            entry = self.bridge._codex_catalog(force=True)
+        self.assertEqual(entry['source'], 'last_known')
+        self.assertEqual([item['model'] for item in entry['models']], ['gpt-6.1-sol', 'gpt-6-luna'])
+        self.assertEqual(entry['updated_at'], '2026-11-20T15:00:00+00:00')
+        self.assertEqual(entry['error'], 'codexd down')
+        self.assertEqual(self.catalog_path.read_bytes(), before)  # pas de réécriture circulaire
+        routing = self.bridge._codex_route(entry, 'default')
+        self.assertEqual(routing['model'], 'gpt-6.1-sol')
+        self.assertEqual(routing['effort'], 'medium')
+
+    def test_unavailable_when_no_or_corrupt_file_and_live_fails_issue_253(self):
+        # (c) #253 : fichier absent, corrompu ou sans modèle valide + codexd bas
+        # → source 'unavailable', models vide (comportement #242 inchangé).
+        for seed in ('absent', 'corrupt', 'empty'):
+            with self.subTest(case=seed):
+                self.bridge._codex_catalog_cache = None
+                self.bridge._codex_catalog_time = None
+                if seed == 'corrupt':
+                    self.catalog_path.write_text('not json {')
+                elif seed == 'empty':
+                    self.write_catalog_file({'models': [], 'updated_at': 'x', 'version': 1})
+                with patch('codex_expert_mcp.Client', side_effect=ValueError('codexd down')):
+                    entry = self.bridge._codex_catalog(force=True)
+                self.assertEqual(entry['source'], 'unavailable')
+                self.assertEqual(entry['models'], [])
+                self.assertEqual(entry['error'], 'codexd down')
+
+    def test_explicit_model_admitted_against_last_known_issue_253(self):
+        # (d) #253 : modèle explicite de l'opérateur présent dans le fichier
+        # last-known → admis (compromis documenté) ; dispatch résolu depuis
+        # last-known quand codexd est indisponible.
+        lineup = ['gpt-6.1-sol', 'gpt-6-luna', 'gpt-5.6-terra']
+        self.write_catalog_file({'models': [{'model': model, 'displayName': model,
+                                             'supportedReasoningEfforts': ['low', 'medium', 'high']}
+                                            for model in lineup],
+                                 'updated_at': '2026-11-20T15:00:00+00:00', 'version': 1})
+        self.bridge._codex_catalog_cache = None
+        self.bridge._codex_catalog_time = None
+        with patch('codex_expert_mcp.review', return_value={'status':'finished'}) as review, \
+                patch('codex_expert_mcp.Client', side_effect=ValueError('codexd down')):
+            self.call('reprise_delegate', {'kind':'review', 'question':'Review', 'model':'gpt-6-luna'})
+            self.assertEqual(review.call_args.kwargs['model'], 'gpt-6-luna')
 
     def test_nonpersistent_thread_is_not_registered(self):
         with patch('codex_expert_mcp.review', return_value={'status':'blocked_permission','thread_id':ID,'resumable':False}):
@@ -796,7 +895,7 @@ class CompactReceiptTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state')
         self.bridge.program = 'codex'
-        self.bridge._codex_catalog_cache = simulated_codex_catalog(BACKEND_MODELS['codex'])
+        self.bridge._codex_catalog_cache = simulated_codex_catalog(CODEX_TEST_MODELS)
         self.bridge._codex_catalog_time = time.monotonic()
         self.addCleanup(self.bridge.close)
 
@@ -954,7 +1053,7 @@ class ChatGptStateRenameTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
         self.bridge.program = 'codex'
-        self.bridge._codex_catalog_cache = simulated_codex_catalog(BACKEND_MODELS['codex'])
+        self.bridge._codex_catalog_cache = simulated_codex_catalog(CODEX_TEST_MODELS)
         self.bridge._codex_catalog_time = time.monotonic()
         self.addCleanup(self.bridge.close)
 
