@@ -60,6 +60,89 @@ def dedicated_profile(profile_root=DEFAULT_PROFILE_ROOT):
 PROFILE_NAME = re.compile(r'[A-Za-z0-9_-]{1,64}\Z')
 MAIN_URL = 'app://-/index.html'
 # Fixed, read-only probe. Never capture conversation text or authorization tokens.
+DIAG_PROBE = r"""(() => {
+  const candidates = [];
+  const controls = [...document.querySelectorAll(
+    'button, [role="tab"], [role="radiogroup"], [role="radio"], ' +
+    '[role="button"], [role="group"], [role="segmentedcontrol"]')];
+  for (const e of controls) {
+    const r = e.getBoundingClientRect();
+    if (r.top < 0 || r.top > 400 || r.bottom < 0) continue;
+    const style = getComputedStyle(e);
+    if (style.display === 'none' || style.visibility === 'hidden' ||
+        r.width <= 0 || r.height <= 0) continue;
+    const text = (e.innerText || e.getAttribute('aria-label') || '')
+      .replace(/\s+/g, ' ').trim();
+    const role = e.getAttribute('role');
+    if (!/chatgpt|codex/i.test(text) &&
+        !['tab', 'radiogroup', 'radio', 'group', 'segmentedcontrol'].includes(role))
+      continue;
+    const attrs = {};
+    for (const a of [...e.attributes]) {
+      if (a.name.startsWith('data-'))
+        attrs[a.name.slice(0, 80)] = a.value.slice(0, 120);
+    }
+    candidates.push({
+      tag: e.tagName.toLowerCase(), text: text.slice(0, 80),
+      role, aria_selected: e.getAttribute('aria-selected'),
+      aria_pressed: e.getAttribute('aria-pressed'),
+      aria_checked: e.getAttribute('aria-checked'),
+      aria_expanded: e.getAttribute('aria-expanded'),
+      data: attrs, class: String(e.className || '').slice(0, 120),
+      rect: {x: Math.round(r.x), y: Math.round(r.y),
+             w: Math.round(r.width), h: Math.round(r.height)}
+    });
+    if (candidates.length >= 200) break;
+  }
+  return {href: location.href, title: document.title, candidates};
+})()"""
+
+DIAG_MAX_BYTES = 8 * 1024
+
+
+def _bounded_diag(result):
+    """Return a small JSON-safe renderer excerpt, trimming candidates first."""
+    if not isinstance(result, dict):
+        raise ValueError('invalid_diag')
+    diag = {'href': str(result.get('href', ''))[:512],
+            'title': str(result.get('title', ''))[:256],
+            'candidates': result.get('candidates')
+            if isinstance(result.get('candidates'), list) else [],
+            'truncated': False}
+    while len(json.dumps(diag, ensure_ascii=False,
+                         separators=(',', ':')).encode('utf-8')) > DIAG_MAX_BYTES:
+        if diag['candidates']:
+            diag['candidates'].pop()
+            diag['truncated'] = True
+        else:
+            diag['href'] = diag['href'][:128]
+            diag['title'] = diag['title'][:64]
+            diag['truncated'] = True
+            if len(json.dumps(diag, ensure_ascii=False,
+                              separators=(',', ':')).encode('utf-8')) <= DIAG_MAX_BYTES:
+                break
+            raise ValueError('diag_too_large')
+    return diag
+
+
+def _holder_diag(runtime):
+    """Read a bounded, conversation-free excerpt from the unique main page."""
+    transport = runtime.get('transport')
+    try:
+        state = census(transport)
+    except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+        return {'status': 'pipe_unavailable', 'diag': None}
+    if not isinstance(state, dict) or state.get('status') != 'ready':
+        reason = state.get('status') if isinstance(state, dict) else None
+        return {'status': reason or 'holder_not_ready', 'diag': None}
+    try:
+        result = transport.evaluate(DIAG_PROBE)
+        diag = _bounded_diag(result)
+        return {'status': 'ok', 'diag': diag}
+    except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+        return {'status': 'diag_failed', 'diag': None}
+
+
 RENDERER_PROBE = """(() => ({
     href: location.href,
     ready: document.readyState,
@@ -1425,6 +1508,9 @@ def _serve_connection(conn, runtime, binary, profile):
     if isinstance(payload, dict) and payload.get('cmd') == 'ensure' \
             and 'prompt' not in payload:
         receipt = _holder_ensure(runtime, binary, profile)
+    elif isinstance(payload, dict) and payload.get('cmd') == 'diag' \
+            and 'prompt' not in payload:
+        receipt = _holder_diag(runtime)
     else:
         receipt = _holder_dispatch(runtime, binary, profile, payload)
     try:
