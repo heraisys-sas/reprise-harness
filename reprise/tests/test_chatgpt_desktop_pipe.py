@@ -1490,5 +1490,74 @@ class TestHolderEnsure247(unittest.TestCase):
         self.assertEqual(frame, {'status': 'ready', 'verified': True})
 
 
+class TestHolderDiag248(unittest.TestCase):
+    """Issue #248 LOT 1: read-only 'diag' holder command (bounded DOM excerpt)."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.base = Path(folder.name)
+        self.root = self.base / 'profiles'
+        self.binary = self.base / 'ChatGPT'
+        self.binary.write_text('#!/bin/sh\nexit 0\n')
+        self.binary.chmod(0o700)
+
+    def process(self, pid):
+        child = mock.Mock(pid=pid)
+        child.poll.return_value = None
+        return child
+
+    def test_serve_connection_routes_diag_command_without_dispatch(self):
+        conn = mock.MagicMock()
+        runtime = {'transport': mock.MagicMock(), 'proc': self.process(9005)}
+        diag = {'status': 'ok', 'diag': {'href': adapter.MAIN_URL,
+                                        'title': 'ReChatGPT',
+                                        'candidates': [], 'truncated': False}}
+        with mock.patch.object(adapter, '_read_holder_frame',
+                               return_value={'cmd': 'diag'}), \
+             mock.patch.object(adapter, '_holder_diag', return_value=diag) as diag_call, \
+             mock.patch.object(adapter, '_holder_dispatch') as dispatch:
+            adapter._serve_connection(conn, runtime, self.binary, self.root)
+        diag_call.assert_called_once_with(runtime)
+        dispatch.assert_not_called()
+        frame = json.loads(conn.sendall.call_args.args[0].decode('utf-8'))
+        self.assertEqual(frame, diag)
+
+    def test_census_refusal_does_not_evaluate(self):
+        transport = mock.MagicMock()
+        state = {'status': 'target_ambiguous'}
+        with mock.patch.object(adapter, 'census', return_value=state):
+            result = adapter._holder_diag({'transport': transport})
+        self.assertEqual(result, {'status': 'target_ambiguous', 'diag': None})
+        transport.evaluate.assert_not_called()
+
+    def test_evaluate_error_returns_failure_receipt(self):
+        transport = mock.MagicMock()
+        transport.evaluate.side_effect = TimeoutError('timed out')
+        with mock.patch.object(adapter, 'census',
+                               return_value={'status': 'ready'}):
+            result = adapter._holder_diag({'transport': transport})
+        self.assertEqual(result, {'status': 'diag_failed', 'diag': None})
+        transport.evaluate.assert_called_once_with(adapter.DIAG_PROBE)
+
+    def test_large_excerpt_truncates_candidate_list_under_limit(self):
+        candidate = {'tag': 'button', 'text': 'ChatGPT',
+                     'data': {'data-testid': 'x' * 100},
+                     'class': 'x' * 120}
+        transport = mock.MagicMock()
+        transport.evaluate.return_value = {
+            'href': adapter.MAIN_URL, 'title': 'ReChatGPT',
+            'candidates': [candidate.copy() for _ in range(200)]}
+        with mock.patch.object(adapter, 'census',
+                               return_value={'status': 'ready'}):
+            result = adapter._holder_diag({'transport': transport})
+        self.assertEqual(result['status'], 'ok')
+        encoded = json.dumps(result['diag'], ensure_ascii=False,
+                             separators=(',', ':')).encode('utf-8')
+        self.assertLessEqual(len(encoded), adapter.DIAG_MAX_BYTES)
+        self.assertTrue(result['diag']['truncated'])
+        self.assertLess(len(result['diag']['candidates']), 200)
+
+
 if __name__ == '__main__':
     unittest.main()
