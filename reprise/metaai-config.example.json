@@ -7,5 +7,8 @@
   "dav_user": null,
   "dav_password": null,
   "poll_s": 2.0,
-  "taskstore": "~/Library/Application Support/Reprise/metaai-tasks.sqlite"
+  "taskstore": "~/Library/Application Support/Reprise/metaai-tasks.sqlite",
+  "ui_bridge": true,
+  "ui_socket": "~/.reprise/metaai-reprise-trigger.sock",
+  "ui_app": "~/Applications/Meta AI Reprise.app/Contents/MacOS/Meta AI"
 }

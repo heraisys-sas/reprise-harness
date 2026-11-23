@@ -33,3 +33,4 @@
 **/.runtime-py/
 
 reprise/chatgpt-state/
+/reprise/build/

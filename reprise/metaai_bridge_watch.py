@@ -120,8 +120,13 @@ def consume_inbox(directory: Path) -> None:
         except Exception as e:
             log(f"⚠ erreur inbox {f.name}: {e}")
 
-def watch_loop(root: Path, poll_s: float = POLL_S, once: bool = False, taskstore_path=None) -> None:
-    """Boucle de pont exposée pour l'intégration (metaaid la lance en thread)."""
+def watch_loop(root: Path, poll_s: float = POLL_S, once: bool = False, taskstore_path=None,
+               ui=None) -> None:
+    """Boucle de pont exposée pour l'intégration (metaaid la lance en thread).
+
+    ui=None : comportement historique (observation inbox seule). ui=dict
+    (socket_path, template?) : dispatcher UI actif — chaque inbox non marquée
+    est injectée + soumise dans la copie patchée par la socket de contrôle."""
     global ROOT
     ROOT = Path(root).expanduser()
     set_taskstore(taskstore_path)
@@ -130,6 +135,13 @@ def watch_loop(root: Path, poll_s: float = POLL_S, once: bool = False, taskstore
     while True:
         consume_inbox(inbox)
         consume_outbox(outbox)
+        if ui:
+            try:
+                import metaai_ui_dispatch as uid
+                uid.dispatch_pending(ROOT, Path(ui["socket_path"]),
+                                     template=ui.get("template"))
+            except Exception as e:
+                log(f"⚠ dispatch UI: {e}")
         if once:
             return
         time.sleep(poll_s)
