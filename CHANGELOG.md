@@ -2,6 +2,12 @@
 
 Historique des versions, consolidé depuis les notes de release et les notes produit datées (détails complets dans l'historique Git, commits et balises).
 
+## 0.1.22 — pont Meta AI : invocation rapide (copie patchée), tour 100 % automatisé
+
+## Notes produit — 23 novembre 2026 (b)
+
+- **Pont UI Meta AI fermé de bout en bout, sans Accessibilité ni CDP (23/11)** — copie patchée « Meta AI Reprise.app » pilotée par socket in-process : injection par **remplacement du binaire Sparkle** de la copie (ré-export du vrai Sparkle ; DYLD_INSERT strippé par AMFI sur les apps enregistrées), **shim Security.framework** ré-exportant la vraie Security et émulant les tokens de session via l'API legacy SecKeychain* (contournement du mur keychain de macOS 26 : `-34018` sans entitlement, `application-identifier` sans profil ignoré, `keychain-access-groups` étranger = SIGKILL AMFI) — **session partagée avec l'originale, aucune connexion requise** ; composer `MetaAIComposerNSTextView` piloté par `insert` + `send` (`insertNewline:` au délégué, confirmation par vidage du composer). **Dispatcher UI + lanceur dans metaaid** (`ui_bridge` dans la connexion) : chaque `dispatch_task` est injecté et soumis automatiquement (marker `.ui-state/`, idempotent). Build/déploiement idempotent `metaai_reprise_build.py` (copie rsync sans xattrs, signature Apple Development, chmod 755 — le bit exec est perdu par `write_bytes`). Validé live : `tache-20261123-151306-c1d6` — dispatch → prompt soumis en 3 s → `answered` en ~25 s, 23 × 7 = 161, `confiance=1`, `source=metaai`. Limites : copie gelée (re-déploiement après chaque mise à jour de Meta AI), TCC propre à la copie au premier accès fichiers, single-instance avec l'originale. [Intégration](docs/integrations/metaai/METAI-QUICKINVOKE.md).
+
 ## 0.1.21 — pont Meta AI : transport fichiers WebDAV, TaskStore partagé, daemon metaaid
 
 ## Notes produit — 23 novembre 2026
