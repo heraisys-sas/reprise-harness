@@ -157,6 +157,9 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var testedSocket = ""
     @Published var connectionVerified = false
     @Published var connectionTestedAt: Date?
+    @Published var codexThreadRows: [[String: Any]] = []
+    @Published var codexThreadsStatus = "Aucune consultation des conversations Codex effectuée."
+    @Published var codexThreadsBusy = false
     var connectionLoaded = false
     @Published var desktopConnection: [String: Any] = [:]
     @Published var desktopSocketPath = ""
@@ -291,11 +294,50 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         process.standardOutput = pipe; process.standardError = FileHandle.nullDevice
         do {
             try process.run()
-            DispatchQueue.global().asyncAfter(deadline: .now() + (args.first == "vault-authorize" ? 100 : (["analyze", "search", "shared-mode", "rechatgpt-launch"].contains(args.first ?? "") ? 45 : 15))) { if process.isRunning { process.terminate() } }
+            DispatchQueue.global().asyncAfter(deadline: .now() + (args.first == "vault-authorize" ? 100 : (["analyze", "search", "shared-mode", "rechatgpt-launch", "codex-threads"].contains(args.first ?? "") ? 45 : 15))) { if process.isRunning { process.terminate() } }
             let data = pipe.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
             guard process.terminationStatus == 0 else { return nil }
             return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         } catch { return nil }
+    }
+    func loadCodexThreads(summaryThreadID: String? = nil) {
+        guard stateReady, !codexThreadsBusy else { return }
+        codexThreadsBusy = true
+        codexThreadsStatus = summaryThreadID == nil
+            ? "Lecture locale des conversations Codex…"
+            : "Résumé demandé explicitement…"
+        var args = ["codex-threads"]
+        if let summaryThreadID { args += ["--summary-thread", summaryThreadID] }
+        DispatchQueue.global(qos: .utility).async {
+            let result = self.execute(args)
+            DispatchQueue.main.async {
+                self.codexThreadsBusy = false
+                guard let result else {
+                    self.codexThreadsStatus = "Consultation indisponible. Les conversations existantes ne sont pas modifiées."
+                    return
+                }
+                if let summaryThreadID {
+                    guard result["status"] as? String == "ok" else {
+                        self.codexThreadsStatus = "Résumé indisponible."
+                        return
+                    }
+                    if let index = self.codexThreadRows.firstIndex(where: { $0["thread_id"] as? String == summaryThreadID }) {
+                        var row = self.codexThreadRows[index]
+                        row["summary_status"] = result["summary_status"] as? String ?? "unavailable"
+                        if let summary = result["summary"] as? String { row["summary"] = summary }
+                        self.codexThreadRows[index] = row
+                    }
+                    self.codexThreadsStatus = result["summary_status"] as? String == "available"
+                        ? "Résumé disponible."
+                        : "Résumé indisponible."
+                    return
+                }
+                self.codexThreadRows = result["rows"] as? [[String: Any]] ?? []
+                self.codexThreadsStatus = result["status"] as? String == "ok"
+                    ? "Consultation locale terminée."
+                    : "Consultation indisponible."
+            }
+        }
     }
     func refresh() {
         guard stateReady else { return }

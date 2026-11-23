@@ -15,6 +15,82 @@ private enum IntegrationDateTime {
     }
 }
 
+struct CodexThreadsSection: View {
+    @ObservedObject var app: App
+
+    private func activity(_ row: [String: Any]) -> String {
+        guard let milliseconds = row["updated_at_ms"] as? Int else { return "Inconnue" }
+        return IntegrationDateTime.string(from: Date(timeIntervalSince1970: Double(milliseconds) / 1000))
+    }
+
+    private func readability(_ row: [String: Any]) -> String {
+        switch row["rpc_readability"] as? String {
+        case "confirmed": return "Vérifiée"
+        case "identity_mismatch": return "Identité incohérente"
+        case "unavailable": return "Indisponible"
+        default: return "Non vérifiée"
+        }
+    }
+
+    private func summary(_ row: [String: Any]) -> String {
+        switch row["summary_status"] as? String {
+        case "available": return "Disponible"
+        case "unavailable": return "Indisponible"
+        default: return "Non demandé"
+        }
+    }
+
+    var body: some View {
+        SettingsCard(title: "Conversations Codex récentes",
+                     status: app.codexThreadsBusy ? "Lecture…" : "Lecture locale",
+                     ok: !app.codexThreadRows.isEmpty) {
+            HStack {
+                Text("L’index local et une lecture RPC éventuelle ne donnent aucun contrôle sur les conversations.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Actualiser") { app.loadCodexThreads() }
+                    .disabled(app.codexThreadsBusy)
+            }
+            if !app.codexThreadsStatus.isEmpty {
+                InlineStatus(busy: app.codexThreadsBusy, message: app.codexThreadsStatus)
+            }
+            if app.codexThreadRows.isEmpty && !app.codexThreadsBusy {
+                Text("Aucune conversation récente disponible dans l’index local.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                    GridRow {
+                        Text("Sujet").font(.caption.weight(.semibold))
+                        Text("Dernière activité").font(.caption.weight(.semibold))
+                        Text("Lecture RPC").font(.caption.weight(.semibold))
+                        Text("Contrôle").font(.caption.weight(.semibold))
+                        Text("Résumé").font(.caption.weight(.semibold))
+                    }
+                    ForEach(Array(app.codexThreadRows.enumerated()), id: \.offset) { _, row in
+                        GridRow(alignment: .top) {
+                            Text(row["subject"] as? String ?? "Sujet indisponible")
+                                .lineLimit(2).frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
+                            Text(activity(row)).font(.caption)
+                            Text(readability(row)).font(.caption)
+                            Text("Lecture seule").font(.caption)
+                            HStack(spacing: 6) {
+                                Text(summary(row)).font(.caption)
+                                if let threadID = row["thread_id"] as? String {
+                                    Button("Demander") { app.loadCodexThreads(summaryThreadID: threadID) }
+                                        .controlSize(.small).disabled(app.codexThreadsBusy)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear {
+            if app.codexThreadRows.isEmpty && !app.codexThreadsBusy { app.loadCodexThreads() }
+        }
+    }
+}
+
 private struct ClaudeInboxTaskOption: View {
     let key: String
     let state: String

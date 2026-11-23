@@ -882,6 +882,7 @@ struct Dashboard: View {
                 title: app.connection.isEmpty ? "Configuration indisponible" : "Configuration Codex chargée",
                 detail: app.connection.isEmpty ? "Lancez une actualisation pour lire l’état du service."
                     : customSocket ? "Socket personnalisé enregistré. Testez la connexion pour vérifier le service." : "Détection automatique du socket local ou de la CLI ; la configuration seule ne confirme pas la connexion.")
+            CodexThreadsSection(app: app)
             SettingsCard(title: "Partage des sessions avec Codex Desktop",
                          status: shared["startup_eligible"] as? Bool == true ? "Validé" : "À valider",
                          ok: shared["startup_eligible"] as? Bool == true) {
