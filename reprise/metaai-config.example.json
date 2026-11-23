@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "dav_host": "127.0.0.1",
+  "dav_port": 9770,
+  "dav_root": "~/Library/Application Support/Reprise/metaaid-dav",
+  "mount_point": "~/Library/Application Support/Reprise/metaaid-dav-mnt",
+  "dav_user": null,
+  "dav_password": null,
+  "poll_s": 2.0,
+  "taskstore": "~/Library/Application Support/Reprise/metaai-tasks.sqlite"
+}
