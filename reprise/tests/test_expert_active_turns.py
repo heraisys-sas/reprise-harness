@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from codex_expert_mcp import BACKEND_MODELS, Bridge
+from expert_mcp import BACKEND_MODELS, Bridge
 from support_clock import FakeClock, ScriptedFactory, thread_reply, turn_payload
 
 THREAD = '12345678-1234-1234-1234-123456789abc'
@@ -99,7 +99,7 @@ class ExpertActiveTurnsTests(unittest.TestCase):
                                    ('codex', '0')).fetchone()
         bridge.db.execute('INSERT INTO expert_threads VALUES (?,?)', (bridge.scope, THREAD))
         bridge.db.commit()
-        with patch('codex_expert_mcp.review', return_value={'status': 'finished', 'resumable': True,
+        with patch('expert_mcp.review', return_value={'status': 'finished', 'resumable': True,
                                                             'thread_id': THREAD, 'response': 'Continued'}) as review:
             result = bridge.call('reprise_followup', {'request_key': 'follow-req', 'thread_id': THREAD,
                                                       'backend': 'codex', 'question': 'Continue'})

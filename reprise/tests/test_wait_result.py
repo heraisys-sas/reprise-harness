@@ -10,7 +10,7 @@ from unittest.mock import patch, Mock
 import sys
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-import codex_expert_mcp as mcp
+import expert_mcp as mcp
 from claude_mcp import ClaudeMCP
 from delegation_store import receipt_view
 from desktop_task_store import TaskStore

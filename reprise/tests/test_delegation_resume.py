@@ -136,7 +136,7 @@ class DelegationResumeEngineTests(unittest.TestCase):
         for key in keys:
             schedule_due(self.db, key, self.root)
         with patch('codex_expert.review') as codex_review, \
-                patch('codex_expert_mcp.claude_review') as claude, \
+                patch('expert_mcp.claude_review') as claude, \
                 patch('chatgpt_quick.review') as chatgpt, \
                 patch('claude_desktop.review') as desktop, \
                 patch('delegation_reconcile.reconcile',

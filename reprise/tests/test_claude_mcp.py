@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock
 from claude_mcp import ClaudeMCP
 from desktop_task_store import TaskStore
-from codex_expert_mcp import tool_content
+from expert_mcp import tool_content
 
 
 class ClaudeMCPTests(unittest.TestCase):

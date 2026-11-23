@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import quota_knowledge as q
-from codex_expert_mcp import Bridge
+from expert_mcp import Bridge
 
 
 def sample(account='fixture-account-A', used=20, reset=2000):

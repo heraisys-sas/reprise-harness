@@ -242,7 +242,7 @@ def block_entries(block_text):
 
 def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, codex_workspace_write=False, desktop_socket=None, bash_sandbox_disabled=False, memory=None, chatgpt_state=None, chatgpt_dispatch=False):
     program = release / 'Contents/Resources/runtime/bin/python3'
-    args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/codex_expert_mcp.py'),
+    args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/expert_mcp.py'),
             '--project-root', project]
     if desktop_socket:
         args.extend(['--desktop-socket', str(desktop_socket)])
@@ -255,7 +255,7 @@ def _bridge_entries(release, state, tools, project, profile, managed, output_res
         args.append('--codex-workspace-write')
     entries = [
         {'id': 'reprise-codex-expert', 'name': '@deepseek-ai/dsh-mcp-client', 'config': {
-            'transport': 'stdio', 'serverName': 'reprise_codex', 'command': str(program), 'args': args,
+            'transport': 'stdio', 'serverName': 'reprise_experts', 'command': str(program), 'args': args,
             'toolCallTimeoutMs': 630000 if 'wait_result' in tools else 330000, 'failOnStartupError': False, 'reconnect': {'enabled': False}}},
         {'id': 'reprise-skill-filesystem', 'name': '@deepseek-ai/dsh-skill-filesystem', 'config': {
             'providerName': 'reprise-' + profile, 'includeDefaultRoots': False,
@@ -1639,7 +1639,7 @@ def verify(home, profile, root=None, project=None):
                 {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list', 'params': {}}]
     with tempfile.TemporaryDirectory(prefix='reprise-bridge-check-') as temporary:
         program = release / 'Contents/Resources/runtime/bin/python3'
-        command = [str(program), '-E', '-s', '-B', str(release / 'Contents/Resources/helpers/codex_expert_mcp.py'),
+        command = [str(program), '-E', '-s', '-B', str(release / 'Contents/Resources/helpers/expert_mcp.py'),
                    '--project-root', old['project'], '--state', temporary, '--tools', ','.join(old['tools'])]
         # Legacy releases do not recognize the new flag. Verification never
         # writes ChatGPT state in the user's active profile.

@@ -581,7 +581,7 @@ class ReviewDispatchTests(unittest.TestCase):
             self.assertFalse(store.reserve_review_dispatch(key))
 
     def test_review_and_claude_mcp_share_explicit_state_outside_project(self):
-        from codex_expert_mcp import Bridge
+        from expert_mcp import Bridge
         from claude_mcp import ClaudeMCP
         from desktop_task_store import TaskStore
         base = Path(self.directory.name)

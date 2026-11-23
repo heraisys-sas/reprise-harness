@@ -117,7 +117,7 @@ class PackageHelpersTests(unittest.TestCase):
             imported = subprocess.run([
                 sys.executable, '-I', '-B', '-c',
                 "import sys; sys.path.insert(0, sys.argv.pop(1)); "
-                "import codex_expert_mcp, claude_desktop_apply, claude_inbox, "
+                "import expert_mcp, claude_desktop_apply, claude_inbox, "
                 "websocket_transport, claude_session_store, claude_session_observer, "
                 "apple_pilot, apple_pilot_transport, apple_pilot_service, "
                 "coordinator_candidate, orchestrator_memory, orchestrator_memory_service; "

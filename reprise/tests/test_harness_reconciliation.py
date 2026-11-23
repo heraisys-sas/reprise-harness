@@ -24,7 +24,7 @@ class HarnessReconciliationTests(unittest.TestCase):
         span = integration._reconcile_span(text)
         entries = integration.block_entries(span.group())
         entries[0]['config']['command'] = '/synthetic/broken-concatenated-release/runtime/bin/python3'
-        entries[0]['config']['args'][3] = '/synthetic/old-release/helpers/codex_expert_mcp.py'
+        entries[0]['config']['args'][3] = '/synthetic/old-release/helpers/expert_mcp.py'
         entries[0]['config']['args'].append('--codex-workspace-write')
         self.prefix = '# SYNTHETIC PRIVATE SETTING — not a repository default\r\n- insert: [{"id":"unrelated"}]\r\n'
         self.suffix = '\r\n# SYNTHETIC trailing settings\r\n- insert: [{"id":"tail"}]\r\n'

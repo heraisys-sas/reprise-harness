@@ -125,14 +125,14 @@ class ApprovalDelegationTests(unittest.TestCase):
         self.assertFalse((self.private/'one').exists())
 
     def test_no_mcp_entry_can_grant_or_respond(self):
-        import codex_expert_mcp
-        tools = {x['name'] for x in codex_expert_mcp.TOOLS}
+        import expert_mcp
+        tools = {x['name'] for x in expert_mcp.TOOLS}
         self.assertNotIn('approval-delegation-grant', tools)
         self.assertNotIn('approval_grant', tools)
         self.assertNotIn('approval_delegation', tools)
         self.assertIn('approval_respond', tools)
         self.assertIn("raise Unavailable('approval_disabled'", 
-                      __import__('inspect').getsource(codex_expert_mcp.Bridge._approval_respond))
+                      __import__('inspect').getsource(expert_mcp.Bridge._approval_respond))
 
     def test_cli_list_does_not_print_secret(self):
         result = self.grant()

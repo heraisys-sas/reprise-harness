@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import codex_expert as expert
-import codex_expert_mcp
+import expert_mcp
 
 ID = '12345678-1234-1234-1234-123456789abc'
 
@@ -82,7 +82,7 @@ class ApprovalSurfaceTests(unittest.TestCase):
         self.addCleanup(self.patch_client.stop)
 
     def make_bridge(self):
-        bridge = codex_expert_mcp.Bridge(str(self.project), {}, self.state)
+        bridge = expert_mcp.Bridge(str(self.project), {}, self.state)
         self.addCleanup(bridge.close)
         return bridge
 
@@ -114,7 +114,7 @@ class ApprovalSurfaceTests(unittest.TestCase):
         # CI runners have no Codex executable; the bridge would short-circuit with
         # engine_unavailable before reaching the (patched) wait loop.
         bridge.program = 'codex-fixture'
-        with patch.object(codex_expert_mcp, 'review',
+        with patch.object(expert_mcp, 'review',
                           side_effect=lambda *a, **k: (k['on_turn'] or events.append)(APPROVAL_EVENT) or {'status': 'awaiting_approval'}):
             bridge.call('codex_review', {'question': 'Review input checks', 'request_key': 'appr-1'})
         self.assertEqual(len(bridge.desktop_tasks.list_approvals()), 1)
@@ -141,8 +141,8 @@ class ApprovalSurfaceTests(unittest.TestCase):
                      {'approval_id': APPROVAL_EVENT['approval']['approval_id'], 'decision': 'denied'},
                      {}):
             with self.subTest(args=args):
-                with patch('codex_expert_mcp.Client', no_client):
-                    with self.assertRaises(codex_expert_mcp.Unavailable) as caught:
+                with patch('expert_mcp.Client', no_client):
+                    with self.assertRaises(expert_mcp.Unavailable) as caught:
                         bridge.call('approval_respond', args)
                 self.assertEqual(caught.exception.state, 'approval_disabled')
                 self.assertIn('#117 T2b', caught.exception.reason)
@@ -154,7 +154,7 @@ class ApprovalSurfaceTests(unittest.TestCase):
     def test_4_approval_list_unchanged_after_respond_refusal(self):
         bridge = self.make_bridge()
         self.record(bridge)
-        with self.assertRaises(codex_expert_mcp.Unavailable):
+        with self.assertRaises(expert_mcp.Unavailable):
             bridge.call('approval_respond', {'approval_id': APPROVAL_EVENT['approval']['approval_id'],
                                              'decision': 'approved'})
         result = bridge.call('approval_list', {})
@@ -168,7 +168,7 @@ class ApprovalSurfaceTests(unittest.TestCase):
         self.record(bridge)
         with patch.object(bridge.desktop_tasks, 'resolve_approval',
                           side_effect=AssertionError('resolve_approval ne doit pas être appelé par MCP (#117 T2a)')):
-            with self.assertRaises(codex_expert_mcp.Unavailable):
+            with self.assertRaises(expert_mcp.Unavailable):
                 bridge.call('approval_respond', {'approval_id': APPROVAL_EVENT['approval']['approval_id'],
                                                  'decision': 'approved'})
         self.assertIsNotNone(bridge.desktop_tasks.pending_approval(APPROVAL_EVENT['approval']['approval_id']))

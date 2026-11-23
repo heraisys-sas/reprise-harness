@@ -2,7 +2,7 @@
 from pathlib import Path
 import threading
 
-from codex_expert_mcp import Bridge
+from expert_mcp import Bridge
 
 
 class LocalBridge:
