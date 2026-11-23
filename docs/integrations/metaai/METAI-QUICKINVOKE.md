@@ -53,4 +53,13 @@ Connexion `metaai.json` — champs UI : `ui_bridge` (true), `ui_socket`, `ui_app
 
 ## Tests
 
-`python3 -m unittest discover -s reprise/tests -q -p "test_metaai_*.py"` — 18 tests incl. dispatcher UI (prompt, marker/idempotence, AppleDouble, ping, `ensure_app`, `watch_loop` avec/sans `ui=`) sous fake socket.
+`python3 -m unittest discover -s reprise/tests -q -p "test_metaai_*.py"` — 18 tests incl. dispatcher UI (prompt, marker/idempotence, AppleDouble, ping, `ensure_app`, `watch_loop` avec/sans `ui=`) sous fake socket ; plus 21 tests CLI (`test_metaai_reprise_cli.py`) sous 3.9 et 3.13.
+
+## Redéploiement depuis la GUI (0.1.23)
+
+Après une mise à jour de `/Applications/Meta AI.app`, la copie devient périmée. Deux voies équivalentes :
+
+- **GUI Reprise** → Vue Intégrations → carte « Copie Meta AI Reprise » : « Relire l'état » → « Préparer le redéploiement… » → acquittement (Meta AI quitée) → « Appliquer le redéploiement » → « Vérifier ».
+- **CLI** (JSON stdout) : `python3 reprise/reprise metaai-integration-inspect|plan|apply|verify` — plan/apply/verify passent le plan JSON par stdin, mêmes conventions que `codex-integration-*`.
+
+Garde-fous : refus si Meta AI (originale) est en cours d'exécution ; plan périmé refusé si l'empreinte de l'arbre de l'originale a changé ; outils de build vérifiés (`clang`, `codesign`, `rsync`, `install_name_tool`, `security`) ; jamais de lancement de l'app ni de modification de l'originale. Le `apply` resynchronise la copie (`rsync -a --delete`), ré-extrait le Sparkle si son empreinte change, réapplique swap + shim + re-signature, puis consigne `~/.reprise/metaai-reprise-state.json` (empreinte, version, `last_plan_id`).

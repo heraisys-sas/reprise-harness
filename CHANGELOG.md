@@ -2,6 +2,12 @@
 
 Historique des versions, consolidé depuis les notes de release et les notes produit datées (détails complets dans l'historique Git, commits et balises).
 
+## 0.1.23 — pont Meta AI : redéploiement de la copie pilotable depuis la GUI
+
+- **`metaai_reprise_build.py` : CLI `metaai-integration-inspect/plan/apply/verify`** (JSON stdout, plan consommé par stdin, exit 0/1 — mêmes conventions que `codex-integration-*`) : inspect rend l'état réel (version originale/copie, marqueurs de patch, signature, socket, outils) ; le plan `metaai-reprise` porte l'empreinte de l'arbre de l'originale — apply refuse si Meta AI tourne, si le plan est périmé ou si les outils manquent, puis resynchronise la copie (`refresh_app`, rsync -a --delete), ré-extrait le Sparkle si son empreinte a changé (`Sparkle-real.meta.json`), réapplique patchs + signature, et consigne l'état dans `~/.reprise/metaai-reprise-state.json` ; verify recontrôle le tout.
+- **GUI** : carte « Copie Meta AI Reprise » dans la Vue Intégrations (état, préparer le redéploiement, acquittement, appliquer, vérifier) ; dispatch `reprise` → `metaai_cli`.
+- 21 tests nouveaux (`test_metaai_reprise_cli.py`), OK sous 3.9 et 3.13.
+
 ## 0.1.22 — pont Meta AI : invocation rapide (copie patchée), tour 100 % automatisé
 
 ## Notes produit — 23 novembre 2026 (b)

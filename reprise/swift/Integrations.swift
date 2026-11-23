@@ -192,6 +192,44 @@ extension App {
             self.codexIntegrationResult = result
         }
     }
+    func inspectMetaaiIntegration() {
+        guard stateReady, !setupBusy else { return }
+        setupCommand(["metaai-integration-inspect"]) { result in
+            self.metaaiIntegrationResult = result
+        }
+    }
+    func invalidateMetaaiIntegrationPlan() {
+        metaaiIntegrationGeneration &+= 1
+        metaaiIntegrationPlan = nil
+        metaaiIntegrationAcknowledged = false
+    }
+    func previewMetaaiIntegration() {
+        guard stateReady, !setupBusy else { return }
+        invalidateMetaaiIntegrationPlan()
+        let generation = metaaiIntegrationGeneration
+        setupCommand(["metaai-integration-plan"]) { result in
+            guard generation == self.metaaiIntegrationGeneration else { return }
+            self.metaaiIntegrationResult = result
+            self.metaaiIntegrationPlan = result["plan"] as? [String: Any]
+        }
+    }
+    func applyMetaaiIntegration() {
+        guard stateReady, !setupBusy, metaaiIntegrationAcknowledged,
+              let plan = metaaiIntegrationPlan,
+              let names = plan["names"] as? [String], names == ["metaai-reprise"] else { return }
+        // Consume the plan before starting: a timeout or lost reply must not be replayed.
+        metaaiIntegrationVerificationPlan = plan
+        invalidateMetaaiIntegrationPlan()
+        setupCommand(["metaai-integration-apply"], input: ["plan": plan]) { result in
+            self.metaaiIntegrationResult = result
+        }
+    }
+    func verifyMetaaiIntegration() {
+        guard stateReady, !setupBusy, let plan = metaaiIntegrationVerificationPlan else { return }
+        setupCommand(["metaai-integration-verify"], input: ["plan": plan]) { result in
+            self.metaaiIntegrationResult = result
+        }
+    }
     func inspectClaudeIntegration() {
         guard stateReady, !setupBusy else { return }
         setupCommand(["claude-integration-inspect"]) { result in
@@ -1062,6 +1100,30 @@ struct Integrations: View {
                 if !app.codexIntegrationResult.isEmpty {
                     SettingsHint(text: app.codexIntegrationResult["message"] as? String ?? "Résultat local ; chargement client inconnu.",
                                  detail: planDetail(app.codexIntegrationResult), detailLabel: "Réponse complète")
+                }
+            }
+            SettingsCard(title: "Copie Meta AI Reprise",
+                         status: app.metaaiIntegrationResult["status_label"] as? String ?? "État inconnu",
+                         ok: app.metaaiIntegrationResult["ok"] as? Bool == true) {
+                SettingsHint(text: "Redéploie la copie patchée après une mise à jour de Meta AI.app.",
+                             detail: "L'opération resynchronise la copie depuis /Applications/Meta AI.app, réapplique le binaire Sparkle, le shim Security et la re-signature. Meta AI doit être quittée pendant l'application ; la copie n'est jamais lancée par Reprise et le lanceur metaaid reprend ensuite le relais.",
+                             detailLabel: "Ce que fait l'opération")
+                HStack(spacing: 10) {
+                    Button("Relire l'état") { app.inspectMetaaiIntegration() }
+                    Button("Préparer le redéploiement…") { app.previewMetaaiIntegration() }
+                    Button("Vérifier") { app.verifyMetaaiIntegration() }
+                        .disabled(app.metaaiIntegrationVerificationPlan == nil)
+                }
+                if let plan = app.metaaiIntegrationPlan {
+                    SettingsHint(text: plan["feasible"] as? Bool == true ? "Un plan de redéploiement est prêt ; il attend votre accord." : "Plan bloqué — lisez le message avant de replanifier.",
+                                 detail: planDetail(plan), detailLabel: "Plan exact")
+                    Toggle("J'ai vérifié le plan et quitté Meta AI", isOn: $app.metaaiIntegrationAcknowledged)
+                    Button("Appliquer le redéploiement") { app.applyMetaaiIntegration() }
+                        .disabled(!app.metaaiIntegrationAcknowledged)
+                }
+                if !app.metaaiIntegrationResult.isEmpty {
+                    SettingsHint(text: app.metaaiIntegrationResult["message"] as? String ?? "Résultat local.",
+                                 detail: planDetail(app.metaaiIntegrationResult), detailLabel: "Réponse complète")
                 }
             }
             SettingsCard(title: "Connecteur Claude Desktop",

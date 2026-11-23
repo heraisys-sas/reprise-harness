@@ -52,6 +52,11 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var codexIntegrationOperationID = ""
     @Published var codexIntegrationAcknowledged = false
     var codexIntegrationGeneration: UInt64 = 0
+    @Published var metaaiIntegrationPlan: [String: Any]?
+    @Published var metaaiIntegrationVerificationPlan: [String: Any]?
+    @Published var metaaiIntegrationResult: [String: Any] = [:]
+    @Published var metaaiIntegrationAcknowledged = false
+    var metaaiIntegrationGeneration: UInt64 = 0
     @Published var claudeIntegrationPlan: [String: Any]?
     @Published var claudeIntegrationResult: [String: Any] = [:]
     @Published var claudeIntegrationAcknowledged = false
