@@ -39,6 +39,9 @@ CONFIG_DEFAULTS = {
     "dav_password": None,
     "poll_s": 2.0,
     "taskstore": "~/Library/Application Support/Reprise/metaai-tasks.sqlite",
+    "ui_bridge": False,
+    "ui_socket": "~/.reprise/metaai-reprise-trigger.sock",
+    "ui_app": "~/Applications/Meta AI Reprise.app/Contents/MacOS/Meta AI",
 }
 
 def log(msg: str) -> None:
@@ -158,9 +161,21 @@ def main() -> None:
     for p in (DAV_ROOT / "inbox", DAV_ROOT / "outbox"):
         p.mkdir(parents=True, exist_ok=True)
     threading.Thread(target=ensure_mount, daemon=True).start()
+    ui = None
+    if CFG.get("ui_bridge"):
+        import metaai_ui_dispatch as uid
+        ui_socket = Path(str(CFG["ui_socket"])).expanduser()
+        ui_app = Path(str(CFG["ui_app"])).expanduser()
+        # Lanceur : au boot, ping socket → lancement de la copie si muette
+        threading.Thread(target=uid.ensure_app, args=(ui_socket, ui_app), daemon=True).start()
+        ui = {"socket_path": str(ui_socket)}
+        log(f"pont UI actif — socket={ui_socket}")
+    else:
+        log("pont UI désactivé (ui_bridge=false) — transport WebDAV seul")
     threading.Thread(
         target=bridge.watch_loop,
         args=(DAV_ROOT, float(CFG["poll_s"]), False, CFG.get("taskstore")),
+        kwargs={"ui": ui},
         daemon=True,
     ).start()
     log("metaaid prêt (watcher + mount lancés)")

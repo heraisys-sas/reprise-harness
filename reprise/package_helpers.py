@@ -23,6 +23,8 @@ ASSETS += ('memory_integration.py', 'reprise_memory_adapter.py', 'reprise_memory
 ASSETS += ('delegation_resume.py',)  # Lot C #239 : moteur de reprise observe-only des délégations (tick).
 ASSETS += ('app_clones.py',)  # #255 : pilotage UI des clones d'app (clone-inspect/plan/apply/verify).
 ASSETS += ('codex_thread_observer.py',)  # #245 : observation lecture seule des conversations Codex récentes.
+ASSETS += ('metaai_reprise_build.py', 'metaai_reprise_client.py', 'metaai_ui_dispatch.py',
+           'metaai_patch_dylib_path.py')  # Redéploiement Meta AI Reprise via reprise metaai-integration-* (GUI).
 # Documentation durable embarquée dans le payload ; résolue depuis la racine du dépôt.
 DOCS = (
     'docs/integrations/claude/CLAUDE-DESKTOP-APPLY.md',
