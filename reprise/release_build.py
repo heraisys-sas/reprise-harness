@@ -26,7 +26,7 @@ def sha(path):
 
 def inputs(root):
     # Only build inputs: never state, logs, credentials, generated bundles or tests.
-    suffixes = {'.swift', '.py', '.md', '.json', '.txt', '.html', '.cjs'}
+    suffixes = {'.swift', '.py', '.md', '.json', '.txt', '.html', '.cjs', '.m'}
     files = {p.name: sha(p) for p in sorted(root.iterdir())
              if not p.is_symlink() and p.is_file()
              and (p.suffix in suffixes or p.name in ('VERSION', 'native-install', 'reprise'))}
