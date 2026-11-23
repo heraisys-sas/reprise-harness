@@ -186,6 +186,16 @@ class MetaaiCliTestCase(unittest.TestCase):
         out = build.apply_payload({'names': ['metaai-reprise'], 'action': 'install', 'target': str(self.dst)})
         self.assertFalse(out['ok'])
 
+    def test_refresh_app_rend_la_copie_inscriptible(self):
+        # Meta AI distribue ses binaires en r-xr-xr-x ; sans réinscription,
+        # codesign --deep échoue (Permission denied sur _CodeSignature/CodeResources).
+        (self.src / 'Contents/_CodeSignature').mkdir()
+        (self.src / 'Contents/_CodeSignature/CodeResources').write_bytes(b'<plist/>')
+        (self.src / 'Contents/_CodeSignature/CodeResources').chmod(0o444)
+        build.refresh_app()
+        resources = self.dst / 'Contents/_CodeSignature/CodeResources'
+        self.assertEqual(resources.stat().st_mode & 0o200, 0o200)
+
     def test_apply_heureux(self):
         called = []
         steps = {'refresh_app': lambda: {'step': 'refresh-copy'},

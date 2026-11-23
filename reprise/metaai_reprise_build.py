@@ -75,6 +75,9 @@ def copy_app() -> dict:
         return {'step': 'copy', 'changed': False, 'app': str(DST_APP)}
     DST_APP.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(['rsync', '-a', str(SRC_APP) + '/', str(DST_APP) + '/'], check=True)
+    # Meta AI distribue ses binaires en r-xr-xr-x : sans réinscription, codesign --deep
+    # échoue en Permission denied en tentant de réécrire les _CodeSignature/CodeResources.
+    subprocess.run(['chmod', '-R', 'u+w', str(DST_APP)], check=True)
     return {'step': 'copy', 'changed': True, 'app': str(DST_APP),
             'note': 'copie rsync -a : xattrs (quarantaine/provenance) non copiés'}
 
@@ -171,6 +174,9 @@ def refresh_app() -> dict:
     if not DST_APP.exists():
         return copy_app()
     subprocess.run(['rsync', '-a', '--delete', str(SRC_APP) + '/', str(DST_APP) + '/'], check=True)
+    # Meta AI distribue ses binaires en r-xr-xr-x : sans réinscription, codesign --deep
+    # échoue en Permission denied en tentant de réécrire les _CodeSignature/CodeResources.
+    subprocess.run(['chmod', '-R', 'u+w', str(DST_APP)], check=True)
     backup = (DST_APP / SPARKLE_REL).parent / 'Sparkle.reprise-real'
     if backup.exists():
         backup.unlink()
