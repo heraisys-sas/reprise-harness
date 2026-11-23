@@ -276,6 +276,10 @@ def main():
     desktop_check.add_argument('--socket')
     desktop_check.add_argument('--session')
     sub.add_parser('desktop-connection-status')
+    codex_threads = sub.add_parser('codex-threads')
+    codex_threads.add_argument('--max', dest='max_rows', type=int, default=20)
+    codex_threads.add_argument('--no-proofs', action='store_true')
+    codex_threads.add_argument('--summary-thread')
     claude_quota_status = sub.add_parser('claude-quota-status')
     claude_quota_status.add_argument('--observe-renderer-log', action='store_true',
                                      help='Read a bounded local Claude renderer-log observation')
@@ -454,6 +458,17 @@ def main():
     elif args.action == 'desktop-connection-status':
         from claude_desktop import status
         print(json.dumps(status(db, STATE), ensure_ascii=False))
+    elif args.action == 'codex-threads':
+        import codex_thread_observer
+        try:
+            if args.summary_thread:
+                result = codex_thread_observer.summarize_indexed_thread(thread_id=args.summary_thread)
+            else:
+                result = codex_thread_observer.inspect_threads(max_rows=args.max_rows,
+                                                               with_proofs=not args.no_proofs)
+        except ValueError as error:
+            parser.error(str(error))
+        print(json.dumps(result, ensure_ascii=False))
     elif args.action == 'desktop-connection-config':
         from claude_desktop import configure
         print(json.dumps(configure(db, executable, args.socket), ensure_ascii=False))
