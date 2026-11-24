@@ -1,1 +1,0 @@
-Test du pont Reprise : réponds simplement PONT OK, sans rien faire d'autre.
