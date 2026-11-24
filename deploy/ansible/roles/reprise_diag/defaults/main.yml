@@ -1,0 +1,4 @@
+---
+# Valeurs du role reprise_diag (reprises des variables globales, surchargeables par role).
+reprise_scheduler_label: local.agent-resume
+reprise_diag_dir: "{{ reprise_support_dir }}/diag"

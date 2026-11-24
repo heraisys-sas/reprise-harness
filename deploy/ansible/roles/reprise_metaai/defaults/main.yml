@@ -1,0 +1,11 @@
+---
+# Valeurs du role reprise_metaai.
+reprise_metaai_manage: true
+reprise_metaai_force: false
+reprise_metaai_restart: true
+reprise_metaai_redeploy: false
+reprise_metaai_port: 9770
+reprise_metaai_wait_s: 45
+reprise_metaai_config_path: connections/metaai.json
+reprise_metaai_taskstore_path: metaai-tasks.sqlite
+reprise_metaai_mount_point: "{{ ansible_env.HOME }}/MetaAI-bridge-test/mnt"

@@ -3,7 +3,8 @@
 
 Invoque plan -> apply -> verify via l'API module du bundle (jamais
 d'édition directe des fichiers managés). Un module par intégration,
-bouclé depuis les tasks.
+bouclé depuis les tasks. chatgpt retiré : route fermée (#226), le module
+côté bundle n'existe plus sur dev.
 """
 from ansible.module_utils.basic import AnsibleModule
 
@@ -19,7 +20,7 @@ def run(helpers, integration, project, harness_project, harness_profile):
     if integration == "claude":
         from claude_integration import plan, apply, verify
 
-        p = plan(helpers, home, project, "install")
+        p = plan(helpers, home, project, action="install")
         r = apply(helpers, p)
         v = verify(helpers, home, project=project)
         return {
@@ -27,14 +28,6 @@ def run(helpers, integration, project, harness_project, harness_profile):
             "verify": v["status"],
             "daemon": v.get("daemon", {}),
         }
-
-    if integration == "chatgpt":
-        from chatgpt_integration import plan, apply, verify
-
-        p = plan(helpers, home, project, "install")
-        r = apply(helpers, p)
-        v = verify(helpers, home, project=project)
-        return {"apply": r.get("status"), "verify": v["status"]}
 
     if integration == "harness":
         from harness_integration import plan, apply, verify
@@ -56,7 +49,7 @@ def main():
         argument_spec={
             "integration": {
                 "type": "str", "required": True,
-                "choices": ["claude", "chatgpt", "harness"],
+                "choices": ["claude", "harness"],
             },
             "helpers": {"type": "str", "required": True},
             "project": {"type": "str", "required": True},

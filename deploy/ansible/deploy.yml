@@ -1,20 +1,33 @@
 ---
-# Playbook de déploiement/redéploiement de Reprise sur ce Mac (localhost).
+# Playbook de déploiement/récupération de Reprise sur ce Mac (localhost).
+# Pensé pour l'opérateur HUMAIN, même quand toute la chaîne AI est enrayée :
+#   --tags diag      état complet lecture seule (premier réflexe)
+#   --tags services  recycler scheduler + daemon Quick Apply
+#   --tags integrations  réappliquer les intégrations managées (plan->apply->verify)
+#   --tags metaai    réparer le pont Meta AI (metaaid, montage, copie patchée)
+#   --tags update    mise à jour transactionnelle managed_update (plan lu avant apply)
+#   --tags build     reconstruire le bundle autonome
 # Exemples :
-#   ansible-playbook deploy.yml --tags build
+#   ansible-playbook deploy.yml --tags diag
 #   ansible-playbook deploy.yml --tags services,integrations
-#   ansible-playbook deploy.yml --skip-tags build
-- name: Déployer Reprise
+#   ansible-playbook deploy.yml --skip-tags build,update
+- name: Déployer et diagnostiquer Reprise
   hosts: reprise
   gather_facts: true
   become: false
   tags: always
   roles:
+    - role: reprise_diag
+      tags: [diag]
     - role: reprise_build
       tags: [build]
-    - role: reprise_integrations
-      tags: [integrations]
+    - role: reprise_update
+      tags: [update]
     - role: reprise_services
       tags: [services]
+    - role: reprise_integrations
+      tags: [integrations]
+    - role: reprise_metaai
+      tags: [metaai, metaai-copy]
     - role: reprise_verify
       tags: [verify]

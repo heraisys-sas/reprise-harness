@@ -35,6 +35,7 @@ jobs:
       - name: Vérifier la syntaxe des modules Python
         run: |
           python3 -m py_compile deploy/ansible/library/reprise_bundle.py \
+            deploy/ansible/roles/reprise_diag/library/reprise_diag.py \
             deploy/ansible/roles/reprise_integrations/library/reprise_integration.py \
             deploy/ansible/roles/reprise_services/library/reprise_quick_daemon.py \
             deploy/ansible/roles/reprise_verify/library/reprise_verify.py \

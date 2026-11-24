@@ -30,12 +30,7 @@ def main():
         out["claude"] = cv(params["helpers"], home, project=params["project"])["status"]
     except Exception as error:
         out["claude"] = "error: %s" % error
-    try:
-        from chatgpt_integration import verify as gv
-
-        out["chatgpt"] = gv(params["helpers"], home, project=params["project"])["status"]
-    except Exception as error:
-        out["chatgpt"] = "error: %s" % error
+    # chatgpt retiré : route fermée (#226), module absent du bundle sur dev.
     try:
         from harness_integration import verify as hv
 

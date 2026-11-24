@@ -12,7 +12,7 @@
     reprise_app: "{{ bundle.app_path }}"
     reprise_helpers: "{{ bundle.helpers }}"
 
-- name: Appliquer les intégrations managées (claude, chatgpt, harness)
+- name: Appliquer les intégrations managées (claude, harness)
   reprise_integration:
     integration: "{{ item }}"
     helpers: "{{ reprise_helpers }}"

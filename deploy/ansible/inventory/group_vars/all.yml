@@ -1,3 +1,4 @@
+---
 # Source de vérité du déploiement Reprise sur ce Mac (localhost).
 reprise_source_dir: "{{ ansible_env.HOME }}/Projets/reprise-harness/source"
 reprise_support_dir: "{{ ansible_env.HOME }}/Library/Application Support/Reprise"
@@ -9,12 +10,26 @@ reprise_harness_project: "{{ ansible_env.HOME }}/Projets/reprise-harness/workspa
 reprise_runtime_archive: /private/tmp/reprise-python.tar.gz
 # Chaîne cible : SHA du release (vide = dernier build).
 reprise_release_sha: ""
-# Intégrations managées à (ré)appliquer.
+# Intégrations managées à (ré)appliquer. chatgpt retiré : route fermée (#226),
+# module chatgpt_integration.py supprimé sur dev — la réapplication planterait.
 reprise_integrations:
   - claude
-  - chatgpt
   - harness
 reprise_harness_profile: desktop
 # Services à (re)lancer.
 reprise_restart_scheduler: true
 reprise_restart_quick_daemon: true
+# Pont Meta AI (rôle reprise_metaai ; runbook docs/integrations/metaai/METAI-INTEGRATION.md).
+reprise_metaai_config_path: connections/metaai.json
+reprise_metaai_taskstore_path: metaai-tasks.sqlite
+reprise_metaai_port: 9770
+reprise_metaai_mount_point: "{{ ansible_env.HOME }}/MetaAI-bridge-test/mnt"
+reprise_metaai_manage: true
+reprise_metaai_force: false
+reprise_metaai_restart: true
+# Redéploiement de la copie patchée : jamais par défaut (double consentement :
+# variable + confirmation à la volée ; refuse si Meta AI originale tourne).
+reprise_metaai_redeploy: false
+# Diagnostic et plans écrits pour lecture humaine.
+reprise_scheduler_label: local.agent-resume
+reprise_diag_dir: "{{ reprise_support_dir }}/diag"

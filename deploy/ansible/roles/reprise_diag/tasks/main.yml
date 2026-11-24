@@ -1,0 +1,29 @@
+---
+# Diagnostic lecture seule : le premier geste de l'operateur humain.
+# N'ecrit qu'un rapport markdown sous le dossier de diagnostic.
+# Aucun redemarrage, aucune reparation ici — voir les autres tags.
+- name: Localiser le bundle courant
+  reprise_bundle:
+    builds_dir: "{{ reprise_build_app_path }}"
+  register: bundle
+  tags: [diag]
+
+- name: Executer le diagnostic lecture seule
+  reprise_diag:
+    builds_dir: "{{ reprise_build_app_path }}"
+    support_dir: "{{ reprise_support_dir }}"
+    scheduler_label: "{{ reprise_scheduler_label }}"
+    metaai_config: "{{ reprise_metaai_config_path }}"
+    metaai_taskstore: "{{ reprise_metaai_taskstore_path }}"
+    metaai_port: "{{ reprise_metaai_port }}"
+    project: "{{ reprise_project_root }}"
+    harness_project: "{{ reprise_harness_project }}"
+    harness_profile: "{{ reprise_harness_profile }}"
+    report_dir: "{{ reprise_diag_dir }}"
+  register: diag
+  tags: [diag]
+
+- name: Restituer le diagnostic (resume par section)
+  ansible.builtin.debug:
+    msg: "{{ diag.sections | dict2items | map(attribute='key') | join(', ') }} — rapport complet : {{ diag.report }}"
+  tags: [diag]

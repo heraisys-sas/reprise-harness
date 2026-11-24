@@ -1,0 +1,148 @@
+---
+# Récupération humaine du pont Meta AI (runbook docs/integrations/metaai/METAI-INTEGRATION.md).
+# Sécurité : ne jamais stat-er un mount webdavfs zombie ; le montage est géré par le
+# daemon metaaid lui-même (ensure_mount), le rôle ne fait qu'assurer le cycle launchd.
+# Le redéploiement de la copie patchée (tag metaai-copy) exige la variable
+# reprise_metaai_redeploy=true ET une confirmation à la volée — il refuse si
+# Meta AI (originale) tourne, et il n'est jamais automatique.
+- name: Localiser le bundle courant
+  reprise_bundle:
+    builds_dir: "{{ reprise_build_app_path }}"
+  register: bundle
+  tags: [metaai, metaai-copy]
+
+- name: Installer ou réparer les modules metaaid + connexion + plist
+  ansible.builtin.command:
+    cmd: >-
+      /usr/bin/python3 {{ reprise_source_dir }}/reprise/metaai-install.py
+      {{ '--force' if reprise_metaai_force else '' }}
+    chdir: "{{ reprise_source_dir }}/reprise"
+  when: reprise_metaai_manage
+  changed_when: true
+  tags: [metaai]
+
+- name: Vérifier le chargement launchd de metaaid
+  ansible.builtin.command:
+    cmd: /bin/launchctl print gui/{{ ansible_user_uid }}/app.reprise.metaaid
+  register: metaaid_loaded
+  failed_when: false
+  changed_when: false
+  tags: [metaai]
+
+- name: Charger le LaunchAgent metaaid si absent
+  ansible.builtin.command:
+    cmd: /bin/launchctl bootstrap gui/{{ ansible_user_uid }}
+      ~/Library/LaunchAgents/app.reprise.metaaid.plist
+  when: reprise_metaai_manage and metaaid_loaded.rc != 0
+  register: metaaid_bootstrap
+  failed_when: metaaid_bootstrap.rc != 0 and 'already bootstrapped' not in metaaid_bootstrap.stderr
+  changed_when: metaaid_bootstrap.rc == 0
+  tags: [metaai]
+
+- name: Recycler metaaid (recharge connexion et démon WebDAV)
+  ansible.builtin.command:
+    cmd: /bin/launchctl kickstart -k gui/{{ ansible_user_uid }}/app.reprise.metaaid
+  when: reprise_metaai_restart
+  changed_when: true
+  tags: [metaai]
+
+- name: Attendre le port WebDAV local de metaaid
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ reprise_metaai_port }}"
+    timeout: "{{ reprise_metaai_wait_s }}"
+  tags: [metaai]
+
+- name: Vérifier la présence du montage webdavfs (informationnel)
+  ansible.builtin.command:
+    cmd: /sbin/mount
+  register: metaai_mount
+  changed_when: false
+  tags: [metaai]
+
+- name: Signaler l'absence du montage (webdavfs retente seul — ne pas monter à la main)
+  ansible.builtin.debug:
+    msg: >-
+      ATTENTION : {{ reprise_metaai_mount_point }} absent de la table de montage.
+      metaaid (ensure_mount) retente seul ; si le partage Meta AI a été révoqué
+      (logout), refaire le partage du volume dans l'app (Paramètres → Applications).
+  when: reprise_metaai_mount_point not in metaai_mount.stdout
+  tags: [metaai]
+
+- name: État de la copie patchée Meta AI Reprise (lecture seule)
+  ansible.builtin.command:
+    cmd: >-
+      {{ bundle.runtime_python }} -E -s {{ bundle.helpers }}/reprise
+      metaai-integration-inspect
+  register: metaai_copy_inspect
+  changed_when: false
+  failed_when: false
+  tags: [metaai, metaai-copy]
+
+- name: Restituer l'état de la copie patchée
+  ansible.builtin.debug:
+    msg: "{{ (metaai_copy_inspect.stdout | from_json).message | default(metaai_copy_inspect.stdout) }}"
+  when: metaai_copy_inspect.rc == 0
+  tags: [metaai, metaai-copy]
+
+- name: Préparer le plan de redéploiement de la copie patchée
+  ansible.builtin.command:
+    cmd: >-
+      {{ bundle.runtime_python }} -E -s {{ bundle.helpers }}/reprise
+      metaai-integration-plan
+  register: metaai_copy_plan
+  changed_when: true
+  when: reprise_metaai_redeploy | bool
+  tags: [metaai-copy]
+
+- name: Écrire le plan de redéploiement pour lecture humaine
+  ansible.builtin.copy:
+    content: "{{ metaai_copy_plan.stdout }}"
+    dest: "{{ reprise_diag_dir }}/metaai-redeploy-plan.json"
+    mode: "0600"
+  when: reprise_metaai_redeploy | bool
+  tags: [metaai-copy]
+
+- name: PAUSE — lire le plan ({{ reprise_diag_dir }}/metaai-redeploy-plan.json) avant d'accepter
+  ansible.builtin.pause:
+    prompt: "Redéployer la copie Meta AI Reprise maintenant ? Tapez 'oui' pour continuer, Entrée pour annuler."
+  when: reprise_metaai_redeploy | bool
+  register: metaai_copy_confirm
+  tags: [metaai-copy]
+
+- name: Refuser si l'opérateur n'a pas accepté explicitement
+  ansible.builtin.assert:
+    that:
+      - reprise_metaai_redeploy | bool == false or (metaai_copy_confirm.user_input | default('') | lower) in ['oui', 'o', 'y', 'yes']
+    fail_msg: "Redéploiement annulé (aucun accord explicite). Le plan reste dans {{ reprise_diag_dir }}/metaai-redeploy-plan.json"
+  tags: [metaai-copy]
+
+- name: Appliquer le redéploiement de la copie patchée (plan par stdin)
+  ansible.builtin.shell:
+    cmd: >-
+      {{ bundle.runtime_python }} -E -s {{ bundle.helpers }}/reprise metaai-integration-apply
+      < {{ reprise_diag_dir }}/metaai-redeploy-plan.json
+  register: metaai_copy_apply
+  when:
+    - reprise_metaai_redeploy | bool
+    - (metaai_copy_confirm.user_input | default('') | lower) in ['oui', 'o', 'y', 'yes']
+  changed_when: true
+  tags: [metaai-copy]
+
+- name: Vérifier le redéploiement de la copie patchée
+  ansible.builtin.shell:
+    cmd: >-
+      {{ bundle.runtime_python }} -E -s {{ bundle.helpers }}/reprise metaai-integration-verify
+      < {{ reprise_diag_dir }}/metaai-redeploy-plan.json
+  register: metaai_copy_verify
+  when:
+    - reprise_metaai_redeploy | bool
+    - (metaai_copy_confirm.user_input | default('') | lower) in ['oui', 'o', 'y', 'yes']
+  changed_when: false
+  tags: [metaai-copy]
+
+- name: Restituer le résultat du redéploiement
+  ansible.builtin.debug:
+    msg: "apply : {{ metaai_copy_apply.stdout | default('non exécuté') }} — verify : {{ metaai_copy_verify.stdout | default('non exécuté') }}"
+  when: reprise_metaai_redeploy | bool
+  tags: [metaai-copy]
