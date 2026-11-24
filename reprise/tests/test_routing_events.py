@@ -157,6 +157,41 @@ class RoutingEventsTests(unittest.TestCase):
         self.assertIsNotNone(db.execute('SELECT value FROM routing_meta WHERE key=?',
                                        (routing_events.LEGACY_IDENTITY_SCRUB_KEY,)).fetchone())
 
+    def test_legacy_identity_scrub_race_concurrent_marker_wins(self):
+        # Issue #195 : deux setups concurrents au premier lancement lisent tous
+        # deux l'absence du marqueur. On simule le concurrent : il insère le
+        # marqueur pendant le check (l'auteur du patch monkeypatche _meta_value),
+        # puis notre INSERT ne doit ni lever, ni écraser le reçu concurrent.
+        db = memory_db(self)
+        db.execute('DELETE FROM routing_meta WHERE key=?',
+                   (routing_events.LEGACY_IDENTITY_SCRUB_KEY,))
+        db.execute(
+            "INSERT INTO routing_events(ts,type,tool,channel,terminal_state,account_key) "
+            "VALUES (1,'explicit','t','codex','finished','legacy-account')")
+        db.execute("INSERT INTO route_admissibility VALUES "
+                   "('codex','legacy-account',NULL,'included','known',100)")
+        db.commit()
+        concurrent = json.dumps({'events_redacted': 99, 'admissibility_revoked': 88},
+                                sort_keys=True, separators=(',', ':'))
+        original_meta = routing_events._meta_value
+
+        def raced_meta(db_inner, key):
+            if key == routing_events.LEGACY_IDENTITY_SCRUB_KEY:
+                db_inner.execute('INSERT OR IGNORE INTO routing_meta(key,value) VALUES (?,?)',
+                                 (key, concurrent))
+                return None
+            return original_meta(db_inner, key)
+
+        routing_events._meta_value = raced_meta
+        try:
+            routing_events.setup(db)
+        finally:
+            routing_events._meta_value = original_meta
+        marker = db.execute('SELECT value FROM routing_meta WHERE key=?',
+                            (routing_events.LEGACY_IDENTITY_SCRUB_KEY,)).fetchone()[0]
+        self.assertEqual(marker, concurrent)
+        self.assertIsNone(db.execute('SELECT account_key FROM routing_events').fetchone()[0])
+
     def test_admissibility_matrix(self):
         db = memory_db(self)
         for channel, billing in (('codex', 'included'), ('claude-api', 'paid'),

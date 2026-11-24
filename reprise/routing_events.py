@@ -83,7 +83,13 @@ def _scrub_legacy_identities(db):
         + unsafe).rowcount
     counts = json.dumps({'events_redacted': redacted, 'admissibility_revoked': revoked},
                         sort_keys=True, separators=(',', ':'))
-    db.execute('INSERT INTO routing_meta(key,value) VALUES (?,?)',
+    # Course au premier lancement (#195) : deux setups peuvent tous deux passer
+    # le check _meta_value puis tenter l'INSERT. OR IGNORE rend le marqueur
+    # idempotent et préserve le reçu du premier écrivain, comme les autres
+    # écritures routing_meta de setup. Pas de capture IntegrityError : elle
+    # masquerait d'autres conflits et compliquerait le rollback du trigger de
+    # test.
+    db.execute('INSERT OR IGNORE INTO routing_meta(key,value) VALUES (?,?)',
                (LEGACY_IDENTITY_SCRUB_KEY, counts))
 
 
