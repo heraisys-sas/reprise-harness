@@ -1,0 +1,30 @@
+---
+# Redémarrage des services Reprise. Les plist et configs sont managés :
+# le pointage release passe par PlistBuddy, jamais une réécriture complète
+# (aucun module standard ne fait du Set ciblé sans resérialiser le plist).
+- name: Localiser le bundle courant
+  reprise_bundle:
+    builds_dir: "{{ reprise_build_app_path }}"
+  register: bundle
+
+- name: Repointer le LaunchAgent scheduler vers le release courant
+  ansible.builtin.command:
+    cmd: >
+      /usr/libexec/PlistBuddy
+      -c "Set :ProgramArguments:0 {{ bundle.runtime_python }}"
+      -c "Set :ProgramArguments:4 {{ bundle.helpers }}/reprise"
+      "{{ ansible_env.HOME }}/Library/LaunchAgents/local.agent-resume.plist"
+  when: reprise_release_sha | length > 0
+  changed_when: true
+  notify: Recycler le LaunchAgent scheduler
+  tags: [services]
+
+- name: Recycler le daemon Quick Apply (arrêt, socket orphelin, relance, attente)
+  reprise_quick_daemon:
+    state: "{{ 'restarted' if reprise_restart_quick_daemon else 'started' }}"
+    runtime_python: "{{ bundle.runtime_python }}"
+    helpers: "{{ bundle.helpers }}"
+    project_root: "{{ reprise_project_root }}"
+    state_dir: "{{ reprise_state_dir }}"
+  when: reprise_restart_quick_daemon
+  tags: [services]

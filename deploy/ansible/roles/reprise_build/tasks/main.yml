@@ -1,0 +1,19 @@
+---
+# Construit le bundle autonome via restart-chain --runtime-archive.
+# Idempotent : le build est refait à chaque run (le bundle est versionné par SHA).
+- name: Vérifier la présence de l'archive runtime
+  ansible.builtin.stat:
+    path: "{{ reprise_runtime_archive }}"
+  register: runtime_archive
+
+- name: Échouer si l'archive runtime est absente
+  ansible.builtin.fail:
+    msg: "Archive runtime absente : {{ reprise_runtime_archive }} (voir docs/runbooks/RUNTIME-PACKAGING.md)"
+  when: not runtime_archive.stat.exists
+
+- name: Construire le bundle Reprise
+  ansible.builtin.command:
+    cmd: "{{ reprise_source_dir }}/reprise/restart-chain --runtime-archive {{ reprise_runtime_archive }}"
+    chdir: "{{ reprise_source_dir }}"
+  changed_when: true
+  tags: [build]

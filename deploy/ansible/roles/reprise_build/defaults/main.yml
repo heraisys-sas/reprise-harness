@@ -1,0 +1,3 @@
+---
+# Passé au rôle integrations après la construction.
+reprise_build_app_path: "{{ reprise_source_dir }}/reprise/builds"

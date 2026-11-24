@@ -1,0 +1,6 @@
+# Les variables globales reprise_* sont volontairement partagées entre rôles
+# (source unique dans group_vars) ; préfixe par rôle imposé seulement aux faits internes.
+exclude_paths:
+  - .cache
+skip_list:
+  - var-naming[no-role-prefix]

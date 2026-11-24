@@ -1,0 +1,5 @@
+---
+- name: Recycler le LaunchAgent scheduler
+  ansible.builtin.command:
+    cmd: launchctl kickstart -k "gui/{{ ansible_user_uid }}/local.agent-resume"
+  changed_when: true

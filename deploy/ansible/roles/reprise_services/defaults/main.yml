@@ -1,0 +1,3 @@
+---
+reprise_restart_quick_daemon: true
+reprise_restart_scheduler: true
