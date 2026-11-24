@@ -32,6 +32,28 @@ class TestTaskStore(unittest.TestCase):
         self.store.claim_next(task_id=tid)
         self.assertIsNone(self.store.claim_next(task_id=tid))
 
+    def test_enqueue_existing_id_left_intact(self):
+        # INSERT OR REPLACE historique effaçait result/status d'une tâche existante :
+        # un id déjà présent (ex. answered) ne doit plus être réinitialisé.
+        tid = self.store.enqueue('question', {'q': 'x'})
+        self.store.claim_next(task_id=tid)
+        self.store.record_result(tid, {'reponse': '391'}, '{}', 'metaai')
+        self.assertEqual(self.store.enqueue('question', {'q': 'y'}, task_id=tid), tid)
+        task = self.store.get(tid)
+        self.assertEqual(task['status'], 'answered')
+        self.assertEqual(json.loads(task['payload'])['q'], 'x')
+
+    def test_claim_next_atomic_between_connections(self):
+        # Le store est ouvert par deux processus (pont MCP + metaaid) : la
+        # réservation concurrente doit échouer côté perdant (garde pending).
+        other = mts.TaskStore(self.root / 'tasks.sqlite')
+        tid = self.store.enqueue('question', {'q': 'x'})
+        first = self.store.claim_next()
+        second = other.claim_next()
+        self.assertEqual(first['id'], tid)
+        self.assertIsNone(second)
+        self.assertIsNone(other.claim_next(task_id=tid))
+
     def test_dispatch_write_inbox_atomic_and_content(self):
         tid = self.store.enqueue('question', {'question': 'Combien font 17 x 23 ?'})
         task = self.store.claim_next(task_id=tid)

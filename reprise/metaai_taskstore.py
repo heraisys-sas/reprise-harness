@@ -33,8 +33,12 @@ class TaskStore:
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
+        self._conn = sqlite3.connect(str(self.path), check_same_thread=False, timeout=5.0)
         self._conn.row_factory = sqlite3.Row
+        # Le store est partagé entre processus (ponts MCP) et threads (watcher metaaid) :
+        # WAL + busy_timeout évitent les OperationalError « database is locked ».
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -58,38 +62,48 @@ class TaskStore:
         tid = task_id or new_task_id()
         with self._lock:
             self._conn.execute(
-                "INSERT OR REPLACE INTO tasks (id, type, payload, status, created_at) VALUES (?,?,?,?,?)",
+                "INSERT INTO tasks (id, type, payload, status, created_at) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(id) DO NOTHING",
                 (tid, type_, json.dumps(payload, ensure_ascii=False), "pending", now_iso()),
             )
+            # Un id existant est laissé intact (une tâche answered n'est pas effacée) :
+            # pour réessayer, utiliser un nouvel id.
             self._conn.commit()
         return tid
 
     def claim_next(self, task_id: Optional[str] = None) -> Optional[dict]:
         """Usage A : réserver une tâche pour l'agent appelant (pending → dispatched).
-        Sans task_id : la plus ancienne pending."""
+        Sans task_id : la plus ancienne pending.
+        La réservation est atomique ENTRE processus : l'UPDATE porte la garde
+        `AND status='pending'` et n'aboutit que si elle réserve exactement une
+        ligne (rowcount=1) — deux ponts concurrents ne peuvent pas réserver la
+        même tâche. Le RLock ne protège que les threads du process courant."""
         with self._lock:
             if task_id:
-                row = self._conn.execute(
-                    "SELECT * FROM tasks WHERE id=? AND status='pending'", (task_id,)
-                ).fetchone()
-                if not row:
-                    return None
-                self._conn.execute(
-                    "UPDATE tasks SET status='dispatched', dispatched_at=? WHERE id=?",
+                cur = self._conn.execute(
+                    "UPDATE tasks SET status='dispatched', dispatched_at=? "
+                    "WHERE id=? AND status='pending'",
                     (now_iso(), task_id),
                 )
+                if cur.rowcount != 1:
+                    return None
+                tid = task_id
             else:
                 row = self._conn.execute(
-                    "SELECT * FROM tasks WHERE status='pending' ORDER BY created_at LIMIT 1"
+                    "SELECT id FROM tasks WHERE status='pending' ORDER BY created_at LIMIT 1"
                 ).fetchone()
                 if not row:
                     return None
-                self._conn.execute(
-                    "UPDATE tasks SET status='dispatched', dispatched_at=? WHERE id=?",
+                cur = self._conn.execute(
+                    "UPDATE tasks SET status='dispatched', dispatched_at=? "
+                    "WHERE id=? AND status='pending'",
                     (now_iso(), row["id"]),
                 )
+                if cur.rowcount != 1:  # réservé entre-temps par un autre processus
+                    return None
+                tid = row["id"]
             self._conn.commit()
-            return dict(self._conn.execute("SELECT * FROM tasks WHERE id=?", (row["id"],)).fetchone())
+            return dict(self._conn.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone())
 
     def dispatch_write_inbox(self, task: dict, inbox_dir) -> str:
         """Usage B : matérialiser la tâche pour Meta AI (inbox/<id>.json, format lu validé)."""

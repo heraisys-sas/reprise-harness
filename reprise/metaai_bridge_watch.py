@@ -71,7 +71,10 @@ def handle_result(result: dict, raw: str, path: Path) -> None:
             status = _TASKSTORE.record_result(tid, result, raw, "metaai")
             log(f"TaskStore ← {tid} → {status}")
         except Exception as e:
-            log(f"⚠ TaskStore indisponible: {e}")
+            # Ne PAS archiver sur échec du store : le fichier reste en outbox et
+            # sera retraité au prochain cycle (perte de résultat sinon définitive).
+            log(f"⚠ TaskStore indisponible — {tid} laissé en outbox pour reprise: {e}")
+            return False
     # consommation du roundtrip : archiver aussi la tâche source de inbox
     for cand in (ROOT / "inbox").glob(f"{tid}*.json"):
         archive(cand, "task")

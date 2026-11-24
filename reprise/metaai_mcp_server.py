@@ -120,7 +120,10 @@ def tool_submit_result(args: dict) -> dict:
 
 
 def tool_get_status(args: dict) -> dict:
-    return summary(STORE.get(args["task_id"])) or {"task_id": args["task_id"], "status": "unknown"}
+    row = STORE.get(args["task_id"])
+    # summary(None) est véridique ({"task_id": None}) : la branche unknown doit
+    # être choisie explicitement, sinon une tâche inconnue est indistinguable.
+    return summary(row) if row is not None else {"task_id": args["task_id"], "status": "unknown"}
 
 
 def tool_list_tasks(args: dict) -> dict:
