@@ -43,3 +43,7 @@ Le plist pointe **ce checkout** (`reprise/metaaid.py`) et des chemins sous le do
 ## Tests
 
 `python3 -m unittest discover -s reprise/tests -q -p "test_metaai_*.py"` — 11 tests (TaskStore : ordre de claim, écriture inbox atomique, answered/orphan/fail ; serveur MCP réel en subprocess : initialize/tools, roundtrip dispatch+submit, `get_task` sans écriture inbox, dispatch sans pending). Référence live : cycle complet `enqueue → dispatch → Meta AI réel → watcher → get_status` du 23/11/2026.
+
+## Perspectives (backlog, non implémenté)
+
+**Couche outils « desktop-commander »** (idée Olivier du 24/11/2026, à chiffrer après la refonte UI #263) : donner à Meta AI un accès exécution à la machine réelle par-dessus le pont dossier — sans serveur ni MCP (le binaire n'a aucun client MCP, vérifié le 22/11). Mécanique : Meta AI écrit une requête clé/valeur dans le dossier partagé (ex. `tools/run.txt` : `cmd:` / `args:` / `cwd:`), le watcher de `metaaid` l'interprète comme un tool-call, exécute localement (hors du dossier partagé) et écrit le résultat à côté. Pré-requis de sécurité avant toute implémentation : allowlist de commandes (même modèle que desktop-commander), aucun secret dans le rayon du pont, quota/rate, validation opérateur par catégorie (lecture seule d'abord, exec ensuite).

@@ -28,6 +28,7 @@ ReMetaAI.app (copie re-signée, session partagée par trousseau)
 - **Keychain (mur macOS 26)** : `SecItem` exige un entitlement (`-34018` même sans groupe) ; `com.apple.application-identifier` sans provisioning profile est ignoré par securityd ; `keychain-access-groups` avec un préfixe d'équipe étranger = **SIGKILL AMFI à l'exec** (l'entitlement s'embarque uniquement en signant le fichier binaire directement, pas via le bundle). Contournement : le shim ré-exporte la vraie Security, **supprime `kSecAttrAccessGroup`** et émule les generic passwords du service `com.meta.prototypes.endo.tokens` via l'API legacy `SecKeychain*` (sans entitlement, ACL par chemin) — la copie lit ainsi les tokens de l'originale : **session partagée, aucune connexion requise**.
 - **Signature** : identité Apple Development de l'opérateur (runtime durci désactivé par défaut au re-sign). Toujours `chmod 755` le binaire après patch (la réécriture par `write_bytes` perd le bit exec).
 - **Détection de soumission** : après `send` (`insertNewline:` au délégué du NSTextView), le composer se vide — commande `len` de confirmation.
+- **Quirk du double Enter** : après un `insert` long, le premier `send` peut insérer un saut de ligne (composer multi-lignes, `len` reste > 0) au lieu de soumettre — toujours confirmer par `len` et renvoyer `send` si nécessaire ; la soumission réelle vide le composer (`len: 0`).
 
 ## Build & déploiement
 
