@@ -103,14 +103,15 @@ def _clean_answer(stdout):
     return '\n'.join(lines) if lines else None
 
 
-def submit(program, values, question, *, timeout=180):
-    """Submit one bounded task and read the model reply back.
-
-    Returns {'status': 'finished', 'response': answer, 'model': ...}.
-    Raises engines.Unavailable for refused auth, expiry or non-zero exit.
-    """
+def _submit_prompt(program, values, prompt, *, timeout=180):
+    """Transport commun : le prompt complet voyage sur stdin (il n'apparaît
+    jamais dans une liste de processus). Sans borne de longueur : la borne
+    12000 est celle de la QUESTION (cf. codex_expert.review / claude_expert.review,
+    où le contexte attaché vit sur un budget séparé) — review() compose
+    question + contexte et ne doit pas reporter la borne de question sur
+    l'ensemble (revue MAJEUR 4)."""
     host, port, user, key = validate_values(values)
-    if not isinstance(question, str) or not question.strip() or len(question) > 12000:
+    if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError('Question bornée requise')
     # The prompt travels on stdin: it never appears in a local or remote process list.
     remote = 'ironclaw run -m "$(cat)" 2>/dev/null'
@@ -119,7 +120,7 @@ def submit(program, values, question, *, timeout=180):
     command = _ssh_base(program, keyfile, host, port, user) + [remote]
     try:
         try:
-            proc = _run(command, timeout, input_text=question)
+            proc = _run(command, timeout, input_text=prompt)
         except subprocess.TimeoutExpired:
             raise Unavailable('timed_out', 'Soumission IronClaw expirée ; aucune relance automatique.')
         text = (proc.stdout or '') + (proc.stderr or '')
@@ -134,6 +135,17 @@ def submit(program, values, question, *, timeout=180):
         return {'status': 'finished', 'response': answer}
     finally:
         cleanup()
+
+
+def submit(program, values, question, *, timeout=180):
+    """Submit one bounded task and read the model reply back.
+
+    Returns {'status': 'finished', 'response': answer, 'model': ...}.
+    Raises engines.Unavailable for refused auth, expiry or non-zero exit.
+    """
+    if not isinstance(question, str) or not question.strip() or len(question) > 12000:
+        raise ValueError('Question bornée requise')
+    return _submit_prompt(program, values, question, timeout=timeout)
 
 
 def engine(program, values, *, timeout=30):
@@ -207,6 +219,8 @@ def review(program, values, root, question, *, kind='expertise', level='standard
     if kind not in ('expertise', 'review', 'batch') or level not in ('standard', 'deep'):
         raise ValueError('Invalid delegation kind or level')
     from claude_desktop import context_files
+    # La borne 12000 porte sur la question ; le contexte est un budget séparé
+    # (revue MAJEUR 4) — le prompt combiné part sans revalidation de question.
     prompt = question + context_files(root, paths)
     result = {'status': 'needs_review', 'resumable': False, 'project_root': str(root),
               'kind': kind, 'level': level, 'quota_remaining': None,
@@ -219,7 +233,7 @@ def review(program, values, root, question, *, kind='expertise', level='standard
         result['model'] = discovered.get('model')
         result['billing'] = f"Remote IronClaw runtime ({discovered.get('provider')} backend)"
     try:
-        submitted = submit(program, values, prompt, timeout=timeout)
+        submitted = _submit_prompt(program, values, prompt, timeout=timeout)
         return result | {'status': 'finished', 'response': submitted['response'],
                          'resumable': False}
     except Unavailable as error:
