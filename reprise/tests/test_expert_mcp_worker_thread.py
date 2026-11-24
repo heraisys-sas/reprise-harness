@@ -40,7 +40,11 @@ class WaitResultWorkerThreadTests(unittest.TestCase):
         TaskStore(self.root / 'chatgpt-state', self.root)
 
     def record(self, bridge, key, backend):
-        scope = bridge.scope  # le Bridge résout strict le chemin (ex. /private/var/…)
+        # Semis via la partition réelle de l'écrivain : Store(scope=str(root)).
+        # (Revue MAJEUR 6 — le test initial semait sous bridge.scope, un digest
+        # sha256, et validait un lecteur faux ; l'échec du shard chatgpt_bridge
+        # l'a révélé.)
+        scope = str(bridge.root)
         bridge.db.execute(
             'INSERT INTO delegation_requests(scope,request_key,identity,signature,parent,root,depth,attempt,state,result,acknowledged) '
             "VALUES(?,?,?,?,'',?,0,'a1','recorded',?,0)",

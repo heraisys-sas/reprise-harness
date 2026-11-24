@@ -984,7 +984,9 @@ class Bridge:
         if key is not None:
             # Revue MAJEUR 6 : lecture thread-safe (connexion read-only dédiée)
             # et non self.requests, lié à la connexion du thread principal.
-            previous = _ledger_backend(self.db_path, self.scope, key)
+            # Partition identique à l'écrivain : Store(scope=str(self.root)),
+            # PAS self.scope (digest sha256 réservé aux tables expert_*).
+            previous = _ledger_backend(self.db_path, str(self.root), key)
             backend = 'chatgpt' if previous == 'chatgpt' else 'claude-desktop'
         state = self.chatgpt_state if backend == 'chatgpt' else self.desktop_state
         return wait_for_result(state, self.root, args, cancel, backend=backend or 'claude-desktop')
