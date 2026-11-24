@@ -4,7 +4,7 @@
 
 ## Delegation installed in DSH (17 October 2026 — historique)
 
-The Desktop profile now contains a backed-up, marked `reprise-codex-expert` MCP entry connected to the shared Codex daemon, not the separate expert socket. It is bound to the project passed to the installer. Load a new Harness session or reload its profile to discover `mcp__reprise_codex__reprise_delegate`, `reprise_backends`, `codex_review` and `codex_followup` (the latter names have the same server prefix).
+The Desktop profile now contains a backed-up, marked `reprise-codex-expert` MCP entry connected to the shared Codex daemon, not the separate expert socket. It is bound to the project passed to the installer. Load a new Harness session or reload its profile to discover `mcp__reprise_experts__reprise_delegate`, `reprise_backends`, `codex_review` and `codex_followup` (the latter names have the same server prefix).
 
 ```sh
 python3 install-expertise.py --project-root /absolute/project
@@ -111,7 +111,7 @@ If preflight fails before any turn submission, Reprise re-reads its newly create
 python3 expert_mcp.py --project-root /absolute/project --socket /absolute/private/path/codex-expert.sock
 ```
 
-The last command is an **historical manual** MCP STDIO entrypoint, not an interactive shell. The current managed installer builds the `@deepseek-ai/dsh-mcp-client` entry automatically from a sealed release, with `transport: stdio`, `serverName: reprise_codex`, explicit `--project-root`, `--state` and `--tools`, a call timeout set by the installer, and retries disabled. The example `reprise-expert.local.patch.yml` belonged to a workspace experiment; do **not** infer that it is installed or that its project binding matches the current DSH profile.
+The last command is an **historical manual** MCP STDIO entrypoint, not an interactive shell. The current managed installer builds the `@deepseek-ai/dsh-mcp-client` entry automatically from a sealed release, with `transport: stdio`, `serverName: reprise_experts`, explicit `--project-root`, `--state` and `--tools`, a call timeout set by the installer, and retries disabled. The example `reprise-expert.local.patch.yml` belonged to a workspace experiment; do **not** infer that it is installed or that its project binding matches the current DSH profile.
 
 Calls return the bounded response, Codex thread/turn IDs, event types and explicit errors. `codex_followup` accepts only review threads recorded by this bridge for its fixed project and endpoint, and reuses their Codex history. No full DSH conversation is copied. Approvals or user questions stop the tool and are reported to DSH; the bridge does not grant them, impersonate a user reply or claim an unfinished review succeeded.
 

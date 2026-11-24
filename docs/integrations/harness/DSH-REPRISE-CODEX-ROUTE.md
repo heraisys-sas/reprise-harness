@@ -6,7 +6,7 @@
 
 | Chemin | Point d'entrée | Propriétaire de la tâche et des preuves |
 | --- | --- | --- |
-| **Via Reprise** (objet de cette page) | DSH appelle le serveur MCP `reprise_codex` : `reprise_delegate(backend="codex", ...)` | Reprise : requête, garde de rejeu, reçu durable et réconciliation ; Codex : thread et tour natifs |
+| **Via Reprise** (objet de cette page) | DSH appelle le serveur MCP `reprise_experts` : `reprise_delegate(backend="codex", ...)` | Reprise : requête, garde de rejeu, reçu durable et réconciliation ; Codex : thread et tour natifs |
 | **Directement dans DSH** | DSH choisit son fournisseur `openai-codex` ou le modèle d'un sous-agent Harness | DSH : conversation et exécution ; aucun reçu Reprise créé par cette seule sélection |
 | **Sous-agent DSH qui appelle Reprise** | Un sous-agent Harness appelle explicitement `reprise_delegate` | DSH conserve sa sous-session ; Reprise conserve la délégation Codex appelée par celle-ci |
 
@@ -51,11 +51,11 @@ Le parcours de gestion de Reprise prépare l'intégration du profil DSH via `rep
 - Sans `--delegate`, la liste des outils est bornée par `OBSERVE` : `reprise_backends`, `reprise_requests`, `reprise_quotas`, `approval_list`, `wait_result`. Une installation donnée peut encore présenter une ancienne allowlist ; **c'est `tools/list` qui décide**.
 - Avec `--delegate`, s'ajoutent `reprise_delegate`, `reprise_followup`, `reprise_reconcile`. `approval_respond` n'est pas automatiquement exposé.
 - Après l'application, **recharger le profil ou une nouvelle session DSH**. Le `verify` lance une sonde directe `initialize` / `tools/list`, ce qui ne prouve pas que DSH lui-même a chargé le pont.
-- Dans DSH, découvrir `mcp__reprise_codex__reprise_backends` ; confirmer le `project_root`, `configured`, `modes`, `models` et les outils réellement visibles. Le projet de la session DSH et le `project_root` fixé dans la configuration MCP peuvent être différents.
+- Dans DSH, découvrir `mcp__reprise_experts__reprise_backends` ; confirmer le `project_root`, `configured`, `modes`, `models` et les outils réellement visibles. Le projet de la session DSH et le `project_root` fixé dans la configuration MCP peuvent être différents. Nuance : un profil géré déployé avant le renommage n'est pas régénéré automatiquement — le préfixe legacy `mcp__reprise_codex__*` peut encore apparaître jusqu'à la prochaine installation/régénération ; les deux conventions désignent le même serveur.
 
 ### 2. Admettre une demande identifiée
 
-DSH appelle `mcp__reprise_codex__reprise_delegate`, avec `backend: "codex"`, `kind: "expertise" | "review" | "batch"`, une `question` (12 000 caractères maximum, y compris le préfixe de contrat ajouté), éventuellement `level`, `mode`, un modèle explicitement annoncé, et au plus 30 chemins **relatifs au projet lié**. DSH **persiste lui-même** une `request_key` unique avant l'appel ; les enfants utilisent `parent_request_key` si leur parent est connu.
+DSH appelle `mcp__reprise_experts__reprise_delegate`, avec `backend: "codex"`, `kind: "expertise" | "review" | "batch"`, une `question` (12 000 caractères maximum, y compris le préfixe de contrat ajouté), éventuellement `level`, `mode`, un modèle explicitement annoncé, et au plus 30 chemins **relatifs au projet lié**. DSH **persiste lui-même** une `request_key` unique avant l'appel ; les enfants utilisent `parent_request_key` si leur parent est connu.
 
 Le pont vérifie la validité des paramètres, les permissions, les fichiers d'entrée et l'admissibilité de la route. Il prend un verrou de sérialisation `expert.lock`, puis `Store.begin` dans `expert.sqlite`. Un rejeu de la même clé avec les mêmes entrées ne crée pas un nouveau tour. Une même clé avec un payload différent est refusée ; une demande incertaine ne doit pas être « débloquée » par une nouvelle clé. Le journal de routage est distinct du reçu métier.
 
@@ -121,7 +121,7 @@ Pour une **nouvelle demande relative au même travail**, `reprise_followup` acce
 }
 ```
 
-Ce JSON est le **payload** de `mcp__reprise_codex__reprise_delegate`, pas une commande shell ni une nouvelle route de fournisseur DSH. Une clé d'exemple doit être remplacée par une clé unique persistée côté demandeur. Un simple `reprise_delegate` en `expertise` ne réserve **pas** une issue GitHub et n'octroie pas les permissions de commit.
+Ce JSON est le **payload** de `mcp__reprise_experts__reprise_delegate`, pas une commande shell ni une nouvelle route de fournisseur DSH. Une clé d'exemple doit être remplacée par une clé unique persistée côté demandeur. Un simple `reprise_delegate` en `expertise` ne réserve **pas** une issue GitHub et n'octroie pas les permissions de commit.
 
 ## Vocabulaire commun pour les demandes d'évolution
 
