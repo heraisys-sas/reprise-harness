@@ -1,4 +1,5 @@
 """#117 T2b operator grant registry: no inference, native dispatch or real approval."""
+import errno
 import hashlib
 import json
 import os
@@ -115,6 +116,24 @@ class ApprovalDelegationTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             self.grant()
         self.assertEqual(token_file.read_text(), 'already exists')
+        self.assertEqual(self.manager.list_grants(), [])
+
+    def test_symlink_token_file_is_refused_and_target_intact(self):
+        # Issue #201 : un token_file déjà présent en symlink est refusé via
+        # O_NOFOLLOW|O_CREAT|O_EXCL (ELOOP) et la cible reste intacte.
+        target = self.private / 'real-target'
+        target.write_text('target intact')
+        link = self.private / 'link'
+        link.symlink_to(target)
+        with self.assertRaises(OSError) as caught:
+            self.grant(suffix='link')
+        # O_CREAT|O_EXCL|O_NOFOLLOW : EEXIST sur macOS (création exclusive sur
+        # entrée existante), ELOOP possible ailleurs (symlink final) — dans les
+        # deux cas l'appel est refusé et le symlink n'est jamais suivi.
+        self.assertIn(caught.exception.errno, (errno.EEXIST, errno.ELOOP))
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(link.readlink(), target)
+        self.assertEqual(target.read_text(), 'target intact')
         self.assertEqual(self.manager.list_grants(), [])
 
     def test_database_failure_does_not_leave_credential_file(self):

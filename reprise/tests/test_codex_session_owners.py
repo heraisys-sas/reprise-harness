@@ -77,6 +77,17 @@ class CodexOwnerCensusTests(unittest.TestCase):
         self.assertEqual(result['profiles'][0]['index_state'], 'index_missing')
         self.assertFalse((home / 'state_5.sqlite').exists())
 
+    def test_home_not_directory_is_partial(self):
+        # Issue #201 : un home qui est un fichier régulier est signalé, jamais
+        # créé ni lu.
+        regular = self.root / 'not-a-directory'
+        regular.write_text('not a directory')
+        result = owners.census([regular])
+        self.assertEqual(result['status'], 'partial')
+        self.assertEqual(result['profiles'][0]['index_state'], 'home_not_directory')
+        self.assertEqual(result['session_count'], 0)
+        self.assertEqual(result['profiles'][0]['sessions'], [])
+
     def test_bad_schema_and_corruption_do_not_bypass_failsafe(self):
         home = self.root / 'bad-schema'
         home.mkdir()
