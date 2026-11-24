@@ -38,6 +38,13 @@ extension App {
                     process.terminate()
                     let stopDeadline = Date().addingTimeInterval(5)
                     while process.isRunning && Date() < stopDeadline { Thread.sleep(forTimeInterval: 0.1) }
+                    if process.isRunning {
+                        // Revue MAJEUR 8 : SIGTERM peut être ignoré ; SIGKILL
+                        // garantit l'arrêt avant la suppression du temporaire.
+                        kill(process.processIdentifier, SIGKILL)
+                        let killDeadline = Date().addingTimeInterval(2)
+                        while process.isRunning && Date() < killDeadline { Thread.sleep(forTimeInterval: 0.1) }
+                    }
                     result = ["status": "failed", "message": "Délai dépassé. L’état sera revérifié avant toute reprise.", "timed_out": true]
                 } else {
                     let data = try Data(contentsOf: out)
@@ -46,7 +53,16 @@ extension App {
                 let diagnostic = String(data: (try? Data(contentsOf: err)) ?? Data(), encoding: .utf8) ?? ""
                 if !diagnostic.isEmpty && result["status"] as? String != "completed" { result["diagnostic"] = String(diagnostic.prefix(2000)) }
             } catch { result = ["status": "failed", "message": error.localizedDescription] }
-            if !process.isRunning { try? FileManager.default.removeItem(at: directory) }
+            if process.isRunning {
+                // Exception en cours d'exécution : même séquence d'arrêt.
+                process.terminate()
+                let stopDeadline = Date().addingTimeInterval(2)
+                while process.isRunning && Date() < stopDeadline { Thread.sleep(forTimeInterval: 0.1) }
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            }
+            // Revue MAJEUR 8 : le fichier « in » contient la clé API — le
+            // répertoire temporaire 0700 est supprimé dans tous les cas.
+            try? FileManager.default.removeItem(at: directory)
             DispatchQueue.main.async {
                 self.setupBusy = false
                 if !process.isRunning { self.setupProcess = nil }
