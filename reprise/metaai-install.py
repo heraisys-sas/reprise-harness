@@ -65,7 +65,11 @@ def write_connection(config_path: Path, dav_root=None, mount_point=None, tasksto
     config_path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(example, indent=2, ensure_ascii=False)
     temporary = config_path.with_name(config_path.name + '.reprise-tmp')
-    temporary.write_text(payload, encoding='utf-8')
+    # Revue (MINEUR S9-C8) : créé directement en 0600 — jamais lisible
+    # (creds dav) entre création et chmod.
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
+        handle.write(payload)
     temporary.chmod(0o600)
     os.replace(temporary, config_path)
     return {'config': str(config_path), 'changed': True}
@@ -104,7 +108,10 @@ def install(*, service_dir=None, config_path=None, force=False) -> dict:
     payload = plistlib.dumps(settings, sort_keys=False)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(target.name + '.reprise-tmp')
-    temporary.write_bytes(payload)
+    # Revue (MINEUR S9-C8) : même garde que pour la connexion.
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, 'wb') as handle:
+        handle.write(payload)
     temporary.chmod(0o600)
     os.replace(temporary, target)
     return {
