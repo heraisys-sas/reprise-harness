@@ -112,6 +112,10 @@ def execute(db, task, argv, env, log, timeout=7200, engine='codex-cli'):
     finally:
         selector.close()
         terminate(process)
+    for event in decoder.finish():
+        state = evidence.feed(event)
+        if state:
+            save(db, ident, state, last_event_at=time.time())
     state, reason = evidence.finish(process.returncode, timed_out)
     if state in ('failed', 'needs_review') and not timed_out:
         classified, diagnostic_reason = classify(diagnostic.decode('utf-8', errors='replace'))

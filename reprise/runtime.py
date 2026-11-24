@@ -32,7 +32,7 @@ def terminate(process, grace=0):
             process.wait(timeout=5)
         except Exception:
             pass
-        for stream in (process.stdin, process.stdout):
+        for stream in (process.stdin, process.stdout, process.stderr):
             if stream and not stream.closed:
                 try:
                     stream.close()
@@ -64,4 +64,19 @@ class JsonLines:
                 self.discarding = True
             if not self.discarding:
                 self.buffer.extend(part)
+        return records
+
+    def finish(self):
+        # Revue (MINEUR S9-C5) : un dernier enregistrement sans saut de ligne
+        # final (truncature du flux) doit être décodé à la fin de la lecture.
+        records = []
+        if not self.discarding and self.buffer:
+            try:
+                value = json.loads(self.buffer)
+                if isinstance(value, dict):
+                    records.append(value)
+            except (ValueError, UnicodeDecodeError):
+                pass
+            self.buffer.clear()
+            self.discarding = False
         return records
