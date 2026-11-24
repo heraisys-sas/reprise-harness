@@ -192,7 +192,15 @@ def main():
                 return 0
             print(f'Log absent ou de plus de {args.reuse_log} min : relance nécessaire ({log_path}).')
             return 1
-        python, extra_env = pinned_interpreter()
+        try:
+            python, extra_env = pinned_interpreter()
+        except (FileNotFoundError, ValueError) as exc:
+            explicit = os.environ.get('REPRISE_TEST_RUNTIME_ARCHIVE')
+            if not explicit:
+                raise
+            print(f'Archive runtime invalide : REPRISE_TEST_RUNTIME_ARCHIVE={explicit} : {exc} '
+                  '— vérifier le chemin ou retirer la variable.', file=sys.stderr)
+            return 2
         if python != sys.executable:
             print(f'Interpréteur épinglé : {python}')
         else:
@@ -211,7 +219,15 @@ def main():
                 print(f'Shard {index}/{count} vide : aucun module de test affecté.')
                 return 2
             print(f'Shard {index}/{count} : {len(modules)} modules')
-            python, extra_env = pinned_interpreter()
+            try:
+                python, extra_env = pinned_interpreter()
+            except (FileNotFoundError, ValueError) as exc:
+                explicit = os.environ.get('REPRISE_TEST_RUNTIME_ARCHIVE')
+                if not explicit:
+                    raise
+                print(f'Archive runtime invalide : REPRISE_TEST_RUNTIME_ARCHIVE={explicit} : {exc} '
+                      '— vérifier le chemin ou retirer la variable.', file=sys.stderr)
+                return 2
             env.update(extra_env)
             print(f'Interpréteur tests : {python}')
             command = [python, '-B', '-m', 'unittest', *modules, '-q',
