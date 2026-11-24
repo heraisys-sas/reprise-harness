@@ -41,7 +41,7 @@
       "capacity": 1,
       "resumable": false,
       "session": "durable_taskstore",
-      "enabled": false
+      "enabled": true
     }
   }
 }

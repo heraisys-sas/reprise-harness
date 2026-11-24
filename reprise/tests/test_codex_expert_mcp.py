@@ -65,7 +65,11 @@ class BridgeTests(RequestCalls, unittest.TestCase):
                 self.call('reprise_delegate', {'question':'Implement', 'kind':'batch', 'mode':'implementation'})
             review.assert_not_called()
         self.assertEqual(self.bridge.db.execute('SELECT COUNT(*) FROM delegation_requests').fetchone()[0], 0)
-        self.assertFalse(self.call('reprise_backends', {})['backends'][0]['writes'])
+        # #258 lot 3 : `writes` devient déclaratif (capacité du backend),
+        # le grant CLI reste mesuré par workspace_write_authorized et gate le mode.
+        codex = self.call('reprise_backends', {})['backends'][0]
+        self.assertTrue(codex['writes'])
+        self.assertFalse(codex['workspace_write_authorized'])
 
     def test_ungranted_implementation_refusal_is_explicit_issue_104(self):
         with patch('expert_mcp.review') as review:

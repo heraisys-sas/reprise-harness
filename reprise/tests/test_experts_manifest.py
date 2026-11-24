@@ -153,20 +153,27 @@ class ExpertsManifestTests(unittest.TestCase):
     def test_backend_unknown_to_manifest_refused(self):
         # metaai absent du manifeste : backend connu de l'enum mais sans
         # déclaration → refus distinct, jamais de fallthrough vers codex.
+        # #258 lot 3 : metaai a un handler ; le scénario « absent du manifeste
+        # et sans handler » est simulé en le retirant de la table des handlers.
         bridge = self.bridge({'schema_version': 1, 'backends': {'codex': {**CODEX, 'capacity': 2}}})
-        result = bridge.call('reprise_delegate', {'backend': 'metaai', 'question': 'Q',
-                                                  'kind': 'expertise', 'request_key': 'probe-unknown'})
+        patched = tuple(b for b in expert_mcp.EXPERTS_HANDLED_BACKENDS if b != 'metaai')
+        with patch.object(expert_mcp, 'EXPERTS_HANDLED_BACKENDS', patched):
+            result = bridge.call('reprise_delegate', {'backend': 'metaai', 'question': 'Q',
+                                                      'kind': 'expertise', 'request_key': 'probe-unknown'})
         self.assertEqual(result['status'], 'engine_unavailable')
         self.assertIn('inconnu du manifeste', result['reason'])
 
     def test_enabled_metaai_declared_without_handler_refused(self):
-        # metaai est le seul backend de l'enum hors EXPERTS_HANDLED_BACKENDS :
-        # c'est le cas réalisable de « déclaré mais sans handler de dispatch ».
+        # #258 lot 3 : metaai possède désormais un handler ; le cas réalisable
+        # « déclaré mais sans handler de dispatch » est simulé en retirant
+        # metaai de la table des handlers — le refus déterministe reste identique.
         bridge = self.bridge({'schema_version': 1, 'backends': {
             'codex': {**CODEX, 'capacity': 2},
             'metaai': {'enabled': True, 'session': 'durable_taskstore'}}})
-        result = bridge.call('reprise_delegate', {'backend': 'metaai', 'question': 'Q',
-                                                  'kind': 'expertise', 'request_key': 'probe-metaai-on'})
+        with patch.object(expert_mcp, 'EXPERTS_HANDLED_BACKENDS',
+                          tuple(b for b in expert_mcp.EXPERTS_HANDLED_BACKENDS if b != 'metaai')):
+            result = bridge.call('reprise_delegate', {'backend': 'metaai', 'question': 'Q',
+                                                      'kind': 'expertise', 'request_key': 'probe-metaai-on'})
         self.assertEqual(result['status'], 'engine_unavailable')
         self.assertIn('sans handler', result['reason'])
         self.assertFalse(result['automatic_fallback'])
@@ -212,7 +219,9 @@ class ExpertsManifestTests(unittest.TestCase):
         self.assertEqual(claude_code['availability'], 'unavailable')
         metaai = by_id['metaai']
         self.assertFalse(metaai['enabled'])
-        self.assertFalse(metaai['handler'])
+        # #258 lot 3 : metaai a un handler ; sans connexion il reste
+        # mesuré indisponible (déclaré ≠ disponible).
+        self.assertTrue(metaai['handler'])
         self.assertFalse(metaai['measured_available'])
         self.assertEqual(metaai['availability'], 'unavailable')
 
