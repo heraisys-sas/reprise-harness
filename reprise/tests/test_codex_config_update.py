@@ -143,6 +143,25 @@ class CodexConfigUpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'étranger'):
             update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
 
+    def test_legacy_helper_name_is_rewritten(self):
+        # Installation d'avant renommage #258 : l'entrée pointe vers le shim
+        # codex_expert_mcp.py et doit être réécrite vers expert_mcp.py.
+        legacy = str(self.old / 'Contents/Resources/helpers/codex_expert_mcp.py')
+        text = self.config.read_text().replace(
+            str(self.old / 'Contents/Resources/helpers/expert_mcp.py'), legacy)
+        self.config.write_text(text)
+        value = update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
+        expected = str(self.target / 'Contents/Resources/helpers/expert_mcp.py')
+        self.assertEqual(value['after']['reprise-harness']['args'][3], expected)
+
+    def test_unknown_helper_name_refused(self):
+        text = self.config.read_text().replace(
+            str(self.old / 'Contents/Resources/helpers/expert_mcp.py'),
+            str(self.old / 'Contents/Resources/helpers/autre_helper.py'))
+        self.config.write_text(text)
+        with self.assertRaisesRegex(ValueError, 'étranger'):
+            update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
+
     def test_timeout_does_not_replay(self):
         value = update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
         original = self.client.call

@@ -97,6 +97,11 @@ class NativeClient:
 
 ENTRIES = {'reprise-harness': 'expert_mcp.py'}
 
+# Le shim codex_expert_mcp.py embarqué dans le bundle n'existe que pour un
+# cycle de release (#258) : une installation d'avant renommage doit pouvoir
+# être réécrite, mais le mapping reste borné à ce couple.
+_LEGACY_HELPERS = {'codex_expert_mcp.py': 'expert_mcp.py'}
+
 
 def _digest(value):
     return hashlib.sha256(value).hexdigest()
@@ -174,8 +179,10 @@ def _rewrite(entry, script, release_base, target):
         raise ValueError('Chemin de runtime ambigu.')
     _safe(command.parent)
     suffix = Path('Contents/Resources/helpers') / script
+    legacy = _LEGACY_HELPERS.get(Path(helper).name)
     if not str(helper).endswith('/' + str(suffix)):
-        raise ValueError('Helper MCP étranger.')
+        if legacy != script or not str(helper).endswith('/Contents/Resources/helpers/' + Path(helper).name):
+            raise ValueError('Helper MCP étranger.')
     old = helper.parents[3]
     _release(old, release_base)
     runtime = old / 'Contents/Resources/runtime'
