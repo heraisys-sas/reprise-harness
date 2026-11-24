@@ -69,8 +69,10 @@ class AnchorLossTests(unittest.TestCase):
                     body=[first[-60000:], latest], quiet_ms=lambda _: None)
                 with mock.patch.object(adapter, 'time', fixtures.AcceleratedTime()), \
                      mock.patch.object(adapter, '_persist_receipt'), \
-                     mock.patch.object(adapter, 'drain_turn_completion',
-                                       side_effect=[False, True, False]):
+                     mock.patch.object(adapter, 'drain_lifecycle',
+                                       side_effect=[(False, None, None),
+                                                    (True, None, None),
+                                                    (False, None, None)]):
                     receipt = adapter._dispatch(transport, prompt, Path('/unused'),
                                                 'anchor-loss', adapter._send_receipt())
                 self.assertEqual(receipt['status'], 'captured_incomplete')

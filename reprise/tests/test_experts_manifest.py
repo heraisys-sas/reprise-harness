@@ -37,7 +37,7 @@ FULL_MANIFEST = {
         'codex': {**CODEX, 'capacity': 2, 'resumable': True},
         'claude-code': {'session': 'stdio_thread', 'capacity': 2, 'resumable': True},
         'claude-desktop': {'session': 'durable_taskstore'},
-        'chatgpt': {'session': 'push_only'},
+        'chatgpt': {'session': 'window_continuation', 'resumable': True},
         'foundation-models': {'session': 'push_only'},
         'ironclaw': {'session': 'push_only'},
         'metaai': {'session': 'durable_taskstore', 'enabled': False},

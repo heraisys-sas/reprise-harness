@@ -21,8 +21,8 @@
     },
     "chatgpt": {
       "capacity": 1,
-      "resumable": false,
-      "session": "push_only",
+      "resumable": true,
+      "session": "window_continuation",
       "enabled": true
     },
     "foundation-models": {

@@ -683,6 +683,12 @@ REPLY_FOOTERS = ('chatgpt peut faire des erreurs', 'chatgpt can make mistakes',
 # a strict completion proof for a short expected answer.
 MIN_USEFUL_REPLY_CHARS = 80
 TURN_COMPLETE_MARKER = 'conversation-turn-complete'
+# Issue #260 : la fenêtre d'ancrage — NetworkWS livre conversation-created
+# sur le même socket à sujets partagés ; l'id extrait est porté dans le reçu
+# durable (le followup n'y touche pas : la preuve de continuation au tour 2
+# reste l'écho du prompt). Extraction bornée, best effort, jamais fatale.
+CONVERSATION_CREATED_MARKER = 'conversation-created'
+CONVERSATION_ID_PATTERN = re.compile(r'"conversation_id"\s*:\s*"([0-9a-fA-F-]{8,64})"')
 # JSON control characters can expand to six ASCII bytes, even with ensure_ascii=False.
 MAX_REQUEST_BYTES = 6 * MAX_PROMPT_CHARS + 1024
 MAX_RESPONSE_BYTES = 6 * (MAX_CAPTURE_CHARS + RESPONSE_EXCERPT_CHARS) + 16384
@@ -731,6 +737,56 @@ def _net_enable(transport):
         return False
 
 
+def _note_conversation(receipt, conversation_id, divergent=False):
+    """Record the observed conversation id in the receipt (best effort).
+
+    A first id is kept; a later divergent id (same pass or a later drain) is
+    reported, never fatal and never a refusal — continuation semantics stay
+    « fenêtre courante »."""
+    if receipt.get('conversation_id') is not None and divergent:
+        receipt['conversation_id_divergent'] = True
+    if conversation_id is None:
+        return
+    if receipt.get('conversation_id') is None:
+        receipt['conversation_id'] = conversation_id
+    elif receipt['conversation_id'] != conversation_id:
+        receipt['conversation_id_divergent'] = True
+
+
+def drain_lifecycle(transport):
+    """Combined lifecycle drain (issue #260): the turn-complete marker plus
+    the conversation id announced by conversation-created frames.
+
+    Same buffer, same scan pass — a separate drain would split frames
+    between the two consumers. The id extraction is bounded to the first
+    64 KiB of each payload and never raises on malformed frames. The third
+    element reports a second distinct conversation id observed in the pass
+    (divergence is recorded in the receipt, never a refusal).
+    """
+    completed = False
+    conversation_id = None
+    divergent = False
+    for frame in transport.drain_notifications():
+        if not isinstance(frame, dict):
+            continue
+        response = (frame.get('params') or {}).get('response') or {}
+        payload = response.get('payloadData') if isinstance(response, dict) else None
+        if not isinstance(payload, str):
+            continue
+        if TURN_COMPLETE_MARKER in payload:
+            completed = True
+        if CONVERSATION_CREATED_MARKER in payload:
+            match = CONVERSATION_ID_PATTERN.search(payload[:65536])
+            if not match:
+                continue
+            found = match.group(1)
+            if conversation_id is None:
+                conversation_id = found
+            elif conversation_id != found:
+                divergent = True
+    return completed, conversation_id, divergent
+
+
 def drain_turn_completion(transport):
     """Scan buffered CDP notifications for the turn lifecycle event.
 
@@ -738,14 +794,7 @@ def drain_turn_completion(transport):
     shared topics socket may predate the Network.enable call: frames keep
     flowing to a session that enables the domain mid-flight (measured).
     """
-    for frame in transport.drain_notifications():
-        if not isinstance(frame, dict):
-            continue
-        response = (frame.get('params') or {}).get('response') or {}
-        payload = response.get('payloadData') if isinstance(response, dict) else None
-        if isinstance(payload, str) and TURN_COMPLETE_MARKER in payload:
-            return True
-    return False
+    return drain_lifecycle(transport)[0]
 
 
 def apply_window_title(transport):
@@ -947,6 +996,7 @@ def _send_receipt():
         'user_message_count_after': None, 'user_confirmed': False,
         'composer_emptied': False, 'response_observed': False,
         'response_complete': False, 'operator_isolation_verified': False,
+        'conversation_id': None,
         'transport': 'cdp-pipe',
     }
 
@@ -1117,10 +1167,12 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
         last = best = None
         last_source = best_source = last_selector = best_selector = None
         while True:
-            if drain_turn_completion(transport):
+            turn, conversation, divergent = drain_lifecycle(transport)
+            if turn:
                 completed = True
                 if completed_at is None:
                     completed_at = time.monotonic()
+            _note_conversation(receipt, conversation, divergent)
             probe = transport.evaluate(
                 '(() => {\n' + SEND_HELPERS + '\nreturn bodyProbe();\n})()')
             assistant_text = (probe.get('assistant_text')
@@ -1190,8 +1242,10 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
                 break
             time.sleep(CAPTURE_REREAD_INTERVAL_SECONDS if completed
                        else COMPLETION_POLL_INTERVAL_SECONDS)
-        if drain_turn_completion(transport):
+        turn, conversation, divergent = drain_lifecycle(transport)
+        if turn:
             completed = True
+        _note_conversation(receipt, conversation, divergent)
         status = _evaluate_send(transport, 'composerStatus', None)
         receipt['composer_emptied'] = isinstance(status, dict) and status.get('status') == 'ready'
         chosen = last if last is not None else best

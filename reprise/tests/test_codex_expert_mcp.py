@@ -1104,3 +1104,136 @@ class BridgeFinalizerTests(unittest.TestCase):
         self.assertIsNone(bridge_ref(), 'Bridge doit être collectable sans close()')
         with self.assertRaisesRegex(sqlite3_module.ProgrammingError, 'closed'):
             connection.execute('SELECT 1')
+
+
+class ChatGptFollowupTests(RequestCalls, unittest.TestCase):
+    """Issue #260 : followup ChatGPT — possession levée ou refus typé.
+
+    thread_id = request_key de l'admission chatgpt d'origine ; la levée
+    exige une ligne chatgpt_submissions de CE scope dont le reçu durable de
+    dispatch est présent. L'au-plus-une-fois reste porté par le request_key
+    transmis au ledger Endpoint (au-moins-une-fois côté bridge inchangé).
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.catalog_path = Path(self.temp.name)/'codex-models.json'
+        catalog_patcher = patch('expert_mcp.CATALOG_PATH', self.catalog_path)
+        catalog_patcher.start()
+        self.addCleanup(catalog_patcher.stop)
+        # Chemin absolu requis par Bridge (resolve strict) ; bridge et tests
+        # partagent le même fichier chatgpt.sqlite.
+        self.chatgpt_state = Path(self.temp.name)/'chatgpt-state'
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state',
+                             daily_limit=2, chatgpt_socket=str(self.chatgpt_state))
+        self.bridge.program = 'codex'
+        self.addCleanup(self.bridge.close)
+
+    def seed_chatgpt_submissions(self, request_key, *, dispatch_receipt='receipt-260'):
+        database = self.chatgpt_state/'chatgpt.sqlite'
+        database.parent.mkdir(parents=True, exist_ok=True)
+        ledger = sqlite3.connect(database)
+        try:
+            with ledger:
+                ledger.execute(
+                    'CREATE TABLE IF NOT EXISTS chatgpt_submissions ('
+                    'scope TEXT NOT NULL, request_key TEXT NOT NULL, prompt TEXT NOT NULL,'
+                    ' delivery TEXT, dispatch_receipt TEXT, before_evidence TEXT,'
+                    ' after_evidence TEXT, needs_review INTEGER NOT NULL DEFAULT 0,'
+                    ' admitted_at REAL NOT NULL, PRIMARY KEY(scope, request_key))')
+                ledger.execute(
+                    'INSERT INTO chatgpt_submissions (scope, request_key, prompt,'
+                    ' delivery, dispatch_receipt, admitted_at) VALUES (?,?,?,?,?,?)',
+                    (str(self.bridge.root), request_key, 'question initiale',
+                     'admitted', dispatch_receipt, time.time()))
+        finally:
+            ledger.close()
+
+    def test_unknown_chatgpt_thread_is_typed_thread_not_owned(self):
+        with self.assertRaises(ValueError) as caught:
+            self.call('reprise_followup', {'thread_id': ID, 'backend': 'chatgpt',
+                                           'question': 'continue'})
+        payload = error_payload(caught.exception)
+        self.assertEqual(payload['data']['kind'], 'thread_not_owned')
+        self.assertEqual(payload['data']['backend'], 'chatgpt')
+        self.assertEqual(payload['data']['thread_id'], ID)
+        self.assertEqual(payload['data']['resume_with'], 'parent_request_key')
+
+    def test_admission_without_dispatch_receipt_is_not_owned(self):
+        owned = str(uuid.uuid4())
+        self.seed_chatgpt_submissions(owned, dispatch_receipt=None)
+        with self.assertRaises(ValueError) as caught:
+            self.call('reprise_followup', {'thread_id': owned, 'backend': 'chatgpt',
+                                           'question': 'continue'})
+        self.assertEqual(error_payload(caught.exception)['data']['kind'],
+                         'thread_not_owned')
+
+    def test_admission_from_another_scope_is_not_owned(self):
+        # La possession est locale au projet : une admission d'un autre root
+        # (scope différent) ne lève pas le refus.
+        owned = str(uuid.uuid4())
+        self.seed_chatgpt_submissions(owned)
+        self.bridge.root = Path(self.temp.name)/'autre-projet'
+        try:
+            with self.assertRaises(ValueError) as caught:
+                self.call('reprise_followup', {'thread_id': owned, 'backend': 'chatgpt',
+                                               'question': 'continue'})
+            self.assertEqual(error_payload(caught.exception)['data']['kind'],
+                             'thread_not_owned')
+        finally:
+            self.bridge.root = Path(self.temp.name)
+
+    def test_non_string_thread_id_is_refused_before_ownership_lift(self):
+        # La validation de schéma (thread_id: string) refuse les identifiants
+        # non string avant la levée de possession : refus générique, jamais
+        # une possession implicite.
+        for ident in (None, 123, ['a']):
+            with self.assertRaises(ValueError):
+                self.call('reprise_followup', {'thread_id': ident, 'backend': 'chatgpt',
+                                               'question': 'continue'})
+
+    def test_owned_chatgpt_followup_dispatches_with_followup_identity(self):
+        owned = str(uuid.uuid4())
+        self.seed_chatgpt_submissions(owned)
+        result = {'status': 'captured', 'thread_id': owned, 'response': 'Suite experte'}
+        with patch('expert_mcp.chatgpt_quick.review', return_value=result) as review:
+            payload = self.call('reprise_followup', {'request_key': 'follow-260',
+                                                     'thread_id': owned,
+                                                     'backend': 'chatgpt',
+                                                     'question': 'continue'})
+        review.assert_called_once()
+        # L'au-plus-une-fois du ledger Endpoint est indexé sur l'identité du
+        # followup lui-même (request_key actif), pas sur le thread d'origine.
+        self.assertEqual(review.call_args.kwargs['request_key'], 'follow-260')
+        self.assertEqual(payload['backend'], 'chatgpt')
+        self.assertFalse(payload['automatic_fallback'])
+        self.assertEqual(payload['thread_id'], owned)
+
+    def test_chatgpt_thread_id_never_leaks_into_codex_control(self):
+        # Le rename codex_followup ne s'applique pas à chatgpt : un thread_id
+        # d'admission chatgpt absent d'expert_threads ne bloque pas la levée
+        # (couvert ci-dessus), et un followup codex reste bloqué sans route.
+        with self.assertRaises(ValueError) as caught:
+            self.call('reprise_followup', {'thread_id': ID, 'backend': 'codex',
+                                           'question': 'continue'})
+        self.assertEqual(error_payload(caught.exception)['data']['kind'],
+                         'thread_not_owned')
+
+    def test_chatgpt_implementation_mode_still_refused(self):
+        owned = str(uuid.uuid4())
+        self.seed_chatgpt_submissions(owned)
+        with patch('expert_mcp.chatgpt_quick.review') as review:
+            with self.assertRaises(ValueError) as caught:
+                self.call('reprise_followup', {'thread_id': owned, 'backend': 'chatgpt',
+                                               'question': 'Implement', 'mode': 'implementation'})
+            review.assert_not_called()
+        payload = error_payload(caught.exception)
+        self.assertNotEqual(payload['data']['kind'], 'thread_not_owned')
+
+    def test_metaai_followup_refusal_unchanged(self):
+        with self.assertRaises(ValueError) as caught:
+            self.call('reprise_followup', {'thread_id': ID, 'backend': 'metaai',
+                                           'question': 'continue'})
+        self.assertNotEqual(error_payload(caught.exception)['data']['kind'],
+                            'thread_not_owned')
