@@ -32,3 +32,27 @@ class RestartChain(unittest.TestCase):
             self.assertIn('quick-apply-daemon-stop',calls)
             self.assertIn('quick-apply-daemon-start',calls)
             self.assertEqual(endpoint.read_text(),'existing endpoint must stay')
+
+    def test_cli_action_passes_explicit_development_mode(self):
+        # Revue MAJEUR 9 : le script refuse tout appel sans mode explicite
+        # (exit 2). L'action CLI « restart-chain » (bouton GUI « Redémarrage
+        # groupé ») doit donc passer --development, jamais appeler le script
+        # sans argument.
+        import ast
+        source = (Path(__file__).parents[1]/'reprise').read_text()
+        tree = ast.parse(source)
+        found = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            test = ast.unparse(node.test)
+            if "args.action == 'restart-chain'" not in test:
+                continue
+            branch = ast.Module(body=node.body, type_ignores=[])
+            for sub in ast.walk(branch):
+                if isinstance(sub, ast.Call) and getattr(sub.func, 'attr', '') == 'run' and sub.args:
+                    command = sub.args[0]
+                    if isinstance(command, ast.List):
+                        found.append([elt.value for elt in command.elts if isinstance(elt, ast.Constant)])
+        self.assertTrue(found, 'appel subprocess.run introuvable dans la branche restart-chain')
+        self.assertIn('--development', found[-1])

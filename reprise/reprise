@@ -447,7 +447,12 @@ def main():
             print(json.dumps({'status': 'unsupported', 'error': 'Redémarrage groupé indisponible dans le prototype distribué ; aucun service modifié.'}, ensure_ascii=False))
             return
         script = ROOT / 'restart-chain'
-        result = subprocess.run(['/bin/sh', str(script)], capture_output=True, text=True, timeout=120)
+        # Revue MAJEUR 9 : le script exige un mode explicite (--runtime-archive,
+        # --no-build, --server, --development) et refuse sans argument (exit 2),
+        # ce qui rendait l'action et le bouton GUI « Redémarrage groupé » inertes.
+        # En checkout non bundled, le mode correspondant à l'action est la chaîne
+        # de développement : rebuild + daemon Quick Entry + GUI, jamais codexd.
+        result = subprocess.run(['/bin/sh', str(script), '--development'], capture_output=True, text=True, timeout=120)
         print(json.dumps({'status': 'finished' if result.returncode == 0 else 'failed',
                           'output': result.stdout[-2000:], 'error': result.stderr[-500:]}, ensure_ascii=False))
     elif args.action == 'reprise-health':
