@@ -452,7 +452,13 @@ def main():
         # ce qui rendait l'action et le bouton GUI « Redémarrage groupé » inertes.
         # En checkout non bundled, le mode correspondant à l'action est la chaîne
         # de développement : rebuild + daemon Quick Entry + GUI, jamais codexd.
-        result = subprocess.run(['/bin/sh', str(script), '--development'], capture_output=True, text=True, timeout=120)
+        try:
+            result = subprocess.run(['/bin/sh', str(script), '--development'], capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            # Revue (MINEUR S9-C1) : sortie JSON et statut failed plutôt qu'un
+            # traceback brut côté CLI comme côté GUI.
+            print(json.dumps({'status': 'failed', 'output': '', 'error': 'Redémarrage interrompu après 120 s ; vérifier les processus avant un nouvel essai.'}, ensure_ascii=False))
+            return
         print(json.dumps({'status': 'finished' if result.returncode == 0 else 'failed',
                           'output': result.stdout[-2000:], 'error': result.stderr[-500:]}, ensure_ascii=False))
     elif args.action == 'reprise-health':
@@ -596,6 +602,10 @@ def main():
             with db:
                 scheduler.put(db, 'claude_desktop_last_observation', dict(claude_result, checked_at=dt.datetime.now().timestamp()))
         except Exception as error:
+            # Revue (MINEUR S9-C3) : initialisé pour que le bloc continuation
+            # plus bas ne lève jamais NameError (diagnostic trompeur) si
+            # l'observation quota a échoué — snapshot simplement absent.
+            claude_result = None
             with db:
                 scheduler.put(db, 'claude_desktop_last_observation', {'status': 'unavailable', 'checked_at': dt.datetime.now().timestamp(), 'error': type(error).__name__})
         # État de quota lisible par le harness (#132) : écrit à chaque tick, jamais bloquant.
