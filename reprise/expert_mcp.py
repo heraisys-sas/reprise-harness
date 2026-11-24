@@ -354,6 +354,35 @@ def wait_arguments(args):
     return args['request_key'], float(seconds)
 
 
+def _ledger_backend(db_path, scope, key):
+    """Backend enregistré d'un reçu, lu depuis une connexion read-only dédiée
+    (revue MAJEUR 6) : le worker de wait_result tourne hors du thread
+    principal et la connexion partagée du Bridge (check_same_thread=True)
+    refuserait sqlite3.ProgrammingError. Même motif que TaskStore.open_reader :
+    connexion mode=ro courte, fermée avant retour. Retourne None si absent ou
+    illisible (routage par défaut claude-desktop conservé)."""
+    validate_key(key)
+    try:
+        db = sqlite3.connect(Path(db_path).as_uri() + '?mode=ro', timeout=0,
+                             isolation_level=None, uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        row = db.execute('SELECT result FROM delegation_requests WHERE scope=? AND request_key=?',
+                         (scope, key)).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        db.close()
+    if not row or not row[0]:
+        return None
+    try:
+        backend = (json.loads(row[0]) or {}).get('backend')
+    except ValueError:
+        return None
+    return backend if isinstance(backend, str) else None
+
+
 def wait_status(key, status, backend='claude-desktop', **fields):
     return {'status': status, 'request_key': key, 'backend': backend,
             'completed': status == 'finished', 'idle': status != 'finished',
@@ -436,6 +465,7 @@ class Bridge:
         state = Path(state)
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.owner = 'local:' + str(os.getpid())
+        self.db_path = state / 'expert.sqlite'
         self.lock_path = state/'expert.lock'
         self.db = sqlite3.connect(state/'expert.sqlite', timeout=2)
         self.db.execute('CREATE TABLE IF NOT EXISTS expert_threads(scope TEXT,id TEXT,PRIMARY KEY(scope,id))')
@@ -946,7 +976,9 @@ class Bridge:
         key = args.get('request_key')
         backend = None
         if key is not None:
-            previous = (self.requests.lookup({'request_key': key}).get('result') or {}).get('backend')
+            # Revue MAJEUR 6 : lecture thread-safe (connexion read-only dédiée)
+            # et non self.requests, lié à la connexion du thread principal.
+            previous = _ledger_backend(self.db_path, self.scope, key)
             backend = 'chatgpt' if previous == 'chatgpt' else 'claude-desktop'
         state = self.chatgpt_state if backend == 'chatgpt' else self.desktop_state
         return wait_for_result(state, self.root, args, cancel, backend=backend or 'claude-desktop')
