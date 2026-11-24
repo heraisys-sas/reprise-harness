@@ -52,6 +52,7 @@ Connexion `metaai.json` — champs UI : `ui_bridge` (true), `ui_socket`, `ui_app
 - **Le trousseau émulé est isolé** : items ACL par chemin, créés par la copie ; les secrets ne sont jamais loggés.
 - **Originale et copie peuvent coexister** (identités distinctes) mais utilisent la même session serveur — éviter de chatter des deux côtés en même temps.
 - Le prompt pont ne contient pas d'accolades : le bug JSON du connecteur (cf. METAI-INTEGRATION.md) s'applique au contenu de l'outbox, pas au composer — mais le template reste stable par prudence.
+- **Session & login initial** : la session chat de la copie vient des tokens de l'originale, lus dans le trousseau via le shim (`SecKeychain*` legacy sur le service `com.meta.prototypes.endo.tokens`) — indépendant de l'identité de bundle : le renommage ne l'affecte pas. Preuve live du 24/11/2026 sous `com.reprise.remetaai` : `SecItemCopyMatching[emu] native_credential_record_v1 → 0` au boot, historique du chat présent sans connexion. Si la session se perd un jour : reconnecter d'abord l'originale (elle écrit les tokens du service émulé), puis relancer la copie — la copie peut aussi se connecter elle-même (ses items restent ACL par chemin, isolés). Le mur initial (entitlements SecItem sur macOS 26) est contourné par le shim, cf. § Keychain ci-dessus.
 - **Lecture des réponses du chat** : le dump ne couvre que l'AppKit (composer, sidebar) — le rendu SwiftUI de la conversation est illisible via la dylib ; les réponses structurées passent par la outbox WebDAV.
 
 ## Tests
