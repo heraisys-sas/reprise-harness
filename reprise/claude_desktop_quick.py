@@ -264,6 +264,10 @@ class Endpoint:
             return result | {'dispatch_ok': False, 'stage': 'incertain',
                              'dispatch_error': str(exc) or 'launch_chrome échoué'}
         path = '/chat/' + chat_id
+        # Revue MAJEUR 3 : à partir d'ici un échec pré-clic certain doit
+        # terminer le Chrome daemon-owned (sinon fuite à chaque crash) ; seul
+        # un clic possible préserve le process pour observation.
+        click_possible = False
         try:
             try:
                 transport.pick_and_attach(chat_id)
@@ -319,6 +323,7 @@ class Endpoint:
                 cdp_mod.terminate_chrome(proc)
                 return result | {'dispatch_ok': False, 'stage': 'composeur',
                                  'dispatch_error': 'Insertion dans le composeur non confirmée'}
+            click_possible = True
             try:
                 outcome = claude_desktop_apply._dispatch(transport, path, fingerprint)
             except (OSError, ValueError, claude_desktop_apply.WSError, TimeoutError):
@@ -337,6 +342,10 @@ class Endpoint:
             return result | {'dispatch_ok': False, 'stage': stage,
                              'dispatch_error': outcome.get('dispatch_error') or stage}
         except Exception as exc:  # a daemon crash must never replace the receipt
+            if not click_possible:
+                # Échec certain pré-clic : le clic n'a pas pu partir, on
+                # termine le Chrome daemon-owned (fuite sinon, revue MAJEUR 3).
+                cdp_mod.terminate_chrome(proc)
             return result | {'dispatch_ok': False, 'stage': 'incertain',
                              'dispatch_error': str(exc) or type(exc).__name__}
 
@@ -499,7 +508,14 @@ class Endpoint:
             cdp_mod.terminate_chrome(proc)
             return {'ok': False, 'status': 'session', 'reason': str(exc)}
 
-        if not claude_desktop_apply.wait_composer(transport):
+        try:
+            composer_ready = claude_desktop_apply.wait_composer(transport)
+        except Exception as exc:
+            cdp_mod.terminate_chrome(proc)
+            return {'ok': False, 'status': 'composeur', 'stage': 'composeur',
+                    'detail': f'Composeur non vérifiable: {exc}',
+                    'exc_type': type(exc).__name__}
+        if not composer_ready:
             cdp_mod.terminate_chrome(proc)
             return {'ok': False, 'status': 'composeur', 'stage': 'composeur',
                     'detail': 'Composeur indisponible'}

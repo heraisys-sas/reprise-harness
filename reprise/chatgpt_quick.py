@@ -304,6 +304,19 @@ def finish_with_holder_dispatch(root, state, admission):
         result['captured_answer_sha256'] = receipt.get('response_sha256')
         if receipt.get('output_complete'):
             result['output_complete'] = True
+    elif receipt.get('status') in ('sent', 'confirmed'):
+        # Revue MAJEUR 2 : un envoi réel sans texte capturé ne doit ni rester
+        # « admission_only » (le prompt est déjà parti côté ChatGPT), ni taire
+        # la perte de la réponse. needs_review explicite, jamais de re-dispatch
+        # automatique (la réception terminale du holder bloque déjà le re-send).
+        result['delivery'] = 'sent_uncaptured'
+        result['admission_only'] = False
+        result['status'] = 'needs_review'
+        result['work_completed'] = False
+        result['next_action'] = 'reconcile'
+        result['reason'] = ('ChatGPT dispatch was sent but no response text was '
+                            'captured; reconcile the answer manually in ChatGPT. '
+                            'Do not automatically retry.')
     return result
 
 

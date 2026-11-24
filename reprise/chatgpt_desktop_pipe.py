@@ -1737,7 +1737,21 @@ def _holder_dispatch(runtime, binary, profile, payload):
         return receipt
     receipt['mode'] = mode['mode']
     receipt['mode_verified'] = True
-    return _dispatch(transport, prompt, profile, request_key, receipt)
+    try:
+        return _dispatch(transport, prompt, profile, request_key, receipt)
+    except (TimeoutError, EOFError, RuntimeError, OSError, ValueError):
+        # Revue MAJEUR 1 : une exception CDP en staging (avant la frontière
+        # irréversible) sortait de _dispatch et tuait la boucle serve() —
+        # l'appelant restait sans réception utilisable. La garder ici rend la
+        # défaillance explicite et laisse le holder vivre.
+        if receipt.get('attempted'):
+            # Frontière déjà franchie : jamais de re-dispatch sur incertain.
+            receipt.update(status='incertain',
+                           reason='dispatch_exception_post_boundary')
+        else:
+            receipt.update(status='refused',
+                           reason='dispatch_exception_pre_boundary')
+        return receipt
 
 
 def _close_secondary_pages(transport):
