@@ -140,6 +140,7 @@ Une évolution de **modèle DSH** ne doit pas être présentée comme une évolu
 
 - [Installation Harness et allowlist](HARNESS-INTEGRATION.md) : `reprise/harness_integration.py`.
 - [Pont MCP, prévalidation, identités et reçus](../../../reprise/expert_mcp.py) : `Bridge.call`, `Bridge._call`, `Bridge._reconcile`.
+- [Manifeste experts déclaratif](../../../reprise/experts-manifest.json) (#258 lot 2, #259) : capacité/`session`/`enabled` par backend, refus deterministes et diagnostic `reprise_experts_list` — « le manifeste décrit, la disponibilité se mesure » ; voir la section dédiée de [CODEX-INTEGRATION.md](../codex/CODEX-INTEGRATION.md).
 - [Transport RPC Codex](../../../reprise/codex_rpc.py) et [sélection/validation du socket](../../../reprise/engines.py).
 - [Tours natifs Codex, compte, quota et sandbox](../../../reprise/codex_expert.py).
 - [Persistance des délégations](../../contracts/DELEGATION-PERSISTENCE.md) : `reprise/delegation_store.py` et `reprise/delegation_reconcile.py`.

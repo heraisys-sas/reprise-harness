@@ -139,6 +139,49 @@ harness_integration harness-integration-apply
 
 `--codex-workspace-write` exige `--delegate`. Le périmètre inscriptible est `implementation_scope` = le `project_root` du pont ; les approbations natives Codex restent requises. L'autorisation est lue au démarrage du pont : **redémarrer le pont** après `harness-integration-apply`, puis vérifier `reprise_backends` (`workspace_write_authorized: true`, `implementation_scope` renseigné).
 
+## Manifeste experts déclaratif (#258 lot 2, #259)
+
+La configuration des backends experts vit dans `reprise/experts-manifest.json`
+(`schema_version: 1`), lu au démarrage du pont par `load_experts_manifest()`.
+Principe : **le manifeste décrit, la disponibilité se mesure** — `enabled` ne
+rend jamais un backend disponible, et un backend non déclaré n'est jamais
+routé par défaillance vers un autre.
+
+Champs par backend (`reprise.expert_mcp`) :
+
+- `session` — **obligatoire, sans défaut** : `stdio_thread` (codex,
+  claude-code), `durable_taskstore` (claude-desktop, metaai) ou `push_only`
+  (chatgpt, foundation-models, ironclaw) ;
+- `capacity` — entier ≥ 1, défaut 1 (#259). Codex est déclaré à 2 ; tout
+  backend non listé dans le manifeste garde une capacité 1 (singleton).
+  Limite singleton : un seul tour actif par state directory, pas de
+  parallélisme pour les singletons physiques ;
+- `enabled` — booléen, défaut `true` ;
+- `resumable` — booléen, défaut `false`.
+
+Clés inconnues, types invalides ou `session` absente : `ValueError` à la
+construction du pont (échec rapide). Fichier absent : repli legacy `{}` —
+capacité codex = `CODEX_PARALLEL_SLOTS` (2, valeur historique documentée),
+1 pour les autres ; aucune erreur. `reload_experts_manifest()` relit le
+fichier à chaud ; un manifeste invalide au rechargement lève `ValueError`
+sans écraser l'état courant.
+
+Refus deterministes (statut `engine_unavailable`, `automatic_fallback: false`,
+jamais de tombée vers un autre backend) :
+
+- backend `enabled: false` → « désactivé dans le manifeste » ;
+- backend déclaré sans handler de dispatch (ex. `metaai`, déclaré
+  `enabled: false` : l'infrastructure TaskStore/WebDAV existe, aucun handler
+  d'expert n'est branché) → « déclaré sans handler » ;
+- backend connu de l'enum mais absent du manifeste → « inconnu du manifeste ».
+
+Le nouveau diagnostic `reprise_experts_list` (sans argument) croise
+déclaration et mesure : par backend, `enabled`/`capacity`/`resumable`/
+`session` (manifeste), `handler` (existence d'un dispatch), et
+`measured_available`/`availability` mesurés au moment de l'appel (programme
+codex joignable, ironclaw configuré, `desktop_values` présents, TaskStore
+chatgpt ouvert, etc.).
+
 ## Pont ChatGPT desktop (issue #156)
 
 **Historique :** la première approche de #156 était un serveur MCP local

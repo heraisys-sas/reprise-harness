@@ -138,7 +138,55 @@ CATALOG_PATH = Path.home() / 'Library/Application Support/Reprise/codex-models.j
 CODEX_EFFORT_PREFERENCES = {'deep': 'high', 'batch': 'medium', 'default': 'medium'}
 INFERENCE_TOOLS = ('reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup')
 # Lot C (#238) : capacité du slot Codex ; les singletons physiques restent mono-slot.
+# #258 lot 2 : valeur de repli legacy — la source de vérité est experts-manifest.json.
 CODEX_PARALLEL_SLOTS = 2
+
+# Manifeste expert déclaratif (#258 lot 2) : le manifeste décrit les backends
+# (capacité, resumable, sémantique de session) ; la disponibilité, elle, se
+# mesure (programmes, sockets, TaskStores). Erreur de schéma/type = échec de
+# construction du bridge ; backend déclaré sans handler de dispatch = démarré
+# quand même, marqué unavailable (jamais routé vers un autre backend).
+EXPERTS_MANIFEST_VERSION = 1
+EXPERTS_MANIFEST_PATH = Path(__file__).resolve().parent / 'experts-manifest.json'
+EXPERTS_SESSION_MODES = ('stdio_thread', 'durable_taskstore', 'push_only')
+EXPERTS_HANDLED_BACKENDS = ('codex', 'ironclaw', 'claude-code', 'claude-desktop',
+                            'foundation-models', 'chatgpt')
+
+
+def load_experts_manifest(path=None):
+    """Charge experts-manifest.json avec validation stricte.
+
+    Fichier absent : {} (repli legacy documenté — CODEX_PARALLEL_SLOTS pour
+    codex, 1 sinon). Fichier présent mais invalide : ValueError, le bridge
+    refuse de démarrer (fail-fast sur schéma/types uniquement)."""
+    manifest_path = Path(path) if path is not None else EXPERTS_MANIFEST_PATH
+    if not manifest_path.exists():
+        return {}
+    with open(manifest_path, encoding='utf-8') as handle:
+        document = json.load(handle)
+    if not isinstance(document, dict) or document.get('schema_version') != EXPERTS_MANIFEST_VERSION:
+        raise ValueError(f'experts manifest requires schema_version {EXPERTS_MANIFEST_VERSION}')
+    backends = document.get('backends')
+    if not isinstance(backends, dict) or not backends:
+        raise ValueError('experts manifest requires a nonempty backends object')
+    validated = {}
+    for backend, entry in backends.items():
+        if not isinstance(backend, str) or not backend or not isinstance(entry, dict):
+            raise ValueError(f'invalid manifest entry for backend {backend!r}')
+        unknown = entry.keys() - {'enabled', 'capacity', 'resumable', 'session'}
+        if unknown:
+            raise ValueError(f'unknown manifest fields for {backend}: {sorted(unknown)}')
+        capacity = entry.get('capacity', 1)
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
+            raise ValueError(f'capacity must be a positive integer for {backend}')
+        session = entry.get('session')
+        if session not in EXPERTS_SESSION_MODES:
+            raise ValueError(f'session must be one of {EXPERTS_SESSION_MODES} for {backend}')
+        validated[backend] = {'enabled': bool(entry.get('enabled', True)),
+                              'capacity': capacity,
+                              'resumable': bool(entry.get('resumable', False)),
+                              'session': session}
+    return validated
 
 MODE_SCHEMA = {'type': 'string', 'enum': ['expertise', 'implementation'],
                'description': 'Implementation requires operator-enabled project workspace writes; followup preserves its original mode.'}
@@ -184,12 +232,14 @@ TOOLS = [
          'kind': {'type': 'string', 'enum': ['expertise', 'review', 'batch']},
          'level': {'type': 'string', 'enum': ['standard', 'deep']},
          'model': MODEL_SCHEMA,
-         'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models', 'chatgpt']},
+         'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models', 'chatgpt', 'metaai']},
          'paths': {'type': 'array', 'maxItems': 30, 'items': {'type': 'string'}},
          'chatId': {'type': 'string'},
          'filePaths': {'type': 'array', 'maxItems': 10, 'items': {'type': 'string'}}},
          'required': ['question', 'kind', 'request_key']}},
     {'name': 'reprise_backends', 'description': 'List configured delegation capabilities without inference. Availability is not a price or quota guarantee.',
+     'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
+    {'name': 'reprise_experts_list', 'description': 'List expert backends from the declarative manifest (declaration) side by side with measured availability (handlers, programs, TaskStores). Declaration is not availability; read-only, no inference.',
      'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
     {'name': 'reprise_notifications', 'description': 'Read, wait for or acknowledge durable delegation notifications (lot C, issue #237). read/wait never consume and never mark; ack is idempotent per (event_id, consumer_id); after a wait, events are re-read (at-least-once). No redispatch logic here: redispatching is decided by the caller, never by this tool.',
      'inputSchema': {'type': 'object', 'properties': {
@@ -207,7 +257,7 @@ TOOLS = [
     {'name': 'reprise_followup', 'description': 'Continue an owned project session and inherit its execution mode. Omitted model preserves the thread route; explicit model overrides it, preserving effort. No fallback.',
      'inputSchema': SCHEMA | {'properties': SCHEMA['properties'] | POLICY_PROPERTIES | {
          'model': MODEL_SCHEMA, 'mode': MODE_SCHEMA,
-         'thread_id': {'type': 'string'}, 'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models', 'chatgpt']}},
+         'thread_id': {'type': 'string'}, 'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models', 'chatgpt', 'metaai']}},
          'required': ['question', 'thread_id', 'backend', 'request_key']}},
     {'name': 'reprise_resume', 'description': 'List interrupted tasks reconstructed from local logs that can be retried (quota, guard or missing dispatch). Read-only; no automatic retry.',
      'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
@@ -410,6 +460,9 @@ class Bridge:
         self._codex_catalog_cache = None
         self._codex_catalog_time = None
         self._release_terminal_slots()
+        # Manifeste expert déclaratif (#258 lot 2) : échec de schéma = bridge
+        # refusé au démarrage ; fichier absent = repli legacy ({}).
+        self.experts = load_experts_manifest()
         # Canal de retour MCP (get_task/submit_result) : TaskStore durable, ou
         # None si l'état Quick Apply n'est pas initialisable — le pont doit
         # alors refuser l'orchestration plutôt que promettre un aller-retour.
@@ -438,6 +491,12 @@ class Bridge:
         # du processus). _safe_close est idempotent (close après close
         # lève sqlite3.Error, avalé).
         weakref.finalize(self, _close_bridge_databases, self.desktop_tasks, self.db, self.chatgpt_tasks)
+
+    def reload_experts_manifest(self):
+        """Recharge experts-manifest.json (validation stricte identique au
+        démarrage ; lève ValueError sur schéma/type invalide)."""
+        self.experts = load_experts_manifest()
+        return self.experts
 
     def close(self):
         self.desktop_tasks, tasks = None, self.desktop_tasks
@@ -676,7 +735,11 @@ class Bridge:
                 self.db.commit()
                 key = args.get('request_key')
                 return (backend, row[0], key if row[1] == key else None)
-        capacity = CODEX_PARALLEL_SLOTS if backend == 'codex' else 1
+        # #258 lot 2 : la capacité vient du manifeste ; repli legacy documenté
+        # (CODEX_PARALLEL_SLOTS pour codex, 1 sinon) quand le manifeste est absent
+        # ou ne déclare pas ce backend.
+        entry = self.experts.get(backend)
+        capacity = entry['capacity'] if entry else (CODEX_PARALLEL_SLOTS if backend == 'codex' else 1)
         for index in range(capacity):
             slot = str(index)
             try:
@@ -738,7 +801,7 @@ class Bridge:
             return self._lookup_requests(args)
         if name == 'reprise_reconcile':
             return self._reconcile(args)
-        if name in ('reprise_backends', 'reprise_health', 'reprise_history', 'reprise_resume'):
+        if name in ('reprise_backends', 'reprise_experts_list', 'reprise_health', 'reprise_history', 'reprise_resume'):
             return self._call(name, args)
         if name == 'reprise_notifications':
             return self._notifications(args)
@@ -969,7 +1032,7 @@ class Bridge:
                     reason='Result exceeds the full-mode delivery limit; read it with reprise_requests view=page or delegation_collect.py.')
 
     def _call(self, name, args, *, preflight=False, on_turn=None):
-        if name not in ('reprise_backends', 'reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup', 'reprise_resume', 'reprise_history', 'reprise_health') or not isinstance(args, dict):
+        if name not in ('reprise_backends', 'reprise_experts_list', 'reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup', 'reprise_resume', 'reprise_history', 'reprise_health') or not isinstance(args, dict):
             raise ValueError('Unknown tool or invalid arguments')
         if name == 'reprise_health':
             if args:
@@ -1040,8 +1103,33 @@ class Bridge:
                   'kinds': ['expertise', 'review'], 'levels': ['standard', 'deep'],
                   'writes': False, 'transport_verified': False, 'availability': 'unverified',
                   'dispatch': 'holder_capture_sync', 'task_return_supported': False,
-                  'context': 'Admission SQLite durable ; dispatch holder CDP profil dédié, retour = capture de réponse (WS fin de tour + lecture rendue ancrée)'}],
+                  'context': 'Admission SQLite durable ; dispatch holder CDP profil dédié, retour = capture de réponse (WS fin de tour + lecture rendue ancrée)'},
+                {'id': 'metaai', 'configured': False, 'models': [],
+                 'billing': 'Meta AI session; quota not reported',
+                 'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': False,
+                 'task_return_supported': False, 'availability': 'unavailable',
+                 'reason': 'Session metaai non prouvée pour la délégation expert (#258 lot 2) : pont fichier WebDAV validé pour les tâches (23/11/2026), pas de session de délégation.',
+                 'context': 'Declared in experts-manifest.json with enabled: false; dispatch refused until a measured session exists.'}],
                 'automatic_fallback': False}
+        if name == 'reprise_experts_list':
+            if args:
+                raise ValueError('No arguments expected')
+            measured = {'codex': bool(self.program),
+                        'ironclaw': self._ironclaw_configured(),
+                        'claude-code': bool(self.claude_program and self.claude_subscription_only),
+                        'claude-desktop': bool(self.desktop_values),
+                        'foundation-models': apple_expert.configured(),
+                        'chatgpt': self.chatgpt_tasks is not None,
+                        'metaai': False}
+            listed = [{'id': backend, 'enabled': entry['enabled'], 'capacity': entry['capacity'],
+                       'resumable': entry['resumable'], 'session': entry['session'],
+                       'handler': backend in EXPERTS_HANDLED_BACKENDS,
+                       'measured_available': measured.get(backend, False),
+                       'availability': 'available' if measured.get(backend, False) else 'unavailable'}
+                      for backend, entry in self.experts.items()]
+            return {'status': 'finished', 'automatic_fallback': False,
+                    'manifest_path': str(EXPERTS_MANIFEST_PATH),
+                    'manifest_loaded': bool(self.experts), 'backends': listed}
         allowed = {'question', 'thread_id'} if name in ('codex_followup', 'reprise_followup') else {'question', 'paths'}
         if name == 'reprise_followup':
             allowed |= {'backend', 'model', 'mode'}
@@ -1054,13 +1142,15 @@ class Bridge:
         mode = self.execution_mode(name, args)
         routing = {}
         backend = args.get('backend', 'codex')
-        if backend not in ('codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models', 'chatgpt'):
+        if backend not in ('codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models', 'chatgpt', 'metaai'):
             raise ValueError('Unknown expertise backend')
         if 'model' in args:
             if backend == 'codex':
                 # Admission dynamique (#242, #253) : source de vérité = catalogue
                 # live ou last-known persisté ; jamais de liste figée.
                 self._codex_admit_model(self._codex_catalog(), args['model'])
+            elif backend not in BACKEND_MODELS:
+                raise ValueError(f'Backend {backend} does not accept a model argument')
             elif not isinstance(args['model'], str) or args['model'] not in BACKEND_MODELS[backend]:
                 raise ValueError(f'Unknown or unsupported model for backend {backend}')
         if name == 'reprise_delegate' and backend != 'claude-desktop' and args.keys() & {'chatId', 'filePaths'}:
@@ -1095,6 +1185,8 @@ class Bridge:
             raise ValueError('Pas de session Quick Apply suiveuse ; la soumission est unidirectionnelle.')
         if name == 'reprise_followup' and backend == 'chatgpt':
             raise ValueError('Pas de session ChatGPT suiveuse ; admission unidirectionnelle, retour = capture de réponse par le holder (receipt).')
+        if name == 'reprise_followup' and backend == 'metaai':
+            raise ValueError('Pas de session metaai suiveuse (#258 lot 2) ; le pont TaskStore WebDAV couvre les tâches, pas une session de délégation expert.')
         if name == 'reprise_followup' and backend == 'claude-code':
             if not isinstance(ident, str):
                 raise ValueError('Owned Claude session required')
@@ -1172,6 +1264,39 @@ class Bridge:
         if backend == 'chatgpt' and self.chatgpt_tasks is None and not self._retry_task_store('chatgpt'):
             return {'status': 'return_channel_unavailable', 'backend': backend,
                     'reason': 'Canal de retour MCP indisponible (TaskStore non initialisé) ; aucun aller-retour garanti.',
+                    'automatic_fallback': False}
+        if preflight:
+            # #258 lot 2 : porte manifeste déterministe évaluée au preflight —
+            # un backend désactivé dans experts-manifest.json, déclaré sans
+            # handler (ex. metaai) ou absent du manifeste est refusé ici, jamais
+            # routé vers un autre backend (le fallthrough codex historicisait
+            # ce risque). Le refus reste re-évalué au tour réel ci-dessous.
+            entry = self.experts.get(backend)
+            if entry is not None and not entry['enabled']:
+                return {'status': 'engine_unavailable', 'backend': backend,
+                        'reason': f'Backend {backend} désactivé dans experts-manifest.json (#258 lot 2).',
+                        'automatic_fallback': False}
+            if backend not in EXPERTS_HANDLED_BACKENDS:
+                return {'status': 'engine_unavailable', 'backend': backend,
+                        'reason': (f'Backend {backend} déclaré dans experts-manifest.json mais sans handler de dispatch (#258 lot 2).'
+                                   if entry is not None else
+                                   f'Backend {backend} inconnu du manifeste experts ; aucun handler de dispatch.'),
+                        'automatic_fallback': False}
+            return
+        # #258 lot 2 : porte manifeste déterministe — un backend désactivé dans
+        # experts-manifest.json, déclaré sans handler de dispatch (ex. metaai)
+        # ou absent du manifeste est refusé ici, jamais routé vers un autre
+        # backend (le fallthrough codex historicisait ce risque).
+        entry = self.experts.get(backend)
+        if entry is not None and not entry['enabled']:
+            return {'status': 'engine_unavailable', 'backend': backend,
+                    'reason': f'Backend {backend} désactivé dans experts-manifest.json (#258 lot 2).',
+                    'automatic_fallback': False}
+        if backend not in EXPERTS_HANDLED_BACKENDS:
+            return {'status': 'engine_unavailable', 'backend': backend,
+                    'reason': (f'Backend {backend} déclaré dans experts-manifest.json mais sans handler de dispatch (#258 lot 2).'
+                               if entry is not None else
+                               f'Backend {backend} inconnu du manifeste experts ; aucun handler de dispatch.'),
                     'automatic_fallback': False}
         if backend not in ('claude-desktop', 'foundation-models', 'chatgpt') and not (self.ironclaw_program if backend == 'ironclaw'
                                                 else (self.program if backend == 'codex' else self.claude_program)):
