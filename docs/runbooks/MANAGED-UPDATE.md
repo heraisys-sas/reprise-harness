@@ -61,6 +61,28 @@ porte sur les nouveaux octets depuis le plan (64 Kio maximum) ; rotation,
 volume supérieur ou signature d’erreur conserve les sauvegardes pour examen.
 Aucun contenu de journal n’est imprimé dans le résultat public.
 
+### Redémarrage du daemon Claude après apply
+
+`apply --components scheduler,claude` redémarre le scheduler launchd mais pas le
+daemon `claude-desktopd`, détenteur du socket `~/.claude-desktop/quick-entry.sock` :
+il continue de charger l’ancienne release jusqu’à redémarrage manuel. Preuve de
+chargement : `lsof ~/.claude-desktop/quick-entry.sock` donne le PID du daemon ;
+`lsof -p <pid> | grep bin/python3` doit citer la nouvelle `integration-releases/<identité>`.
+Relance : SIGTERM de l’ancien PID, puis démarrage avec le runtime de la nouvelle release :
+
+```sh
+python3 -E -s -B <release>/Contents/Resources/helpers/claude_desktop_quick.py --project-root <projet>
+```
+
+Le socket est recréé au démarrage. Après l’arrêt du daemon, le fichier socket peut
+rester présent sans détenteur et le daemon refuse alors de démarrer
+(« Socket déjà présent ; remplacement interdit sans réconciliation explicite »).
+Un socket dont `connect()` est refusé est orphelin — daemon arrêté ; c’est le
+diagnostic normal, jamais par existence du fichier. Après confirmation qu’aucun
+processus ne tient le socket (`lsof` vide + `connect()` refusé), supprimer le
+fichier socket orphelin est la réparation normale, puis relancer. Ne jamais
+supprimer un socket tenu par un daemon vivant.
+
 ### Contrôle post-déploiement des outils de délégation (#216)
 
 Pour chaque profil Harness déjà géré :
