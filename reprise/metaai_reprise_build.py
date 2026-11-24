@@ -38,6 +38,7 @@ REPRISE = Path(__file__).resolve().parent
 HOME = Path.home()
 SRC_APP = Path('/Applications/Meta AI.app')
 DST_APP = HOME / 'Applications' / 'Meta AI Reprise.app'
+DST_BUNDLE_ID = 'com.meta.endo.vanilla.reprise'
 RUNTIME = HOME / '.reprise'
 SPARKLE_REAL = RUNTIME / 'Sparkle-real'
 SEC_SHIM = RUNTIME / 'sec-shim.dylib'
@@ -159,24 +160,40 @@ def patch_security_path() -> dict:
 
 
 def patch_info_plist() -> dict:
-    """Insérer CFBundleExecutable s'il manque (dépendance du lancement LaunchServices).
+    """Poser les clés d'identité de la copie (dépendances du lancement LaunchServices).
 
-    L'app originale de Meta omet cette clé : LaunchServices résout alors
-    l'exécutable par le nom du bundle, ce qui ne colle plus pour une copie
-    renommée. Sans la clé, le clic / open répond « executable is missing »
-    alors que le binaire existe (le lanceur metaaid, qui exec le binaire en
-    direct, n'est pas affecté).
+    - CFBundleExecutable : l'originale de Meta s'en passe (LaunchServices
+      retombe sur le nom du bundle) ; la copie renommée en a besoin
+      explicitement, sinon « executable is missing » au clic.
+    - CFBundleIdentifier : identité DISTINCTE de l'originale. Partagée, macOS
+      confond les deux apps (TCC, items de connexion, single-instance par
+      bundle id) : un droit accordé « à la copie » est résolu vers
+      l'originale, et tout lancement de l'originale tue la copie.
+    - CFBundleName/CFBundleDisplayName « Meta AI Reprise » pour distinguer la
+      fenêtre et la barre des menus.
     """
     plist_path = DST_APP / 'Contents/Info.plist'
     with plist_path.open('rb') as handle:
         payload = plistlib.load(handle)
-    if payload.get('CFBundleExecutable'):
+    changes = []
+    if payload.get('CFBundleExecutable') != 'Meta AI':
+        payload['CFBundleExecutable'] = 'Meta AI'
+        changes.append('CFBundleExecutable')
+    if payload.get('CFBundleIdentifier') != DST_BUNDLE_ID:
+        payload['CFBundleIdentifier'] = DST_BUNDLE_ID
+        changes.append('CFBundleIdentifier')
+    if payload.get('CFBundleName') != 'Meta AI Reprise':
+        payload['CFBundleName'] = 'Meta AI Reprise'
+        changes.append('CFBundleName')
+    if payload.get('CFBundleDisplayName') != 'Meta AI Reprise':
+        payload['CFBundleDisplayName'] = 'Meta AI Reprise'
+        changes.append('CFBundleDisplayName')
+    if not changes:
         return {'step': 'patch-info-plist', 'changed': False}
-    payload['CFBundleExecutable'] = 'Meta AI'
     with plist_path.open('wb') as handle:
         plistlib.dump(payload, handle)
     return {'step': 'patch-info-plist', 'changed': True,
-            'note': 'CFBundleExecutable=Meta AI ajouté ; la re-signature suivante refait le sceau'}
+            'detail': 'clés posées : ' + ', '.join(changes)}
 
 
 def sign(identity: str) -> dict:
@@ -268,9 +285,12 @@ def patched_state(app: Path) -> dict:
             checks[key] = False
     try:
         with (app / 'Contents/Info.plist').open('rb') as handle:
-            checks['plist_executable'] = bool(plistlib.load(handle).get('CFBundleExecutable'))
+            plist = plistlib.load(handle)
+        checks['plist_executable'] = bool(plist.get('CFBundleExecutable'))
+        checks['plist_identity'] = plist.get('CFBundleIdentifier') == DST_BUNDLE_ID
     except OSError:
         checks['plist_executable'] = False
+        checks['plist_identity'] = False
     verify = subprocess.run(['codesign', '--verify', '--deep', str(app)],
                             capture_output=True, text=True)
     return dict(checks, present=True, signature_ok=verify.returncode == 0, version=read_version(app))
@@ -312,7 +332,8 @@ def inspect_payload() -> dict:
     state = load_state()
     up_to_date = bool(src_digest and copy.get('present') and state.get('original_tree_digest') == src_digest
                       and copy.get('sparkle_patched') and copy.get('binary_patched')
-                      and copy.get('plist_executable') and copy.get('signature_ok'))
+                      and copy.get('plist_executable') and copy.get('plist_identity')
+                      and copy.get('signature_ok'))
     tools = missing_tools()
     if not src_present:
         ok, label, message = False, 'Originale introuvable', f'{SRC_APP} introuvable — rien à redéployer.'
@@ -404,6 +425,7 @@ def verify_payload(plan) -> dict:
               'sparkle_patched': copy.get('sparkle_patched') is True,
               'binary_patched': copy.get('binary_patched') is True,
               'plist_executable': copy.get('plist_executable') is True,
+              'plist_identity': copy.get('plist_identity') is True,
               'signature_ok': copy.get('signature_ok') is True,
               'state_digest_current': bool(src_digest) and state.get('original_tree_digest') == src_digest,
               'plan_id_matches': bool(plan.get('id')) and state.get('last_plan_id') == plan.get('id')}
