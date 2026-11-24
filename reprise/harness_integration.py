@@ -434,7 +434,9 @@ def release_check(release):
     if evidence['format'] == 2:
         if evidence.get('immutability') != 'posix-readonly-v1':
             raise ValueError('Politique d’immuabilité de release inconnue.')
-        if 'directories' in evidence and _release_directory_paths(release) != evidence['directories']:
+        if 'directories' not in evidence:
+            raise ValueError('Inventaire des répertoires de release manquant ; manifeste format 2 incomplet.')
+        if _release_directory_paths(release) != evidence['directories']:
             raise ValueError('Arborescence de release altérée ; aucune exécution.')
         _check_release_readonly(release)
 
@@ -474,6 +476,8 @@ def diagnose_release(release, max_examples=30):
     runtime_cache = sorted(name for name in added
                            if name.startswith('Contents/Resources/runtime/')
                            and ('__pycache__' in Path(name).parts or name.endswith(('.pyc', '.pyo'))))
+    if evidence['format'] == 2 and 'directories' not in evidence:
+        raise ValueError('Inventaire des répertoires de release manquant ; manifeste format 2 incomplet.')
     expected_directories = evidence.get('directories') if evidence['format'] == 2 else None
     if expected_directories is not None and not isinstance(expected_directories, list):
         raise ValueError('Inventaire des répertoires de release non supporté.')

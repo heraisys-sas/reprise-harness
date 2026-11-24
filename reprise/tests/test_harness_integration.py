@@ -126,6 +126,36 @@ class HarnessIntegrationTests(unittest.TestCase):
             python.chmod(previous)
         integration.release_check(release)
 
+    def test_format2_manifest_without_directories_is_refused(self):
+        # Issue #196 : un manifeste format 2 sans clé directories échappait à
+        # l'inventaire d'arborescence ; la clé est désormais exigée des deux
+        # côtés (release_check et diagnose_release).
+        helpers, runtime, identity = integration.bundle_info(self.root)
+        release = self.base / 'releases' / identity
+        integration.stage_release(helpers, runtime, release)
+        integration.release_check(release)
+        self.assertTrue(integration.diagnose_release(release)['directory_inventory'])
+        evidence_path = release / 'release.json'
+        release.chmod(0o700)
+        evidence_path.chmod(0o600)
+        evidence = json.loads(evidence_path.read_text())
+        directories = evidence.pop('directories')
+        evidence_path.write_text(json.dumps(evidence))
+        with self.assertRaisesRegex(ValueError, 'manquant'):
+            integration.release_check(release)
+        with self.assertRaisesRegex(ValueError, 'manquant'):
+            integration.diagnose_release(release)
+        evidence['directories'] = directories
+        evidence_path.write_text(json.dumps(evidence))
+        evidence_path.chmod(0o444)
+        release.chmod(0o555)
+        integration.release_check(release)
+        diagnosed = integration.diagnose_release(release)
+        self.assertEqual(diagnosed['status'], 'clean')
+        self.assertTrue(diagnosed['directory_inventory'])
+        self.assertEqual(diagnosed['added_directories']['count'], 0)
+        self.assertEqual(diagnosed['missing_directories']['count'], 0)
+
     def test_legacy_release_format_remains_readable_without_chmod(self):
         helpers, runtime, identity = integration.bundle_info(self.root)
         release = self.base / 'releases' / identity
