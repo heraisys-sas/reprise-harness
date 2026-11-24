@@ -45,9 +45,12 @@
     mode: "0600"
   tags: [update]
 
-- name: PAUSE — lire le plan ({{ reprise_diag_dir }}/managed-update-plan.json), fermer Reprise avant son remplacement
+- name: PAUSE — lire le plan de mise à jour avant d'accepter
   ansible.builtin.pause:
-    prompt: "Appliquer le plan de mise à jour maintenant ? Tapez 'oui' pour continuer, Entrée pour annuler."
+    prompt: >-
+      Lire {{ reprise_diag_dir }}/managed-update-plan.json puis fermer Reprise
+      avant son remplacement et appliquer le plan ? Tapez 'oui' pour continuer,
+      Entrée pour annuler.
   when: not reprise_auto_approve | bool
   register: update_confirm
   tags: [update]
@@ -71,7 +74,9 @@
 
 - name: Extraire le chemin du reçu
   ansible.builtin.set_fact:
-    update_receipt: "{{ (update_apply.stdout | regex_findall('/[^ \\r\\n]*receipt\\.json') | last) if 'receipt.json' in (update_apply.stdout | default('')) else '' }}"
+    update_receipt: >-
+      {{ (update_apply.stdout | regex_findall('/[^ \r\n]*receipt\.json') | last)
+      if 'receipt.json' in (update_apply.stdout | default('')) else '' }}
   when: update_apply is changed and update_apply is not skipped
   tags: [update]
 

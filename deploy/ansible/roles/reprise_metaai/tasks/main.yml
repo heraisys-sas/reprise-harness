@@ -53,7 +53,7 @@
     timeout: "{{ reprise_metaai_wait_s }}"
   tags: [metaai]
 
-- name: Vérifier la présence du montage webdavfs (informationnel)
+- name: Vérifier la présence du montage webdavfs (informationnel)  # noqa: command-instead-of-module
   ansible.builtin.command:
     cmd: /sbin/mount
   register: metaai_mount
@@ -103,9 +103,9 @@
   when: reprise_metaai_redeploy | bool
   tags: [metaai-copy]
 
-- name: PAUSE — lire le plan ({{ reprise_diag_dir }}/metaai-redeploy-plan.json) avant d'accepter
+- name: PAUSE — lire le plan de redéploiement Meta AI avant d'accepter
   ansible.builtin.pause:
-    prompt: "Redéployer la copie Meta AI Reprise maintenant ? Tapez 'oui' pour continuer, Entrée pour annuler."
+    prompt: "Lire {{ reprise_diag_dir }}/metaai-redeploy-plan.json puis redéployer la copie Meta AI Reprise ? Tapez 'oui' pour continuer, Entrée pour annuler."
   when: reprise_metaai_redeploy | bool
   register: metaai_copy_confirm
   tags: [metaai-copy]
