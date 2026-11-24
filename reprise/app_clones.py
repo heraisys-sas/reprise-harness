@@ -333,7 +333,9 @@ def main(argv=None):
     else:
         out = verify()
     print(json.dumps(out, sort_keys=True, ensure_ascii=False, indent=1))
-    return 0
+    # Revue (MINEUR S9-C2) : même contrat que les familles *-integration-* —
+    # exit 1 si refus/échec déclaré ('ok' faux), exit 0 sinon.
+    return 1 if out.get('ok') is False else 0
 
 
 if __name__ == '__main__':

@@ -611,6 +611,18 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.assertEqual(routing['model'], 'gpt-6.1-sol')
         self.assertEqual(routing['effort'], 'medium')
 
+    def test_route_effort_fallback_picks_lowest_by_codex_order(self):
+        # Revue (MINEUR S6) : repli « le plus bas » selon l'ordre codex ;
+        # l'ordre lexicographique aurait choisi 'high' ('high' < 'medium' ASCII).
+        item = {'model': 'gpt-6.1-sol', 'supportedReasoningEfforts': ['high', 'xhigh', 'low']}
+        self.assertEqual(self.bridge._codex_route_effort(item, 'default')['effort'], 'low')
+        item_unknown = {'model': 'gpt-9', 'supportedReasoningEfforts': ['omega', 'alpha']}
+        self.assertEqual(self.bridge._codex_route_effort(item_unknown, 'default')['effort'], 'alpha')
+
+    def test_route_effort_prescribed_wins_over_fallback(self):
+        item = {'model': 'gpt-6.1-sol', 'supportedReasoningEfforts': ['low', 'high']}
+        self.assertEqual(self.bridge._codex_route_effort(item, 'deep')['effort'], 'high')
+
     def test_unavailable_when_no_or_corrupt_file_and_live_fails_issue_253(self):
         # (c) #253 : fichier absent, corrompu ou sans modèle valide + codexd bas
         # → source 'unavailable', models vide (comportement #242 inchangé).

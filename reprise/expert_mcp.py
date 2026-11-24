@@ -136,6 +136,9 @@ CODEX_CATALOG_VERSION = 1
 # MANIFEST_PATH d'app_clones.py ; écriture atomique à la sauvegarde live.
 CATALOG_PATH = Path.home() / 'Library/Application Support/Reprise/codex-models.json'
 CODEX_EFFORT_PREFERENCES = {'deep': 'high', 'batch': 'medium', 'default': 'medium'}
+# Revue (MINEUR S6) : ordre canonique des efforts codex — « le plus bas » se
+# juge sur cet ordre, pas sur l'ordre lexicographique ('high' < 'medium' en ASCII).
+CODEX_EFFORT_ORDER = {'minimal': 0, 'low': 1, 'medium': 2, 'high': 3, 'xhigh': 4}
 INFERENCE_TOOLS = ('reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup')
 # Lot C (#238) : capacité du slot Codex ; les singletons physiques restent mono-slot.
 # #258 lot 2 : valeur de repli legacy — la source de vérité est experts-manifest.json.
@@ -588,7 +591,9 @@ class Bridge:
         """Écriture atomique last-known-good (#253) ; retourne None ou un message d'erreur."""
         try:
             CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            tmp = CATALOG_PATH.with_name(CATALOG_PATH.name + '.tmp')
+            # Revue (MINEUR S6) : suffixe unique par processus — deux ponts
+            # concurrents n'écrasent plus le même temporaire.
+            tmp = CATALOG_PATH.with_name(f'{CATALOG_PATH.name}.{os.getpid()}.tmp')
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, 'w', encoding='utf-8') as handle:
                 json.dump({'models': models,
@@ -661,7 +666,8 @@ class Bridge:
             return {'model': item['model'], 'effort': prescribed}
         if 'medium' in efforts:
             return {'model': item['model'], 'effort': 'medium'}
-        return {'model': item['model'], 'effort': min(efforts)}
+        ranked = sorted(efforts, key=lambda effort: (CODEX_EFFORT_ORDER.get(effort, len(CODEX_EFFORT_ORDER)), effort))
+        return {'model': item['model'], 'effort': ranked[0]}
 
     def _ironclaw_configured(self):
         try:
