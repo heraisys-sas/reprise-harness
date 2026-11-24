@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "backends": {
+    "codex": {
+      "capacity": 2,
+      "resumable": true,
+      "session": "stdio_thread",
+      "enabled": true
+    },
+    "claude-code": {
+      "capacity": 2,
+      "resumable": true,
+      "session": "stdio_thread",
+      "enabled": true
+    },
+    "claude-desktop": {
+      "capacity": 1,
+      "resumable": false,
+      "session": "durable_taskstore",
+      "enabled": true
+    },
+    "chatgpt": {
+      "capacity": 1,
+      "resumable": false,
+      "session": "push_only",
+      "enabled": true
+    },
+    "foundation-models": {
+      "capacity": 1,
+      "resumable": false,
+      "session": "push_only",
+      "enabled": true
+    },
+    "ironclaw": {
+      "capacity": 1,
+      "resumable": false,
+      "session": "push_only",
+      "enabled": true
+    },
+    "metaai": {
+      "capacity": 1,
+      "resumable": false,
+      "session": "durable_taskstore",
+      "enabled": false
+    }
+  }
+}
