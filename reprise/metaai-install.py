@@ -9,9 +9,9 @@ et un plist existant est refusé sans --force. Le plist pointe ce checkout
 Différence assumée avec quick-entry : le pont Meta AI est un daemon
 long-durée (watcher de fichiers), donc le plist porte RunAtLoad + KeepAlive.
 
-Le fichier de connexion (JSON plat, convention ironclaw-config.example.json)
+Le fichier de connexion (JSON plat, convention metaai-config.example.json)
 est écrit une seule fois s'il est absent ; il n'est jamais réécrit : c'est la
-configuration opérateur (port, racine dav, point de montage, TaskStore).
+configuration opérateur (dossier du pont, TaskStore).
 """
 import argparse
 import json
@@ -25,7 +25,8 @@ LABEL = 'app.reprise.metaaid'
 PLIST_NAME = LABEL + '.plist'
 SOURCE = Path(__file__).resolve().parent
 DAEMON = SOURCE / 'metaaid.py'
-MODULES = ('metaaid.py', 'metaai_taskstore.py', 'metaai_mcp_server.py', 'metaai_bridge_watch.py')
+MODULES = ('metaaid.py', 'metaai_taskstore.py', 'metaai_mcp_server.py', 'metaai_bridge_watch.py',
+           'metaai_ui_dispatch.py')
 DEFAULT_SERVICE_DIR = Path.home() / 'Library/Application Support/Reprise/metaaid'
 DEFAULT_CONFIG = Path.home() / 'Library/Application Support/Reprise/connections/metaai.json'
 LOG_DIR = Path.home() / 'Library/Logs/reprise'
@@ -50,23 +51,21 @@ def deploy_modules(service_dir: Path, force: bool) -> dict:
     return {'service_dir': str(service_dir), 'copied': copied}
 
 
-def write_connection(config_path: Path, dav_root=None, mount_point=None, taskstore=None) -> dict:
+def write_connection(config_path: Path, bridge_root=None, taskstore=None) -> dict:
     """Écrire la connexion metaai uniquement si absente (jamais réécrite)."""
     if config_path.exists():
         return {'config': str(config_path), 'changed': False,
                 'note': 'connexion existante conservée'}
     example = connection_example()
-    if dav_root:
-        example['dav_root'] = dav_root
-    if mount_point:
-        example['mount_point'] = mount_point
+    if bridge_root:
+        example['bridge_root'] = bridge_root
     if taskstore:
         example['taskstore'] = taskstore
     config_path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(example, indent=2, ensure_ascii=False)
     temporary = config_path.with_name(config_path.name + '.reprise-tmp')
     # Revue (MINEUR S9-C8) : créé directement en 0600 — jamais lisible
-    # (creds dav) entre création et chmod.
+    # entre création et chmod.
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
         handle.write(payload)

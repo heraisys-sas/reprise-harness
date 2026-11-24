@@ -1,6 +1,6 @@
 # Intégration Meta AI — invocation rapide (copie patchée, pont UI automatisé)
 
-Complément de [METAI-INTEGRATION.md](METAI-INTEGRATION.md) (transport WebDAV) : cette page couvre le **pont UI** — le pilotage de la copie patchée « ReMetaAI.app » par socket in-process, qui supprime le dernier geste manuel (le déclenchement du tour). Validé live le **23 novembre 2026** : `tache-20261123-151306-c1d6` — dispatch → prompt UI injecté et soumis automatiquement (3 s) → résultat `161` (23 × 7) → `answered` en ~25 s, **zéro Accessibilité, zéro CDP**.
+Complément de [METAI-INTEGRATION.md](METAI-INTEGRATION.md) (transport par dossier partagé) : cette page couvre le **pont UI** — le pilotage de la copie patchée « ReMetaAI.app » par socket in-process, qui supprime le dernier geste manuel (le déclenchement du tour). Validé live le **23 novembre 2026** : `tache-20261123-151306-c1d6` — dispatch → prompt UI injecté et soumis automatiquement (3 s) → résultat `161` (23 × 7) → `answered` en ~25 s, **zéro Accessibilité, zéro CDP**.
 
 ## Ce que la copie apporte
 
@@ -9,8 +9,8 @@ Meta AI native (`com.meta.endo.vanilla`) n'offre ni CDP (pas d'Electron) ni Acce
 ## Architecture
 
 ```
-metaaid (LaunchAgent app.reprise.metaaid — mount + serveur WebDAV + watcher + dispatcher UI + lanceur)
-  │ dispatch_task → inbox/<id>.json (WebDAV monté)
+metaaid (LaunchAgent app.reprise.metaaid — watcher + dispatcher UI + lanceur)
+  │ dispatch_task → inbox/<id>.json (dossier du pont, partagé en TCC)
   │ metaai_ui_dispatch.py : prompt → socket insert + send, marker .ui-state/<id>
   ▼
 ReMetaAI.app (copie re-signée, session partagée par trousseau)
@@ -41,7 +41,7 @@ Commandes socket (`metaai_reprise_client.py`) : `ping`, `dump` (arbre des fenêt
 
 ## Pont automatisé (metaaid)
 
-Connexion `metaai.json` — champs UI : `ui_bridge` (true), `ui_socket`, `ui_app`. Au boot, `metaaid` lance la copie si la socket est muette (`ensure_app`) ; à chaque `dispatch_task`, le dispatcher injecte + soumet le prompt (template `PROMPT_TEMPLATE` dans `metaai_ui_dispatch.py`), pose le marker `.ui-state/<id>` (idempotent au redémarrage) et le watcher consomme l'outbox comme pour le transport WebDAV seul.
+Connexion `metaai.json` — champs UI : `ui_bridge` (true), `ui_socket`, `ui_app`. Au boot, `metaaid` lance la copie si la socket est muette (`ensure_app`) ; à chaque `dispatch_task`, le dispatcher injecte + soumet le prompt (template `PROMPT_TEMPLATE` dans `metaai_ui_dispatch.py`), pose le marker `.ui-state/<id>` (idempotent au redémarrage) et le watcher consomme l'outbox comme pour le transport fichiers seul.
 
 ## Limites & exploitation
 
@@ -53,7 +53,7 @@ Connexion `metaai.json` — champs UI : `ui_bridge` (true), `ui_socket`, `ui_app
 - **Originale et copie peuvent coexister** (identités distinctes) mais utilisent la même session serveur — éviter de chatter des deux côtés en même temps.
 - Le prompt pont ne contient pas d'accolades : le bug JSON du connecteur (cf. METAI-INTEGRATION.md) s'applique au contenu de l'outbox, pas au composer — mais le template reste stable par prudence.
 - **Session & login initial** : la session chat de la copie vient des tokens de l'originale, lus dans le trousseau via le shim (`SecKeychain*` legacy sur le service `com.meta.prototypes.endo.tokens`) — indépendant de l'identité de bundle : le renommage ne l'affecte pas. Preuve live du 24/11/2026 sous `com.reprise.remetaai` : `SecItemCopyMatching[emu] native_credential_record_v1 → 0` au boot, historique du chat présent sans connexion. Si la session se perd un jour : reconnecter d'abord l'originale (elle écrit les tokens du service émulé), puis relancer la copie — la copie peut aussi se connecter elle-même (ses items restent ACL par chemin, isolés). Le mur initial (entitlements SecItem sur macOS 26) est contourné par le shim, cf. § Keychain ci-dessus.
-- **Lecture des réponses du chat** : le dump ne couvre que l'AppKit (composer, sidebar) — le rendu SwiftUI de la conversation est illisible via la dylib ; les réponses structurées passent par la outbox WebDAV.
+- **Lecture des réponses du chat** : le dump ne couvre que l'AppKit (composer, sidebar) — le rendu SwiftUI de la conversation est illisible via la dylib ; les réponses structurées passent par la outbox du dossier partagé.
 
 ## Tests
 
