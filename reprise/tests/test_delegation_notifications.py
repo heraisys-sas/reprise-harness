@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from codex_expert_mcp import Bridge
+from expert_mcp import Bridge
 from delegation_notifications import KINDS, Queue, install, record_event
 from delegation_store import Store
 from support_clock import FakeClock

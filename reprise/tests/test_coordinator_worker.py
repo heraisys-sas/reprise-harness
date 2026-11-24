@@ -334,7 +334,7 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(jobs.Jobs(self.state,crypt=crypt).get(self.project,self.job['job_id'])['status'],'not_admitted')
 
     def test_real_bridge_contract_discovery_and_thread_owner_without_inference(self):
-        with patch('codex_expert_mcp.executable', return_value='/usr/bin/true'):
+        with patch('expert_mcp.executable', return_value='/usr/bin/true'):
             bridge=LocalBridge(self.repo,self.state)
             try:
                 discovered=bridge.discover()

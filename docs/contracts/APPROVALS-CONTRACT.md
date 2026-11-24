@@ -97,4 +97,4 @@ le lot initial. Il n'existe encore aucune preuve de livraison E2E.
 
 Références : issue #117 (observations et arbitrages du 08–12 novembre 2026),
 `docs/contracts/CODEX-EXECUTION-CONTRACT.md`,
-`reprise/codex_expert_mcp.py`, `reprise/desktop_task_store.py`.
+`reprise/expert_mcp.py`, `reprise/desktop_task_store.py`.

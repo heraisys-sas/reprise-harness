@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from codex_expert_mcp import Bridge
+from expert_mcp import Bridge
 from support_clock import FakeClock, ScriptedFactory, thread_reply, turn_payload
 
 THREAD = '12345678-1234-1234-1234-123456789abc'

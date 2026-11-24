@@ -891,7 +891,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         return subprocess.CompletedProcess([], 0, stdout=stdout, stderr='')
 
     def test_capabilities_match_actual_bridge_schemas_with_oneof_const(self):
-        from codex_expert_mcp import TOOLS
+        from expert_mcp import TOOLS
         result = integration.bridge_capabilities(TOOLS)
         self.assertEqual(result['evidence'], 'direct_probe_tools_schema')
         self.assertEqual(result['result_transport'], {
@@ -1196,7 +1196,7 @@ class HarnessIntegrationTests(unittest.TestCase):
           "config":
             {
               "transport": "stdio",
-              "serverName": "reprise_codex",
+              "serverName": "reprise_experts",
               "command": "<REPRISE>\\
                 /integration-releases/f7d6baabc9484640c88018433ac92ed49b9884d5f122759820d4923a4beaa015/Contents/Resources/runti\\
                 me/bin/python3",
@@ -1207,7 +1207,7 @@ class HarnessIntegrationTests(unittest.TestCase):
                   "-B",
                   "<REPRISE>\\
                 /integration-releases/f7d6baabc9484640c88018433ac92ed49b9884d5f122759820d4923a4beaa015/Contents/Resourc\\
-                es/helpers/codex_expert_mcp.py",
+                es/helpers/expert_mcp.py",
                   "--project-root",
                   "<PROJECT>",
                   "--desktop-socket",

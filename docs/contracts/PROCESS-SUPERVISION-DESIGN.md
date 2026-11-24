@@ -21,7 +21,7 @@ la GUI Reprise elle-même (l'exécuteur doit survivre à sa terminaison).
 
 ## Faits de dépôt établis par l'expert
 
-- `codex_expert_mcp.py` : l'allowlist `allowed_tools` autorise **tous les outils connus** en l'absence
+- `expert_mcp.py` : l'allowlist `allowed_tools` autorise **tous les outils connus** en l'absence
   de sélection explicite — ajouter un outil d'action à `TOOLS` sans changer ce défaut l'exposerait
   implicitement aux harness existants.
 - `reprise_health.py` : `socket_liveness` distingue reachable/stopped/unknown mais n'attribue aucun

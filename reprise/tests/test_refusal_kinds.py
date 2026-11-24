@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from codex_expert_mcp import error_payload
+from expert_mcp import error_payload
 from delegation_store import Store
 
 

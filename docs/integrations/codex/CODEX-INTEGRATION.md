@@ -28,7 +28,7 @@ Verified 2026-10-16 against official documentation and the installed DSH 0.2.0-r
 
 ## Resume and delegation
 
-Codex app-server exposes agent conversations, permissions, tools and streamed execution events through JSON-RPC. It is not an OpenAI-compatible inference endpoint. DSH can delegate a bounded coding task through a Reprise tool adapter, with Codex performing the task inside its own harness. DSH's MCP client supports stdio and Streamable HTTP. `codex_expert_mcp.py` now exposes a narrow stdio bridge with `codex_review` and `codex_followup`.
+Codex app-server exposes agent conversations, permissions, tools and streamed execution events through JSON-RPC. It is not an OpenAI-compatible inference endpoint. DSH can delegate a bounded coding task through a Reprise tool adapter, with Codex performing the task inside its own harness. DSH's MCP client supports stdio and Streamable HTTP. `expert_mcp.py` now exposes a narrow stdio bridge with `codex_review` and `codex_followup`.
 
 The installed CLI and [official app-server documentation](https://learn.chatgpt.com/docs/app-server) support these explicit launch/connect forms:
 
@@ -108,7 +108,7 @@ If preflight fails before any turn submission, Reprise re-reads its newly create
 ```sh
 ./resume expert-server --socket /absolute/private/path/codex-expert.sock
 ./resume server-check --socket /absolute/private/path/codex-expert.sock
-python3 codex_expert_mcp.py --project-root /absolute/project --socket /absolute/private/path/codex-expert.sock
+python3 expert_mcp.py --project-root /absolute/project --socket /absolute/private/path/codex-expert.sock
 ```
 
 The last command is an **historical manual** MCP STDIO entrypoint, not an interactive shell. The current managed installer builds the `@deepseek-ai/dsh-mcp-client` entry automatically from a sealed release, with `transport: stdio`, `serverName: reprise_codex`, explicit `--project-root`, `--state` and `--tools`, a call timeout set by the installer, and retries disabled. The example `reprise-expert.local.patch.yml` belonged to a workspace experiment; do **not** infer that it is installed or that its project binding matches the current DSH profile.

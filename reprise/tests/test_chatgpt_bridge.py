@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from unittest import mock
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from codex_expert_mcp import Bridge
+from expert_mcp import Bridge
 from desktop_task_store import TaskStore
 
 

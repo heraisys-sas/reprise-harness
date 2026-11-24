@@ -14,7 +14,7 @@ import uuid
 from contextlib import redirect_stdout
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from codex_expert_mcp import CODEX_CATALOG_TTL, Bridge, error_payload, main
+from expert_mcp import CODEX_CATALOG_TTL, Bridge, error_payload, main
 from test_codex_expert import ID
 
 # #253 : BACKEND_MODELS ne porte plus la lineup codex figée — les tests
@@ -52,7 +52,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         # #253 : le fichier last-known-good est isolé du vrai chemin utilisateur.
         self.catalog_path = Path(self.temp.name)/'codex-models.json'
-        catalog_patcher = patch('codex_expert_mcp.CATALOG_PATH', self.catalog_path)
+        catalog_patcher = patch('expert_mcp.CATALOG_PATH', self.catalog_path)
         catalog_patcher.start()
         self.addCleanup(catalog_patcher.stop)
         self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
@@ -60,7 +60,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.seed_catalog()
         self.addCleanup(self.bridge.close)
     def test_implementation_requires_installed_grant_before_admission(self):
-        with patch('codex_expert_mcp.review') as review:
+        with patch('expert_mcp.review') as review:
             with self.assertRaises(ValueError):
                 self.call('reprise_delegate', {'question':'Implement', 'kind':'batch', 'mode':'implementation'})
             review.assert_not_called()
@@ -68,7 +68,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.assertFalse(self.call('reprise_backends', {})['backends'][0]['writes'])
 
     def test_ungranted_implementation_refusal_is_explicit_issue_104(self):
-        with patch('codex_expert_mcp.review') as review:
+        with patch('expert_mcp.review') as review:
             with self.assertRaises(ValueError) as caught:
                 self.call('reprise_delegate', {'question':'Implement', 'kind':'batch', 'mode':'implementation'})
             review.assert_not_called()
@@ -94,7 +94,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
 
     def test_new_implementation_invalid_input_is_rejected_before_admission(self):
         self.bridge.codex_workspace_write = True
-        with patch('codex_expert_mcp.review') as review:
+        with patch('expert_mcp.review') as review:
             with self.assertRaises(ValueError):
                 self.call('reprise_delegate', {'question':'Implement','kind':'batch','mode':'implementation','paths':['missing.py']})
             review.assert_not_called()
@@ -103,14 +103,14 @@ class BridgeTests(RequestCalls, unittest.TestCase):
     def test_implementation_followup_inherits_mode_after_restart_and_alias_cannot_promote(self):
         self.bridge.codex_workspace_write = True
         output = {'status':'finished', 'resumable':True, 'thread_id':ID, 'response':'Implemented'}
-        with patch('codex_expert_mcp.review', return_value=output.copy()) as review:
+        with patch('expert_mcp.review', return_value=output.copy()) as review:
             self.call('reprise_delegate', {'question':'Implement', 'kind':'batch', 'mode':'implementation'})
             self.assertTrue(review.call_args.kwargs['implementation'])
         restarted = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', codex_workspace_write=True)
         self.addCleanup(restarted.close)
         restarted.program = 'codex'
         self.seed_catalog(restarted)
-        with patch('codex_expert_mcp.review', return_value=output.copy()) as review:
+        with patch('expert_mcp.review', return_value=output.copy()) as review:
             restarted.call('reprise_followup', {'request_key':'continue-implementation', 'thread_id':ID, 'backend':'codex', 'question':'Continue'})
             self.assertTrue(review.call_args.kwargs['implementation'])
             with self.assertRaises(ValueError):
@@ -121,7 +121,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
 
     def test_legacy_review_cannot_be_promoted_by_prompt_or_mode(self):
         self.bridge.codex_workspace_write = True
-        with patch('codex_expert_mcp.review', return_value={'status':'finished','resumable':True,'thread_id':ID,'response':'Review'}):
+        with patch('expert_mcp.review', return_value={'status':'finished','resumable':True,'thread_id':ID,'response':'Review'}):
             self.call('codex_review', {'question':'Review'})
         with self.assertRaises(ValueError):
             self.call('reprise_followup', {'thread_id':ID,'backend':'codex','question':'Implement','mode':'implementation'})
@@ -133,12 +133,12 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         def implementation(*args, **kwargs):
             target.write_text('after')
             return {'status':'finished','response':'Implemented'}
-        with patch('codex_expert_mcp.review', side_effect=implementation):
+        with patch('expert_mcp.review', side_effect=implementation):
             result = self.call('reprise_delegate', {'question':'Implement','kind':'batch','mode':'implementation','paths':['source.py'],'request_key':'edit-request'})
         self.assertEqual(result['status'], 'finished')
         self.assertTrue(result['project_files_changed'])
         target.unlink()
-        with patch('codex_expert_mcp.review') as review:
+        with patch('expert_mcp.review') as review:
             replay = self.bridge.call('reprise_delegate', {'request_key': 'edit-request', 'question':'Implement', 'kind':'batch', 'mode':'implementation', 'paths':['source.py']})
             review.assert_not_called()
         self.assertEqual(replay['status'], 'finished')
@@ -151,7 +151,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         restricted = Bridge(self.temp.name, {}, Path(self.temp.name)/'restricted', allowed_tools=['reprise_backends', 'reprise_requests'])
         self.addCleanup(restricted.close)
         self.assertEqual({tool['name'] for tool in restricted.dispatch({'method': 'tools/list'})['tools']}, {'reprise_backends', 'reprise_requests'})
-        with patch('codex_expert_mcp.review') as review:
+        with patch('expert_mcp.review') as review:
             with self.assertRaises(ValueError):
                 restricted.dispatch({'method': 'tools/call', 'params': {'name': 'reprise_delegate', 'arguments': {'question': 'Q', 'kind': 'review', 'request_key': 'must-not-run'}}})
             review.assert_not_called()
@@ -175,13 +175,13 @@ class BridgeTests(RequestCalls, unittest.TestCase):
             self.assertIn('reprise_delegate', payload['message'])
 
     def test_owned_thread_followup_still_allowed_after_issue_100(self):
-        with patch('codex_expert_mcp.review', return_value={'status': 'finished', 'resumable': True, 'thread_id': ID, 'response': 'review'}) as review:
+        with patch('expert_mcp.review', return_value={'status': 'finished', 'resumable': True, 'thread_id': ID, 'response': 'review'}) as review:
             self.call('codex_review', {'question': 'review'})
             self.call('codex_followup', {'thread_id': ID, 'question': 'continue'})
             self.assertEqual(review.call_args.kwargs['thread_id'], ID)
 
     def test_codex_has_no_local_cap_even_after_restart_and_old_counter(self):
-        with patch('codex_expert_mcp.review', return_value={'status': 'quota_blocked'}) as review:
+        with patch('expert_mcp.review', return_value={'status': 'quota_blocked'}) as review:
             for _ in range(2): self.call('codex_review', {'question': 'review'})
             other = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
             other.program = 'codex'
@@ -195,7 +195,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
             finally: other.db.close()
             self.assertEqual(review.call_count, 4)
     def test_followup_preserves_thread(self):
-        with patch('codex_expert_mcp.review', return_value={'status': 'finished', 'resumable': True, 'thread_id': ID, 'response': 'review'}) as review:
+        with patch('expert_mcp.review', return_value={'status': 'finished', 'resumable': True, 'thread_id': ID, 'response': 'review'}) as review:
             self.call('codex_review', {'question': 'review'})
             result = self.bridge.dispatch({'method': 'tools/call', 'params': {'name': 'codex_followup', 'arguments': {'thread_id': ID, 'question': 'explain', 'request_key': 'followup'}}})
             self.assertFalse(result['isError'])
@@ -213,11 +213,11 @@ class BridgeTests(RequestCalls, unittest.TestCase):
             if backend:
                 args['backend'] = backend
             with self.subTest(backend=backend, extra=sorted(extra)):
-                with patch('codex_expert_mcp.review') as review:
+                with patch('expert_mcp.review') as review:
                     with self.assertRaises(ValueError):
                         self.call('reprise_delegate', args)
                     review.assert_not_called()
-        with patch('codex_expert_mcp.review') as review:
+        with patch('expert_mcp.review') as review:
             with self.assertRaises(ValueError):
                 self.call('reprise_followup', {'backend': 'codex', 'thread_id': ID, 'question': 'continue', 'chatId': ID})
             review.assert_not_called()
@@ -226,7 +226,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
     def test_followup_refuses_claude_desktop_with_owned_thread(self):
         self.bridge.db.execute('INSERT INTO expert_threads VALUES (?,?)', (self.bridge.scope, ID))
         self.bridge.db.commit()
-        with patch('codex_expert_mcp.review') as codex, patch('codex_expert_mcp.claude_review') as claude:
+        with patch('expert_mcp.review') as codex, patch('expert_mcp.claude_review') as claude:
             with self.assertRaises(ValueError) as ctx:
                 self.call('reprise_followup', {'backend': 'claude-desktop', 'thread_id': ID, 'question': 'continue'})
             self.assertIn('Quick Apply', str(ctx.exception))
@@ -243,9 +243,9 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         payload = io.BytesIO((line('req-1', 'reprise_delegate', {'request_key': 'k1', 'question': 'Q', 'kind': 'review'})
                               + line('x' * 300, 'reprise_delegate', {'request_key': 'k2', 'return_mode': 'receipt'})
                               + line('req-3', 'reprise_requests', {'request_key': 'k3', 'view': 'receipt'})).encode('utf-8'))
-        with patch('codex_expert_mcp.Bridge') as bridge_class, \
+        with patch('expert_mcp.Bridge') as bridge_class, \
              patch('sys.stdin', types.SimpleNamespace(buffer=payload)), \
-             patch('sys.argv', ['codex_expert_mcp.py', '--project-root', str(self.temp.name),
+             patch('sys.argv', ['expert_mcp.py', '--project-root', str(self.temp.name),
                                 '--state', str(Path(self.temp.name) / 'state')]), \
              redirect_stdout(io.StringIO()) as out:
             bridge_class.return_value.dispatch.side_effect = [
@@ -288,8 +288,8 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.assertNotEqual(busy['code'], error_payload(ValueError('bad args'))['code'])
 
     def test_unknown_reconcile_request_is_not_found_not_generic_refusal(self):
-        import codex_expert_mcp
-        with self.assertRaises(codex_expert_mcp.RequestNotFound) as caught:
+        import expert_mcp
+        with self.assertRaises(expert_mcp.RequestNotFound) as caught:
             self.bridge.call('reprise_reconcile', {'request_key': 'unseen-key-for-reconcile'})
         error = error_payload(caught.exception)
         self.assertEqual(error['code'], -32004)
@@ -312,7 +312,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
     def test_padded_oversized_followup_rejected_before_budget(self):
         self.bridge.db.execute('INSERT INTO expert_threads VALUES (?,?)', (self.bridge.scope, ID))
         self.bridge.db.commit()
-        with patch('codex_expert_mcp.review') as codex, patch('codex_expert_mcp.claude_review') as claude:
+        with patch('expert_mcp.review') as codex, patch('expert_mcp.claude_review') as claude:
             for name, extra in [('codex_followup', {}), ('reprise_followup', {'backend':'codex'}),
                                 ('reprise_followup', {'backend':'claude-code'})]:
                 for question in (' '*12000+'x', 'x'+' '*12000):
@@ -333,7 +333,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
             'elif "auth" in sys.argv: print(json.dumps({"loggedIn":True,"authMethod":"claude.ai","apiProvider":"firstParty"}))\n' +
             'else:\n Path(' + repr(str(ready)) + ').touch()\n time.sleep(.8)\n Path(' + repr(str(completed)) + ').touch()\n')
         program.chmod(0o700)
-        script = str(Path(__file__).parents[1]/'codex_expert_mcp.py')
+        script = str(Path(__file__).parents[1]/'expert_mcp.py')
         command = [sys.executable, script, '--project-root', str(root), '--state', str(root/'signal-state'),
                    '--claude-program', str(program), '--claude-included-quota-confirmed']
         with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -356,7 +356,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
                     bridge.wait(timeout=5)
     def test_levels_route_and_followup_preserves_model(self):
         for kind,level,model in [('expertise','standard','gpt-6.1-sol'),('review','deep','gpt-6-astra'),('batch','standard','gpt-6-luna')]:
-            with patch('codex_expert_mcp.review', return_value={'status':'finished','resumable':True,'thread_id':ID}) as review:
+            with patch('expert_mcp.review', return_value={'status':'finished','resumable':True,'thread_id':ID}) as review:
                 self.bridge.limit=20
                 self.call('reprise_delegate',{'kind':kind,'level':level,'question':'Check this contract'})
                 self.assertEqual(review.call_args.kwargs['model'],model)
@@ -375,7 +375,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
                 ('claude-code', ('sonnet', 'opus'), 'claude_review')]:
             for model in models:
                 with self.subTest(backend=backend, model=model), patch(
-                        'codex_expert_mcp.' + target, return_value={'status':'finished'}) as review:
+                        'expert_mcp.' + target, return_value={'status':'finished'}) as review:
                     result = self.call('reprise_delegate', {
                         'backend':backend, 'kind':'review', 'question':'Review', 'model':model})
                     self.assertEqual(review.call_args.kwargs['model'], model)
@@ -385,7 +385,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
     def test_explicit_gpt_6_2_sol_route_is_admitted(self):
         self.bridge.claude_program = '/claude'
         self.bridge.claude_subscription_only = True
-        with patch('codex_expert_mcp.review', return_value={'status':'finished'}) as review:
+        with patch('expert_mcp.review', return_value={'status':'finished'}) as review:
             result = self.call('reprise_delegate', {
                 'backend':'codex', 'kind':'review', 'question':'Review', 'model':'gpt-6.2-sol'})
             self.assertEqual(review.call_args.kwargs['model'], 'gpt-6.2-sol')
@@ -396,7 +396,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         cases = [('codex', value) for value in ('unknown', 'sonnet', '', None, [], 1)]
         cases += [('claude-code', 'gpt-6.1-sol'), ('ironclaw', 'gpt-6.1-sol'),
                   ('claude-desktop', 'sonnet')]
-        with patch('codex_expert_mcp.review') as codex, patch('codex_expert_mcp.claude_review') as claude:
+        with patch('expert_mcp.review') as codex, patch('expert_mcp.claude_review') as claude:
             for backend, model in cases:
                 with self.subTest(backend=backend, model=model), self.assertRaisesRegex(
                         ValueError, 'Unknown or unsupported model'):
@@ -409,7 +409,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         # catalogue simulé mais présent dans la lineup de test → revalidation
         # forcée (Client appelé une seule fois), toujours absent → refus,
         # aucune inférence ni insertion.
-        with patch('codex_expert_mcp.review') as codex, patch('codex_expert_mcp.Client') as client:
+        with patch('expert_mcp.review') as codex, patch('expert_mcp.Client') as client:
             client.return_value.call.side_effect = (
                 lambda method, payload: {'data': [{'model': model} for model in CODEX_TEST_MODELS]}
                 if method == 'model/list' else {})
@@ -450,7 +450,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         for backend, target, first, second in [
                 ('codex', 'review', 'gpt-6-astra', 'gpt-6.1-sol'),
                 ('claude-code', 'claude_review', 'opus', 'sonnet')]:
-            with self.subTest(backend=backend), patch('codex_expert_mcp.' + target, side_effect=result) as review:
+            with self.subTest(backend=backend), patch('expert_mcp.' + target, side_effect=result) as review:
                 self.call('reprise_delegate', {
                     'backend':backend, 'kind':'review', 'level':'deep', 'question':'Review'})
                 followup = {'backend':backend, 'thread_id':ID, 'question':'Continue'}
@@ -467,7 +467,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
                 self.assertEqual(review.call_count, before)
 
     def test_explicit_model_keeps_question_limits(self):
-        with patch('codex_expert_mcp.review') as review:
+        with patch('expert_mcp.review') as review:
             for name, extra, length in [
                     ('reprise_delegate', {'kind':'review'}, 12000),
                     ('reprise_delegate', {'kind':'review'}, 12001),
@@ -480,7 +480,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         # l'admission du modèle) : la seed garantit que le refus ne vient pas
         # du catalogue (#242 : cleanup antirevalidation).
         self.seed_catalog()
-        with patch('codex_expert_mcp.review') as review:
+        with patch('expert_mcp.review') as review:
             with self.assertRaisesRegex(ValueError, 'Invalid question or arguments'):
                 self.call('reprise_delegate', {'kind':'review', 'backend':'codex',
                                                'model':'gpt-6.1-sol', 'question':'x' * 12001})
@@ -488,7 +488,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0], 0)
 
     def test_backends_no_inference_or_budget_consumption(self):
-        with patch('codex_expert_mcp.review') as review:
+        with patch('expert_mcp.review') as review:
             result=self.call('reprise_backends',{})
             review.assert_not_called()
         self.assertFalse(result['automatic_fallback'])
@@ -505,7 +505,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.assertEqual([item['model'] for item in self.call('reprise_backends', {})['backends'][0]['models']],
                          list(CODEX_TEST_MODELS))
         lineup = ['gpt-6.1-sol', 'gpt-6-luna']
-        with patch('codex_expert_mcp.Client') as client:
+        with patch('expert_mcp.Client') as client:
             client.return_value.call.side_effect = (
                 lambda method, payload: {'data': [{'model': model} for model in lineup]}
                 if method == 'model/list' else {})
@@ -521,7 +521,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         # aucune insertion ; reprise_backends expose un catalogue vide (pas de repli statique).
         self.bridge._codex_catalog_cache = None
         self.bridge._codex_catalog_time = None
-        with patch('codex_expert_mcp.Client') as client:
+        with patch('expert_mcp.Client') as client:
             client.return_value.call.side_effect = OSError('proxy spawn failed')
             with self.assertRaisesRegex(ValueError, 'not in live catalog \\(proxy spawn failed\\)'):
                 self.call('reprise_delegate', {'kind':'review', 'question':'Review', 'model':'gpt-6.1-sol'})
@@ -539,13 +539,13 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         before = self.bridge.db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0]
         rpc = lambda method, payload: {'data': [{'model': model} for model in lineup]} \
             if method == 'model/list' else {}
-        with patch('codex_expert_mcp.review', return_value={'status':'finished'}) as review, \
-                patch('codex_expert_mcp.Client') as client:
+        with patch('expert_mcp.review', return_value={'status':'finished'}) as review, \
+                patch('expert_mcp.Client') as client:
             client.return_value.call.side_effect = rpc
             self.call('reprise_delegate', {'kind':'review', 'question':'Review', 'model':'gpt-5.6-terra-new'})
             self.assertEqual(review.call_args.kwargs['model'], 'gpt-5.6-terra-new')
             client.assert_called_once()
-        with patch('codex_expert_mcp.review') as review, patch('codex_expert_mcp.Client') as client:
+        with patch('expert_mcp.review') as review, patch('expert_mcp.Client') as client:
             client.return_value.call.side_effect = rpc
             with self.assertRaisesRegex(ValueError, 'not in live catalog'):
                 self.call('reprise_delegate', {'kind':'review', 'question':'Review', 'model':'ghost-model'})
@@ -561,7 +561,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         # (a) #253 : succès live → source 'live' ET écriture du fichier
         # last-known-good ; un échec d'écriture est journalisé sans invalider le live.
         lineup = ['gpt-6.1-sol', 'gpt-6-luna']
-        with patch('codex_expert_mcp.Client') as client:
+        with patch('expert_mcp.Client') as client:
             client.return_value.call.side_effect = (
                 lambda method, payload: {'data': [{'model': model,
                                                    'displayName': model,
@@ -580,8 +580,8 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         # Échec d'écriture (parent non répertoire) → live conservé, erreur journalisée.
         blocker = Path(self.temp.name)/'blocker'
         blocker.write_text('x')
-        with patch('codex_expert_mcp.Client') as client, \
-                patch('codex_expert_mcp.CATALOG_PATH', blocker/'codex-models.json'):
+        with patch('expert_mcp.Client') as client, \
+                patch('expert_mcp.CATALOG_PATH', blocker/'codex-models.json'):
             client.return_value.call.side_effect = (
                 lambda method, payload: {'data': [{'model': model} for model in lineup]}
                 if method == 'model/list' else {})
@@ -600,7 +600,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
                  'updated_at': '2026-11-20T15:00:00+00:00', 'version': 1}
         self.write_catalog_file(stale)
         before = self.catalog_path.read_bytes()
-        with patch('codex_expert_mcp.Client', side_effect=ValueError('codexd down')):
+        with patch('expert_mcp.Client', side_effect=ValueError('codexd down')):
             entry = self.bridge._codex_catalog(force=True)
         self.assertEqual(entry['source'], 'last_known')
         self.assertEqual([item['model'] for item in entry['models']], ['gpt-6.1-sol', 'gpt-6-luna'])
@@ -622,7 +622,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
                     self.catalog_path.write_text('not json {')
                 elif seed == 'empty':
                     self.write_catalog_file({'models': [], 'updated_at': 'x', 'version': 1})
-                with patch('codex_expert_mcp.Client', side_effect=ValueError('codexd down')):
+                with patch('expert_mcp.Client', side_effect=ValueError('codexd down')):
                     entry = self.bridge._codex_catalog(force=True)
                 self.assertEqual(entry['source'], 'unavailable')
                 self.assertEqual(entry['models'], [])
@@ -639,20 +639,20 @@ class BridgeTests(RequestCalls, unittest.TestCase):
                                  'updated_at': '2026-11-20T15:00:00+00:00', 'version': 1})
         self.bridge._codex_catalog_cache = None
         self.bridge._codex_catalog_time = None
-        with patch('codex_expert_mcp.review', return_value={'status':'finished'}) as review, \
-                patch('codex_expert_mcp.Client', side_effect=ValueError('codexd down')):
+        with patch('expert_mcp.review', return_value={'status':'finished'}) as review, \
+                patch('expert_mcp.Client', side_effect=ValueError('codexd down')):
             self.call('reprise_delegate', {'kind':'review', 'question':'Review', 'model':'gpt-6-luna'})
             self.assertEqual(review.call_args.kwargs['model'], 'gpt-6-luna')
 
     def test_nonpersistent_thread_is_not_registered(self):
-        with patch('codex_expert_mcp.review', return_value={'status':'blocked_permission','thread_id':ID,'resumable':False}):
+        with patch('expert_mcp.review', return_value={'status':'blocked_permission','thread_id':ID,'resumable':False}):
             self.call('codex_review', {'question':'review'})
         self.assertEqual(self.bridge.db.execute('SELECT count(*) FROM expert_threads').fetchone()[0], 0)
 
     def test_claude_explicit_route_followup_and_backend_isolation(self):
         self.bridge.claude_program = '/claude'
         self.bridge.claude_subscription_only = True
-        with patch('codex_expert_mcp.claude_review', return_value={
+        with patch('expert_mcp.claude_review', return_value={
                 'status':'finished','resumable':True,'thread_id':ID,'model':'claude-sonnet-test'}) as review:
             self.call('reprise_delegate', {'backend':'claude-code','kind':'expertise','question':'Review'})
             self.assertEqual(review.call_args.kwargs['model'], 'sonnet')
@@ -665,7 +665,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
                 self.call('reprise_followup', {'backend':'claude-code','thread_id':ID,'question':'Continue'})
 
     def test_claude_disabled_never_falls_back_or_consumes_budget(self):
-        with patch('codex_expert_mcp.review') as codex, patch('codex_expert_mcp.claude_review') as claude:
+        with patch('expert_mcp.review') as codex, patch('expert_mcp.claude_review') as claude:
             result = self.call('reprise_delegate', {'backend':'claude-code','kind':'expertise','question':'Review'})
             self.assertEqual(result['status'],'engine_unavailable')
             self.bridge.claude_program = '/claude'
@@ -678,9 +678,9 @@ class BridgeTests(RequestCalls, unittest.TestCase):
     def test_codex_does_not_consume_claude_budget_and_failed_session_not_owned(self):
         self.bridge.claude_program = '/claude'
         self.bridge.claude_subscription_only = True
-        with patch('codex_expert_mcp.review', return_value={'status':'quota_blocked'}):
+        with patch('expert_mcp.review', return_value={'status':'quota_blocked'}):
             self.call('codex_review', {'question':'Review'})
-        with patch('codex_expert_mcp.claude_review', return_value={'status':'finished','resumable':False}) as review:
+        with patch('expert_mcp.claude_review', return_value={'status':'finished','resumable':False}) as review:
             self.call('reprise_delegate', {'backend':'claude-code','kind':'review','question':'Review'})
             self.call('reprise_delegate', {'backend':'claude-code','kind':'review','question':'Review'})
             self.assertEqual(self.call('reprise_delegate', {'backend':'claude-code','kind':'review','question':'Review'})['status'],'finished')
@@ -743,7 +743,7 @@ class ClaudeDesktopBridgeTests(RequestCalls, unittest.TestCase):
         # de reconstruction du TaskStore par appel, avant tout refus.
         from unittest.mock import MagicMock
         self.bridge.desktop_tasks = None
-        with patch('codex_expert_mcp.TaskStore') as store, \
+        with patch('expert_mcp.TaskStore') as store, \
                 patch('claude_desktop.review', return_value={'status': 'finished', 'resumable': False}) as review:
             result = self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
                                                     'backend': 'claude-desktop'})
@@ -757,7 +757,7 @@ class ClaudeDesktopBridgeTests(RequestCalls, unittest.TestCase):
         self.bridge.desktop_tasks = None
         store.reset_mock()
         store.side_effect = sqlite3.OperationalError('state unreachable')
-        with patch('codex_expert_mcp.TaskStore', store), \
+        with patch('expert_mcp.TaskStore', store), \
                 patch('claude_desktop.review') as review:
             result = self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
                                                     'backend': 'claude-desktop'})
@@ -785,7 +785,7 @@ class ClaudeDesktopBridgeTests(RequestCalls, unittest.TestCase):
         # Cle delegation_lazy_start absente : AUCUN depart paresseux, le refus
         # reste inchange ; lazy_start_attempted est present et vaut False.
         self.bridge.desktop_tasks = None
-        with patch('codex_expert_mcp.TaskStore', side_effect=sqlite3.OperationalError('down')), \
+        with patch('expert_mcp.TaskStore', side_effect=sqlite3.OperationalError('down')), \
                 patch('claude_desktop.review') as review, \
                 patch('delegation_resume.lazy_start') as lazy:
             result = self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise',
@@ -840,7 +840,7 @@ class IronclawBridgeTests(RequestCalls, unittest.TestCase):
 
     def test_legacy_cli_cannot_bypass_durable_admission(self):
         self.bridge.ironclaw_values = {'key': '/'}
-        with patch('codex_expert_mcp.ironclaw.review') as review:
+        with patch('expert_mcp.ironclaw.review') as review:
             result = self.call('reprise_delegate', {'backend': 'ironclaw', 'kind': 'expertise', 'question': 'Ping'})
         self.assertEqual(result['status'], 'engine_unavailable')
         review.assert_not_called()
@@ -848,7 +848,7 @@ class IronclawBridgeTests(RequestCalls, unittest.TestCase):
             "SELECT json_extract(result,'$.status') FROM delegation_requests").fetchone()[0], 'engine_unavailable')
 
     def test_delegate_ironclaw_unconfigured_returns_engine_unavailable(self):
-        with patch('codex_expert_mcp.ironclaw.review') as review:
+        with patch('expert_mcp.ironclaw.review') as review:
             result = self.call('reprise_delegate', {'backend': 'ironclaw', 'kind': 'expertise', 'question': 'Ping'})
         self.assertEqual(result['status'], 'engine_unavailable')
         review.assert_not_called()
@@ -858,7 +858,7 @@ class IronclawBridgeTests(RequestCalls, unittest.TestCase):
     def test_delegate_ironclaw_configured_dispatches_review(self):
         self.bridge.ironclaw_values = {'host': 'ironclaw.example.org', 'port': '22',
                                        'user': 'agent', 'key': '/k'}
-        with patch('codex_expert_mcp.ironclaw.review',
+        with patch('expert_mcp.ironclaw.review',
                    return_value={'status': 'finished', 'response': 'Réponse'}) as review:
             result = self.call('reprise_delegate', {'backend': 'ironclaw', 'kind': 'expertise', 'question': 'Ping'})
         self.assertEqual(result['status'], 'finished')
@@ -871,7 +871,7 @@ class IronclawBridgeTests(RequestCalls, unittest.TestCase):
 
     def test_delegate_ironclaw_incomplete_config_returns_engine_unavailable(self):
         self.bridge.ironclaw_values = {'host': 'ironclaw.example.org', 'user': 'agent'}
-        with patch('codex_expert_mcp.ironclaw.review') as review:
+        with patch('expert_mcp.ironclaw.review') as review:
             result = self.call('reprise_delegate', {'backend': 'ironclaw', 'kind': 'expertise', 'question': 'Ping'})
         self.assertEqual(result['status'], 'engine_unavailable')
         self.assertIn('Configuration IronClaw requise', result['reason'])
@@ -908,7 +908,7 @@ class CompactReceiptTests(unittest.TestCase):
 
     def test_full_then_receipt_replay_preserves_identity_and_result(self):
         args = {'request_key': 'key', 'question': 'Inspect', 'kind': 'review'}
-        with patch('codex_expert_mcp.review', return_value={
+        with patch('expert_mcp.review', return_value={
                 'status': 'finished', 'response': 'x' * 20000, 'thread_id': ID}) as run:
             result = self.bridge.call('reprise_delegate', args)
             before = self.bridge.db.execute('SELECT * FROM delegation_requests').fetchall()
@@ -918,7 +918,7 @@ class CompactReceiptTests(unittest.TestCase):
             self.assertEqual(self.bridge.call('reprise_delegate', dict(args, return_mode='full')), result)
             self.assertEqual(self.bridge.db.execute('SELECT * FROM delegation_requests').fetchall(), before)
             run.assert_called_once()
-        with patch('codex_expert_mcp.review', return_value={'status': 'finished', 'response': 'y' * 20000}) as run:
+        with patch('expert_mcp.review', return_value={'status': 'finished', 'response': 'y' * 20000}) as run:
             manifest = self.dispatch('reprise_delegate', dict(args, request_key='new', return_mode='receipt'))
             self.assertTrue(manifest['available'])
             self.assertEqual(self.bridge.call('reprise_requests', {'request_key': 'new'})['result']['response'],
@@ -939,7 +939,7 @@ class CompactReceiptTests(unittest.TestCase):
                     self.bridge.db.commit()
                     if name == 'reprise_followup':
                         args['backend'] = 'codex'
-                with patch('codex_expert_mcp.review', return_value={
+                with patch('expert_mcp.review', return_value={
                         'status': 'finished', 'response': 'é😀\\"' * 15000}) as run:
                     receipt = self.dispatch(name, dict(args, return_mode='receipt'))
                     self.assertTrue(receipt['available'])
@@ -955,7 +955,7 @@ class CompactReceiptTests(unittest.TestCase):
     def test_claude_continuation_compact_replay(self):
         self.bridge.claude_program = '/claude'
         self.bridge.claude_subscription_only = True
-        with patch('codex_expert_mcp.claude_review', return_value={
+        with patch('expert_mcp.claude_review', return_value={
                 'status': 'finished', 'response': 'é😀' * 30000,
                 'thread_id': ID, 'model': 'sonnet', 'resumable': True}) as run:
             first = self.dispatch('reprise_delegate', {
@@ -977,7 +977,7 @@ class CompactReceiptTests(unittest.TestCase):
             'status': 'finished', 'response': sample * 1500, 'details': sample * 1500})
         manifest = self.dispatch('reprise_requests', {'request_key': key, 'view': 'receipt'})
         parts, offset = [], 0
-        with patch('codex_expert_mcp.review') as run:
+        with patch('expert_mcp.review') as run:
             while True:
                 args = {'request_key': key, 'view': 'page', 'offset': offset,
                         'max_chars': 6000, 'result_sha256': manifest['result_sha256']}
@@ -1011,7 +1011,7 @@ class CompactReceiptTests(unittest.TestCase):
 
     def test_invalid_modes_ids_and_acknowledgement_states(self):
         args = {'request_key': 'key', 'question': 'Inspect', 'kind': 'review'}
-        with patch('codex_expert_mcp.review') as run:
+        with patch('expert_mcp.review') as run:
             for mode in ('other', None, True, 1):
                 with self.subTest(mode=mode), self.assertRaises(ValueError):
                     self.bridge.call('reprise_delegate', dict(args, return_mode=mode))
@@ -1074,7 +1074,7 @@ class ChatGptStateRenameTests(unittest.TestCase):
         # documente la nouvelle option (parse_args sort avant de servir).
         # Chemin absolu : les shards CI (#257) lancent les tests avec
         # cwd = reprise/tests/, où le chemin relatif reprise/... est inexistant.
-        script = str(Path(__file__).parents[1] / 'codex_expert_mcp.py')
+        script = str(Path(__file__).parents[1] / 'expert_mcp.py')
         completed = subprocess.run(
             [sys.executable, script, '--project-root', self.temp.name,
              '--chatgpt-socket', self.temp.name, '--help'],

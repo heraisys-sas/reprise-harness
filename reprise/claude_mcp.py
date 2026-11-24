@@ -13,7 +13,7 @@ import time
 import mcp_transport
 from mcp_transport import request_id_key
 
-from codex_expert_mcp import Bridge, TOOLS, error_payload, tool_content, bounded_content
+from expert_mcp import Bridge, TOOLS, error_payload, tool_content, bounded_content
 from desktop_task_store import TaskStore
 from delegation_store import PAGE_PROPERTIES
 

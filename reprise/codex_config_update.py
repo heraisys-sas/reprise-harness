@@ -95,7 +95,7 @@ class NativeClient:
                 pipe.close()
 
 
-ENTRIES = {'reprise-harness': 'codex_expert_mcp.py'}
+ENTRIES = {'reprise-harness': 'expert_mcp.py'}
 
 
 def _digest(value):
@@ -185,7 +185,7 @@ def _rewrite(entry, script, release_base, target):
     # The helper flags and their values, including scopes, remain byte-for-byte
     # equal as JSON values. Reject a second script/executable or malformed flags.
     options = {
-        'codex_expert_mcp.py': ({'--project-root', '--socket', '--state', '--tools', '--daily-limit',
+        'expert_mcp.py': ({'--project-root', '--socket', '--state', '--tools', '--daily-limit',
                                   '--claude-program', '--desktop-socket', '--ironclaw-config'},
                                  {'--claude-included-quota-confirmed', '--codex-workspace-write'},
                                  {'--project-root', '--state'}),

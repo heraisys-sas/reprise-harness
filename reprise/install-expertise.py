@@ -45,10 +45,10 @@ def install(home, project, profile='desktop'):
         base = original
     if '\n'.join(line for line in base.splitlines() if line.strip() and not line.lstrip().startswith('#')).strip() == '[]':
         base = '\n'.join(line for line in base.splitlines() if line.lstrip().startswith('#'))
-    args = [str(source/'codex_expert_mcp.py'), '--project-root', str(project), '--state', str(source/'state')]
+    args = [str(source/'expert_mcp.py'), '--project-root', str(project), '--state', str(source/'state')]
     block = '\n'.join([START, '- insert:', '    - id: reprise-codex-expert',
         "      name: '@deepseek-ai/dsh-mcp-client'", '      config:', '        transport: stdio',
-        '        serverName: reprise_codex', '        command: '+json.dumps(sys.executable),
+        '        serverName: reprise_experts', '        command: '+json.dumps(sys.executable),
         '        args: '+json.dumps(args, ensure_ascii=False), '        toolCallTimeoutMs: 330000',
         '        failOnStartupError: false', '        reconnect:', '          enabled: false', END, ''])
     updated = base.rstrip()+'\n'+block

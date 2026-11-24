@@ -46,7 +46,7 @@ Le schéma distingue le processus **client** `codex app-server proxy --sock ...`
 
 ### 1. Exposer le bon outil dans le bon projet
 
-Le parcours de gestion de Reprise prépare l'intégration du profil DSH via `reprise harness-integration-inspect`, `harness-integration-plan --action install --delegate`, `harness-integration-apply` et `harness-integration-verify`. Le plan doit viser explicitement **le projet** et **le profil** autorisés. Le pont installé utilise `@deepseek-ai/dsh-mcp-client`, `transport: stdio`, `serverName: reprise_codex`, le Python de la **release d'intégration versionnée**, `codex_expert_mcp.py` et les paramètres `--project-root`, `--state`, `--tools`. L'installateur ne retouche pas les identifiants Codex ni ne démarre DSH.
+Le parcours de gestion de Reprise prépare l'intégration du profil DSH via `reprise harness-integration-inspect`, `harness-integration-plan --action install --delegate`, `harness-integration-apply` et `harness-integration-verify`. Le plan doit viser explicitement **le projet** et **le profil** autorisés. Le pont installé utilise `@deepseek-ai/dsh-mcp-client`, `transport: stdio`, `serverName: reprise_experts`, le Python de la **release d'intégration versionnée**, `expert_mcp.py` et les paramètres `--project-root`, `--state`, `--tools`. L'installateur ne retouche pas les identifiants Codex ni ne démarre DSH.
 
 - Sans `--delegate`, la liste des outils est bornée par `OBSERVE` : `reprise_backends`, `reprise_requests`, `reprise_quotas`, `approval_list`, `wait_result`. Une installation donnée peut encore présenter une ancienne allowlist ; **c'est `tools/list` qui décide**.
 - Avec `--delegate`, s'ajoutent `reprise_delegate`, `reprise_followup`, `reprise_reconcile`. `approval_respond` n'est pas automatiquement exposé.
@@ -139,7 +139,7 @@ Une évolution de **modèle DSH** ne doit pas être présentée comme une évolu
 ## Sources de vérité dans le dépôt
 
 - [Installation Harness et allowlist](HARNESS-INTEGRATION.md) : `reprise/harness_integration.py`.
-- [Pont MCP, prévalidation, identités et reçus](../../../reprise/codex_expert_mcp.py) : `Bridge.call`, `Bridge._call`, `Bridge._reconcile`.
+- [Pont MCP, prévalidation, identités et reçus](../../../reprise/expert_mcp.py) : `Bridge.call`, `Bridge._call`, `Bridge._reconcile`.
 - [Transport RPC Codex](../../../reprise/codex_rpc.py) et [sélection/validation du socket](../../../reprise/engines.py).
 - [Tours natifs Codex, compte, quota et sandbox](../../../reprise/codex_expert.py).
 - [Persistance des délégations](../../contracts/DELEGATION-PERSISTENCE.md) : `reprise/delegation_store.py` et `reprise/delegation_reconcile.py`.
