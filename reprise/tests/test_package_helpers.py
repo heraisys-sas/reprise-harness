@@ -63,6 +63,13 @@ class PackageHelpersTests(unittest.TestCase):
         self.assertIn('approval_delegation.py', ASSETS)
         self.assertIn('docs/contracts/APPROVALS-CONTRACT.md', package_helpers.DOCS)
 
+    def test_experts_manifest_is_packaged_intact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = package(SOURCE, Path(temporary).resolve() / 'Reprise.app')
+            target = root / 'experts-manifest.json'
+            self.assertTrue(target.is_file())
+            self.assertEqual(target.read_bytes(), (SOURCE / 'experts-manifest.json').read_bytes())
+
     def test_moved_payload_runs_without_source_and_keeps_state_outside_bundle(self):
         with tempfile.TemporaryDirectory() as temporary:
             folder = Path(temporary).resolve()
