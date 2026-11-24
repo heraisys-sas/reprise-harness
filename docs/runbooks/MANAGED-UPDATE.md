@@ -11,7 +11,7 @@ python3 -B reprise/managed_update.py inspect
 python3 -B reprise/managed_update.py plan \
   --bundle /chemin/du/build/Reprise.app \
   --components app,scheduler,harness,claude,codex --profile desktop \
-  --codex-entry reprise_codex --codex-entry reprise-harness \
+  --codex-entry reprise-harness \
   --activate-scheduler --relaunch-app > /tmp/reprise-update-plan.json
 # Lire le plan. Fermer normalement Reprise avant son remplacement.
 python3 -B reprise/managed_update.py apply --plan /tmp/reprise-update-plan.json

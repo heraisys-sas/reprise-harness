@@ -53,7 +53,7 @@ class AppNoBackupTests(unittest.TestCase):
     def test_scope_refuses_all_other_components_and_activation(self):
         for options in ({'components':('app','harness')},{'components':('scheduler',)},
                         {'components':('codex',)},{'profiles':('desktop',)},
-                        {'activate':True},{'codex_entries':('reprise_codex',)}):
+                        {'activate':True},{'codex_entries':('reprise_experts',)}):
             with self.subTest(options=options),self.assertRaisesRegex(ValueError,'seul le composant app'):
                 self.plan(**options)
         value=self.plan();value['components'].append('claude')

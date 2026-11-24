@@ -23,7 +23,7 @@ Ce mode définit la discipline « plein-périmètre » : chaque surface d'orches
 |---|---|---|
 | Sous-agents Harness | `subagent`, `subagent_fork`, `send_message`, `list_agents`, `interrupt_agent` | travaux autonomes dans la sandbox du workspace, complément ciblé à un enfant existant, arrêt d'un lot hors de portée |
 | Routes modèles | `list_subagent_models` avant chaque choix | Flash pour lots courts et collectes, Pro/effort élevé pour blocage démontré ou revue critique, Luna/Sol/Astra selon `reprise_backends` |
-| Délégation Reprise | `reprise_backends`, `reprise_delegate`, `reprise_followup`, `reprise_requests`, `reprise_reconcile`, `reprise_quotas` — préfixés du serveur MCP, ex. `mcp__reprise_codex__reprise_delegate` | expertise, revue indépendante, batch borné ; reçus durables, état natif des tours, suivi de quotas par compte |
+| Délégation Reprise | `reprise_backends`, `reprise_delegate`, `reprise_followup`, `reprise_requests`, `reprise_reconcile`, `reprise_quotas` — préfixés du serveur MCP, ex. `mcp__reprise_experts__reprise_delegate` | expertise, revue indépendante, batch borné ; reçus durables, état natif des tours, suivi de quotas par compte |
 | Fan-out large | `workflow` (phases, pipeline, `parallel`, schémas de sortie) | uniquement sur demande explicite d'orchestration multi-agents ; résultats agrégés localement |
 | Objectif persistant | `create_goal`, `get_goal`, `update_goal` | lots longs avec continuation automatique ; `blocked` seulement après persistance du même blocage sur au moins trois tours |
 | Planification | `schedule_create`, `schedule_update`, `schedule_list`, `schedule_delete` | attente quota, retour CI, relance d'un lot en pause, échéance annoncée à l'opérateur |

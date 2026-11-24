@@ -189,7 +189,7 @@ Canal de soumission validé (#122) : l'overlay **Quick Entry natif** soumet vers
 
 ## Attente de la réponse Desktop — issue #111
 
-`wait_result(request_key, wait_seconds=600)` sur `reprise_codex` observe une tâche
+`wait_result(request_key, wait_seconds=600)` sur `reprise_experts` observe une tâche
 Desktop existante du projet. Durée finie strictement positive, maximum 600 s ;
 booléens, clés vides ou dépassant 128 caractères et paramètres supplémentaires refusés.
 Un registre absent, illisible, verrouillé ou incompatible produit une erreur
