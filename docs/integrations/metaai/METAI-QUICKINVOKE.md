@@ -1,6 +1,6 @@
 # Intégration Meta AI — invocation rapide (copie patchée, pont UI automatisé)
 
-Complément de [METAI-INTEGRATION.md](METAI-INTEGRATION.md) (transport WebDAV) : cette page couvre le **pont UI** — le pilotage de la copie patchée « Meta AI Reprise.app » par socket in-process, qui supprime le dernier geste manuel (le déclenchement du tour). Validé live le **23 novembre 2026** : `tache-20261123-151306-c1d6` — dispatch → prompt UI injecté et soumis automatiquement (3 s) → résultat `161` (23 × 7) → `answered` en ~25 s, **zéro Accessibilité, zéro CDP**.
+Complément de [METAI-INTEGRATION.md](METAI-INTEGRATION.md) (transport WebDAV) : cette page couvre le **pont UI** — le pilotage de la copie patchée « ReMetaAI.app » par socket in-process, qui supprime le dernier geste manuel (le déclenchement du tour). Validé live le **23 novembre 2026** : `tache-20261123-151306-c1d6` — dispatch → prompt UI injecté et soumis automatiquement (3 s) → résultat `161` (23 × 7) → `answered` en ~25 s, **zéro Accessibilité, zéro CDP**.
 
 ## Ce que la copie apporte
 
@@ -13,7 +13,7 @@ metaaid (LaunchAgent app.reprise.metaaid — mount + serveur WebDAV + watcher + 
   │ dispatch_task → inbox/<id>.json (WebDAV monté)
   │ metaai_ui_dispatch.py : prompt → socket insert + send, marker .ui-state/<id>
   ▼
-Meta AI Reprise.app (copie re-signée, session partagée par trousseau)
+ReMetaAI.app (copie re-signée, session partagée par trousseau)
   ├── dylib « fake Sparkle » (metaai_reprise.m) : socket ~/.reprise/metaai-reprise-trigger.sock (0600)
   │     ping · dump · insert · send · len — composer = MetaAIDesignSystem.MetaAIComposerNSTextView
   ├── shim Security.framework (metaai_sec_shim.m) : ré-export de la vraie Security + émulation
@@ -33,7 +33,7 @@ Meta AI Reprise.app (copie re-signée, session partagée par trousseau)
 
 ```bash
 /usr/bin/python3 reprise/metaai_reprise_build.py          # idempotent, ne lance jamais l'app
-nohup "$HOME/Applications/Meta AI Reprise.app/Contents/MacOS/Meta AI" &
+nohup "$HOME/Applications/ReMetaAI.app/Contents/MacOS/Meta AI" &
 /usr/bin/python3 reprise/metaai_reprise_client.py '{"cmd":"ping"}'
 ```
 
@@ -45,11 +45,14 @@ Connexion `metaai.json` — champs UI : `ui_bridge` (true), `ui_socket`, `ui_app
 
 ## Limites & exploitation
 
-- **Mise à jour de Meta AI** : la copie est gelée — rejouer `metaai_reprise_build.py` (repart de l'original à jour), puis relancer la copie.
-- **Partage connecteur** : hérité du compte (partagé une fois sur le volume WebDAV) ; la copie déclenche sa propre demande TCC au premier accès fichiers — l'accepter une fois.
+- **Identité de la copie (ReMetaAI)** : bundle renommé `ReMetaAI.app`, identité distincte `com.reprise.remetaai` (posée par `patch_info_plist`). Raison : l'originale de Meta omet `CFBundleExecutable` — LaunchServices retombe sur le nom du bundle et une copie renommée sans la clé ne s'ouvre plus (« executable is missing ») ; et partager le bundle id de l'originale confondait les deux apps côté macOS (TCC et items de connexion résolus vers l'originale, single-instance par bundle id : tout lancement de l'une tuait l'autre). L'exécutable interne reste `Contents/MacOS/Meta AI` (les chemins des dylibs y sont réécrits, ne pas le renommer).
+- **Mise à jour de Meta AI** : la copie est gelée — rejouer `metaai_reprise_build.py` (repart de l'original à jour et re-pose l'identité ReMetaAI), puis relancer la copie. Ne pas recréer la copie à la main (copier-coller Finder) : sans les clés du Info.plist elle retombe sur les défauts de l'originale.
+- **Partage connecteur** : lié à l'identité de bundle — chaque nouvelle identité (renommage) repart avec un TCC vierge ; accepter une fois la demande d'accès au dossier partagé. La session chat elle-même est partagée via le trousseau (tokens de l'originale), indépendante de l'identité.
+- **Lanceur metaaid (`ensure_app`)** : relance la copie si la socket est muette, au boot et au dispatch — pas en veille périodique ; une copie morte en silence reste morte jusqu'au prochain événement (amélioration à prévoir : ping périodique).
 - **Le trousseau émulé est isolé** : items ACL par chemin, créés par la copie ; les secrets ne sont jamais loggés.
-- **Single-instance** : fermer l'originale avant d'utiliser la copie (ou l'inverse) — même bundle id, sessions séparées par trousseau mais même app côté serveur.
+- **Originale et copie peuvent coexister** (identités distinctes) mais utilisent la même session serveur — éviter de chatter des deux côtés en même temps.
 - Le prompt pont ne contient pas d'accolades : le bug JSON du connecteur (cf. METAI-INTEGRATION.md) s'applique au contenu de l'outbox, pas au composer — mais le template reste stable par prudence.
+- **Lecture des réponses du chat** : le dump ne couvre que l'AppKit (composer, sidebar) — le rendu SwiftUI de la conversation est illisible via la dylib ; les réponses structurées passent par la outbox WebDAV.
 
 ## Tests
 
@@ -59,7 +62,7 @@ Connexion `metaai.json` — champs UI : `ui_bridge` (true), `ui_socket`, `ui_app
 
 Après une mise à jour de `/Applications/Meta AI.app`, la copie devient périmée. Deux voies équivalentes :
 
-- **GUI Reprise** → Vue Intégrations → carte « Copie Meta AI Reprise » : « Relire l'état » → « Préparer le redéploiement… » → acquittement (Meta AI quitée) → « Appliquer le redéploiement » → « Vérifier ».
+- **GUI Reprise** → Vue Intégrations → carte « Copie ReMetaAI » : « Relire l'état » → « Préparer le redéploiement… » → acquittement (Meta AI quitée) → « Appliquer le redéploiement » → « Vérifier ».
 - **CLI** (JSON stdout) : `python3 reprise/reprise metaai-integration-inspect|plan|apply|verify` — plan/apply/verify passent le plan JSON par stdin, mêmes conventions que `codex-integration-*`.
 
 Garde-fous : refus si Meta AI (originale) est en cours d'exécution ; plan périmé refusé si l'empreinte de l'arbre de l'originale a changé ; outils de build vérifiés (`clang`, `codesign`, `rsync`, `install_name_tool`, `security`) ; jamais de lancement de l'app ni de modification de l'originale. Le `apply` resynchronise la copie (`rsync -a --delete`), ré-extrait le Sparkle si son empreinte change, réapplique swap + shim + re-signature, puis consigne `~/.reprise/metaai-reprise-state.json` (empreinte, version, `last_plan_id`).

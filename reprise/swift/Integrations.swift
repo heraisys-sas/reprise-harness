@@ -1178,7 +1178,7 @@ struct Integrations: View {
                                  detail: planDetail(app.codexIntegrationResult), detailLabel: "Réponse complète")
                 }
             }
-            SettingsCard(title: "Copie Meta AI Reprise",
+            SettingsCard(title: "Copie ReMetaAI",
                          status: app.metaaiIntegrationResult["status_label"] as? String ?? "État inconnu",
                          ok: app.metaaiIntegrationResult["ok"] as? Bool == true) {
                 SettingsHint(text: "Redéploie la copie patchée après une mise à jour de Meta AI.app.",

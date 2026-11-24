@@ -41,7 +41,7 @@ CONFIG_DEFAULTS = {
     "taskstore": "~/Library/Application Support/Reprise/metaai-tasks.sqlite",
     "ui_bridge": False,
     "ui_socket": "~/.reprise/metaai-reprise-trigger.sock",
-    "ui_app": "~/Applications/Meta AI Reprise.app/Contents/MacOS/Meta AI",
+    "ui_app": "~/Applications/ReMetaAI.app/Contents/MacOS/Meta AI",
 }
 
 def log(msg: str) -> None:

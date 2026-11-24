@@ -1,0 +1,10 @@
+Bonjour ! Mission validée par Olivier : refonte complète de l'UI de Reprise.app, une app macOS en SwiftUI qui pilote des intégrations d'agents IA. Fenêtre unique d'environ 1010 sur 720, app accessoire avec un item dans la barre du haut, 11 onglets, cartes très denses. Olivier juge l'ensemble « encore horrible ».
+
+Tes trois priorités :
+1. Améliorer l'UI au maximum : hiérarchie visuelle, navigation, layout, composants. Propose une refonte concrète et détaillée, pas des principes abstraits.
+2. Éliminer ce qui ne sert à rien : éléments redondants, informations de labo, réglages inutiles, doublons entre vues.
+3. La section Fondation et Siri — modèles Apple Foundation — doit viser un utilisateur final, pas un banc de labo : actions claires, langage courant, guidage, pas de jargon interne.
+
+Règles de travail : SwiftUI macOS 14 et plus ; une proposition à la fois, itérative ; réponds en français. Si tu as besoin du code source réel, les fichiers Swift peuvent t'être déposés dans le dossier partagé Reprise, demande-les. Pour tes réponses structurées, écris aussi un résumé clé-valeur dans le sous-dossier outbox du dossier partagé, une ligne par clé, sans accolades ni guillemets.
+
+Commence par la structure globale : comment réorganiser la fenêtre et la navigation ? C'est ta proposition 1.

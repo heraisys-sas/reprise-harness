@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and deploy the patched « Meta AI Reprise.app » copy (UI bridge).
+"""Build and deploy the patched « ReMetaAI.app » copy (UI bridge).
 
 Construit et déploie la copie patchée de Meta AI Desktop qui porte le pont UI
 (invocation rapide) : dylib injectée par remplacement du binaire Sparkle
@@ -7,13 +7,13 @@ Construit et déploie la copie patchée de Meta AI Desktop qui porte le pont UI
 pour les tokens de session) + socket de contrôle ~/.reprise/.
 
 Sequence (chaque étape est idempotente) :
-  1. copie sans xattrs de /Applications/Meta AI.app vers ~/Applications/Meta AI Reprise.app
+  1. copie sans xattrs de /Applications/Meta AI.app vers ~/Applications/ReMetaAI.app
   2. extraction du vrai Sparkle vers ~/.reprise/Sparkle-real (LC_ID absolu + re-signature)
   3. compilation des deux dylibs depuis ce dépôt (metaai_reprise.m, metaai_sec_shim.m)
   4. remplacement de Sparkle dans la copie + réécriture du chemin Security.framework
   4bis. insertion de CFBundleExecutable dans le Info.plist de la copie (l'app
         originale s'en passe : LaunchServices retombe sur le nom du bundle,
-        « Meta AI » — la copie s'appelle « Meta AI Reprise » et devient
+        « Meta AI » — la copie s'appelle « ReMetaAI » et devient
         introuvable au clic ; la clé explicite supprime cette ambiguïté)
   5. signature Apple Development (runtime durci désactivé) + chmod 755
 
@@ -37,8 +37,8 @@ from pathlib import Path
 REPRISE = Path(__file__).resolve().parent
 HOME = Path.home()
 SRC_APP = Path('/Applications/Meta AI.app')
-DST_APP = HOME / 'Applications' / 'Meta AI Reprise.app'
-DST_BUNDLE_ID = 'com.meta.endo.vanilla.reprise'
+DST_APP = HOME / 'Applications' / 'ReMetaAI.app'
+DST_BUNDLE_ID = 'com.reprise.remetaai'
 RUNTIME = HOME / '.reprise'
 SPARKLE_REAL = RUNTIME / 'Sparkle-real'
 SEC_SHIM = RUNTIME / 'sec-shim.dylib'
@@ -169,7 +169,7 @@ def patch_info_plist() -> dict:
       confond les deux apps (TCC, items de connexion, single-instance par
       bundle id) : un droit accordé « à la copie » est résolu vers
       l'originale, et tout lancement de l'originale tue la copie.
-    - CFBundleName/CFBundleDisplayName « Meta AI Reprise » pour distinguer la
+    - CFBundleName/CFBundleDisplayName « ReMetaAI » pour distinguer la
       fenêtre et la barre des menus.
     """
     plist_path = DST_APP / 'Contents/Info.plist'
@@ -182,11 +182,11 @@ def patch_info_plist() -> dict:
     if payload.get('CFBundleIdentifier') != DST_BUNDLE_ID:
         payload['CFBundleIdentifier'] = DST_BUNDLE_ID
         changes.append('CFBundleIdentifier')
-    if payload.get('CFBundleName') != 'Meta AI Reprise':
-        payload['CFBundleName'] = 'Meta AI Reprise'
+    if payload.get('CFBundleName') != 'ReMetaAI':
+        payload['CFBundleName'] = 'ReMetaAI'
         changes.append('CFBundleName')
-    if payload.get('CFBundleDisplayName') != 'Meta AI Reprise':
-        payload['CFBundleDisplayName'] = 'Meta AI Reprise'
+    if payload.get('CFBundleDisplayName') != 'ReMetaAI':
+        payload['CFBundleDisplayName'] = 'ReMetaAI'
         changes.append('CFBundleDisplayName')
     if not changes:
         return {'step': 'patch-info-plist', 'changed': False}

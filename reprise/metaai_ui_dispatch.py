@@ -2,7 +2,7 @@
 # metaai_ui_dispatch.py — dispatcher UI du pont Meta AI (invocation rapide)
 #
 # Après dispatch_task (inbox/<id>.json écrit sur le volume WebDAV), ce module
-# pilote la copie patchée « Meta AI Reprise » par sa socket de contrôle
+# pilote la copie patchée « ReMetaAI » par sa socket de contrôle
 # (~/.reprise/metaai-reprise-trigger.sock, cf. metaai_reprise.m) :
 #   insert(prompt) puis send() — zéro Accessibilité, zéro CDP.
 #
@@ -97,7 +97,7 @@ def ensure_app(socket_path: Path, app_binary: Path, wait_s: float = 15.0) -> boo
     if not binary.exists():
         log(f"⚠ copie absente ({binary}) — lancer metaai_reprise_build.py")
         return False
-    log("socket muette — lancement de la copie Meta AI Reprise")
+    log("socket muette — lancement de la copie ReMetaAI")
     subprocess.Popen([str(binary)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      start_new_session=True)
     deadline = time.time() + wait_s
