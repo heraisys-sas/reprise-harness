@@ -60,22 +60,27 @@ class StoreNotificationTests(unittest.TestCase):
         # A distinct result digest gets its own deterministic event id: reset
         # between cases to observe the kind mapping alone.
         self.db.execute('DELETE FROM notification_events')
+        self.db.commit()  # issue #194 : plus de commit implicite du travail de l'appelant
         self.store.finish('key', {'status': 'interrupted', 'phase': 'active', 'terminal_evidence': 'sigquit'})
         kinds = sorted(kind for _, kind, *_ in self.events())
         self.assertEqual(kinds, ['attention_required', 'turn_terminal'])
         self.db.execute('DELETE FROM notification_events')
+        self.db.commit()  # issue #194 : plus de commit implicite du travail de l'appelant
         self.store.finish('key', {'status': 'quota_blocked', 'phase': 'active'})
         # quota_blocked is still a `recorded` terminal state: terminated but
         # never a proven success.
         self.assertEqual(sorted(kind for _, kind, *_ in self.events()),
                          ['attention_required', 'turn_terminal'])
         self.db.execute('DELETE FROM notification_events')
+        self.db.commit()  # issue #194 : plus de commit implicite du travail de l'appelant
         self.store.finish('key', {'status': 'blocked_permission', 'phase': 'active'})
         self.assertEqual([kind for _, kind, *_ in self.events()], ['attention_required'])
         self.db.execute('DELETE FROM notification_events')
+        self.db.commit()  # issue #194 : plus de commit implicite du travail de l'appelant
         self.store.finish('key', {'status': 'crashed_unknown', 'phase': 'active'})
         self.assertEqual([kind for _, kind, *_ in self.events()], ['attention_required'])
         self.db.execute('DELETE FROM notification_events')
+        self.db.commit()  # issue #194 : plus de commit implicite du travail de l'appelant
         self.store.finish('key', {'status': 'running', 'phase': 'active'})
         self.assertEqual(self.events(), [])
 

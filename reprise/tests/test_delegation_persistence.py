@@ -331,6 +331,118 @@ class DurableTests(unittest.TestCase):
                 finally:
                     db.close()
 
+    def test_open_caller_transaction_cannot_commit_on_reconcile(self):
+        # Issue #194 : reconcile_awaiting_human doit refuser un appelant en
+        # transaction (et rester utilisable depuis Store.__init__).
+        path = self.root / 'reconcile-tx.sqlite'
+        db = sqlite3.connect(str(path))
+        self.addCleanup(db.close)
+        store = Store(db, 'project')
+        db.execute('CREATE TABLE caller_state(note TEXT NOT NULL)')
+        db.commit()
+        db.execute("INSERT INTO caller_state VALUES ('uncommitted')")
+        self.assertTrue(db.in_transaction)
+        with self.assertRaisesRegex(sqlite3.OperationalError, 'Active caller transaction'):
+            store.reconcile_awaiting_human()
+        self.assertTrue(db.in_transaction)
+        other = sqlite3.connect(str(path))
+        self.addCleanup(other.close)
+        self.assertEqual(other.execute('SELECT COUNT(*) FROM caller_state').fetchone()[0], 0)
+        db.rollback()
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM caller_state').fetchone()[0], 0)
+        store.reconcile_awaiting_human()
+        self.assertFalse(db.in_transaction)
+
+    def test_open_caller_transaction_cannot_commit_on_attach(self):
+        path = self.root / 'attach-tx.sqlite'
+        db = sqlite3.connect(str(path))
+        self.addCleanup(db.close)
+        store = Store(db, 'project')
+        self.assertIsNone(store.begin('first', {'question': 'A'}))
+        db.execute('CREATE TABLE caller_state(note TEXT NOT NULL)')
+        db.commit()
+        db.execute("INSERT INTO caller_state VALUES ('uncommitted')")
+        self.assertTrue(db.in_transaction)
+        with self.assertRaisesRegex(sqlite3.OperationalError, 'Active caller transaction'):
+            store.attach('first', {'phase': 'active', 'thread_id': ID, 'turn_id': 'turn-1'})
+        self.assertTrue(db.in_transaction)
+        self.assertIsNone(store.phase('first'))
+        other = sqlite3.connect(str(path))
+        self.addCleanup(other.close)
+        self.assertEqual(other.execute('SELECT COUNT(*) FROM caller_state').fetchone()[0], 0)
+        db.rollback()
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM caller_state').fetchone()[0], 0)
+        self.assertIsNone(store.phase('first'))
+
+    def test_open_caller_transaction_cannot_commit_on_set_phase(self):
+        path = self.root / 'set-phase-tx.sqlite'
+        db = sqlite3.connect(str(path))
+        self.addCleanup(db.close)
+        store = Store(db, 'project')
+        self.assertIsNone(store.begin('first', {'question': 'A'}))
+        store.attach('first', {'phase': 'active', 'thread_id': ID, 'turn_id': 'turn-1'})
+        self.assertEqual(store.phase('first')['phase'], 'active')
+        db.execute('CREATE TABLE caller_state(note TEXT NOT NULL)')
+        db.commit()
+        db.execute("INSERT INTO caller_state VALUES ('uncommitted')")
+        self.assertTrue(db.in_transaction)
+        with self.assertRaisesRegex(sqlite3.OperationalError, 'Active caller transaction'):
+            store.set_phase('first', 'finished')
+        self.assertTrue(db.in_transaction)
+        self.assertEqual(store.phase('first')['phase'], 'active')
+        other = sqlite3.connect(str(path))
+        self.addCleanup(other.close)
+        self.assertEqual(other.execute('SELECT COUNT(*) FROM caller_state').fetchone()[0], 0)
+        db.rollback()
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM caller_state').fetchone()[0], 0)
+        self.assertEqual(store.phase('first')['phase'], 'active')
+
+    def test_open_caller_transaction_cannot_commit_on_release(self):
+        path = self.root / 'release-tx.sqlite'
+        db = sqlite3.connect(str(path))
+        self.addCleanup(db.close)
+        store = Store(db, 'project')
+        self.assertIsNone(store.begin('first', {'question': 'A'}))
+        store.attach('first', {'phase': 'active', 'thread_id': ID, 'turn_id': 'turn-1'})
+        self.assertEqual(store.claim('first', 'local:42'), 'owned')
+        self.assertEqual(store.phase('first')['owner'], 'local:42')
+        db.execute('CREATE TABLE caller_state(note TEXT NOT NULL)')
+        db.commit()
+        db.execute("INSERT INTO caller_state VALUES ('uncommitted')")
+        self.assertTrue(db.in_transaction)
+        with self.assertRaisesRegex(sqlite3.OperationalError, 'Active caller transaction'):
+            store.release('first', 'local:42')
+        self.assertTrue(db.in_transaction)
+        self.assertEqual(store.phase('first')['owner'], 'local:42')
+        other = sqlite3.connect(str(path))
+        self.addCleanup(other.close)
+        self.assertEqual(other.execute('SELECT COUNT(*) FROM caller_state').fetchone()[0], 0)
+        db.rollback()
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM caller_state').fetchone()[0], 0)
+        self.assertEqual(store.phase('first')['owner'], 'local:42')
+
+    def test_open_caller_transaction_cannot_commit_on_finish(self):
+        path = self.root / 'finish-tx.sqlite'
+        db = sqlite3.connect(str(path))
+        self.addCleanup(db.close)
+        store = Store(db, 'project')
+        self.assertIsNone(store.begin('first', {'question': 'A'}))
+        db.execute('CREATE TABLE caller_state(note TEXT NOT NULL)')
+        db.commit()
+        db.execute("INSERT INTO caller_state VALUES ('uncommitted')")
+        self.assertTrue(db.in_transaction)
+        with self.assertRaisesRegex(sqlite3.OperationalError, 'Active caller transaction'):
+            store.finish('first', {'status': 'finished'})
+        self.assertTrue(db.in_transaction)
+        self.assertEqual(store.lookup({'request_key': 'first'})['state'], 'indeterminate')
+        other = sqlite3.connect(str(path))
+        self.addCleanup(other.close)
+        self.assertEqual(other.execute('SELECT COUNT(*) FROM caller_state').fetchone()[0], 0)
+        db.rollback()
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM caller_state').fetchone()[0], 0)
+        self.assertEqual(store.lookup({'request_key': 'first'})['state'], 'indeterminate')
+        self.assertIsNone(store.lookup({'request_key': 'first'})['result'])
+
     def test_scope_isolation(self):
         db = sqlite3.connect(self.root/'requests.sqlite')
         self.addCleanup(db.close)

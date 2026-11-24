@@ -84,6 +84,7 @@ class AwaitingHumanTests(unittest.TestCase):
         self.db.execute("INSERT INTO delegation_requests(scope,request_key,identity,signature,parent,root,depth,attempt,state,result)"
                         " VALUES ('scope','other','i2','s2',NULL,'other',0,'b','indeterminate',?)",
                         (json.dumps({'status': 'timed_out'}),))
+        self.db.commit()  # issue #194 : plus de commit implicite du travail de l'appelant
         for _ in range(2):
             self.store.reconcile_awaiting_human()
         legacy, = self.db.execute("SELECT state FROM delegation_requests WHERE request_key='legacy'").fetchone()

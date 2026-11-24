@@ -208,14 +208,19 @@ class Store:
             if 'context' not in {row[1] for row in db.execute('PRAGMA table_info(delegation_turns)')}:
                 db.execute('ALTER TABLE delegation_turns ADD COLUMN context TEXT')
             delegation_notifications.install(db)
-            self.reconcile_awaiting_human()
+            self._reconcile_awaiting_human_locked()
 
     def reconcile_awaiting_human(self):
         """One-shot, idempotent backfill (issue #53): receipts persisted before the
         awaiting_human state existed are reclassified from indeterminate; replay changes nothing."""
+        self._require_fresh_write_transaction()
         with self.db:
-            self.db.execute("UPDATE delegation_requests SET state='awaiting_human'"
-                            " WHERE state='indeterminate' AND json_extract(result,'$.status')='blocked_permission'")
+            self._reconcile_awaiting_human_locked()
+
+    def _reconcile_awaiting_human_locked(self):
+        """Backfill lui-même ; l'appelant possède la transaction (Store.__init__ ou wrapper gardé)."""
+        self.db.execute("UPDATE delegation_requests SET state='awaiting_human'"
+                        " WHERE state='indeterminate' AND json_extract(result,'$.status')='blocked_permission'")
 
     def lookup(self, args):
         view = validate_lookup(args)
@@ -325,6 +330,7 @@ class Store:
         if not isinstance(event, dict) or event.get('phase') not in PHASES:
             raise ValueError('Invalid turn event')
         stamp = float(self.now())
+        self._require_fresh_write_transaction()
         with self.db:
             row = self.db.execute('SELECT attempt FROM delegation_requests WHERE scope=? AND request_key=?', (self.scope, key)).fetchone()
             if not row:
@@ -369,6 +375,7 @@ class Store:
         if phase not in PHASES:
             raise ValueError('Unknown native phase')
         stamp = float(self.now())
+        self._require_fresh_write_transaction()
         with self.db:
             if not self.db.execute('SELECT 1 FROM delegation_turns WHERE scope=? AND request_key=?',
                                    (self.scope, key)).fetchone():
@@ -419,6 +426,7 @@ class Store:
             return 'taken_over'
 
     def release(self, key, owner):
+        self._require_fresh_write_transaction()
         with self.db:
             self.db.execute('UPDATE delegation_turns SET owner=NULL WHERE scope=? AND request_key=? AND owner=?',
                             (self.scope, key, owner))
@@ -669,6 +677,7 @@ class Store:
                 'receipt': self.lookup({'request_key': key})}
 
     def finish(self, key, result):
+        self._require_fresh_write_transaction()
         result = dict(result, request_key=key)
         if result.get('status') in RECORDED_STATUSES:
             state = 'recorded'
