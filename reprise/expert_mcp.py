@@ -148,7 +148,7 @@ CODEX_PARALLEL_SLOTS = 2
 # quand même, marqué unavailable (jamais routé vers un autre backend).
 EXPERTS_MANIFEST_VERSION = 1
 EXPERTS_MANIFEST_PATH = Path(__file__).resolve().parent / 'experts-manifest.json'
-EXPERTS_SESSION_MODES = ('stdio_thread', 'durable_taskstore', 'push_only')
+EXPERTS_SESSION_MODES = ('stdio_thread', 'durable_taskstore', 'push_only', 'window_continuation')
 EXPERTS_HANDLED_BACKENDS = ('codex', 'ironclaw', 'claude-code', 'claude-desktop',
                             'foundation-models', 'chatgpt')
 
@@ -680,6 +680,35 @@ class Bridge:
             self.chatgpt_tasks = None
             return False
 
+    def _chatgpt_thread_owned(self, request_key):
+        """Issue #260 : possession d'un thread ChatGPT pour un followup.
+
+        Critère (validé) : une admission de CE projet dans le registre durable
+        chatgpt_submissions (scope = str(root), même convention que
+        chatgpt_quick.Endpoint) dont le reçu de dispatch est présent. Lecture
+        seule, best effort : registre absent, base vide ou illisible = non
+        possédé (ThreadNotOwned côté appelant), jamais d'exception. La
+        correspondance de conversation reste prouvée au tour 2 par l'écho du
+        prompt ; un id divergent observé est signalé dans le reçu, sans refus.
+        """
+        database = self.chatgpt_state / 'chatgpt.sqlite'
+        if not database.is_file():
+            return False
+        try:
+            ledger = sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=2)
+        except sqlite3.Error:
+            return False
+        try:
+            row = ledger.execute(
+                'SELECT 1 FROM chatgpt_submissions'
+                ' WHERE scope=? AND request_key=? AND dispatch_receipt IS NOT NULL',
+                (str(self.root), request_key)).fetchone()
+        except sqlite3.Error:
+            return False
+        finally:
+            ledger.close()
+        return row is not None
+
     def _lazy_claude_start(self):
         """Départ paresseux optionnel du daemon Quick Apply (lot C #239) :
         opt-in via la clé scheduler delegation_lazy_start (défaut False) ;
@@ -1184,7 +1213,11 @@ class Bridge:
         if name == 'reprise_followup' and backend == 'claude-desktop':
             raise ValueError('Pas de session Quick Apply suiveuse ; la soumission est unidirectionnelle.')
         if name == 'reprise_followup' and backend == 'chatgpt':
-            raise ValueError('Pas de session ChatGPT suiveuse ; admission unidirectionnelle, retour = capture de réponse par le holder (receipt).')
+            # Issue #260 : la levée conditionnelle exige une possession
+            # prouvée — admission chatgpt de ce scope dont le reçu durable de
+            # dispatch est présent. Sinon, refus typé (jamais un repli).
+            if not isinstance(ident, str) or not self._chatgpt_thread_owned(ident):
+                raise ThreadNotOwned('chatgpt', ident)
         if name == 'reprise_followup' and backend == 'metaai':
             raise ValueError('Pas de session metaai suiveuse (#258 lot 2) ; le pont TaskStore WebDAV couvre les tâches, pas une session de délégation expert.')
         if name == 'reprise_followup' and backend == 'claude-code':
@@ -1194,7 +1227,10 @@ class Bridge:
             if not route or route[0] != self.claude_program:
                 raise ThreadNotOwned('claude-code', ident)
             routing = dict(zip(('model', 'effort'), route[1:]))
-        elif name == 'reprise_followup':
+        elif name == 'reprise_followup' and backend != 'chatgpt':
+            # Issue #260 : un followup chatgpt gardé sous son propre nom — le
+            # rename codex_followup entraînerait le contrôle expert_threads
+            # (scope codex), inapplicable à un thread_id d'admission chatgpt.
             name = 'codex_followup'
         if name == 'codex_followup' and (not isinstance(ident, str) or not self.db.execute(
                 'SELECT 1 FROM expert_threads WHERE scope=? AND id=?', (self.scope, ident)).fetchone()):

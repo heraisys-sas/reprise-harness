@@ -331,3 +331,34 @@ preuve distincte d'arrivée Desktop et de capture de réponse (receipt holder,
 `response_complete`) avant de déclarer le transport réellement fonctionnel.
 Ni fallback réseau/TCP ni bascule vers une
 API payante implicite.
+
+### Issue #260 — Followup ChatGPT : continuation de la fenêtre courante
+
+`reprise_followup` accepte désormais `backend: "chatgpt"` avec `thread_id`
+égal au `request_key` de l'admission ChatGPT d'origine. La possession est
+levée seulement si le registre `chatgpt-state` (`chatgpt_submissions`)
+contient, pour CE périmètre projet (`scope` = racine du pont), une ligne dont
+le reçu durable de dispatch (`dispatch_receipt`) est présent : la fenêtre
+ChatGPTDesktop visée est donc celle d'un aller-retour déjà poussé, jamais une
+fenêtre arbitraire. Sans cette preuve, le refus est typé
+`thread_not_owned` (`backend: "chatgpt"`, `thread_id`, `resume_with:
+"parent_request_key"`), comme pour les autres backends (#100).
+
+La session est déclarée `window_continuation` dans le manifeste experts
+(`resumable: true`) : il n'existe pas de thread relançable côté ChatGPT —
+le followup continue la fenêtre courante du holder dédié. L'ancrage de la
+réponse est renforcé côté pipe : le reçu durable porte désormais
+`conversation_id`, extrait (borné à 64 KiB par trame) de l'évènement WS
+`conversation-created` lors du drain de fin de tour. Si la fenêtre annonce
+un second `conversation_id` distinct pendant le tour, la divergence est
+**signalée** dans le reçu (`conversation_id_divergent: true`) sans refuser
+le dispatch — preuve conservée, jamais une censure. L'absence d'identifiant
+(sig Frames absentes, WS mort) laisse `conversation_id` à `null` et le
+comportement inchangé.
+
+Invariants inchangés : le mode `implementation` reste refusé pour chatgpt
+(expertise/revue consultative uniquement) ; l'au-plus-une-fois du dispatch
+holder porte sur l'identité du followup lui-même (request_key actif), pas
+sur le thread d'origine ; aucun repli codex ni cross-backend ; les anciens
+reçus sans champ `conversation_id` restent chargeables (champ absent =
+`null`).
