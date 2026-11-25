@@ -7,6 +7,7 @@ struct Request: Decodable {
     let payload: String
     let purpose: String
     let interactive: Bool?
+    let require_existing_key: Bool?
 }
 struct VaultError: Error {
     let code: String
@@ -58,9 +59,10 @@ do {
     let input = FileHandle.standardInput.readDataToEndOfFile()
     guard input.count <= 64 * 1024 * 1024 else { throw VaultError(code: "invalid_request", message: "Requête trop volumineuse.") }
     let request = try JSONDecoder().decode(Request.self, from: input)
-    guard ["search-index-v1", "analysis-cache-v1", "orchestrator-memory-v1", "orchestrator-intent-v1", "coordinator-jobs-v1", "test-v1"].contains(request.purpose),
+    guard ["search-index-v1", "analysis-cache-v1", "orchestrator-memory-v1", "orchestrator-intent-v1", "coordinator-jobs-v1", "siri-inbox-v1", "test-v1"].contains(request.purpose),
           let payload = Data(base64Encoded: request.payload),
           ["seal", "open", "check", "authorize"].contains(request.operation),
+          (request.purpose != "siri-inbox-v1" || (request.require_existing_key == true && request.operation != "authorize")),
           request.interactive != true || request.operation == "authorize" else {
         throw VaultError(code: "invalid_request", message: "Requête du coffre invalide.")
     }
@@ -82,7 +84,7 @@ do {
         let aad = Data(request.purpose.utf8)
         let result: Data
         if request.operation == "seal" {
-            result = try AES.GCM.seal(payload, using: key(create: true, interactive: false), authenticating: aad).combined!
+            result = try AES.GCM.seal(payload, using: key(create: request.purpose != "siri-inbox-v1" && request.require_existing_key != true, interactive: false), authenticating: aad).combined!
         } else {
             result = try AES.GCM.open(AES.GCM.SealedBox(combined: payload), using: key(create: false, interactive: false), authenticating: aad)
         }

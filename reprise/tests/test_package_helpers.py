@@ -49,6 +49,10 @@ class PackageHelpersTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'LICENSE'):
                     package(source, root / 'app')
 
+    def test_registry_durability_helpers_are_packaged(self):
+        for name in ('registry_marker.py', 'registry_adopt.py'):
+            self.assertIn(name, ASSETS)
+
     def test_desktop_apply_assets_preserve_current_packaging(self):
         for name in ('claude_desktop_apply.py',
                      'claude_quota_log.py', 'claude_quota_banner.py', 'claude_cdp_pipe.py', 'claude_inbox.py', 'websocket_transport.py', 'claude_session_store.py', 'claude_session_observer.py', 'managed_update.py',
@@ -56,6 +60,15 @@ class PackageHelpersTests(unittest.TestCase):
             self.assertIn(name, ASSETS)
         self.assertTrue(any(path.endswith('/CLAUDE-DESKTOP-APPLY.md') for path in package_helpers.DOCS))
         self.assertIn('docs/runbooks/SCHEDULER-SERVICE.md', package_helpers.DOCS)
+        self.assertIn('approval_delegation.py', ASSETS)
+        self.assertIn('docs/contracts/APPROVALS-CONTRACT.md', package_helpers.DOCS)
+
+    def test_experts_manifest_is_packaged_intact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = package(SOURCE, Path(temporary).resolve() / 'Reprise.app')
+            target = root / 'experts-manifest.json'
+            self.assertTrue(target.is_file())
+            self.assertEqual(target.read_bytes(), (SOURCE / 'experts-manifest.json').read_bytes())
 
     def test_moved_payload_runs_without_source_and_keeps_state_outside_bundle(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -111,7 +124,7 @@ class PackageHelpersTests(unittest.TestCase):
             imported = subprocess.run([
                 sys.executable, '-I', '-B', '-c',
                 "import sys; sys.path.insert(0, sys.argv.pop(1)); "
-                "import codex_expert_mcp, claude_desktop_apply, claude_inbox, "
+                "import expert_mcp, claude_desktop_apply, claude_inbox, "
                 "websocket_transport, claude_session_store, claude_session_observer, "
                 "apple_pilot, apple_pilot_transport, apple_pilot_service, "
                 "coordinator_candidate, orchestrator_memory, orchestrator_memory_service; "

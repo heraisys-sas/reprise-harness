@@ -119,3 +119,12 @@ let r = !!e.text && e.text.trim().length > 2 || e.images.length > 0
    qui crée le socket `~/.claude-desktop/quick-entry.sock` (fusion 10/11/2026,
    un seul socket) : un socket présent + greeting `{"hello":true}` prouve que
    ReClaude (et non l'originale) tourne.
+6. **Identité et gel (contrat [APP-CLONES](APP-CLONES-CONTRACT.md), 17/11/2026)** :
+   la copie porte désormais son nom affiché propre (`CFBundleName`/
+   `CFBundleDisplayName` = « ReClaude » — le dossier ne suffit pas) sur
+   l'identité de bundle `.reprise` existante ; l'auto-update du clone est
+   coupé (`defaults write com.anthropic.claudefordesktop.reprise
+   SUEnableAutomaticChecks/SUAutomaticallyUpdate false`) — un update Squirrel
+   dans la copie remplacerait le bundle par l'officiel et détruirait le patch
+   #124. Version gelée enregistrée dans `app-clones.json` ; refresh = pipeline
+   #124 puis `app_clones apply` ([runbook](../runbooks/APP-CLONES.md)).

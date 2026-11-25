@@ -1,0 +1,99 @@
+---
+# Mise à jour transactionnelle par managed_update (runbook docs/runbooks/MANAGED-UPDATE.md).
+# Cycle humain : inspect -> plan écrit sur disque -> PAUSE de lecture -> apply -> verify.
+# cleanup n'est JAMAIS lancé par le playbook : il reste une décision humaine après
+# observation des nouveaux logs (le reçu liste les seules sauvegardes supprimables).
+- name: Localiser le bundle construit
+  reprise_bundle:
+    builds_dir: "{{ reprise_build_app_path }}"
+  register: bundle
+  tags: [update]
+
+- name: Inspecter l'installation cible
+  ansible.builtin.command:
+    cmd: >-
+      {{ bundle.runtime_python }} -E -s -B {{ bundle.helpers }}/managed_update.py inspect
+      --app {{ reprise_target_app }} --state {{ reprise_support_dir }}
+  register: update_inspect
+  changed_when: false
+  tags: [update]
+
+- name: Restituer l'inspection
+  ansible.builtin.debug:
+    msg: "{{ update_inspect.stdout }}"
+  tags: [update]
+
+- name: Préparer le plan de mise à jour
+  ansible.builtin.command:
+    cmd: >-
+      {{ bundle.runtime_python }} -E -s -B {{ bundle.helpers }}/managed_update.py plan
+      --bundle {{ bundle.app_path }}
+      --components {{ reprise_update_components }}
+      --profile {{ reprise_harness_profile }}
+      --codex-entry {{ reprise_update_codex_entry }}
+      {{ '--activate-scheduler' if reprise_update_activate_scheduler else '' }}
+      {{ '--relaunch-app' if reprise_update_relaunch_app else '' }}
+    chdir: "{{ reprise_support_dir }}"
+  register: update_plan
+  changed_when: true
+  tags: [update]
+
+- name: Écrire le plan sur disque pour lecture humaine
+  ansible.builtin.copy:
+    content: "{{ update_plan.stdout }}"
+    dest: "{{ reprise_diag_dir }}/managed-update-plan.json"
+    mode: "0600"
+  tags: [update]
+
+- name: PAUSE — lire le plan de mise à jour avant d'accepter
+  ansible.builtin.pause:
+    prompt: >-
+      Lire {{ reprise_diag_dir }}/managed-update-plan.json puis fermer Reprise
+      avant son remplacement et appliquer le plan ? Tapez 'oui' pour continuer,
+      Entrée pour annuler.
+  when: not reprise_auto_approve | bool
+  register: update_confirm
+  tags: [update]
+
+- name: Refuser si l'opérateur n'a pas accepté explicitement
+  ansible.builtin.assert:
+    that:
+      - reprise_auto_approve | bool or (update_confirm.user_input | default('') | lower) in ['oui', 'o', 'y', 'yes']
+    fail_msg: "Apply annulé (aucun accord explicite). Le plan reste dans {{ reprise_diag_dir }}/managed-update-plan.json"
+  tags: [update]
+
+- name: Appliquer le plan (mise à jour transactionnelle, reçu horodaté)
+  ansible.builtin.command:
+    cmd: >-
+      {{ bundle.runtime_python }} -E -s -B {{ bundle.helpers }}/managed_update.py apply
+      --plan {{ reprise_diag_dir }}/managed-update-plan.json
+  register: update_apply
+  when: reprise_auto_approve | bool or (update_confirm.user_input | default('') | lower) in ['oui', 'o', 'y', 'yes']
+  changed_when: true
+  tags: [update]
+
+- name: Extraire le chemin du reçu
+  ansible.builtin.set_fact:
+    update_receipt: >-
+      {{ (update_apply.stdout | regex_findall('/[^ \r\n]*receipt\.json') | last)
+      if 'receipt.json' in (update_apply.stdout | default('')) else '' }}
+  when: update_apply is changed and update_apply is not skipped
+  tags: [update]
+
+- name: Vérifier l'installation (release chargée, tick, ponts sondés)
+  ansible.builtin.command:
+    cmd: >-
+      {{ bundle.runtime_python }} -E -s -B {{ bundle.helpers }}/managed_update.py verify
+      --receipt {{ update_receipt }}
+  register: update_verify
+  when: update_receipt | length > 0
+  changed_when: false
+  tags: [update]
+
+- name: Restituer la vérification et rappeler le cleanup manuel
+  ansible.builtin.debug:
+    msg: >-
+      verify : {{ update_verify.stdout | default('non exécuté') }}
+      — Cleanup humain seulement, après lecture des nouveaux logs :
+      managed_update.py cleanup --receipt {{ update_receipt | default('<reçu affiché par apply>') }}
+  tags: [update]

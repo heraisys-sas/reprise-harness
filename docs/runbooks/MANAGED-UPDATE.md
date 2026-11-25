@@ -11,7 +11,7 @@ python3 -B reprise/managed_update.py inspect
 python3 -B reprise/managed_update.py plan \
   --bundle /chemin/du/build/Reprise.app \
   --components app,scheduler,harness,claude,codex --profile desktop \
-  --codex-entry reprise_codex --codex-entry reprise-harness \
+  --codex-entry reprise-harness \
   --activate-scheduler --relaunch-app > /tmp/reprise-update-plan.json
 # Lire le plan. Fermer normalement Reprise avant son remplacement.
 python3 -B reprise/managed_update.py apply --plan /tmp/reprise-update-plan.json
@@ -50,10 +50,59 @@ lot ; les journaux propres aux adaptateurs restent l’autorité de leur reprise
 début de l’opération lorsqu’un scheduler actif est sélectionné. Si ce tick n’a
 pas encore eu lieu, refaire uniquement `verify` après le passage planifié.
 Les ponts sont sondés directement avec initialize/tools/list, sans inférence.
+La vérification Harness signale maintenant `bridge_capabilities.delegation`
+(`configured`, `advertised`, `mode`, outils manquants) et
+`update_required=true` pour un pont OBSERVE seul, même si la release est à jour.
+Le reçu de mise à jour propage `connector_update_required` et
+`connector_updates` par profil ; une capacité absente bloque la validation
+et le nettoyage. Aucun outil n'est activé automatiquement par vérification.
 Le chargement par les clients ouverts reste `unknown`. Le contrôle des logs
 porte sur les nouveaux octets depuis le plan (64 Kio maximum) ; rotation,
 volume supérieur ou signature d’erreur conserve les sauvegardes pour examen.
 Aucun contenu de journal n’est imprimé dans le résultat public.
+
+### Redémarrage du daemon Claude après apply
+
+`apply --components scheduler,claude` redémarre le scheduler launchd mais pas le
+daemon `claude-desktopd`, détenteur du socket `~/.claude-desktop/quick-entry.sock` :
+il continue de charger l’ancienne release jusqu’à redémarrage manuel. Preuve de
+chargement : `lsof ~/.claude-desktop/quick-entry.sock` donne le PID du daemon ;
+`lsof -p <pid> | grep bin/python3` doit citer la nouvelle `integration-releases/<identité>`.
+Relance : SIGTERM de l’ancien PID, puis démarrage avec le runtime de la nouvelle release :
+
+```sh
+python3 -E -s -B <release>/Contents/Resources/helpers/claude_desktop_quick.py --project-root <projet>
+```
+
+Le socket est recréé au démarrage. Après l’arrêt du daemon, le fichier socket peut
+rester présent sans détenteur et le daemon refuse alors de démarrer
+(« Socket déjà présent ; remplacement interdit sans réconciliation explicite »).
+Un socket dont `connect()` est refusé est orphelin — daemon arrêté ; c’est le
+diagnostic normal, jamais par existence du fichier. Après confirmation qu’aucun
+processus ne tient le socket (`lsof` vide + `connect()` refusé), supprimer le
+fichier socket orphelin est la réparation normale, puis relancer. Ne jamais
+supprimer un socket tenu par un daemon vivant.
+
+### Contrôle post-déploiement des outils de délégation (#216)
+
+Pour chaque profil Harness déjà géré :
+
+```sh
+python3 -B reprise/reprise harness-integration-verify --home ~/.dsh --profile desktop
+# Si update_required=true ou bridge_capabilities.delegation.configured=false :
+python3 -B reprise/reprise harness-integration-plan \
+  --home ~/.dsh --profile desktop --project /projet/autorisé \
+  --action install --delegate > /chemin/prive/harness-plan.json
+# Après examen et consentement explicite :
+python3 -B reprise/reprise harness-integration-apply < /chemin/prive/harness-plan.json
+python3 -B reprise/reprise harness-integration-verify --home ~/.dsh --profile desktop
+```
+
+Après application, recharger manuellement Harness et confirmer dans le
+client `reprise_delegate`, `reprise_followup`, `reprise_reconcile`.
+Le probe des outils ne prouve pas que le profil ouvert les a chargés ;
+seul un aller-retour métier `get_task/submit_result` accepté le prouve.
+Pas d'installation silencieuse ni de repli payant.
 
 Limites explicites : pas de redémarrage de Codex, DSH ou Claude Desktop,
 pas d’arrêt implicite de Reprise, pas d’arrêt d’un daemon à partir d’un simple

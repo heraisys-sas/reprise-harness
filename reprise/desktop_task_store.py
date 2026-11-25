@@ -394,10 +394,22 @@ class TaskStore:
         bounded(claim_key, 'claim_key', 128)
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
+            held = self.db.execute('''SELECT request_key,attempt_id FROM desktop_claims
+                WHERE scope=? AND claim_key=?''', (self.scope, claim_key)).fetchone()
+            if held is not None:
+                # The preceding delivery may have reached the executor. Never hand a
+                # second prompt to the same claim_key while its receipt is unresolved.
+                return {'status': 'finished', 'state': 'busy',
+                        'request_key': held[0], 'attempt_id': held[1],
+                        'instruction': 'This claim_key already holds a task. Submit its result or reconcile the uncertain delivery before claiming another.'}
             row = self.db.execute('''SELECT t.request_key,t.prompt,t.chat_id
                 FROM desktop_task_order o JOIN desktop_tasks t
                   ON t.scope=o.scope AND t.request_key=o.request_key
-                WHERE o.scope=? AND t.claim_key IS NULL AND t.delivery IS NULL AND t.answer IS NULL
+                JOIN desktop_dispatch_guard g
+                  ON g.scope=t.scope AND g.request_key=t.request_key
+                WHERE o.scope=? AND t.claim_key IS NULL AND t.attempt_id IS NULL
+                  AND t.delivery IS NULL AND t.answer IS NULL
+                  AND g.legacy_unknown=0 AND g.review_started=0 AND g.dispatch_started=0
                 ORDER BY o.seq LIMIT 1''', (self.scope,)).fetchone()
             if row is None:
                 return {'status': 'finished', 'state': 'empty',
@@ -405,7 +417,7 @@ class TaskStore:
             attempt = str(uuid.uuid4())
             self.db.execute('UPDATE desktop_tasks SET claim_key=?,attempt_id=?,delivery=? WHERE scope=? AND request_key=?',
                             (claim_key, attempt, 'attempted', self.scope, row[0]))
-            self.db.execute('INSERT OR REPLACE INTO desktop_claims(claim_key,scope,request_key,attempt_id,claimed_at) VALUES(?,?,?,?,?)',
+            self.db.execute('INSERT INTO desktop_claims(claim_key,scope,request_key,attempt_id,claimed_at) VALUES(?,?,?,?,?)',
                             (claim_key, self.scope, row[0], attempt, time.time()))
         return {'status': 'finished', 'request_key': row[0], 'attempt_id': attempt, 'prompt': row[1],
                 'chat_id': row[2], 'completed': False, 'delivery': 'handed_over',

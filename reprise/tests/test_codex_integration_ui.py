@@ -31,6 +31,11 @@ final class App {
  var codexIntegrationOperationID = ""
  var codexIntegrationAcknowledged = false
  var codexIntegrationGeneration: UInt64 = 0
+ var metaaiIntegrationPlan: [String: Any]? = nil
+ var metaaiIntegrationVerificationPlan: [String: Any]? = nil
+ var metaaiIntegrationResult: [String: Any] = [:]
+ var metaaiIntegrationAcknowledged = false
+ var metaaiIntegrationGeneration: UInt64 = 0
  var calls: [String] = []
  var callback: (([String: Any]) -> Void)?
  func setupCommand(_ args: [String], input: [String: Any]? = nil, completion: @escaping ([String: Any]) -> Void) {

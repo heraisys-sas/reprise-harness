@@ -26,8 +26,8 @@ END = '# END REPRISE MANAGED INTEGRATION'
 DOCS = ('REPRISE-AGENTS.template.md', 'CODEX-EXECUTION-CONTRACT.md', 'ASI1-ORCHESTRATOR.template.md', 'ASI1-ORCHESTRATION-CONTRACT.md', 'HANDOFF-CONTRACT.md', 'HARNESS-ROLES-CONTRACT.md', 'DELEGATION-PERSISTENCE.md', 'QUOTA-KNOWLEDGE.md', 'HARNESS-SUPERVISION-ARCHITECTURE.md', 'HARNESS-INTEGRATION.md', 'CLARIFICATION-CONTRACT.md')
 OBSERVE = ('reprise_backends', 'reprise_requests', 'reprise_quotas', 'approval_list', 'wait_result')
 DELEGATE = ('reprise_delegate', 'reprise_followup', 'reprise_reconcile')
-# approval_respond reattaches to the owning Codex thread before answering a native
-# approval request; it may legitimately take longer than a read-only observation.
+# Issue #117 T2a : approval_respond n'est plus exposé automatiquement ; il reviendra
+# en T2b derrière un approval_delegate explicite (ne pas préimplémenter ici).
 APPROVAL_RESPOND = 'approval_respond'
 # Socket Quick Apply local par nature ; généré seulement s'il existe sur cette machine.
 DESKTOP_SOCKET = Path.home() / '.claude-desktop' / 'quick-entry.sock'
@@ -240,18 +240,22 @@ def block_entries(block_text):
     return entries
 
 
-def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, codex_workspace_write=False, desktop_socket=None, bash_sandbox_disabled=False, memory=None):
+def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, codex_workspace_write=False, desktop_socket=None, bash_sandbox_disabled=False, memory=None, chatgpt_state=None, chatgpt_dispatch=False):
     program = release / 'Contents/Resources/runtime/bin/python3'
-    args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/codex_expert_mcp.py'),
+    args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/expert_mcp.py'),
             '--project-root', project]
     if desktop_socket:
         args.extend(['--desktop-socket', str(desktop_socket)])
+    if chatgpt_state:
+        args.extend(['--chatgpt-state', str(chatgpt_state)])
+    if chatgpt_dispatch:
+        args.append('--chatgpt-dispatch')
     args.extend(['--state', state, '--tools', ','.join(tools)])
     if codex_workspace_write:
         args.append('--codex-workspace-write')
     entries = [
         {'id': 'reprise-codex-expert', 'name': '@deepseek-ai/dsh-mcp-client', 'config': {
-            'transport': 'stdio', 'serverName': 'reprise_codex', 'command': str(program), 'args': args,
+            'transport': 'stdio', 'serverName': 'reprise_experts', 'command': str(program), 'args': args,
             'toolCallTimeoutMs': 630000 if 'wait_result' in tools else 330000, 'failOnStartupError': False, 'reconnect': {'enabled': False}}},
         {'id': 'reprise-skill-filesystem', 'name': '@deepseek-ai/dsh-skill-filesystem', 'config': {
             'providerName': 'reprise-' + profile, 'includeDefaultRoots': False,
@@ -269,6 +273,75 @@ def _bridge_entries(release, state, tools, project, profile, managed, output_res
             'config': {'transport': 'stdio', 'serverName': memory_integration.SERVER_NAME, **configured,
                        'toolCallTimeoutMs': 30000, 'failOnStartupError': False, 'reconnect': {'enabled': False}}})
     return entries
+
+
+# Résidu legacy (#156 → #161) : l'ancienne génération écrivait --chatgpt-socket
+# (pont ChatGPT remplacé par la config MCP ~/.codex/config.toml) dans les args de
+# reprise-codex-expert. La migration autorisée est un retrait pur : le drapeau et
+# sa valeur éventuelle, aucune autre divergence.
+_LEGACY_FLAGS = ('--chatgpt-socket',)
+
+
+def _strip_legacy_args(entries):
+    cleaned = json.loads(json.dumps(entries))
+    removed = []
+    for entry in cleaned if isinstance(cleaned, list) else []:
+        if not isinstance(entry, dict) or entry.get('id') != 'reprise-codex-expert':
+            continue
+        args = (entry.get('config') or {}).get('args')
+        if not isinstance(args, list):
+            continue
+        kept, skip = [], False
+        for arg in args:
+            if skip:
+                skip = False
+                if isinstance(arg, str) and not arg.startswith('-'):
+                    removed.append(arg)
+                    continue
+            if arg in _LEGACY_FLAGS:
+                removed.append(arg)
+                skip = True
+                continue
+            kept.append(arg)
+        entry['config']['args'] = kept
+    return cleaned, removed
+
+
+def _validate_target_entries(entries):
+    # Garde-fous contre les corruptions observées hors Reprise : interpréteur
+    # absent, hash de release épissé dans un chemin, bloc plié (style yaml.dump).
+    for entry in entries:
+        config = entry.get('config') if isinstance(entry, dict) else None
+        if not isinstance(config, dict):
+            continue
+        paths = [config.get('command'), entry.get('name')]
+        args = config.get('args')
+        if isinstance(args, list):
+            paths.extend(arg for arg in args if isinstance(arg, str))
+        for path in paths:
+            if not isinstance(path, str) or not path:
+                continue
+            for part in Path(path).parts:
+                if re.fullmatch('[0-9a-fA-F]{65,}', part):
+                    raise ValueError('Chemin épissé ou hash collé : ' + part)
+        command = config.get('command')
+        if config.get('transport') == 'stdio' and isinstance(command, str) and command:
+            if not Path(command).is_file():
+                raise ValueError("Le chemin de l'interpréteur du serveur n'existe pas : " + command)
+
+
+def _canonical_paths(entries):
+    stack = list(entries)
+    while stack:
+        value = stack.pop()
+        if isinstance(value, str):
+            if '\n' in value or value.endswith('\\'):
+                return False
+        elif isinstance(value, list):
+            stack.extend(value)
+        elif isinstance(value, dict):
+            stack.extend(value.values())
+    return True
 
 
 def tree_files(root):
@@ -310,12 +383,127 @@ def bundle_info(root):
     return helpers, runtime, identity
 
 
+def _release_plain_entries(root):
+    # Do not follow symlinks: tree_files() checks their targets separately.
+    for entry in [root, *root.rglob('*')]:
+        if entry.is_symlink():
+            continue
+        info = entry.stat(follow_symlinks=False)
+        if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+            raise ValueError('Type de fichier non supporté dans la release.')
+        yield entry, info
+
+
+def _release_directory_paths(root):
+    return sorted(str(entry.relative_to(root)) for entry, info in _release_plain_entries(root)
+                  if entry != root and stat.S_ISDIR(info.st_mode))
+
+
+def _seal_release(root, keep_root_writable=False):
+    """Seal payload before publish; macOS needs a writable root for rename."""
+    for entry, info in sorted(_release_plain_entries(root), key=lambda item: len(item[0].parts), reverse=True):
+        if keep_root_writable and entry == root:
+            continue
+        entry.chmod(stat.S_IMODE(info.st_mode) & ~0o222)
+
+
+def _restore_directory_writes(root):
+    """Allow cleanup of an unpublished staging tree (also used by disposable tests)."""
+    if not root.exists():
+        return
+    for entry in [root, *root.rglob('*')]:
+        if entry.is_dir() and not entry.is_symlink():
+            entry.chmod(stat.S_IMODE(entry.stat(follow_symlinks=False).st_mode) | stat.S_IWUSR)
+
+
+def _check_release_readonly(root):
+    for entry, info in _release_plain_entries(root):
+        if stat.S_IMODE(info.st_mode) & 0o222:
+            raise ValueError(f'Release publiée modifiable : {entry}')
+
+
 def release_check(release):
     evidence = json.loads((release / 'release.json').read_text())
+    if evidence.get('format') not in (1, 2):
+        raise ValueError('Format de manifeste de release inconnu.')
     actual = tree_files(release)
     actual.pop('release.json', None)
     if actual != evidence['files'] or not os.access(release / 'Contents/Resources/runtime/bin/python3', os.X_OK):
         raise ValueError('Copie installée altérée ; aucune exécution de ce release.')
+    # Format 1: preserve existing installations; never chmod a running release.
+    if evidence['format'] == 2:
+        if evidence.get('immutability') != 'posix-readonly-v1':
+            raise ValueError('Politique d’immuabilité de release inconnue.')
+        if 'directories' not in evidence:
+            raise ValueError('Inventaire des répertoires de release manquant ; manifeste format 2 incomplet.')
+        if _release_directory_paths(release) != evidence['directories']:
+            raise ValueError('Arborescence de release altérée ; aucune exécution.')
+        _check_release_readonly(release)
+
+
+def diagnose_release(release, max_examples=30):
+    """Read-only inventory diff for one explicitly selected integration release.
+
+    This is a filesystem snapshot, not proof of which process caused a drift.
+    Missing files during traversal are reported as unstable, never as clean.
+    """
+    release = Path(release).expanduser().absolute()
+    if release.is_symlink() or not release.is_dir():
+        raise ValueError('Répertoire de release explicite introuvable ou symbolique.')
+    evidence = json.loads((release / 'release.json').read_text())
+    if evidence.get('format') not in (1, 2) or not isinstance(evidence.get('files'), dict):
+        raise ValueError('Manifeste de release non supporté.')
+    expected = evidence['files']
+    try:
+        actual = tree_files(release)
+        actual.pop('release.json', None)
+        writable = []
+        observed_directories = []
+        if evidence['format'] == 2:
+            entries = list(_release_plain_entries(release))
+            writable = [str(entry.relative_to(release))
+                        for entry, info in entries if stat.S_IMODE(info.st_mode) & 0o222]
+            observed_directories = sorted(str(entry.relative_to(release)) for entry, info in entries
+                                          if entry != release and stat.S_ISDIR(info.st_mode))
+    except FileNotFoundError:
+        return {'status': 'unstable', 'release': str(release),
+                'reason': 'entry_disappeared_during_inventory'}
+
+    added = sorted(actual.keys() - expected.keys())
+    missing = sorted(expected.keys() - actual.keys())
+    changed = sorted(name for name in actual.keys() & expected.keys()
+                     if actual[name] != expected[name])
+    runtime_cache = sorted(name for name in added
+                           if name.startswith('Contents/Resources/runtime/')
+                           and ('__pycache__' in Path(name).parts or name.endswith(('.pyc', '.pyo'))))
+    if evidence['format'] == 2 and 'directories' not in evidence:
+        raise ValueError('Inventaire des répertoires de release manquant ; manifeste format 2 incomplet.')
+    expected_directories = evidence.get('directories') if evidence['format'] == 2 else None
+    if expected_directories is not None and not isinstance(expected_directories, list):
+        raise ValueError('Inventaire des répertoires de release non supporté.')
+    extra_directories = sorted(set(observed_directories) - set(expected_directories)) if expected_directories is not None else []
+    lost_directories = sorted(set(expected_directories) - set(observed_directories)) if expected_directories is not None else []
+    runtime_cache_directories = [name for name in extra_directories
+                                 if name.startswith('Contents/Resources/runtime/')
+                                 and Path(name).name == '__pycache__']
+    writable.sort()
+    executable = os.access(release / 'Contents/Resources/runtime/bin/python3', os.X_OK)
+    policy_ok = evidence['format'] == 1 or evidence.get('immutability') == 'posix-readonly-v1'
+    clean = not (added or missing or changed or writable or extra_directories or lost_directories) and executable and policy_ok
+
+    def summary(names):
+        return {'count': len(names), 'examples': names[:max_examples],
+                'truncated': len(names) > max_examples}
+
+    return {'status': 'clean' if clean else 'drift', 'release': str(release),
+            'manifest_format': evidence['format'], 'policy_ok': policy_ok,
+            'runtime_executable': executable, 'added': summary(added),
+            'missing': summary(missing), 'changed': summary(changed),
+            'writable': summary(writable), 'new_runtime_cache': summary(runtime_cache),
+            'directory_inventory': expected_directories is not None,
+            'added_directories': summary(extra_directories),
+            'missing_directories': summary(lost_directories),
+            'new_runtime_cache_dirs': summary(runtime_cache_directories)}
 
 
 def _sync_file(path):
@@ -433,6 +621,33 @@ def _reconcile_atomic(path, text, metadata):
         temporary.unlink(missing_ok=True)
 
 
+def _runtime_copy_function(runtime, destination):
+    """APFS clones large runtime files; unsupported volumes use ordinary copies."""
+    if sys.platform != 'darwin' or runtime.stat().st_dev != destination.stat().st_dev:
+        return shutil.copy2
+    try:
+        import ctypes
+        clone = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True).clonefile
+        clone.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int)
+        clone.restype = ctypes.c_int
+    except (OSError, AttributeError):
+        return shutil.copy2
+
+    def copy(source, target):
+        if Path(source).stat().st_size < 65536:
+            return shutil.copy2(source, target)
+        if clone(os.fsencode(source), os.fsencode(target), 0) == 0:
+            return target
+        code = ctypes.get_errno()
+        if code not in (errno.ENOTSUP, errno.EOPNOTSUPP, errno.EXDEV, errno.ENOSYS):
+            raise OSError(code, os.strerror(code), os.fspath(target))
+        if os.path.lexists(target):
+            raise ValueError('Clonage APFS incomplet ; aucun remplacement implicite.')
+        return shutil.copy2(source, target)
+
+    return copy
+
+
 def stage_release(helpers, runtime, release):
     payload = json.loads((helpers / 'payload-manifest.json').read_text())
     validate_yaml(helpers, payload)
@@ -470,7 +685,8 @@ def stage_release(helpers, runtime, release):
         if json.loads((helper_target / 'payload-manifest.json').read_text()) != payload:
             raise ValueError('Manifeste modifié pendant la copie.')
         validate_yaml(helper_target, payload)
-        shutil.copytree(runtime, resources / 'runtime', symlinks=True)
+        shutil.copytree(runtime, resources / 'runtime', symlinks=True,
+                        copy_function=_runtime_copy_function(runtime, resources))
         if (helpers.parent / 'native-manifest.json').is_file():
             shutil.copyfile(helpers.parent / 'native-manifest.json', resources / 'native-manifest.json')
         native = helpers.parent.parent / 'MacOS'
@@ -478,9 +694,21 @@ def stage_release(helpers, runtime, release):
             shutil.copytree(native, stage / 'Contents/MacOS')
         if bundle_info(helper_target)[2] != release.name:
             raise ValueError('Identité du bundle différente du plan ; publication refusée.')
-        atomic(stage / 'release.json', encoded({'format': 1, 'files': tree_files(stage)}))
-        _sync_tree(stage)
-        stage.rename(release)
+        atomic(stage / 'release.json', encoded({'format': 2, 'immutability': 'posix-readonly-v1',
+                                                'directories': _release_directory_paths(stage),
+                                                'files': tree_files(stage)}))
+        try:
+            _seal_release(stage, keep_root_writable=True)
+            _sync_tree(stage)
+            stage.rename(release)
+            # macOS rejects renaming a read-only source directory. Seal the
+            # root after rename, before acknowledging successful publication.
+            release.chmod(stat.S_IMODE(release.stat().st_mode) & ~0o222)
+            _sync_directory(release)
+        finally:
+            # TemporaryDirectory must remain removable if publication failed after sealing.
+            if stage.exists():
+                _restore_directory_writes(stage)
         _sync_directory(release.parent)
     release_check(release)
 
@@ -817,6 +1045,7 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
     files = {}
     reconciliation = None
     reconciled_from = None
+    legacy_removed = None
     release = None
     state = str(state_location(root).absolute())
     if not bundled(root) and Path(state).resolve().is_relative_to(Path(root).resolve()):
@@ -829,11 +1058,11 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         if memory['access'] != 'off' and not (helpers / 'reprise_memory_mcp.py').is_file():
             raise ValueError('Reconstruire le bundle avec le connecteur mémoire.')
         release = Path(state).parent / 'integration-releases' / identity
+        chatgpt_state = str(state_location(root, 'chatgpt-state').absolute())
         tools = OBSERVE + (DELEGATE if delegate else ())
-        # The approval answer tool always rides with the delegation tools: it only answers
-        # requests recorded by this bridge's own delegations, and needs the delegate scope.
-        if delegate:
-            tools += (APPROVAL_RESPOND,)
+        # Issue #117 T2a : --delegate n'expose plus approval_respond. L'outil reviendra
+        # en T2b seulement avec un approval_delegate explicite ; la réponse opérateur
+        # passe par desktop_task_store.resolve_approval (voie CLI/app, pas MCP).
         # Socket Quick Apply : valeur locale générée par défaut quand le socket existe ;
         # l'état choisi est persisté dans le manifeste pour une vérification déterministe.
         desktop_socket = None
@@ -841,7 +1070,8 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
             desktop_socket = str(DESKTOP_SOCKET)
         entries = _bridge_entries(release, state, tools, project, profile, managed,
                                   output_resume, resume_project, codex_workspace_write,
-                                  desktop_socket, bash_sandbox_disabled, memory)
+                                  desktop_socket, bash_sandbox_disabled, memory,
+                                  chatgpt_state=chatgpt_state, chatgpt_dispatch=True)
         if mismatched_block:
             try:
                 parsed = block_entries(block)
@@ -857,11 +1087,17 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
                     Path(old['release']), old['state'], old.get('tools', []), old['project'],
                     profile, managed, old.get('output_resume', False),
                     old.get('output_resume_project'), old.get('codex_workspace_write', False),
-                    old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), previous_memory)
+                    old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), previous_memory,
+                    old.get('chatgpt_state'), old.get('chatgpt_dispatch', False))
             else:
                 expected = entries
             if parsed != expected:
-                raise ValueError(_BLOCK_REFUSAL)
+                cleaned, legacy_removed = _strip_legacy_args(parsed)
+                if not legacy_removed or cleaned != expected:
+                    raise ValueError(_BLOCK_REFUSAL)
+                # Migration legacy explicite : le live et l'attendu ne diffèrent
+                # que par les paramètres obsolètes ; réécriture canonique tracée.
+                reconciled_from = digest(block.encode())
             # Bloc reformatté équivalent : réécriture canonique tracée dans le manifeste.
             reconciled_from = digest(block.encode())
         new_block = START + '\n- insert: ' + json.dumps(entries, ensure_ascii=False) + '\n' + END + '\n'
@@ -905,6 +1141,8 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
             next_manifest['codex_workspace_write'] = True
         if desktop_socket:
             next_manifest['desktop_socket'] = desktop_socket
+        next_manifest['chatgpt_state'] = chatgpt_state
+        next_manifest['chatgpt_dispatch'] = True
         if bash_sandbox_disabled:
             next_manifest['bash_sandbox_disabled'] = True
         if reconciled_from:
@@ -912,6 +1150,10 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         elif old and 'reconciled_from_sha256' in old:
             # Preuve conservée : le manifeste régénéré doit rester identique au manifeste en place.
             next_manifest['reconciled_from_sha256'] = old['reconciled_from_sha256']
+        if legacy_removed:
+            next_manifest['legacy_removed_params'] = legacy_removed
+        elif old and 'legacy_removed_params' in old:
+            next_manifest['legacy_removed_params'] = old['legacy_removed_params']
         if agent_role != 'standard':
             next_manifest['agent_role'] = agent_role
     else:
@@ -938,6 +1180,9 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         extra['memory'] = memory
     if reconciliation:
         extra['block_reconciled'] = reconciliation
+    if legacy_removed:
+        extra['legacy_migration'] = True
+        extra['removed_legacy_params'] = legacy_removed
     return files, extra, next_manifest
 
 
@@ -1125,7 +1370,8 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
     memory = memory_integration.selected(old)
     expected = _bridge_entries(Path(old['release']), old['state'], old['tools'], project, profile, managed,
         True, old.get('output_resume_project'), old.get('codex_workspace_write', False),
-        old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory)
+        old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory,
+        old.get('chatgpt_state'), old.get('chatgpt_dispatch', False))
     actual = block_entries(block.replace('\r\n', '\n'))
     # Normalize only fields explicitly replaced by this operation. All remaining
     # arguments, tools, permissions and plugin settings must match the old owner.
@@ -1167,9 +1413,16 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
     release = Path(old['state']).parent / 'integration-releases' / identity
     memory_integration.validate_binding(old['state'], memory, project, 'harness')
     entries = _bridge_entries(release, old['state'], old['tools'], project, profile, managed,
-        True, resume_project, write, old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory)
+        True, resume_project, write, old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory,
+        old.get('chatgpt_state'), old.get('chatgpt_dispatch', False))
+    _validate_target_entries(entries)
+    if not _canonical_paths(entries):
+        raise ValueError('Bloc non canonique : une seule ligne entre les délimiteurs, sans continuation.')
     newline = '\n'  # Canonical managed block; outer bytes retain their original endings.
-    target_block = START + newline + '- insert: ' + json.dumps(entries, ensure_ascii=False) + newline + END
+    payload = '- insert: ' + json.dumps(entries, ensure_ascii=False)
+    if '\n' in payload:
+        raise ValueError('Bloc non canonique : le JSON des entries doit tenir sur une seule ligne.')
+    target_block = START + newline + payload + newline + END
     if block.endswith('\n'):
         target_block += newline
     target_config = text[:span.start()] + target_block + text[span.end():]
@@ -1348,7 +1601,8 @@ def verify(home, profile, root=None, project=None):
         expected = _bridge_entries(Path(old['release']), old['state'], old['tools'], old['project'],
                                    old['profile'], managed, old.get('output_resume', False),
                                    old.get('output_resume_project'), old.get('codex_workspace_write', False),
-                                   old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory_integration.selected(old))
+                                   old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory_integration.selected(old),
+                                   old.get('chatgpt_state'), old.get('chatgpt_dispatch', False))
         if block is None or block_entries(block) != expected:
             raise ValueError('Configuration Reprise absente ou modifiée.')
         # Bloc reformatté équivalent : accepté sans réécriture ici.
@@ -1389,8 +1643,12 @@ def verify(home, profile, root=None, project=None):
                 {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list', 'params': {}}]
     with tempfile.TemporaryDirectory(prefix='reprise-bridge-check-') as temporary:
         program = release / 'Contents/Resources/runtime/bin/python3'
-        command = [str(program), '-E', '-s', '-B', str(release / 'Contents/Resources/helpers/codex_expert_mcp.py'),
+        command = [str(program), '-E', '-s', '-B', str(release / 'Contents/Resources/helpers/expert_mcp.py'),
                    '--project-root', old['project'], '--state', temporary, '--tools', ','.join(old['tools'])]
+        # Legacy releases do not recognize the new flag. Verification never
+        # writes ChatGPT state in the user's active profile.
+        if old.get('chatgpt_state'):
+            command += ['--chatgpt-state', str(Path(temporary) / 'chatgpt-state')]
         env = {k: v for k, v in os.environ.items() if not k.startswith(('PYTHON', 'DYLD_')) and k != 'AGENT_RESUME_STATE'}
         env['PYTHONDONTWRITEBYTECODE'] = '1'
         response = subprocess.run(command, input='\n'.join(json.dumps(r) for r in requests) + '\n',
@@ -1412,13 +1670,29 @@ def verify(home, profile, root=None, project=None):
     capabilities = bridge_capabilities(tools)
     transport = capabilities['result_transport']
     missing = [name for name, available in transport.items() if available is False]
-    update_required = selected_release['status'] == 'outdated' or bool(missing)
+    configured = set(old['tools'])
+    observed = set(names)
+    missing_configured = [tool for tool in DELEGATE if tool not in configured]
+    missing_observed = [tool for tool in DELEGATE if tool not in observed]
+    capabilities['delegation'] = {
+        'configured': not missing_configured,
+        'advertised': not missing_observed,
+        'mode': 'delegate' if not missing_configured and not missing_observed else 'observe_only',
+        'configured_tools': sorted(configured.intersection(DELEGATE)),
+        'advertised_tools': sorted(observed.intersection(DELEGATE)),
+        'missing_configured_tools': missing_configured,
+        'missing_advertised_tools': missing_observed,
+        'client_loaded': 'unknown',
+    }
+    update_required = (selected_release['status'] == 'outdated' or bool(missing)
+                       or bool(missing_configured) or bool(missing_observed))
     message = 'Bloc géré et consignes vérifiés ; pont sondé directement sans inférence. Chargement par Harness non observé.'
     if update_required:
         message += ' Mise à jour de l’intégration requise ; rechargement du client à coordonner séparément.'
     result = {'status': 'verified', 'message': message,
             'selected_release': selected_release, 'update_required': update_required,
             'bridge_capabilities': capabilities, 'missing_result_capabilities': missing,
+            'missing_delegation_tools': sorted(set(missing_configured + missing_observed)),
             'output_resume': {'configured': old.get('output_resume', False), 'client_loaded': 'unknown'},
             'asi1_effort': {'configured': old.get('asi1_effort', False), 'client_loaded': 'unknown'},
             'levels': {'configuration_written': True, 'integration_loaded': 'unknown', 'client_tools_discovered': 'unknown', 'exchange_confirmed': 'unknown'},
@@ -1433,13 +1707,13 @@ def verify(home, profile, root=None, project=None):
 def main(root, argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
-    for name in ('integration-inspect', 'integration-plan', 'integration-verify'):
+    for name in ('harness-integration-inspect', 'harness-integration-plan', 'harness-integration-verify'):
         command = sub.add_parser(name)
         command.add_argument('--home', required=True)
-        command.add_argument('--profile', required=name != 'integration-inspect')
-        if name == 'integration-verify':
+        command.add_argument('--profile', required=name != 'harness-integration-inspect')
+        if name == 'harness-integration-verify':
             command.add_argument('--project')
-        if name == 'integration-plan':
+        if name == 'harness-integration-plan':
             command.add_argument('--project', required=True)
             command.add_argument('--action', choices=('install', 'remove'), required=True)
             toggle = command.add_mutually_exclusive_group()
@@ -1462,7 +1736,7 @@ def main(root, argv=None):
             command.add_argument('--memory-access', choices=('off', 'read', 'write'), default=None)
             command.add_argument('--memory-project-id')
             command.add_argument('--memory-scope-id', help='Scope v2 préexistant explicitement sélectionné')
-    command = sub.add_parser('integration-reconcile-plan')
+    command = sub.add_parser('harness-integration-reconcile-plan')
     command.add_argument('--home', default=str(Path.home() / '.dsh'))
     command.add_argument('--profile', required=True)
     command.add_argument('--project', required=True)
@@ -1471,17 +1745,22 @@ def main(root, argv=None):
     toggle = command.add_mutually_exclusive_group(required=True)
     toggle.add_argument('--codex-workspace-write', action='store_true', default=None)
     toggle.add_argument('--no-codex-workspace-write', dest='codex_workspace_write', action='store_false')
-    sub.add_parser('integration-apply')
+    command = sub.add_parser('harness-integration-release-diagnose')
+    command.add_argument('--release', required=True,
+                         help='Chemin explicite d’une release MCP ; inventaire seul, sans exécution.')
+    sub.add_parser('harness-integration-apply')
     args = parser.parse_args(argv)
     os.umask(0o077)
     try:
-        if args.command == 'integration-inspect':
+        if args.command == 'harness-integration-release-diagnose':
+            result = diagnose_release(args.release)
+        elif args.command == 'harness-integration-inspect':
             result = inspect(args.home, args.profile)
-        elif args.command == 'integration-reconcile-plan':
+        elif args.command == 'harness-integration-reconcile-plan':
             result = {'status': 'planned', 'plan': reconcile_plan(root, args.home, args.profile, args.project,
                 args.output_resume_project, args.codex_workspace_write, args.accept_block_sha256),
                 'message': 'Plan explicite sans écriture ni sauvegarde ; aucune activation ni rollback.'}
-        elif args.command == 'integration-plan':
+        elif args.command == 'harness-integration-plan':
             old = manifest(context(args.home, args.profile)[2])
             installed = old if old and old.get('status') == 'installed' else {}
             changed_project = bool(installed and str(Path(args.project).resolve(strict=True)) != installed.get('project'))
@@ -1501,14 +1780,14 @@ def main(root, argv=None):
                 args.output_resume_project = installed.get('output_resume_project')
             result = {'status': 'planned', 'message': 'Plan sans écriture. L’installation n’autorise ni inférence ni activation automatique.',
                       'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role, args.output_resume, args.output_resume_project, args.codex_workspace_write, args.asi1_effort, args.disable_bash_sandbox, args.memory_access, args.memory_project_id, args.memory_scope_id)}
-        elif args.command == 'integration-apply':
+        elif args.command == 'harness-integration-apply':
             public = json.loads(sys.stdin.read(1024 * 1024))['plan']
             result = apply(root, public)
         else:
             result = verify(args.home, args.profile, root=root, project=args.project)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         result = {'status': 'refused', 'message': str(error), 'recovery': 'Aucune suppression automatique. Inspecter le profil pour retrouver un plan partiel ou les sauvegardes.'}
-        if args.command == 'integration-apply' and isinstance(locals().get('public'), dict):
+        if args.command == 'harness-integration-apply' and isinstance(locals().get('public'), dict):
             try:
                 evidence = inspect(public['home'], public['profile'])
                 for key in ('pending_plan', 'backup'):
@@ -1519,4 +1798,6 @@ def main(root, argv=None):
         print(json.dumps(result, ensure_ascii=False))
         return 1
     print(json.dumps(result, ensure_ascii=False))
+    if args.command == 'harness-integration-release-diagnose':
+        return 0 if result['status'] == 'clean' else 2
     return 0

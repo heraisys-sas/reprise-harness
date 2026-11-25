@@ -16,10 +16,14 @@ def crypt(data, purpose, operation, *, interactive=False):
         raise ValueError('L’autorisation du coffre nécessite une action utilisateur explicite')
     executable = native_binary(ROOT, 'Vault')
     try:
-        result = subprocess.run([str(executable)], input=json.dumps({
+        request = {
             'operation': operation, 'payload': base64.b64encode(data).decode(),
             'purpose': purpose, 'interactive': interactive,
-        }), text=True, capture_output=True, timeout=90 if interactive else 30)
+        }
+        if purpose == 'siri-inbox-v1':
+            request['require_existing_key'] = True
+        result = subprocess.run([str(executable)], input=json.dumps(request),
+                                text=True, capture_output=True, timeout=90 if interactive else 30)
         response = json.loads(result.stdout)
         if result.returncode:
             details = response.get('error', {}) if isinstance(response, dict) else {}

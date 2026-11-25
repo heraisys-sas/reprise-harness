@@ -25,6 +25,12 @@ def read_limits(executable, timeout=15):
             for key, _ in selector.select(.2):
                 chunk = os.read(key.fileobj.fileno(), 65536)
                 if not chunk:
+                    # Revue (MINEUR S9-C5) : honorer un dernier enregistrement
+                    # sans saut de ligne final avant l'EOF.
+                    for message in decoder.finish():
+                        if message.get('id') == 2:
+                            result = message.get('result')
+                            return result if isinstance(result, dict) else None
                     return None
                 total += len(chunk)
                 if total > 2 * 1024 * 1024:

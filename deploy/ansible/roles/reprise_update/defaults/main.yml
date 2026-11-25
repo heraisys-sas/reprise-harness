@@ -1,0 +1,8 @@
+---
+# Valeurs du role reprise_update (runbook MANAGED-UPDATE).
+reprise_target_app: /Applications/Reprise.app
+reprise_update_components: app,scheduler,harness,claude,codex
+reprise_update_codex_entry: reprise-harness
+reprise_update_activate_scheduler: true
+reprise_update_relaunch_app: true
+reprise_auto_approve: false

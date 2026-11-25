@@ -52,9 +52,18 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var codexIntegrationOperationID = ""
     @Published var codexIntegrationAcknowledged = false
     var codexIntegrationGeneration: UInt64 = 0
+    @Published var metaaiIntegrationPlan: [String: Any]?
+    @Published var metaaiIntegrationVerificationPlan: [String: Any]?
+    @Published var metaaiIntegrationResult: [String: Any] = [:]
+    @Published var metaaiIntegrationAcknowledged = false
+    var metaaiIntegrationGeneration: UInt64 = 0
     @Published var claudeIntegrationPlan: [String: Any]?
     @Published var claudeIntegrationResult: [String: Any] = [:]
     @Published var claudeIntegrationAcknowledged = false
+    @Published var chatgptIntegrationProject = ""
+    @Published var chatgptIntegrationPlan: [String: Any]?
+    @Published var chatgptIntegrationResult: [String: Any] = [:]
+    @Published var chatgptIntegrationAcknowledged = false
     @Published var claudeReplaceProbe = false
     @Published var claudeAwaitChoice = "preserve"
     @Published var claudeInboxTasks: [[String: Any]] = []
@@ -73,7 +82,40 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var integrationAgentRole = "standard"
     @Published var integrationAcknowledged = false
     @Published var integrationProfiles: [String] = []
+    @Published var appClones: [[String: Any]] = []
+    @Published var appClonesMessage = ""
+    @Published var cloneActionBusy = ""
+    @Published var cloneResult: [String: Any] = [:]
+    @Published var cloneResultAction = ""
+    @Published var cloneResultAt: Date? = nil
+    @Published var clonePlanShown: [String: Any]? = nil
+    @Published var cloneMessage = ""
+    @Published var relaunchNote = ""
+    @Published var relaunchBusy = false
+
+    func relaunchApp() {
+        guard let executable = Bundle.main.executablePath else {
+            relaunchNote = "Chemin de l’exécutable introuvable — relancez Reprise manuellement."
+            return
+        }
+        relaunchBusy = true
+        relaunchNote = ""
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = CommandLine.arguments.filter { $0 != executable }
+        do {
+            try process.run()
+            relaunchNote = "Nouvelle instance lancée — fermeture de l’interface actuelle."
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { NSApp.terminate(nil) }
+        } catch {
+            relaunchBusy = false
+            relaunchNote = "Relance impossible : " + (error as NSError).localizedDescription
+        }
+    }
     @Published var integrationPlan: [String: Any]? = nil
+    var integrationPlanGeneration: UInt64 = 0
+    var integrationPlanContext: [String]? = nil
+    var integrationPlanRecovered = false
     @Published var integrationResult: [String: Any]? = nil
     @Published var integrationVerification: [String: Any]? = nil
     @Published var integrationMessage = "Inspectez le dossier Harness choisi avant de préparer une modification."
@@ -92,6 +134,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var schedulerServicePlan: [String: Any]? = nil
     @Published var schedulerServiceMessage = "Inspectez le planificateur avant de préparer une modification."
     @Published var schedulerServiceActivate = false
+    @Published var schedulerServiceQueueMode = "preserve"
     @Published var schedulerServiceAcknowledged = false
     @Published var scheduler: [String: Any] = [:]
     @Published var quotaKnowledge: [String: Any] = [:]
@@ -110,6 +153,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var snapshot: [String: Any] = [:]
     @Published var navigationNote = ""
     @Published var page = "overview"
+    @Published var searchSheet = false
     @Published var sessionFilter = "Récentes"
     @Published var resumeFilter = "À examiner"
     @Published var connection: [String: Any] = [:]
@@ -118,6 +162,10 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var connectionNote = ""
     @Published var testedSocket = ""
     @Published var connectionVerified = false
+    @Published var connectionTestedAt: Date?
+    @Published var codexThreadRows: [[String: Any]] = []
+    @Published var codexThreadsStatus = "Aucune consultation des conversations Codex effectuée."
+    @Published var codexThreadsBusy = false
     var connectionLoaded = false
     @Published var desktopConnection: [String: Any] = [:]
     @Published var desktopSocketPath = ""
@@ -125,6 +173,8 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var desktopConnectionNote = ""
     @Published var desktopTestedSocket = ""
     @Published var desktopConnectionVerified = false
+    @Published var desktopConnectionTestedAt: Date?
+    @Published var desktopRoutesCheckedAt: Date?
     var desktopConnectionLoaded = false
     @Published var health: [String: Any] = [:]
     @Published var healthState = "unavailable"
@@ -143,12 +193,11 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var quickApplyStartupEnabled = StartupPreferences.startupFlag(StartupPreferences.quickApplyStartupKey)
     @Published var chainBusy = false
     @Published var chainNote = ""
-    @Published var connectionTab = "codex"  // codex | quickapply
+    @Published var connectionTab = "codex"  // codex | quickapply | ironclaw
     @Published var desktopNote = ""
     @Published var sharedBusy = false
     @Published var sharedNote = ""
     @Published var sharedSession = ""
-    @Published var sharedStartup = StartupPreferences.startupFlag("SharedCodexStartup")
     var pilotProjectsRequested = false
     @Published var pilotProjectsLoadFailed = false
     var startupAttempted = false
@@ -156,7 +205,16 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var observerStartupFailed = false
     var refreshPending = false
     @Published var busy = false
+    @Published var verifyEverythingBusy = false
+    @Published var verifyEverythingSummary = ""
     @Published var vaultBusy = false
+    @Published var vaultChecking = false
+    @Published var vaultAvailability: [String: Any] = [:]
+    @Published var vaultAvailabilityCheckedAt: Date?
+    var vaultAccessVerified: Bool {
+        vaultAvailability["status"] as? String == "verified"
+            && vaultAvailabilityCheckedAt.map { Date().timeIntervalSince($0) <= 120 } == true
+    }
     @Published var vaultNote = "Les accès automatiques au cache ne demandent aucune autorisation à l’écran."
     @Published var analysisBusy = false
     @Published var searching = false
@@ -210,6 +268,13 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "arrow.clockwise.circle", accessibilityDescription: "Reprise")
         item.button?.target = self; item.button?.action = #selector(show)
+        // Chantier ① (issue #263) : le menu de l’icône de barre expose l’ouverture
+        // de l’interface et l’arrêt propre (le daemon codexd et le scheduler restent en place).
+        let statusMenu = NSMenu()
+        statusMenu.addItem(withTitle: "Ouvrir Reprise", action: #selector(show), keyEquivalent: "").target = self
+        statusMenu.addItem(.separator())
+        statusMenu.addItem(withTitle: "Quitter Reprise", action: #selector(quit), keyEquivalent: "").target = self
+        item.menu = statusMenu
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1010, height: 720), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "Reprise"
         window.titlebarAppearsTransparent = true
@@ -229,7 +294,14 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { _ in self.analyzeLocal() }
     }
     @objc func show() { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
-    @objc func quit() { NSApp.terminate(nil) }
+    @objc func quit() { stopAndQuit() }
+    /// Chantier ① (issue #263) : arrêt propre depuis l’interface — le daemon
+    /// codexd et le scheduler restent en place, seule l’interface se ferme.
+    /// NSApp.terminate seul : toute note affichée ici ne serait jamais rendue
+    /// (la boucle d’événements se ferme aussitôt).
+    func stopAndQuit() {
+        NSApp.terminate(nil)
+    }
     @objc func reload() { refresh() }
     func execute(_ args: [String]) -> [String: Any]? {
         guard runtimeError == nil, stateReady || ["state-status", "state-plan", "state-apply"].contains(args.first ?? "") else { return nil }
@@ -244,11 +316,50 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         process.standardOutput = pipe; process.standardError = FileHandle.nullDevice
         do {
             try process.run()
-            DispatchQueue.global().asyncAfter(deadline: .now() + (args.first == "vault-authorize" ? 100 : (["analyze", "search", "shared-mode"].contains(args.first ?? "") ? 45 : 15))) { if process.isRunning { process.terminate() } }
+            DispatchQueue.global().asyncAfter(deadline: .now() + (args.first == "vault-authorize" ? 100 : (["analyze", "search", "shared-mode", "rechatgpt-launch", "codex-threads"].contains(args.first ?? "") ? 45 : 15))) { if process.isRunning { process.terminate() } }
             let data = pipe.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
             guard process.terminationStatus == 0 else { return nil }
             return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         } catch { return nil }
+    }
+    func loadCodexThreads(summaryThreadID: String? = nil) {
+        guard stateReady, !codexThreadsBusy else { return }
+        codexThreadsBusy = true
+        codexThreadsStatus = summaryThreadID == nil
+            ? "Lecture locale des conversations Codex…"
+            : "Résumé demandé explicitement…"
+        var args = ["codex-threads"]
+        if let summaryThreadID { args += ["--summary-thread", summaryThreadID] }
+        DispatchQueue.global(qos: .utility).async {
+            let result = self.execute(args)
+            DispatchQueue.main.async {
+                self.codexThreadsBusy = false
+                guard let result else {
+                    self.codexThreadsStatus = "Consultation indisponible. Les conversations existantes ne sont pas modifiées."
+                    return
+                }
+                if let summaryThreadID {
+                    guard result["status"] as? String == "ok" else {
+                        self.codexThreadsStatus = "Résumé indisponible."
+                        return
+                    }
+                    if let index = self.codexThreadRows.firstIndex(where: { $0["thread_id"] as? String == summaryThreadID }) {
+                        var row = self.codexThreadRows[index]
+                        row["summary_status"] = result["summary_status"] as? String ?? "unavailable"
+                        if let summary = result["summary"] as? String { row["summary"] = summary }
+                        self.codexThreadRows[index] = row
+                    }
+                    self.codexThreadsStatus = result["summary_status"] as? String == "available"
+                        ? "Résumé disponible."
+                        : "Résumé indisponible."
+                    return
+                }
+                self.codexThreadRows = result["rows"] as? [[String: Any]] ?? []
+                self.codexThreadsStatus = result["status"] as? String == "ok"
+                    ? "Consultation locale terminée."
+                    : "Consultation indisponible."
+            }
+        }
     }
     func refresh() {
         guard stateReady else { return }
@@ -279,6 +390,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                 self.scheduler = scheduler ?? [:]
                 self.connection = connection ?? [:]
                 self.desktopConnection = desktopConnection ?? [:]
+                self.desktopRoutesCheckedAt = desktopConnection == nil ? nil : Date()
                 if let health,
                    health["versions"] is [String: Any],
                    health["actions_for_human"] is [String],
@@ -304,7 +416,6 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                 }
                 if !self.startupAttempted {
                     self.startupAttempted = true
-                    if self.sharedStartup && !self.running.contains("com.openai.codex") { self.sharedAction("launch", startup: true) }
                     self.startManagedServices()
                 }
                 if let result { self.snapshot = result; self.lastRefresh = Date() }
@@ -467,6 +578,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             self.connectionBusy = false
             self.testedSocket = path
             self.connectionVerified = result?["connected"] as? Bool == true
+            self.connectionTestedAt = result?["connected"] is Bool ? Date() : nil
             self.connectionNote = result?["reason"] as? String ?? "Vérification indisponible. Configuration conservée."
             if save && result?["saved"] as? Bool == true { self.refresh() }
         }
@@ -491,6 +603,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             self.desktopConnectionBusy = false
             self.desktopTestedSocket = path
             self.desktopConnectionVerified = result?["connected"] as? Bool == true
+            self.desktopConnectionTestedAt = result?["connected"] is Bool ? Date() : nil
             self.desktopConnectionNote = result?["reason"] as? String ?? "Vérification indisponible. Configuration conservée."
             if save && result?["saved"] as? Bool == true { self.refresh() }
         }
@@ -608,17 +721,130 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             }
         }
     }
-    func setSharedStartup(_ enabled: Bool) {
-        sharedStartup = enabled
-        UserDefaults.standard.set(enabled, forKey: "SharedCodexStartup")
+    func launchReChatGPT() {
+        guard !sharedBusy else { return }
+        sharedBusy = true
+        sharedNote = "Démarrage de ReChatGPT…"
+        perform(["rechatgpt-launch"]) { result in
+            self.sharedBusy = false
+            let status = result?["status"] as? String
+            let verified = result?["verified"] as? Bool == true
+            self.sharedNote = {
+                switch status {
+                case "launched" where verified:
+                    return "ReChatGPT lancé et écran ChatGPT vérifié."
+                case "launched":
+                    return "ReChatGPT lancé, mais l'écran ChatGPT n'a pas pu être vérifié."
+                case "already_active":
+                    return "ReChatGPT est déjà actif (service de l'application liée à l'écoute)."
+                case "error":
+                    return "Démarrage de ReChatGPT impossible : \(result?["detail"] as? String ?? "cause inconnue")."
+                default:
+                    return "Démarrage de ReChatGPT non confirmé. Aucun nouvel essai automatique."
+                }
+            }()
+            self.refresh()
+        }
+    }
+    func cloneInspect() {
+        cloneReadCommand("clone-inspect", action: "inspect", label: "Inspection")
+    }
+    func clonePlan() {
+        cloneReadCommand("clone-plan", action: "plan", label: "Plan")
+    }
+    func cloneVerify() {
+        cloneReadCommand("clone-verify", action: "verify", label: "Vérification")
+    }
+    private func cloneReadCommand(_ command: String, action: String, label: String) {
+        guard cloneActionBusy.isEmpty else { return }
+        cloneActionBusy = action
+        perform([command]) { result in
+            self.cloneActionBusy = ""
+            guard let result = result else {
+                self.cloneResultAction = label
+                self.cloneResult = [:]
+                self.cloneResultAt = Date()
+                self.cloneMessage = "Commande \(command) non confirmée. Aucun nouvel essai automatique."
+                return
+            }
+            self.cloneMessage = ""
+            self.cloneResult = result
+            self.cloneResultAction = label
+            self.cloneResultAt = Date()
+            if action == "plan" { self.clonePlanShown = result }
+        }
+    }
+    func cloneApply(names: [String]) {
+        guard cloneActionBusy.isEmpty, !names.isEmpty, clonePlanShown != nil else { return }
+        cloneActionBusy = "apply"
+        var args = ["clone-apply"]
+        args.append(contentsOf: names)
+        perform(args) { result in
+            self.cloneActionBusy = ""
+            self.cloneResultAction = "Application"
+            if let result = result {
+                self.cloneResult = result
+                self.cloneMessage = ""
+            } else {
+                self.cloneResult = [:]
+                self.cloneMessage = "Application non confirmée. Aucun nouvel essai automatique."
+            }
+            self.cloneResultAt = Date()
+            self.loadAppClones()
+        }
+    }
+    /// Chantier ② (issue #263) : « Vérifier tout » — relance toutes les
+    /// vérifications locales et distantes puis résume les conclusions.
+    func verifyEverything() {
+        guard stateReady, !verifyEverythingBusy, !busy else { return }
+        verifyEverythingBusy = true
+        verifyEverythingSummary = "Vérification en cours…"
+        refresh()
+        refreshQuotas()
+        testConnection()
+        testDesktopConnection()
+        checkVaultAvailability()
+        let deadline = Date().addingTimeInterval(20)
+        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { timer in
+            let quiet = !self.busy && !self.connectionBusy && !self.desktopConnectionBusy && !self.vaultChecking && !self.quotaBusy
+            guard quiet || Date() > deadline else { return }
+            timer.invalidate()
+            var parts: [String] = []
+            if self.connectionVerified { parts.append("Codex connecté") } else if !self.connectionNote.isEmpty { parts.append("Codex : " + self.connectionNote) }
+            if self.desktopConnectionVerified { parts.append("Claude Desktop connecté") } else if !self.desktopConnectionNote.isEmpty { parts.append("Claude Desktop : " + self.desktopConnectionNote) }
+            if self.vaultAccessVerified { parts.append("Clé de chiffrement accessible") }
+            if self.healthVerified {
+                let claudeAnomalies = ((self.health["quick_entry_features"] as? [String: Any])?["anomalies"] as? [String: Any])?["anomalies"] as? [[String: Any]] ?? []
+                let codexAnomalies = self.health["codex_anomalies"] as? [[String: Any]] ?? []
+                let humanActions = self.health["actions_for_human"] as? [String] ?? []
+                let healthCount = claudeAnomalies.count + codexAnomalies.count + humanActions.count
+                parts.append(healthCount == 0 ? "Santé : tout est sain" : healthCount == 1 ? "Santé : 1 élément à examiner" : "Santé : \(healthCount) éléments à examiner")
+            }
+            self.verifyEverythingSummary = parts.isEmpty
+                ? "Vérifications relancées ; les conclusions s’affinent dans quelques secondes."
+                : parts.joined(separator: " · ")
+            self.verifyEverythingBusy = false
+        }
+    }
+    func checkVaultAvailability() {
+        guard stateReady, !vaultChecking, !vaultBusy else { return }
+        vaultChecking = true
+        perform(["vault-check"]) { result in
+            self.vaultChecking = false
+            self.vaultAvailability = result ?? ["status": "error", "reason": "no_response"]
+            self.vaultAvailabilityCheckedAt = result == nil ? nil : Date()
+        }
     }
     func authorizeVault() {
         guard stateReady, !vaultBusy else { return }
         vaultBusy = true
+        vaultAvailability = [:]
+        vaultAvailabilityCheckedAt = nil
         vaultNote = "Autorisation du cache demandée explicitement…"
         perform(["vault-authorize"]) { result in
             self.vaultBusy = false
             self.vaultNote = result?["message"] as? String ?? "Autorisation non confirmée. Réessayez uniquement depuis ce bouton."
+            self.checkVaultAvailability()
             self.refresh()
         }
     }
@@ -646,7 +872,13 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             guard let result else { self.searchNote = "Recherche indisponible. Autorisez le cache dans Confidentialité si le Trousseau bloque son accès."; return }
             self.searchHasRun = true
             self.searchResults = result["results"] as? [[String: Any]] ?? []
-            self.searchNote = result["semantic_available"] as? Bool == true ? "Mots-clés et recherche sémantique Apple · index chiffré" : "Mots-clés · modèle sémantique indisponible"
+            if result["semantic_available"] as? Bool != true {
+                self.searchNote = "Mots-clés · modèle sémantique indisponible"
+            } else if result["semantic_partial"] as? Bool == true {
+                self.searchNote = "Mots-clés et recherche sémantique Apple partielle · certains éléments non comparables (langue, révision ou dimensions)"
+            } else {
+                self.searchNote = "Mots-clés et recherche sémantique Apple · index chiffré"
+            }
         }
     }
     func clearIndex() {

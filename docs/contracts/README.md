@@ -12,6 +12,7 @@ réelles ou simulées avec preuve), **partiel** (une partie livrée, le reste tr
 | [DELEGATION-PERSISTENCE](DELEGATION-PERSISTENCE.md) | Reçus durables, barrières de dispatch, résultats et incertitude | Référence courante |
 | [HARNESS-ROLES-CONTRACT](HARNESS-ROLES-CONTRACT.md) | Rôles, reprise après quota, archivage, routage | Contrat courant ; implémentations partielles |
 | [QUOTA-KNOWLEDGE](QUOTA-KNOWLEDGE.md) | Sémantique quota/échéance, classes de facturation | Référence courante |
+| [QUOTA-CONTINUATION-CONTRACT](QUOTA-CONTINUATION-CONTRACT.md) | Reconnaître le quota, tenter tôt dans le bon chat et prouver la continuation | **Cible** : généralisation #10 non livrée ; runbook local disponible |
 | [CACHE-POLICY](CACHE-POLICY.md) | Cache de préfixe, plafonds retirés, réserve fournisseur | Référence courante |
 | [INSTALLATION-CONTRACT](INSTALLATION-CONTRACT.md) | Installation/maintenance autonome `inspect/plan/apply/verify/remove` | Livré composants Reprise ; D3/D4 restants |
 | [PROJECT-REGISTRY-CONTRACT](PROJECT-REGISTRY-CONTRACT.md) | Registre projets (UUID ↔ workspaces) | Livré |
@@ -26,6 +27,8 @@ réelles ou simulées avec preuve), **partiel** (une partie livrée, le reste tr
 | [PROCESS-SUPERVISION-DESIGN](PROCESS-SUPERVISION-DESIGN.md) | Supervision des processus (registre PID, relance) | Cible non implémentée (issues #25-#28) |
 | [QUICK-ENTRY-CONTRACT](QUICK-ENTRY-CONTRACT.md) | Contrat Quick Entry natif (QTi) — déclenchement Desktop patché | Livré (patch #124) |
 
+Procédure pour les agents disposant de droits locaux : [QUOTA-LOCAL-ACCEPTANCE](../runbooks/QUOTA-LOCAL-ACCEPTANCE.md) (tests, preuves, commits et passation).
+
 Autres familles de documentation : [intégrations par canal](../integrations/),
 [runbooks d'opération](../runbooks/), [gabarits](../templates/),
-[maquette interface](../design/interface-structure/).
+[maquette interface : suivi #118](https://github.com/heraisys-sas/reprise-harness/issues/118).

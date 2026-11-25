@@ -309,6 +309,52 @@ class PilotServiceTests(unittest.TestCase):
         self.assertEqual(self.await_response(ident)['status'], 'finished')
         self.assertTrue(self.host.shutdown(timeout=1))
 
+    def test_job_reply_published_before_worker_exit_allows_next_step_and_shutdown_waits(self):
+        emitting, release = threading.Event(), threading.Event()
+        first = uid()
+        class Jobs:
+            def prepare_proposal(self, project, operation, proposal):
+                return {'project_id': project, 'operation_id': operation, 'proposal': proposal}
+            def recover(self, project, operation):
+                return {'project_id': project, 'operation_id': operation}
+        def emit(value):
+            self.output.append(value)
+            self.signal.set()
+            if value['id'] == first:
+                emitting.set()
+                release.wait(2)
+        host = service.Service('/private/tmp', emit, jobs_factory=lambda _: Jobs())
+        self.addCleanup(lambda: (release.set(), host.shutdown()))
+        operation = uid()
+        host.handle({'id': first, 'op': 'job_prepare', 'enabled': True,
+                     'project_id': self.project, 'operation_id': operation, 'proposal': {'objective': 'x', 'acceptance': ['y'], 'constraints': [], 'questions': []}})
+        self.assertTrue(emitting.wait(1))
+        self.assertEqual(self.await_response(first)['status'], 'finished')
+        second = self.send_on(host, 'job_recover', enabled=True, project_id=self.project, operation_id=operation)
+        self.assertEqual(self.await_response(second)['status'], 'finished')
+        self.assertFalse(host.shutdown(timeout=.05))
+        release.set()
+        self.assertTrue(host.shutdown(timeout=1))
+
+    def test_existing_local_run_recovery_releases_job_worker(self):
+        operation, run, digest = uid(), uid(), 'a' * 64
+        row = {'project_id': self.project, 'operation_id': operation,
+               'local_execution': {'run_id': run, 'manifest_sha256': digest}}
+        class Jobs:
+            def recover(self, project, operation): return row
+        class Local:
+            def recover(self, project, operation, *, active): return row
+        host = service.Service('/private/tmp', self.output.append,
+                               jobs_factory=lambda _: Jobs(), local_factory=lambda _: Local())
+        self.addCleanup(host.shutdown)
+        recovered = self.await_response(self.send_on(host, 'job_local_start', enabled=True,
+            project_id=self.project, operation_id=operation, run_id=run,
+            expected_revision=1, expected_manifest_sha256=digest))
+        self.assertEqual(recovered['status'], 'finished')
+        after = self.await_response(self.send_on(host, 'job_recover', enabled=True,
+                                                project_id=self.project, operation_id=operation))
+        self.assertEqual(after['status'], 'finished')
+
     def test_noncooperative_worker_does_not_keep_process_alive(self):
         script = r"""
 import io, json, sys, threading, time, uuid

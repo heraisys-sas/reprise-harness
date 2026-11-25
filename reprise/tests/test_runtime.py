@@ -21,14 +21,32 @@ class RuntimeTests(unittest.TestCase):
         self.assertLessEqual(len(decoder.buffer), 16)
         self.assertEqual(decoder.feed(b'{"fake":1}\n{"real":1}\n'), [{'real': 1}])
 
+    def test_finish_emits_last_record_without_trailing_newline(self):
+        # Revue (MINEUR S9-C5) : fin de flux sans saut de ligne final.
+        decoder = JsonLines()
+        self.assertEqual(decoder.feed(b'{"a":1}\n{"b":2}'), [{'a': 1}])
+        self.assertEqual(decoder.finish(), [{'b': 2}])
+        self.assertEqual(decoder.finish(), [])
+        self.assertFalse(decoder.buffer)
+
+    def test_finish_after_discard_returns_nothing(self):
+        decoder = JsonLines(limit=8)
+        self.assertEqual(decoder.feed(b'x'*20), [])
+        self.assertEqual(decoder.finish(), [])
+        # Contrat discard : jusqu'au prochain saut de ligne, tout est avalé ;
+        # l'enregistrement complet suivant doit rester décodable en fin de flux.
+        self.assertEqual(decoder.feed(b'y'*20 + b'\n{"ok":1}'), [])
+        self.assertEqual(decoder.finish(), [{'ok': 1}])
+
     def test_environment_preserves_everything_except_api_overrides(self):
         with patch.dict(os.environ, {'OPENAI_API_KEY': 'test', 'OPENAI_BASE_URL': 'test', 'KEEP': 'yes'}, clear=True):
             self.assertEqual(codex_environment(), {'KEEP': 'yes'})
 
     def test_cleanup_reaps_process_and_closes_streams(self):
         process = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(30)'],
-                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, start_new_session=True)
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         terminate(process, grace=.1)
         self.assertIsNotNone(process.returncode)
         self.assertTrue(process.stdout.closed)
         self.assertTrue(process.stdin.closed)
+        self.assertTrue(process.stderr.closed)

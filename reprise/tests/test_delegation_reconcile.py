@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from codex_expert_mcp import Bridge
+from expert_mcp import Bridge
 from support_clock import FakeClock, ScriptedFactory, thread_reply, turn_payload
 
 THREAD = '12345678-1234-1234-1234-123456789abc'
@@ -142,6 +142,28 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(manifest['phase'], 'owner_unavailable')
         self.assertEqual(manifest['state'], 'running')
         self.assertEqual(factory.last.methods().count('turn/start'), 0)
+
+    def test_oversized_completed_turn_is_distinct_status_with_identity_preserved(self):
+        from websocket_transport import OversizedResponse
+        bridge = self.bridge()
+        self.prepare(bridge)
+        factory = self.factory(status='completed',
+                               items=[{'type': 'agentMessage', 'phase': 'final_answer', 'text': 'Late deliverable'}])
+        def oversized(params):
+            raise OversizedResponse('Oversized WebSocket response', thread_id=THREAD, turn_id=TURN)
+        factory.kwargs['replies']['thread/read'] = oversized
+        result = self.reconcile(bridge, factory)
+        self.assertNotEqual(result['status'], 'owner_unavailable')
+        self.assertEqual(result['status'], 'oversized_capture')
+        self.assertEqual((result['thread_id'], result['turn_id']), (THREAD, TURN))
+        methods = factory.last.methods()
+        self.assertNotIn('turn/start', methods)
+        self.assertNotIn('turn/resume', methods)
+        self.assertNotIn('turn/interrupt', methods)
+        manifest = self.manifest(bridge)
+        self.assertEqual(manifest['phase'], 'oversized_capture')
+        self.assertEqual(manifest['state'], 'running')
+        self.assertEqual(manifest['next_action'], 'collect')
 
     def test_pending_approval_is_reported_without_interrupt(self):
         bridge = self.bridge()
@@ -325,13 +347,13 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(factory.instances, [])
 
     def test_active_client_lock_blocks_reconciliation(self):
-        import fcntl
+        import os
         bridge = self.bridge()
-        self.prepare(bridge)
-        with bridge.lock_path.open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            factory = self.factory()
-            result = self.reconcile(bridge, factory, action='stop', reason='user_stop')
+        # Un client vivant d'un autre processus tient la demande (claim frais,
+        # PID vivant) : la réconciliation est refusée sans nouveau tour.
+        self.prepare(bridge, owner='foreign:%d' % os.getpid())
+        factory = self.factory()
+        result = self.reconcile(bridge, factory, action='stop', reason='user_stop')
         self.assertEqual(result['status'], 'busy')
         self.assertEqual(factory.instances, [])
 

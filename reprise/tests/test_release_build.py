@@ -2,12 +2,15 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 import unittest
 import sys
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
+import orchestrator_memory
+import coordinator_jobs
 SPEC = importlib.util.spec_from_file_location('release_build_review', Path(__file__).parents[1] / 'release_build.py')
 b = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(b)
@@ -149,3 +152,63 @@ class RelaunchScriptTests(unittest.TestCase):
             self.assertIn('release_build.py open', log.read_text())
             self.assertNotIn('daemon', log.read_text())
             self.assertNotIn('--args', log.read_text())
+
+
+class DiffInventoriesTests(unittest.TestCase):
+    def test_stable(self):
+        before = {'a': {'sha256': 'x'}, 'b/c': {'sha256': 'y'}}
+        self.assertEqual(b._diff_inventories(before, dict(before)), [])
+
+    def test_added_pyc(self):
+        before = {'a': {'sha256': 'x'}}
+        after = {'a': {'sha256': 'x'}, 'm/__pycache__/m.pyc': {'sha256': 'z'}}
+        self.assertEqual(b._diff_inventories(before, after), ['m/__pycache__/m.pyc'])
+
+    def test_modified(self):
+        self.assertEqual(b._diff_inventories({'a': {'sha256': 'x'}}, {'a': {'sha256': 'changed'}}), ['a'])
+
+    def test_removed(self):
+        self.assertEqual(b._diff_inventories({'a': {'sha256': 'x'}, 'c': {'sha256': 'y'}}, {'a': {'sha256': 'x'}}), ['c'])
+
+
+class MemoryProbeFlagsTests(unittest.TestCase):
+    def test_orchestrator_memory_probe_is_isolated_no_bytecode(self):
+        source = Path(orchestrator_memory.__file__).read_text()
+        self.assertIn("[sys.executable, '-I', '-B', '-c', _REGISTRY_PROBE]", source)
+
+    def test_coordinator_jobs_probe_is_isolated_no_bytecode(self):
+        source = Path(coordinator_jobs.__file__).read_text()
+        self.assertIn("[sys.executable, '-I', '-B', '-c', orchestrator_memory._REGISTRY_PROBE]", source)
+
+
+class VerifyNoDriftTests(unittest.TestCase):
+    def drift_fixture(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        app = Path(temporary.name).resolve() / 'Reprise.app'
+        (app / 'Contents/Resources/runtime/bin').mkdir(parents=True)
+        python = app / 'Contents/Resources/runtime/bin/python3'
+        python.write_text('#!/bin/sh\necho \'{"status": "ok"}\'\n')
+        python.chmod(python.stat().st_mode | stat.S_IXUSR)
+        return app
+
+    def test_accepts_stable_bundle(self):
+        # metadata() exige un runtime réel épinglé : fixture avec metadata simulée,
+        # le test couvre la comparaison d'inventaire avant/après probe.
+        with patch.object(b.package_runtime, 'metadata', lambda app: {'fixture': True}):
+            b.verify_no_drift(self.drift_fixture())
+
+    def test_refuses_file_created_during_probe(self):
+        app = self.drift_fixture()
+        python = app / 'Contents/Resources/runtime/bin/python3'
+        python.write_text('#!/bin/sh\necho x > "$0.pyc"\necho \'{"status": "ok"}\'\n')
+        with patch.object(b.package_runtime, 'metadata', lambda app: {'fixture': True}):
+            with self.assertRaisesRegex(ValueError, 'Dérive du bundle'):
+                b.verify_no_drift(app)
+
+    def test_probe_uses_bare_interpreter_without_protective_env(self):
+        source = Path(b.__file__).read_text()
+        self.assertIn("'-I', '-B', '-c', _DRIFT_PROBE", source)
+        self.assertIn('assert sys.dont_write_bytecode', b._DRIFT_PROBE)
+        probe_source = source.split('def _drift_probe')[1].split('def verify_no_drift')[0]
+        self.assertNotIn('PYTHONDONTWRITEBYTECODE', probe_source)

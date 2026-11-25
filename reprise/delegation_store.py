@@ -1,4 +1,5 @@
 """Durable admission receipts. No transaction spans an external call."""
+import delegation_notifications
 import hashlib
 import json
 import os
@@ -91,10 +92,10 @@ RUNNING_STATUSES = ('running', 'awaiting_approval')
 # Native reconciliation phases. `finished` and `interrupted` are terminal; `owner_unavailable`
 # keeps the uncertainty instead of inventing a result.
 PHASES = ('starting', 'active', 'awaiting_approval', 'finished', 'interrupted',
-          'owner_unavailable', 'unknown')
+          'owner_unavailable', 'unknown', 'oversized_capture')
 NEXT_ACTIONS = {'starting': 'reconcile', 'active': 'reconcile', 'awaiting_approval': 'reconcile',
                 'finished': 'collect', 'interrupted': 'collect', 'owner_unavailable': 'collect',
-                'unknown': 'reconcile'}
+                'unknown': 'reconcile', 'oversized_capture': 'collect'}
 TURN_FIELDS = ('thread_id', 'turn_id', 'phase', 'work_completed', 'terminal_evidence',
                'pending_method', 'owner', 'started_at', 'deadline_at', 'last_event_at',
                'last_event', 'event_count', 'context')
@@ -206,14 +207,20 @@ class Store:
                 updated_at REAL, context TEXT, PRIMARY KEY(scope,request_key))''')
             if 'context' not in {row[1] for row in db.execute('PRAGMA table_info(delegation_turns)')}:
                 db.execute('ALTER TABLE delegation_turns ADD COLUMN context TEXT')
-            self.reconcile_awaiting_human()
+            delegation_notifications.install(db)
+            self._reconcile_awaiting_human_locked()
 
     def reconcile_awaiting_human(self):
         """One-shot, idempotent backfill (issue #53): receipts persisted before the
         awaiting_human state existed are reclassified from indeterminate; replay changes nothing."""
+        self._require_fresh_write_transaction()
         with self.db:
-            self.db.execute("UPDATE delegation_requests SET state='awaiting_human'"
-                            " WHERE state='indeterminate' AND json_extract(result,'$.status')='blocked_permission'")
+            self._reconcile_awaiting_human_locked()
+
+    def _reconcile_awaiting_human_locked(self):
+        """Backfill lui-même ; l'appelant possède la transaction (Store.__init__ ou wrapper gardé)."""
+        self.db.execute("UPDATE delegation_requests SET state='awaiting_human'"
+                        " WHERE state='indeterminate' AND json_extract(result,'$.status')='blocked_permission'")
 
     def lookup(self, args):
         view = validate_lookup(args)
@@ -244,28 +251,34 @@ class Store:
             rows = self.db.execute('SELECT request_key,state,parent,acknowledged FROM delegation_requests WHERE scope=? ORDER BY rowid DESC LIMIT 100', (self.scope,)).fetchall()
             return {'status': 'finished', 'requests': [dict(zip(('request_key', 'state', 'parent_request_key', 'acknowledged'), row)) for row in rows], 'limit': 100}
         validate_key(key)
-        with self.db:
-            row = self.db.execute('SELECT state,result,attempt,acknowledged FROM delegation_requests WHERE scope=? AND request_key=?', (self.scope, key)).fetchone()
-            if not row:
-                return {'status': 'not_found', 'request_key': key}
-            if args.get('acknowledge'):
-                if row[0] == 'awaiting_human':
-                    # Acknowledgement is the documented reconciliation act for a human-pending
-                    # attempt; the caller attests the observed native state. No other
-                    # non-recorded state is ever acknowledged.
-                    self.db.execute("UPDATE delegation_requests SET state='recorded', acknowledged=1 WHERE scope=? AND request_key=?", (self.scope, key))
-                    state = 'recorded'
-                elif row[0] != 'recorded':
-                    raise ValueError('Only a recorded receipt can be acknowledged')
-                else:
-                    self.db.execute('UPDATE delegation_requests SET acknowledged=1 WHERE scope=? AND request_key=?', (self.scope, key))
-                    state = row[0]
+        if args.get('acknowledge'):
+            # Mutating a receipt is an explicit write, not a read-only lookup.
+            # Never commit the caller's transaction as a side effect of ack.
+            self._require_fresh_write_transaction()
+            with self.db:
+                return self._lookup_key(key, acknowledge=True)
+        # A read does not own a transaction and must not commit/rollback one.
+        return self._lookup_key(key, acknowledge=False)
+
+    def _lookup_key(self, key, *, acknowledge):
+        row = self.db.execute('SELECT state,result,attempt,acknowledged FROM delegation_requests WHERE scope=? AND request_key=?', (self.scope, key)).fetchone()
+        if not row:
+            return {'status': 'not_found', 'request_key': key}
+        if acknowledge:
+            if row[0] == 'awaiting_human':
+                # Only the documented human-pending state can be reconciled.
+                self.db.execute("UPDATE delegation_requests SET state='recorded', acknowledged=1 WHERE scope=? AND request_key=?", (self.scope, key))
+                state = 'recorded'
+            elif row[0] != 'recorded':
+                raise ValueError('Only a recorded receipt can be acknowledged')
             else:
+                self.db.execute('UPDATE delegation_requests SET acknowledged=1 WHERE scope=? AND request_key=?', (self.scope, key))
                 state = row[0]
-        receipt = {'status': 'finished', 'request_key': key, 'state': state, 'attempt_id': row[2],
-                   'acknowledged': bool(row[3] or args.get('acknowledge')),
-                   'result': json.loads(row[1]) if row[1] else None}
-        return receipt
+        else:
+            state = row[0]
+        return {'status': 'finished', 'request_key': key, 'state': state, 'attempt_id': row[2],
+                'acknowledged': bool(row[3] or acknowledge),
+                'result': json.loads(row[1]) if row[1] else None}
 
     def _enrich(self, receipt):
         """Add the reconciliation fields to compact views only; full receipts stay unchanged."""
@@ -317,6 +330,7 @@ class Store:
         if not isinstance(event, dict) or event.get('phase') not in PHASES:
             raise ValueError('Invalid turn event')
         stamp = float(self.now())
+        self._require_fresh_write_transaction()
         with self.db:
             row = self.db.execute('SELECT attempt FROM delegation_requests WHERE scope=? AND request_key=?', (self.scope, key)).fetchone()
             if not row:
@@ -361,6 +375,7 @@ class Store:
         if phase not in PHASES:
             raise ValueError('Unknown native phase')
         stamp = float(self.now())
+        self._require_fresh_write_transaction()
         with self.db:
             if not self.db.execute('SELECT 1 FROM delegation_turns WHERE scope=? AND request_key=?',
                                    (self.scope, key)).fetchone():
@@ -378,10 +393,22 @@ class Store:
             values += [self.scope, key]
             self.db.execute('UPDATE delegation_turns SET ' + ', '.join(assignments) + ' WHERE scope=? AND request_key=?', values)
 
+    def _require_fresh_write_transaction(self):
+        """The caller must not own a transaction spanning a durable admission.
+
+        Python's Connection context manager commits on exit even when the
+        transaction was opened by another caller. Refuse before entering that
+        context: never implicitly commit/rollback someone else's work.
+        """
+        if self.db.in_transaction:
+            raise sqlite3.OperationalError(
+                'Active caller transaction prevents independent delegation write; no mutation recorded')
+
     def claim(self, key, owner, stale_after=120.0, alive=None):
         """Return owned, held or taken_over. A takeover is recorded, never redispatch."""
         alive = alive or owner_alive
         stamp = float(self.now())
+        self._require_fresh_write_transaction()
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
             row = self.db.execute('SELECT owner,updated_at,phase FROM delegation_turns WHERE scope=? AND request_key=?', (self.scope, key)).fetchone()
@@ -399,6 +426,7 @@ class Store:
             return 'taken_over'
 
     def release(self, key, owner):
+        self._require_fresh_write_transaction()
         with self.db:
             self.db.execute('UPDATE delegation_turns SET owner=NULL WHERE scope=? AND request_key=? AND owner=?',
                             (self.scope, key, owner))
@@ -407,6 +435,7 @@ class Store:
         validate_key(key)
         if parent is not None:
             validate_key(parent)
+        self._require_fresh_write_transaction()
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
             result = self._begin_locked(key, payload, parent)
@@ -648,6 +677,7 @@ class Store:
                 'receipt': self.lookup({'request_key': key})}
 
     def finish(self, key, result):
+        self._require_fresh_write_transaction()
         result = dict(result, request_key=key)
         if result.get('status') in RECORDED_STATUSES:
             state = 'recorded'
@@ -689,7 +719,43 @@ class Store:
                     values.append((result['pending_request'] or {}).get('method'))
                 values += [self.scope, key]
                 self.db.execute('UPDATE delegation_turns SET ' + ', '.join(assignments) + ' WHERE scope=? AND request_key=?', values)
+            self._record_notifications(key, state, result)
         return result
+
+    def _notification_kinds(self, state, result):
+        """Kinds to emit for a finished receipt update. A `recorded` state is
+        terminal but only status `finished` proves a success (interrupted,
+        quota_blocked, timeout... never do); uncertain or human-blocked states
+        still deserve attention without claiming a termination."""
+        if state == 'recorded':
+            kinds = ['turn_terminal']
+            if result.get('status') != 'finished':
+                kinds.append('attention_required')
+            return kinds
+        if state in ('indeterminate', 'awaiting_human'):
+            return ['attention_required']
+        return []
+
+    def _record_notifications(self, key, state, result):
+        """Emit notification events INSIDE the caller's active transaction
+        (#237): receipt and signal commit or roll back together. Event ids are
+        deterministic (kind, key, result digest) so an idempotent re-finish
+        deduplicates instead of waking consumers twice."""
+        result_sha256 = digest(result)
+        turn = self.db.execute('SELECT attempt, thread_id, turn_id FROM delegation_turns WHERE scope=? AND request_key=?',
+                               (self.scope, key)).fetchone()
+        for kind in self._notification_kinds(state, result):
+            delegation_notifications.record_event(
+                self.db, self.scope, key, kind, now=self.now(),
+                event_id=f'{kind}:{key}:{result_sha256[:32]}',
+                attempt_id=turn[0] if turn else None,
+                thread_id=turn[1] if turn else None,
+                turn_id=turn[2] if turn else None,
+                receipt_revision=RECEIPT_FORMAT,
+                result_sha256=result_sha256,
+                terminal_evidence=result.get('terminal_evidence'),
+                work_completed=result.get('work_completed'),
+                receipt_ref=f'delegation_requests:{self.scope}:{key}')
 
 
 def owner_alive(owner):

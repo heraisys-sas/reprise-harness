@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "bridge_root": "~/Library/Application Support/Reprise/metaaid-bridge",
+  "poll_s": 2.0,
+  "taskstore": "~/Library/Application Support/Reprise/metaai-tasks.sqlite",
+  "ui_bridge": true,
+  "ui_socket": "~/.reprise/metaai-reprise-trigger.sock",
+  "ui_app": "~/Applications/ReMetaAI.app/Contents/MacOS/Meta AI"
+}

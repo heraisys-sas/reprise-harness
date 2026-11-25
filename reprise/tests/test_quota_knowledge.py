@@ -3,12 +3,13 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import quota_knowledge as q
-from codex_expert_mcp import Bridge
+from expert_mcp import Bridge
 
 
 def sample(account='fixture-account-A', used=20, reset=2000):
@@ -172,15 +173,16 @@ class KnowledgeTests(unittest.TestCase):
         self.assertNotIn('scheduler_meta', tables)
 
     def test_mcp_quota_lookup_available_while_expertise_lock_held(self):
-        import fcntl
         with tempfile.TemporaryDirectory() as root:
             bridge = Bridge(root, {}, Path(root)/'state')
             self.addCleanup(bridge.db.close)
-            with bridge.lock_path.open('a') as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                result = bridge.call('reprise_quotas', {})
-            self.assertEqual(result['status'], 'finished')
-            self.assertEqual(result['quota_knowledge']['knowledge'], 'unknown')
+            # Un tour d'expertise actif (slot codex occupé) n'empêche pas la
+            # lecture des quotas : les outils non-inférence restent répondants.
+            bridge.db.execute("INSERT INTO expert_active_turns VALUES ('codex','0',NULL,'held',?,?)",
+                              (time.time(), time.time()))
+            bridge.db.commit()
+            result = bridge.call('reprise_quotas', {})
+        self.assertEqual(result['status'], 'finished')
 
     def test_cli_home_switch_cannot_reuse_cached_account(self):
         with patch.dict('os.environ', {'CODEX_HOME': '/private/tmp/fixture-home-A'}):

@@ -10,6 +10,32 @@ Un fait comporte un UUID, un texte, une révision, deux dates locales de stockag
 
 Un checkpoint immuable, associé à un projet et à un `work_id`, comporte un numéro de version, une copie des faits choisis et de leurs provenances à cet instant, des décisions, contraintes, prochaine action, effets incertains et provenance déclarée. Il ne réconcilie pas les reçus et ne vérifie aucun effet externe. Le prochain numéro exige le numéro précédent attendu, ou zéro pour la première version. La suppression d’un fait ne supprime pas sa copie dans un checkpoint antérieur : celle-ci est conservée pour la reprise. Aucun transcript brut n’est collecté automatiquement. Une prochaine couche devra définir comment sélectionner, vérifier et éventuellement supprimer des checkpoints.
 
+## Protection de l'initialisation des registres (#158)
+
+Une première écriture de mémoire crée et synchronise le marqueur privé vide
+`orchestrator-memory.noindex/initialized` **avant** de publier `memory.enc`.
+Le marqueur est lu sous le même verrou que le snapshot. Si le marqueur
+existe mais que `memory.enc` manque, la lecture et l'écriture refusent toute
+réinitialisation silencieuse. Un échec entre la publication du marqueur
+et la première publication du snapshot peut exiger une récupération
+manuelle : ne jamais supprimer le marqueur pour contourner ce refus.
+
+Un snapshot historique chiffré qui ne possède pas le marqueur reste
+lisible, mais les mutations sont bloquées jusqu'à son adoption
+**explicitement décidée par l'opérateur**. Après quiescence des clients,
+l'opérateur utilise `registry_adopt.py --state <état privé absolu>
+--registry memory --confirm-existing-registry`. La commande charge
+l'ancien snapshot, vérifie la version, les tables et l'intégrité SQLite,
+puis synchronise le marqueur sans réécrire ni migrer le chiffré. Une
+installation historique ne doit pas déployer ce changement sans prévoir
+cette étape avant ses nouvelles écritures. L'adoption est idempotente.
+
+Ce marqueur ne détecte pas la suppression simultanée de lui-même et du
+snapshot, le rejeu d'un ancien snapshot authentifié, ni un processus
+hostile du même utilisateur. La publication sur cette branche ne
+constitue ni test de durabilité en conditions réelles ni autorisation
+de déployer sans validation par l'agent local.
+
 ## Accès et cohérence
 
 - `Memory(state_directory)` exige un dossier d’état existant, privé, appartenant à l’utilisateur local, et un registre de projets existant. Elle crée le sous-dossier privé de stockage à la première construction.
@@ -26,6 +52,11 @@ La suppression est **logique** ; aucune garantie d’effacement physique des sna
 `python3 -m unittest discover -s reprise/tests -p 'test_orchestrator_memory.py' -v` utilise un faux coffre, jamais le trousseau utilisateur. Les essais couvrent isolation des projets, conflits et rejeu, écriture concurrente, snapshots, provenance, erreur du coffre, corruption, échec de remplacement et arrêt brutal autour du remplacement. Le faux coffre sert uniquement à tester le protocole d’appel et ne prouve pas la cryptographie ; le chiffrement réel et la disponibilité du Trousseau restent à vérifier dans un environnement de test approprié.
 
 ## Adaptateur commun local inter-harness — capture explicite
+
+L'[évaluation documentaire de Claude-Mem](../integrations/CLAUDE-MEM-EVALUATION.md)
+consigne la décision de conserver Reprise comme source canonique et les conditions
+non encore démontrées d'une éventuelle adaptation, sans installation ni capture
+automatique autorisée.
 
 `reprise_memory_mcp.py` expose un frontend MCP stdio local, sans inférence, sans
 écoute réseau et sans capture automatique. Reprise demeure la source canonique :
@@ -302,3 +333,39 @@ historique datée et versionnée peut précéder une modification ou suppression
 fait courant. La suppression reste limitée au fait courant : elle ne purge pas
 les snapshots, requêtes et reçus déjà approuvés. Cette conservation est affichée
 avant confirmation, et aucun verrou n’est gardé pendant le modèle.
+
+### Socle interne du rappel qualifié (#151)
+
+`Memory.recall_scopes(project_id, work_id)` résout en lecture seule le namespace
+projet historique et l'éventuel scope du travail courant. Une base v1 ou un scope
+travail absent est signalé sans migration ni création. Une association contradictoire,
+un doublon de scope travail ou une collision avec un UUID de projet est refusé.
+Cette résolution n'est pas une autorisation : le service doit valider le contexte
+hôte avant son utilisation.
+
+`coordinator_recall.read_scoped_snapshot` et `validate_v2` constituent un socle
+interne, sans raccordement au service ou à la GUI à ce stade. Le snapshot
+`reprise-memory-selection-v2` conserve les clés racines `schema`, `project_id`,
+`work_id`, `facts`. Chaque fait conserve les champs v1 et ajoute `scope`, copie
+du descripteur `{id, kind, subject_id, project_id, work_id}`. Seuls le projet
+sélectionné et l'unique scope du travail courant sont admissibles ; aucun scope
+utilisateur ou héritage implicite n'est autorisé. La sélection porte des références
+`{scope_id, fact_id}`, triées par ce couple, sans doublon. Deux faits portant le
+même UUID dans deux namespaces restent distincts. Les limites cumulées restent
+huit faits et 12 Kio. La validation historique ne relit jamais les scopes vivants.
+
+Le lecteur, validateur et parcours d'approbation v1 restent inchangés ; le lecteur
+v2 ne les remplace pas implicitement. `attach_scoped` revalide la copie avant
+mutation et conserve les références qualifiées dans l'identité d'approbation.
+Un rejeu déjà accepté retrouve sa copie historique sans relire la mémoire ; un
+même identifiant avec une autre identité est refusé. Le CAS de révision Jobs
+reste applicable aux approbations concurrentes.
+
+Le SHA-256 du snapshot v2 participe au consentement et au manifeste comme celui
+de v1. Le format `preparation-analysis-v4-recall` reste exclusivement associé au
+snapshot v1 ; `preparation-analysis-v5-scoped-recall` exige v2. Un helper qui
+n'annonce pas v5 est refusé avant réservation d'une tentative. Le payload contient
+la copie approuvée exacte ; sa reconstruction ne recherche pas de faits vivants.
+Le helper valide le contexte et les scopes de v2 avant de sérialiser les souvenirs
+comme données non fiables, sans leur conférer d'autorité. La liaison service/GUI
+doit être vérifiée avant de considérer le parcours opérateur complet.

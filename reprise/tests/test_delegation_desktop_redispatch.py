@@ -2,7 +2,7 @@
 
 Tout passe par l'API publique du pont (`reprise_delegate`, `reprise_reconcile`,
 `reprise_requests`) et par `TaskStore` ; le dispatch Desktop est simulé par un
-patch de `codex_expert_mcp.claude_desktop.review`. Un reçu existant vaut
+patch de `expert_mcp.claude_desktop.review`. Un reçu existant vaut
 collecte, jamais un second envoi.
 """
 import json
@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from codex_expert_mcp import Bridge
+from expert_mcp import Bridge
 from desktop_task_store import TaskStore
 
 CHAT = '178dcceb-fcd3-4f2d-ac4f-116a8a153bc3'
@@ -49,7 +49,7 @@ class DesktopRedispatchTests(unittest.TestCase):
             (bridge.requests.scope, key)).fetchone()
 
     def test_same_request_key_returns_the_receipt_and_dispatches_once(self):
-        with patch('codex_expert_mcp.claude_desktop.review',
+        with patch('expert_mcp.claude_desktop.review',
                    return_value=dict(ADMISSION)) as review:
             first = self.delegate(self.bridge, 'desk-1')
             second = self.delegate(self.bridge, 'desk-1')
@@ -65,12 +65,12 @@ class DesktopRedispatchTests(unittest.TestCase):
         self.assertIsInstance(self.bridge.desktop_tasks, TaskStore)
 
     def test_restart_with_an_equivalent_new_key_is_indeterminate_without_dispatch(self):
-        with patch('codex_expert_mcp.claude_desktop.review',
+        with patch('expert_mcp.claude_desktop.review',
                    return_value=dict(ADMISSION)):
             self.delegate(self.bridge, 'desk-2')
         restarted = self.make_bridge()
         self.addCleanup(restarted.close)
-        with patch('codex_expert_mcp.claude_desktop.review',
+        with patch('expert_mcp.claude_desktop.review',
                    return_value=dict(ADMISSION)) as review:
             result = self.delegate(restarted, 'desk-2-retry')
         review.assert_not_called()  # signature sémantique équivalente déjà incertaine
@@ -97,10 +97,10 @@ class DesktopRedispatchTests(unittest.TestCase):
         self.assertEqual(row, ('claim-stable', attempt, 'attempted', None))
 
     def test_reconcile_observe_never_submits_and_keeps_admission_only(self):
-        with patch('codex_expert_mcp.claude_desktop.review',
+        with patch('expert_mcp.claude_desktop.review',
                    return_value=dict(ADMISSION)):
             self.delegate(self.bridge, 'desk-4')
-        with patch('codex_expert_mcp.reconcile_turn',
+        with patch('expert_mcp.reconcile_turn',
                    return_value={'status': 'running', 'phase': 'active',
                                  'next_action': 'reconcile'}) as reconcile:
             observed = self.bridge.call('reprise_reconcile', {'request_key': 'desk-4',
@@ -120,7 +120,7 @@ class DesktopRedispatchTests(unittest.TestCase):
 
     def test_wait_expiry_then_same_key_never_redispatches(self):
         expired = dict(ADMISSION, status='awaiting_approval', phase='active')
-        with patch('codex_expert_mcp.claude_desktop.review',
+        with patch('expert_mcp.claude_desktop.review',
                    return_value=expired) as review:
             first = self.delegate(self.bridge, 'desk-5')
             second = self.delegate(self.bridge, 'desk-5')

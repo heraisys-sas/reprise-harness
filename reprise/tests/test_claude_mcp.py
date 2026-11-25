@@ -7,30 +7,36 @@ import unittest
 from unittest.mock import Mock
 from claude_mcp import ClaudeMCP
 from desktop_task_store import TaskStore
-from codex_expert_mcp import tool_content
+from expert_mcp import tool_content
 
 
 class ClaudeMCPTests(unittest.TestCase):
-    def test_composed_tools_and_blocked_loopback(self):
+    def test_composed_tools_allow_explicit_self_delegation(self):
         with tempfile.TemporaryDirectory() as tmp:
             tasks = TaskStore(tmp, tmp); bridge = Mock()
             facade = ClaudeMCP(tasks, bridge)
-            listed = facade.dispatch({'method':'tools/list'})['tools']
-            self.assertTrue({'get_task','submit_result','get_result','reprise_delegate','reprise_followup','reprise_requests'} <= {t['name'] for t in listed})
+            listed = facade.dispatch({'method': 'tools/list'})['tools']
+            self.assertTrue({'get_task', 'submit_result', 'get_result', 'reprise_delegate',
+                             'reprise_followup', 'reprise_requests'} <= {t['name'] for t in listed})
             for item in listed:
                 backend = item['inputSchema'].get('properties', {}).get('backend')
-                if backend: self.assertNotIn('claude-desktop', backend['enum'])
-            call = {'method':'tools/call','params':{'name':'reprise_delegate','arguments':{'backend':'claude-desktop'}}}
-            with self.assertRaises(ValueError): facade.dispatch(call)
-            bridge.dispatch.assert_not_called()
-            call['params']['arguments']['backend'] = 'codex'
-            bridge.dispatch.return_value = {'existing':'dispatch'}
-            self.assertEqual(facade.dispatch(call), {'existing':'dispatch'})
-            bridge.dispatch.assert_called_once_with(call)
-            bridge.dispatch.return_value = tool_content({'status':'finished','backends':[{'id':'codex'},{'id':'claude-desktop'}]})
-            payload = facade.dispatch({'method':'tools/call','params':{'name':'reprise_backends'}})
-            self.assertEqual(json.loads(payload['content'][0]['text'])['backends'], [{'id':'codex'}])
-            self.assertIn('version', facade.dispatch({'method':'initialize'})['serverInfo'])
+                if backend and 'enum' in backend:
+                    self.assertIn('claude-desktop', backend['enum'])
+                    self.assertIn('chatgpt', backend['enum'])
+            bridge.dispatch.return_value = {'existing': 'dispatch'}
+            for backend_name in ('claude-desktop', 'chatgpt', 'codex'):
+                call = {'method': 'tools/call', 'params': {'name': 'reprise_delegate',
+                         'arguments': {'backend': backend_name, 'kind': 'expertise',
+                                       'question': 'Probe', 'request_key': 'self-' + backend_name}}}
+                self.assertEqual(facade.dispatch(call), {'existing': 'dispatch'})
+            self.assertEqual(bridge.dispatch.call_count, 3)
+            bridge.dispatch.return_value = tool_content({
+                'status': 'finished', 'backends': [{'id': 'codex'}, {'id': 'claude-desktop'},
+                                                   {'id': 'chatgpt', 'availability': 'unverified'}]})
+            payload = facade.dispatch({'method': 'tools/call', 'params': {'name': 'reprise_backends'}})
+            self.assertEqual([item['id'] for item in json.loads(payload['content'][0]['text'])['backends']],
+                             ['codex', 'claude-desktop', 'chatgpt'])
+            self.assertIn('version', facade.dispatch({'method': 'initialize'})['serverInfo'])
             tasks.close()
 
     def test_incoming_completion(self):
@@ -66,8 +72,16 @@ class ClaudeMCPTests(unittest.TestCase):
             def call():
                 r = facade.dispatch({'method':'tools/call','params':{'name':'claim_next','arguments':{'claim_key':'ck'}}})
                 return json.loads(r['content'][0]['text'])
-            self.assertEqual(call()['request_key'], 't-first')
-            self.assertEqual(call()['request_key'], 't-second')
+            first = call()
+            self.assertEqual(first['request_key'], 't-first')
+            held = call()
+            self.assertEqual((held['state'], held['request_key'], held['attempt_id']),
+                             ('busy', 't-first', first['attempt_id']))
+            self.assertNotIn('prompt', held)
+            tasks.submit('t-first', first['attempt_id'], 'réponse 1')
+            second = call()
+            self.assertEqual(second['request_key'], 't-second')
+            tasks.submit('t-second', second['attempt_id'], 'réponse 2')
             self.assertEqual(call()['state'], 'empty')
             tasks.close()
 

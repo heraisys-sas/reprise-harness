@@ -37,6 +37,18 @@ VERSION = Path(__file__).with_name('VERSION').read_text().strip()
 RELAY_PROTOCOL = 'reprise-relay-1'
 
 
+def task_pointer(request_key):
+    """Composeur text handed to the chat: get_task is the single source of the full prompt.
+
+    The full prompt stays in the TaskStore (claim/attempt_id traceability);
+    pushing it in the composer too made the chat receive the instruction twice.
+    """
+    return ('A Reprise task is waiting in the configured project. Persist a claim_key, then call '
+            'get_task with request_key=' + json.dumps(request_key) +
+            '. Follow your session instructions, perform that scoped task, and call submit_result '
+            'with the returned attempt_id. If already completed, retrieve the existing result instead.')
+
+
 class RelayHub:
     """Connexion relais Quick Apply (injection ReClaude) tenue ouverte.
 
@@ -172,11 +184,7 @@ class Endpoint:
             return existing
         delivery = payload
         if self.tasks and purpose == 'delegation' and not orchestrated:
-            delivery = dict(payload, text=(
-                'A Reprise task is waiting in the configured project. Persist a claim_key, then call '
-                'get_task with request_key=' + json.dumps(args['request_key']) +
-                '. Follow your session instructions, perform that scoped task, and call submit_result '
-                'with the returned attempt_id. If already completed, retrieve the existing result instead.'))
+            delivery = dict(payload, text=task_pointer(args['request_key']))
         day = int(time.time() // 86400)
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
@@ -194,9 +202,10 @@ class Endpoint:
                 'task_available': self.tasks is not None and purpose == 'delegation', 'purpose': purpose})
         if self.relay.connected():
             # Canal relais additionnel : la réception reste durable (admission),
-            # la preuve d'envoi reste la chaîne native Quick Apply.
+            # la preuve d'envoi reste la chaîne native Quick Apply. Same pointer
+            # rule as the composer (#155): the full prompt travels via get_task.
             pushed = self.relay.push({'request_key': args.get('request_key'),
-                                      'prompt': payload['text'], 'chatId': payload['chatId']})
+                                      'prompt': delivery['text'], 'chatId': payload['chatId']})
             receipt['relay_pushed'] = pushed is not None
         return receipt
 
@@ -205,14 +214,16 @@ class Endpoint:
 
         Unknown request_key never dispatches. The failure is logged
         (dispatch_attempted + ok/error/stage) and returned as-is; no retry, no
-        fallback, and admission-only remains the recorded outcome.
+        fallback, and admission-only remains the recorded outcome. The composer
+        receives the task pointer only: the full prompt is delivered by
+        get_task (#155).
         """
         row = self.tasks.db.execute(
             'SELECT prompt,chat_id FROM desktop_tasks WHERE scope=? AND request_key=?',
             (self.tasks.scope, request_key)).fetchone()
         if not row:
             raise ValueError('Unknown request_key; no dispatch')
-        prompt, chat_id = row
+        chat_id = row[1]
         result = {'request_key': request_key, 'dispatch_attempted': True,
                   'dispatch_channel': 'cdp-pipe', 'admission_only': True}
         reservation = self.tasks.reserve_socket_dispatch(request_key)
@@ -221,7 +232,7 @@ class Endpoint:
         if reservation['state'] != 'reserved':
             return result | {'dispatch_ok': False, 'stage': 'incertain',
                              'dispatch_error': 'Dispatch antérieur ou historique incertain ; aucune relance.'}
-        outcome = self._dispatch_reserved(result, prompt, chat_id)
+        outcome = self._dispatch_reserved(result, task_pointer(request_key), chat_id)
         self.tasks.record_socket_dispatch(request_key, outcome)
         return outcome
 
@@ -253,6 +264,10 @@ class Endpoint:
             return result | {'dispatch_ok': False, 'stage': 'incertain',
                              'dispatch_error': str(exc) or 'launch_chrome échoué'}
         path = '/chat/' + chat_id
+        # Revue MAJEUR 3 : à partir d'ici un échec pré-clic certain doit
+        # terminer le Chrome daemon-owned (sinon fuite à chaque crash) ; seul
+        # un clic possible préserve le process pour observation.
+        click_possible = False
         try:
             try:
                 transport.pick_and_attach(chat_id)
@@ -308,6 +323,7 @@ class Endpoint:
                 cdp_mod.terminate_chrome(proc)
                 return result | {'dispatch_ok': False, 'stage': 'composeur',
                                  'dispatch_error': 'Insertion dans le composeur non confirmée'}
+            click_possible = True
             try:
                 outcome = claude_desktop_apply._dispatch(transport, path, fingerprint)
             except (OSError, ValueError, claude_desktop_apply.WSError, TimeoutError):
@@ -326,6 +342,10 @@ class Endpoint:
             return result | {'dispatch_ok': False, 'stage': stage,
                              'dispatch_error': outcome.get('dispatch_error') or stage}
         except Exception as exc:  # a daemon crash must never replace the receipt
+            if not click_possible:
+                # Échec certain pré-clic : le clic n'a pas pu partir, on
+                # termine le Chrome daemon-owned (fuite sinon, revue MAJEUR 3).
+                cdp_mod.terminate_chrome(proc)
             return result | {'dispatch_ok': False, 'stage': 'incertain',
                              'dispatch_error': str(exc) or type(exc).__name__}
 
@@ -488,7 +508,14 @@ class Endpoint:
             cdp_mod.terminate_chrome(proc)
             return {'ok': False, 'status': 'session', 'reason': str(exc)}
 
-        if not claude_desktop_apply.wait_composer(transport):
+        try:
+            composer_ready = claude_desktop_apply.wait_composer(transport)
+        except Exception as exc:
+            cdp_mod.terminate_chrome(proc)
+            return {'ok': False, 'status': 'composeur', 'stage': 'composeur',
+                    'detail': f'Composeur non vérifiable: {exc}',
+                    'exc_type': type(exc).__name__}
+        if not composer_ready:
             cdp_mod.terminate_chrome(proc)
             return {'ok': False, 'status': 'composeur', 'stage': 'composeur',
                     'detail': 'Composeur indisponible'}

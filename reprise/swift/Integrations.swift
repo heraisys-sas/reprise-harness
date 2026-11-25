@@ -15,6 +15,82 @@ private enum IntegrationDateTime {
     }
 }
 
+struct CodexThreadsSection: View {
+    @ObservedObject var app: App
+
+    private func activity(_ row: [String: Any]) -> String {
+        guard let milliseconds = row["updated_at_ms"] as? Int else { return "Inconnue" }
+        return IntegrationDateTime.string(from: Date(timeIntervalSince1970: Double(milliseconds) / 1000))
+    }
+
+    private func readability(_ row: [String: Any]) -> String {
+        switch row["rpc_readability"] as? String {
+        case "confirmed": return "Vérifiée"
+        case "identity_mismatch": return "Identité incohérente"
+        case "unavailable": return "Indisponible"
+        default: return "Non vérifiée"
+        }
+    }
+
+    private func summary(_ row: [String: Any]) -> String {
+        switch row["summary_status"] as? String {
+        case "available": return "Disponible"
+        case "unavailable": return "Indisponible"
+        default: return "Non demandé"
+        }
+    }
+
+    var body: some View {
+        SettingsCard(title: "Fils Codex récents",
+                     status: app.codexThreadsBusy ? "Lecture…" : "Lecture locale",
+                     ok: !app.codexThreadRows.isEmpty) {
+            HStack {
+                Text("Reprise peut lire vos conversations Codex, pas les modifier.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Actualiser") { app.loadCodexThreads() }
+                    .disabled(app.codexThreadsBusy)
+            }
+            if !app.codexThreadsStatus.isEmpty {
+                InlineStatus(busy: app.codexThreadsBusy, message: app.codexThreadsStatus)
+            }
+            if app.codexThreadRows.isEmpty && !app.codexThreadsBusy {
+                Text("Aucune conversation récente disponible dans l’index local.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                    GridRow {
+                        Text("Sujet").font(.caption.weight(.semibold))
+                        Text("Dernière activité").font(.caption.weight(.semibold))
+                        Text("Lecture RPC").font(.caption.weight(.semibold))
+                        Text("Contrôle").font(.caption.weight(.semibold))
+                        Text("Résumé").font(.caption.weight(.semibold))
+                    }
+                    ForEach(Array(app.codexThreadRows.enumerated()), id: \.offset) { _, row in
+                        GridRow(alignment: .top) {
+                            Text(row["subject"] as? String ?? "Sujet indisponible")
+                                .lineLimit(2).frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
+                            Text(activity(row)).font(.caption)
+                            Text(readability(row)).font(.caption)
+                            Text("Lecture seule").font(.caption)
+                            HStack(spacing: 6) {
+                                Text(summary(row)).font(.caption)
+                                if let threadID = row["thread_id"] as? String {
+                                    Button("Demander") { app.loadCodexThreads(summaryThreadID: threadID) }
+                                        .controlSize(.small).disabled(app.codexThreadsBusy)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear {
+            if app.codexThreadRows.isEmpty && !app.codexThreadsBusy { app.loadCodexThreads() }
+        }
+    }
+}
+
 private struct ClaudeInboxTaskOption: View {
     let key: String
     let state: String
@@ -55,8 +131,8 @@ private struct ClaudeQuotaRendererObservation: View {
 
     private var eventStatusLabel: String {
         switch observation["event_status"] as? String ?? "not_checked" {
-        case "recognized": "événement quota reconnu"
-        case "no_event": "aucun événement quota reconnu"
+        case "recognized": "événement de quota reconnu"
+        case "no_event": "aucun événement de quota reconnu"
         case "no_event_in_tail": "aucun événement reconnu dans la partie lue (journal tronqué)"
         case "not_checked": "événement non vérifié"
         default: "événement indisponible"
@@ -127,7 +203,7 @@ private struct ClaudeQuotaRendererObservation: View {
             readAtView
             Text("Fraîcheur de l’événement : \(freshnessLabel)")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("Quota actuel, quantité et attribution compte/chat : inconnus.")
+            Text("Jauge Claude Desktop indisponible ici : lisez la jauge sur la page Sessions.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -192,6 +268,44 @@ extension App {
             self.codexIntegrationResult = result
         }
     }
+    func inspectMetaaiIntegration() {
+        guard stateReady, !setupBusy else { return }
+        setupCommand(["metaai-integration-inspect"]) { result in
+            self.metaaiIntegrationResult = result
+        }
+    }
+    func invalidateMetaaiIntegrationPlan() {
+        metaaiIntegrationGeneration &+= 1
+        metaaiIntegrationPlan = nil
+        metaaiIntegrationAcknowledged = false
+    }
+    func previewMetaaiIntegration() {
+        guard stateReady, !setupBusy else { return }
+        invalidateMetaaiIntegrationPlan()
+        let generation = metaaiIntegrationGeneration
+        setupCommand(["metaai-integration-plan"]) { result in
+            guard generation == self.metaaiIntegrationGeneration else { return }
+            self.metaaiIntegrationResult = result
+            self.metaaiIntegrationPlan = result["plan"] as? [String: Any]
+        }
+    }
+    func applyMetaaiIntegration() {
+        guard stateReady, !setupBusy, metaaiIntegrationAcknowledged,
+              let plan = metaaiIntegrationPlan,
+              let names = plan["names"] as? [String], names == ["metaai-reprise"] else { return }
+        // Consume the plan before starting: a timeout or lost reply must not be replayed.
+        metaaiIntegrationVerificationPlan = plan
+        invalidateMetaaiIntegrationPlan()
+        setupCommand(["metaai-integration-apply"], input: ["plan": plan]) { result in
+            self.metaaiIntegrationResult = result
+        }
+    }
+    func verifyMetaaiIntegration() {
+        guard stateReady, !setupBusy, let plan = metaaiIntegrationVerificationPlan else { return }
+        setupCommand(["metaai-integration-verify"], input: ["plan": plan]) { result in
+            self.metaaiIntegrationResult = result
+        }
+    }
     func inspectClaudeIntegration() {
         guard stateReady, !setupBusy else { return }
         setupCommand(["claude-integration-inspect"]) { result in
@@ -243,6 +357,53 @@ extension App {
             return
         }
         setupCommand(["claude-integration-verify", "--project", claudeIntegrationProject]) { self.claudeIntegrationResult = $0 }
+    }
+
+    func inspectChatgptIntegration() {
+        guard stateReady, !setupBusy else { return }
+        setupCommand(["chatgpt-integration-inspect"]) { result in
+            self.chatgptIntegrationResult = result
+        }
+    }
+    func previewChatgptIntegration(_ action: String) {
+        guard stateReady, !setupBusy else { return }
+        guard !chatgptIntegrationProject.isEmpty else { return }
+        let args = ["chatgpt-integration-plan", "--project", chatgptIntegrationProject, "--action", action]
+        setupCommand(args) { result in
+            self.chatgptIntegrationResult = result
+            self.chatgptIntegrationPlan = result["plan"] as? [String: Any]
+            self.chatgptIntegrationAcknowledged = false
+        }
+    }
+    func applyChatgptIntegration() {
+        guard stateReady, !setupBusy, chatgptIntegrationAcknowledged, let plan = chatgptIntegrationPlan else { return }
+        guard plan["project"] as? String == chatgptIntegrationProject else { invalidateChatgptIntegrationPlan(); return }
+        setupCommand(["chatgpt-integration-apply"], input: ["plan": plan]) { result in
+            var displayedResult = result
+            displayedResult["action"] = plan["action"]
+            displayedResult["project"] = plan["project"]
+            self.chatgptIntegrationResult = displayedResult
+            self.chatgptIntegrationAcknowledged = false
+            if result["status"] as? String == "completed" {
+                self.chatgptIntegrationPlan = nil
+            }
+        }
+    }
+    func verifyChatgptIntegration() {
+        guard stateReady, !setupBusy else { return }
+        guard !chatgptIntegrationProject.isEmpty else {
+            chatgptIntegrationResult = ["status": "refused", "message": "Associez un projet avant la vérification du pont ChatGPT."]
+            return
+        }
+        setupCommand(["chatgpt-integration-verify", "--project", chatgptIntegrationProject]) { self.chatgptIntegrationResult = $0 }
+    }
+    func invalidateChatgptIntegrationPlan() {
+        chatgptIntegrationPlan = nil
+        chatgptIntegrationAcknowledged = false
+        let status = chatgptIntegrationResult["status"] as? String
+        if !["completed", "verified", "inspected"].contains(status ?? "") {
+            chatgptIntegrationResult = [:]
+        }
     }
 
     func invalidateClaudeInbox(clearTasks: Bool = true) {
@@ -297,7 +458,7 @@ extension App {
             self.claudeInboxTasks = tasks
             self.claudeInboxStatus = tasks.isEmpty
                 ? "Aucune tâche dans le registre de ce projet."
-                : "\(tasks.count) tâche(s) du projet vérifié. Aucun prompt ni secret n’est affiché."
+                : (tasks.count == 1 ? "1 tâche du projet vérifié." : "\(tasks.count) tâches du projet vérifié.") + " Aucun prompt ni secret n’est affiché."
         }
     }
 
@@ -430,8 +591,45 @@ extension App {
         }
     }
 
+    // Bind one preview to both its selected project and its exact draft options.
+    // The generation also rejects selection A -> B -> A while a command is running.
+    var harnessPlanContext: [String] {
+        [selectedProjectID, integrationHome, integrationProfile, integrationProject,
+         integrationDelegate ? "1" : "0", integrationCodexWorkspaceWrite ? "1" : "0",
+         integrationOutputResume ? "1" : "0", integrationOutputResumeProject,
+         integrationAsi1Effort ? "1" : "0", integrationAgentRole]
+    }
+    func harnessPlanMatchesDestination(_ plan: [String: Any]) -> Bool {
+        guard let home = plan["home"] as? String, let project = plan["project"] as? String,
+              let profile = plan["profile"] as? String, !profile.isEmpty else { return false }
+        func canonical(_ path: String) -> String {
+            URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+        }
+        return canonical(home) == canonical(integrationHome)
+            && canonical(project) == canonical(integrationProject)
+            && profile == integrationProfile
+    }
+    func harnessPlanMatchesOptions(_ plan: [String: Any]) -> Bool {
+        guard let action = plan["action"] as? String, ["install", "remove"].contains(action),
+              plan["delegate"] as? Bool == integrationDelegate else { return false }
+        let resume = plan["output_resume"] as? Bool == true
+        let resumeProject = integrationOutputResumeProject.isEmpty ? integrationProject : integrationOutputResumeProject
+        return (plan["codex_workspace_write"] as? Bool == true) == (integrationDelegate && integrationCodexWorkspaceWrite)
+            && (plan["agent_role"] as? String ?? "standard") == integrationAgentRole
+            && resume == integrationOutputResume
+            && (!resume || URL(fileURLWithPath: plan["output_resume_project"] as? String ?? "").resolvingSymlinksInPath().standardizedFileURL.path
+                == URL(fileURLWithPath: resumeProject).resolvingSymlinksInPath().standardizedFileURL.path)
+            && (action == "remove" || (plan["asi1_effort"] as? Bool == true) == integrationAsi1Effort)
+    }
+    var harnessPlanReady: Bool {
+        guard let plan = integrationPlan, integrationPlanContext == harnessPlanContext else { return false }
+        return harnessPlanMatchesDestination(plan) && (integrationPlanRecovered || harnessPlanMatchesOptions(plan))
+    }
     func invalidateIntegrationPlan() {
+        integrationPlanGeneration &+= 1
         integrationPlan = nil
+        integrationPlanContext = nil
+        integrationPlanRecovered = false
         integrationAcknowledged = false
         integrationResult = nil
         integrationVerification = nil
@@ -457,29 +655,48 @@ extension App {
     }
     func inspectIntegration() {
         guard stateReady, !setupBusy else { return }
-        var args = ["integration-inspect", "--home", integrationHome]
+        invalidateIntegrationPlan()
+        let generation = integrationPlanGeneration, selection = harnessPlanContext
+        var args = ["harness-integration-inspect", "--home", integrationHome]
         if !integrationProfile.isEmpty { args += ["--profile", integrationProfile] }
         setupCommand(args) { result in
+            guard generation == self.integrationPlanGeneration,
+                  selection == self.harnessPlanContext else { return }
             self.integrationProfiles = result["profiles"] as? [String] ?? []
-            if let project = result["output_resume_project"] as? String { self.integrationOutputResumeProject = project }
-            if let enabled = result["output_resume"] as? Bool { self.integrationOutputResume = enabled }
-            self.integrationAsi1Effort = result["asi1_effort"] as? Bool ?? false
-            if let enabled = result["delegate"] as? Bool { self.integrationDelegate = enabled }
+            let pending = result["pending_plan"] as? [String: Any]
+            // A durable, interrupted plan must be inspected deliberately and
+            // explicitly re-acknowledged. Never silently grant its old options.
+            if pending == nil {
+                if let project = result["output_resume_project"] as? String { self.integrationOutputResumeProject = project }
+                if let enabled = result["output_resume"] as? Bool { self.integrationOutputResume = enabled }
+                self.integrationAsi1Effort = result["asi1_effort"] as? Bool ?? false
+                if let enabled = result["delegate"] as? Bool { self.integrationDelegate = enabled }
+                self.integrationCodexWorkspaceWrite = false
+                if let role = result["agent_role"] as? String { self.integrationAgentRole = role }
+                if self.integrationProject.isEmpty, let project = result["project"] as? String { self.integrationProject = project }
+            }
             self.integrationCodexWorkspaceWriteInstalled = result["codex_workspace_write"] as? Bool ?? false
-            // A new plan must not silently carry an earlier workspace-write grant.
-            self.integrationCodexWorkspaceWrite = false
-            if let role = result["agent_role"] as? String { self.integrationAgentRole = role }
-            if self.integrationProject.isEmpty, let project = result["project"] as? String { self.integrationProject = project }
             self.integrationResult = result
-            self.integrationPlan = result["pending_plan"] as? [String: Any]
-            self.integrationAcknowledged = false
             self.integrationMessage = result["message"] as? String ?? "Inspection non confirmée."
+            if let pending {
+                if self.harnessPlanMatchesDestination(pending) {
+                    self.integrationPlan = pending
+                    self.integrationPlanContext = self.harnessPlanContext
+                    self.integrationPlanRecovered = true
+                    self.integrationAcknowledged = false
+                    self.integrationMessage += "\nPlan interrompu retrouvé : relisez ses changements avant toute nouvelle autorisation."
+                } else {
+                    self.integrationMessage += "\nPlan interrompu pour une autre destination ; aucune application autorisée."
+                }
+            }
             if let diagnostic = result["diagnostic"] as? String { self.integrationMessage += "\n" + diagnostic }
         }
     }
     func previewIntegration(action: String) {
-        guard stateReady, !setupBusy else { return }
-        var args = ["integration-plan", "--home", integrationHome, "--profile", integrationProfile, "--project", integrationProject, "--action", action]
+        guard stateReady, !setupBusy, !integrationProfile.isEmpty, !integrationProject.isEmpty else { return }
+        invalidateIntegrationPlan()
+        let generation = integrationPlanGeneration, selection = harnessPlanContext
+        var args = ["harness-integration-plan", "--home", integrationHome, "--profile", integrationProfile, "--project", integrationProject, "--action", action]
         if integrationDelegate { args.append("--delegate") }
         if integrationDelegate && integrationCodexWorkspaceWrite { args.append("--codex-workspace-write") }
         if integrationOutputResume {
@@ -489,32 +706,55 @@ extension App {
         if integrationAsi1Effort { args.append("--asi1-effort") }
         args += ["--agent-role", integrationAgentRole]
         setupCommand(args) { result in
-            self.integrationPlan = result["plan"] as? [String: Any]
-            self.integrationAcknowledged = false
+            guard generation == self.integrationPlanGeneration,
+                  selection == self.harnessPlanContext else { return }
             self.integrationResult = result
             self.integrationVerification = nil
             self.integrationMessage = result["message"] as? String ?? "Plan indisponible."
+            if let plan = result["plan"] as? [String: Any],
+               self.harnessPlanMatchesDestination(plan), self.harnessPlanMatchesOptions(plan) {
+                self.integrationPlan = plan
+                self.integrationPlanContext = selection
+                self.integrationPlanRecovered = false
+                self.integrationAcknowledged = false
+            } else if result["plan"] != nil {
+                self.integrationMessage += "\nPlan refusé : sélection ou options modifiées."
+            }
             if let diagnostic = result["diagnostic"] as? String { self.integrationMessage += "\n" + diagnostic }
         }
     }
     func applyIntegration() {
-        guard stateReady, !setupBusy, integrationAcknowledged, let plan = integrationPlan else { return }
-        setupCommand(["integration-apply"], input: ["plan": plan]) { result in
+        guard stateReady, !setupBusy, integrationAcknowledged, harnessPlanReady,
+              let plan = integrationPlan else { return }
+        let selection = harnessPlanContext
+        // Consume before dispatch: timeout or lost reply cannot repeat this plan.
+        invalidateIntegrationPlan()
+        let generation = integrationPlanGeneration
+        setupCommand(["harness-integration-apply"], input: ["plan": plan]) { result in
+            guard generation == self.integrationPlanGeneration,
+                  selection == self.harnessPlanContext else { return }
             self.integrationResult = result
-            self.integrationAcknowledged = false
             self.integrationVerification = nil
             if result["status"] as? String == "completed" {
-                self.integrationCodexWorkspaceWriteInstalled = self.integrationCodexWorkspaceWrite
+                self.integrationCodexWorkspaceWriteInstalled = plan["codex_workspace_write"] as? Bool == true
             }
-            if let pending = result["pending_plan"] as? [String: Any] { self.integrationPlan = pending }
-            else if result["status"] as? String == "completed" { self.integrationPlan = nil }
+            if let pending = result["pending_plan"] as? [String: Any],
+               self.harnessPlanMatchesDestination(pending) {
+                self.integrationPlan = pending
+                self.integrationPlanContext = selection
+                self.integrationPlanRecovered = true
+            }
+            self.integrationAcknowledged = false
             self.integrationMessage = result["message"] as? String ?? "Application non confirmée."
             if let diagnostic = result["diagnostic"] as? String { self.integrationMessage += "\n" + diagnostic }
         }
     }
     func verifyIntegration() {
         guard stateReady, !setupBusy else { return }
-        setupCommand(["integration-verify", "--home", integrationHome, "--profile", integrationProfile]) { result in
+        let generation = integrationPlanGeneration, selection = harnessPlanContext
+        setupCommand(["harness-integration-verify", "--home", integrationHome, "--profile", integrationProfile]) { result in
+            guard generation == self.integrationPlanGeneration,
+                  selection == self.harnessPlanContext else { return }
             self.integrationVerification = result
             self.integrationMessage = result["message"] as? String ?? "Vérification non confirmée."
             if let diagnostic = result["diagnostic"] as? String { self.integrationMessage += "\n" + diagnostic }
@@ -539,6 +779,23 @@ extension App {
         return true
     }
 
+    func loadAppClones() {
+        let path = ("~/Library/Application Support/Reprise/app-clones.json" as NSString).expandingTildeInPath
+        guard let data = FileManager.default.contents(atPath: path),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let clones = root["clones"] as? [String: [String: Any]] else {
+            appClones = []
+            appClonesMessage = "Manifeste absent — créez un clone avec la CLI gérée (app_clones.py apply)."
+            return
+        }
+        appClones = clones.keys.sorted().map { name in
+            var row = clones[name] ?? [:]
+            row["name"] = name
+            return row
+        }
+        appClonesMessage = appClones.count == 1 ? "1 clone géré." : "\(appClones.count) clones gérés."
+    }
+
     func refreshProjects(select projectID: String? = nil, completion: (() -> Void)? = nil) {
         guard projectCommandReady() else { return }
         setupCommand(["project-list"]) { result in
@@ -555,7 +812,7 @@ extension App {
                       !rows.contains(where: { $0["id"] as? String == self.selectedProjectID }) {
                 self.selectProject("")
             }
-            self.projectMessage = rows.isEmpty ? "Aucun projet enregistré." : "\(rows.count) projet(s) chargé(s)."
+            self.projectMessage = rows.isEmpty ? "Aucun projet enregistré." : (rows.count == 1 ? "1 projet chargé." : "\(rows.count) projets chargés.")
             completion?()
         }
     }
@@ -568,16 +825,20 @@ extension App {
             projectRenameDraft = ""
             integrationProject = ""
             claudeIntegrationProject = ""
+            chatgptIntegrationProject = ""
             invalidateIntegrationPlan()
             invalidateClaudeIntegrationPlan()
+            invalidateChatgptIntegrationPlan()
             return
         }
         projectRenameDraft = project["name"] as? String ?? ""
         let workspaces = project["workspaces"] as? [String: String] ?? [:]
         integrationProject = workspaces["harness"] ?? ""
         claudeIntegrationProject = workspaces["claude"] ?? ""
+        chatgptIntegrationProject = workspaces["claude"] ?? ""
         invalidateIntegrationPlan()
         invalidateClaudeIntegrationPlan()
+        invalidateChatgptIntegrationPlan()
     }
 
     func chooseProjectDirectory(_ target: String) {
@@ -658,6 +919,15 @@ extension App {
 
 struct Integrations: View {
     @ObservedObject var app: App
+    @State private var cloneApplyCandidate = ""
+    @State private var cloneApplyOffered = false
+    var cloneCommandsReady: Bool { app.stateReady && !app.setupBusy && app.runtimeError == nil }
+    var cloneApplyReady: Bool { cloneCommandsReady && app.clonePlanShown != nil && app.cloneActionBusy.isEmpty }
+    func requestCloneApply(_ clone: [String: Any]) {
+        guard let name = clone["name"] as? String, !name.isEmpty else { return }
+        cloneApplyCandidate = name
+        cloneApplyOffered = true
+    }
     var hasProfile: Bool { !app.integrationProfile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     func path(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 3) { Text(label).font(.caption).foregroundStyle(.secondary); Text(value.isEmpty ? "Non choisi" : value).textSelection(.enabled) }
@@ -733,6 +1003,53 @@ struct Integrations: View {
                         .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }.padding(6)
             }
+            GroupBox("Clones d’app") {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Button("Actualiser") { app.loadAppClones() }
+                        Button("Inspecter") { app.cloneInspect() }
+                        Button("Plan") { app.clonePlan() }
+                        Button("Vérifier") { app.cloneVerify() }
+                    }.disabled(!cloneCommandsReady || !app.cloneActionBusy.isEmpty)
+                    if !app.cloneActionBusy.isEmpty {
+                        Text("Action clone en cours : \(app.cloneActionBusy)…").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text(app.appClonesMessage).font(.caption).foregroundStyle(.secondary)
+                    if !app.cloneMessage.isEmpty {
+                        Text(app.cloneMessage).font(.caption).foregroundStyle(.orange)
+                    }
+                    if let plan = app.clonePlanShown {
+                        Text("Plan courant — à relire avant toute application :").font(.caption).foregroundStyle(.secondary)
+                        Text(planDetail(plan)).font(.caption).textSelection(.enabled)
+                    }
+                    if app.appClones.isEmpty {
+                        Text("Aucun manifeste de clone lu (app-clones.json). La CLI gérée : app_clones.py inspect/plan/apply/verify.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(app.appClones.indices, id: \.self) { index in
+                            CloneRow(clone: app.appClones[index],
+                                     applyReady: cloneApplyReady,
+                                     applyPending: app.cloneActionBusy == "apply",
+                                     onApply: { requestCloneApply(app.appClones[index]) })
+                        }
+                        Text("Auto-update du clone désactivé par contrat ; l’originale /Applications reste pristine et se met à jour normalement.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let at = app.cloneResultAt {
+                        Text("Dernier résultat \(app.cloneResultAction) (\(IntegrationDateTime.string(from: at))) :")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text(planDetail(app.cloneResult)).font(.caption).textSelection(.enabled)
+                    }
+                }.padding(6)
+                .confirmationDialog("Appliquer le plan à \(cloneApplyCandidate) ?", isPresented: $cloneApplyOffered, titleVisibility: .visible) {
+                    Button("Appliquer \(cloneApplyCandidate)", role: .destructive) {
+                        app.cloneApply(names: [cloneApplyCandidate])
+                    }
+                    Button("Annuler", role: .cancel) {}
+                } message: {
+                    Text("Le clone est recréé depuis l’original : identité du bundle modifiée (bundle_id, nom affiché), signature ad hoc, auto-update coupé, version gelée dans le manifeste. Si le clone est en cours d’exécution, l’opération est refusée. L’original /Applications reste pristine.")
+                }
+            }.onAppear { app.loadAppClones() }
             SettingsCard(title: "Profil Harness",
                          status: hasProfile ? "Profil : " + app.integrationProfile : "Aucun profil",
                          ok: hasProfile) {
@@ -759,6 +1076,17 @@ struct Integrations: View {
                          status: app.integrationDelegate ? "Exposée" : "Désactivée",
                          ok: true) {
                 Toggle("Exposer les outils de délégation", isOn: $app.integrationDelegate)
+                if let verification = app.integrationVerification,
+                   verification["status"] as? String == "verified" {
+                    let capability = (verification["bridge_capabilities"] as? [String: Any])?["delegation"] as? [String: Any] ?? [:]
+                    let needsUpdate = verification["update_required"] as? Bool == true
+                    SettingsHint(
+                        text: needsUpdate ? "Mise à jour des connecteurs nécessaire" : "Pont de délégation configuré et sondé",
+                        detail: "Mode installé : " + (capability["mode"] as? String ?? "inconnu")
+                            + " · Outils manquants : " + ((verification["missing_delegation_tools"] as? [String] ?? []).joined(separator: ", "))
+                            + ". Le chargement par Harness reste non observé ; rechargez le profil après application.",
+                        detailLabel: "Contrôle de délégation")
+                }
                 SettingsHint(
                     text: "Par défaut, seuls l’observation et les reçus sont exposés. La délégation peut consommer du quota.",
                     detail: "Autoriser l’exposition n’exécute aucune inférence : c’est le client qui décide d’appeler. Configurer un outil ne vaut pas autorisation de l’utiliser.")
@@ -848,6 +1176,30 @@ struct Integrations: View {
                 if !app.codexIntegrationResult.isEmpty {
                     SettingsHint(text: app.codexIntegrationResult["message"] as? String ?? "Résultat local ; chargement client inconnu.",
                                  detail: planDetail(app.codexIntegrationResult), detailLabel: "Réponse complète")
+                }
+            }
+            SettingsCard(title: "Copie ReMetaAI",
+                         status: app.metaaiIntegrationResult["status_label"] as? String ?? "État inconnu",
+                         ok: app.metaaiIntegrationResult["ok"] as? Bool == true) {
+                SettingsHint(text: "Redéploie la copie patchée après une mise à jour de Meta AI.app.",
+                             detail: "L'opération resynchronise la copie depuis /Applications/Meta AI.app, réapplique le binaire Sparkle, le shim Security et la re-signature. Meta AI doit être quittée pendant l'application ; la copie n'est jamais lancée par Reprise et le lanceur metaaid reprend ensuite le relais.",
+                             detailLabel: "Ce que fait l'opération")
+                HStack(spacing: 10) {
+                    Button("Relire l'état") { app.inspectMetaaiIntegration() }
+                    Button("Préparer le redéploiement…") { app.previewMetaaiIntegration() }
+                    Button("Vérifier") { app.verifyMetaaiIntegration() }
+                        .disabled(app.metaaiIntegrationVerificationPlan == nil)
+                }
+                if let plan = app.metaaiIntegrationPlan {
+                    SettingsHint(text: plan["feasible"] as? Bool == true ? "Un plan de redéploiement est prêt ; il attend votre accord." : "Plan bloqué — lisez le message avant de replanifier.",
+                                 detail: planDetail(plan), detailLabel: "Plan exact")
+                    Toggle("J'ai vérifié le plan et quitté Meta AI", isOn: $app.metaaiIntegrationAcknowledged)
+                    Button("Appliquer le redéploiement") { app.applyMetaaiIntegration() }
+                        .disabled(!app.metaaiIntegrationAcknowledged)
+                }
+                if !app.metaaiIntegrationResult.isEmpty {
+                    SettingsHint(text: app.metaaiIntegrationResult["message"] as? String ?? "Résultat local.",
+                                 detail: planDetail(app.metaaiIntegrationResult), detailLabel: "Réponse complète")
                 }
             }
             SettingsCard(title: "Connecteur Claude Desktop",
@@ -980,6 +1332,55 @@ struct Integrations: View {
                     }
                 }
             }.disabled(app.setupBusy)
+            SettingsCard(title: "Connecteur ChatGPT (pont MCP)",
+                         status: app.chatgptIntegrationResult["status"] as? String == "verified" ? "Release vérifiée" :
+                             app.chatgptIntegrationResult["status"] as? String == "completed" ?
+                                 ((app.chatgptIntegrationResult["action"] as? String == "remove") ? "Retrait appliqué" : "Plan appliqué") : "État inconnu",
+                         ok: ["completed", "verified"].contains(app.chatgptIntegrationResult["status"] as? String ?? "")) {
+                HStack {
+                    path("Projet du pont", app.chatgptIntegrationProject)
+                }
+                HStack(spacing: 10) {
+                    Button("Relire l’état") { app.inspectChatgptIntegration() }
+                    Button("Installer ou mettre à jour…") { app.previewChatgptIntegration("install") }.disabled(app.chatgptIntegrationProject.isEmpty)
+                    Button("Retirer…") { app.previewChatgptIntegration("remove") }.disabled(app.chatgptIntegrationProject.isEmpty)
+                    Button("Vérifier") { app.verifyChatgptIntegration() }.disabled(app.chatgptIntegrationProject.isEmpty)
+                }
+                SettingsHint(
+                    text: "Reprise écrit la table [mcp_servers.reprise] dans ~/.codex/config.toml, partagée avec ChatGPT desktop.",
+                    detail: "ChatGPT desktop partage la configuration MCP de Codex : le même fichier ~/.codex/config.toml (tables [mcp_servers.<nom>]) lu par son sélecteur Réglages → MCP servers. Reprise ne modifie que la table gérée reprise et préserve le reste du fichier. Après application, redémarrez ChatGPT (Réglages → MCP servers → Restart) pour qu’il relise config.toml. La vérification exécute initialize/tools/list sur la release, sans inférence ; le chargement dans ChatGPT reste non observé.",
+                    detailLabel: "Consigne de redémarrage et limites")
+                if let plan = app.chatgptIntegrationPlan {
+                    SettingsHint(text: "Un plan est prêt ; il attend votre accord.",
+                                 detail: planDetail(plan), detailLabel: "Plan exact du connecteur")
+                    Text("Empreinte du plan : " + (plan["fingerprint"] as? String ?? "indisponible")).font(.caption)
+                    Toggle("J’ai vérifié le projet et les changements du connecteur", isOn: $app.chatgptIntegrationAcknowledged)
+                    Button("Appliquer le plan") { app.applyChatgptIntegration() }.disabled(!app.chatgptIntegrationAcknowledged)
+                }
+                if app.chatgptIntegrationResult["status"] as? String == "completed" {
+                    let changed = app.chatgptIntegrationResult["changed"] as? Bool == true
+                    let action = app.chatgptIntegrationResult["action"] as? String ?? "install"
+                    SettingsHint(text: action == "remove"
+                                    ? (changed ? "Table gérée retirée de config.toml." : "Le connecteur était déjà retiré.")
+                                    : (changed ? "Table [mcp_servers.reprise] écrite dans config.toml ; redémarrez ChatGPT desktop (Réglages → MCP servers → Restart)."
+                                               : "Configuration déjà conforme ; aucune écriture."),
+                                 detail: "Ce résultat concerne le dernier plan appliqué. Chargement par ChatGPT : non observé.",
+                                 detailLabel: "Dernier résultat")
+                } else if app.chatgptIntegrationResult["status"] as? String == "verified" {
+                    SettingsHint(text: "Vérification locale : les outils du pont répondent dans la release testée.",
+                                 detail: "La release a répondu à initialize/tools/list sans inférence. Chargement par ChatGPT : non observé ; redémarrez ChatGPT desktop (Réglages → MCP servers → Restart) puis vérifiez les outils dans le client.",
+                                 detailLabel: "Dernière vérification")
+                } else if app.chatgptIntegrationResult["status"] as? String == "inspected" {
+                    SettingsHint(text: (app.chatgptIntegrationResult["managed"] as? Bool == true)
+                                    ? "Configuration gérée active et conforme."
+                                    : "Aucune configuration gérée active.",
+                                 detailLabel: "Dernière inspection")
+                }
+                if !app.chatgptIntegrationResult.isEmpty {
+                    SettingsHint(text: app.chatgptIntegrationResult["message"] as? String ?? "Dernier résultat du pont ChatGPT.",
+                                 detail: planDetail(app.chatgptIntegrationResult), detailLabel: "Réponse complète")
+                }
+            }
             SettingsCard(title: "Reprise après quota Claude Desktop",
                          status: app.claudeQuotaState["enabled"] as? Bool == true ? "Active" : "En pause",
                          ok: true) {
@@ -1022,11 +1423,17 @@ struct Integrations: View {
                     Button("Prévisualiser le retrait…") { app.previewIntegration(action: "remove") }
                     Spacer()
                 }.disabled(!hasProfile || app.integrationProject.isEmpty)
-                if let plan = app.integrationPlan {
+                if let plan = app.integrationPlan, app.harnessPlanReady {
                     Divider()
                     HStack(spacing: 24) {
                         path("Action", plan["action"] as? String ?? "")
                         path("Profil", plan["profile"] as? String ?? "")
+                    }
+                    path("Projet du plan", plan["project"] as? String ?? "inconnu")
+                    path("Dossier de configuration", plan["home"] as? String ?? "inconnu")
+                    if app.integrationPlanRecovered {
+                        Text("Plan durable retrouvé après interruption : examinez chaque modification et autorisez de nouveau son application.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     Text("Rôle : " + ((plan["agent_role"] as? String == "coordinator") ? "Coordinateur" : "Standard"))
                     SettingsHint(
@@ -1042,7 +1449,7 @@ struct Integrations: View {
                     }
                     Text("Empreinte du plan : " + (plan["fingerprint"] as? String ?? "indisponible")).font(.caption)
                     Toggle("J’autorise les modifications de ce plan sur le profil affiché.", isOn: $app.integrationAcknowledged)
-                    Button("Appliquer ce plan") { app.applyIntegration() }.disabled(!app.integrationAcknowledged)
+                    Button("Appliquer ce plan") { app.applyIntegration() }.disabled(!app.integrationAcknowledged || !app.harnessPlanReady)
                 }
                 if let result = app.integrationResult {
                     if let backup = result["backup"] as? String { path("Sauvegarde", backup) }
@@ -1068,7 +1475,10 @@ struct Integrations: View {
         }
         .disabled(app.setupBusy || !app.stateReady)
         .onChange(of: app.codexIntegrationHarness) { _, _ in app.invalidateCodexIntegrationPlan() }
+        .onChange(of: app.integrationHome) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.integrationProject) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationProfile) { _, _ in app.invalidateIntegrationPlan() }
+        .onChange(of: app.integrationAsi1Effort) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationOutputResumeProject) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationOutputResume) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationAgentRole) { _, _ in app.invalidateIntegrationPlan() }
@@ -1085,5 +1495,59 @@ struct Integrations: View {
         }
         .onChange(of: app.claudeAwaitChoice) { _, _ in app.invalidateClaudeIntegrationPlan() }
         .onChange(of: app.claudeReplaceProbe) { _, _ in app.invalidateClaudeIntegrationPlan() }
+        .onChange(of: app.chatgptIntegrationProject) { _, _ in app.invalidateChatgptIntegrationPlan() }
+    }
+}
+
+private struct CloneRow: View {
+    let clone: [String: Any]
+    let applyReady: Bool
+    let applyPending: Bool
+    let onApply: () -> Void
+    private let name: String
+    private let bundleID: String
+    private let frozenVersion: String
+    private let upstreamVersion: String
+    private let issues: [String]
+
+    init(clone: [String: Any], applyReady: Bool, applyPending: Bool, onApply: @escaping () -> Void) {
+        self.clone = clone
+        self.applyReady = applyReady
+        self.applyPending = applyPending
+        self.onApply = onApply
+        self.name = clone["name"] as? String ?? ""
+        self.bundleID = clone["bundle_id"] as? String ?? ""
+        self.frozenVersion = clone["frozen_version"] as? String ?? ""
+        self.upstreamVersion = clone["upstream_version"] as? String ?? ""
+        self.issues = clone["issues"] as? [String] ?? []
+    }
+
+    func path(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(value.isEmpty ? "Non choisi" : value).textSelection(.enabled)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(name).font(.headline)
+            path("Identité", bundleID)
+            path("Version gelée", frozenVersion)
+            path("Version upstream", upstreamVersion)
+            let summary = issues.isEmpty ? "Conforme au contrat." : "À traiter : " + issues.joined(separator: ", ")
+            Text(summary)
+                .font(.caption)
+                .foregroundStyle(issues.isEmpty ? Color.secondary : Color.orange)
+            HStack(spacing: 8) {
+                Button("Appliquer…") { onApply() }
+                    .disabled(!applyReady)
+                if applyPending {
+                    Text("Application en cours…").font(.caption).foregroundStyle(.secondary)
+                } else if !applyReady {
+                    Text("Lancez d’abord Plan, puis appliquez.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 }

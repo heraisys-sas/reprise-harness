@@ -335,13 +335,20 @@ class Tasks:
         return statuses.get(run) == 'failed'
 
     def fail(self, key, reason):
-        """Operator exit for gated, ambiguous, review or busy tasks. Local-only; no replay."""
+        """Operator exit for gated, ambiguous, review or busy tasks. Local-only; no replay.
+
+        Revue MAJEUR 5 : 'dispatching' est accepté aussi — une tâche figée
+        mid-dispatch sans thread_id (crash entre claim et création de thread)
+        n'a ni reconcile ni sweep (tous deux exigent thread_id) et restait
+        bloquée pour toujours ; l'opérateur doit pouvoir la clôturer. Le POST
+        distant peut avoir abouti : 'failed' reste local-only, jamais rejoué.
+        """
         if not isinstance(reason, str) or not reason.strip() or len(reason) > 512:
             raise TaskError('Invalid failure reason')
         with self.db:
-            changed = self.db.execute("UPDATE ironclaw_tasks SET state='failed',result=? WHERE request_key=? AND state IN ('needs_operator','ambiguous','needs_review','blocked_busy')", (json.dumps({'operator': reason}, ensure_ascii=False), key)).rowcount
+            changed = self.db.execute("UPDATE ironclaw_tasks SET state='failed',result=? WHERE request_key=? AND state IN ('needs_operator','ambiguous','needs_review','blocked_busy','dispatching')", (json.dumps({'operator': reason}, ensure_ascii=False), key)).rowcount
         if not changed:
-            raise TaskError('Only gated, ambiguous, review or busy tasks can be marked failed')
+            raise TaskError('Only gated, ambiguous, review, busy or dispatching tasks can be marked failed')
         return self.get(key)
 
     def _expired(self, key):

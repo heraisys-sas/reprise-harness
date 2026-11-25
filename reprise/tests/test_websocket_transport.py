@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from websocket_transport import WebSocketTransport
+from websocket_transport import OversizedResponse, WebSocketTransport
 import claude_desktop_apply
 import codex_rpc
 
@@ -75,6 +75,33 @@ class WebSocketFrames(unittest.TestCase):
         fixture.LIMIT = 10
         with self.assertRaises(ValueError):
             fixture.receive()
+
+    def test_raised_receive_limit_reads_beyond_send_limit(self):
+        payload = {'result': 'x' * (1024 * 1024 + 8)}
+        fixture = Fixture([frame(payload)])
+        fixture.RECEIVE_LIMIT = 64 * 1024 * 1024
+        self.assertEqual(fixture.receive(), payload)
+
+    def test_send_limit_is_unchanged_when_receive_limit_is_raised(self):
+        fixture = Fixture()
+        fixture.RECEIVE_LIMIT = 64 * 1024 * 1024
+        with self.assertRaises(ValueError):
+            fixture.send({'x': 'y' * (1024 * 1024)})
+        self.assertEqual(fixture.sent, [])
+
+    def test_receive_still_rejects_beyond_raised_limit_with_dedicated_error(self):
+        fixture = Fixture([frame({'result': 'x' * 20})])
+        fixture.RECEIVE_LIMIT = 10
+        with self.assertRaises(OversizedResponse) as caught:
+            fixture.receive()
+        error = caught.exception
+        self.assertIsInstance(error, ValueError)
+        self.assertEqual((error.thread_id, error.turn_id), (None, None))
+
+    def test_default_limit_is_the_send_limit(self):
+        payload = {'result': 'x' * (1024 * 1024 + 8)}
+        with self.assertRaises(OversizedResponse):
+            Fixture([frame(payload)]).receive()
 
     def test_request_limit_is_enforced_before_writing(self):
         fixture = Fixture()

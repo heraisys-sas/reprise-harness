@@ -170,21 +170,55 @@ class RoutesTests(unittest.TestCase):
         self.assertEqual(result['cdp_web']['state'], 'indisponible')
         self.assertEqual(result['cdp_web']['reason'], 'Daemon Quick Apply injoignable.')
 
-    def test_native_patch_follows_socket_probe(self):
+    def test_native_patch_states_follow_real_connection(self):
+        """#229: presence / connection / readiness are distinct states."""
         import socket as socket_module
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / 'probe.sock')
-            listener = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
-            self.addCleanup(listener.close)
-            listener.bind(path)
             self.db.execute('INSERT INTO engine_settings VALUES (?,?)', ('claude-desktop', json.dumps({'socket': path})))
             self.db.commit()
-            routes = self.routes(CdpStatusClient)
-            self.assertEqual(routes['native_patch']['state'], 'disponible')
+
+            # No socket file at all: daemon absent.
+            with self.assertRaises(engines.Unavailable) as expected:
+                engines.socket_path({'socket': path})
+            self.assertEqual(claude_desktop.status(self.db, '/private/tmp')['routes']['native_patch'],
+                             {'enabled': True, 'state': 'indisponible', 'connection': 'absent',
+                              'reason': expected.exception.reason})
+
+            # Orphan socket file (bound then closed, file left behind):
+            # detected, never ready.
+            listener = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+            listener.bind(path)
             listener.close()
-            Path(path).unlink()
             routes = self.routes(CdpStatusClient)
-        self.assertEqual(routes['native_patch']['state'], 'indisponible')
+            self.assertEqual(routes['native_patch']['state'], 'détectée')
+            self.assertEqual(routes['native_patch']['connection'], 'failed')
+            self.assertIn('connexion non établie', routes['native_patch']['reason'])
+
+            # Listener answering the daemon greeting: ready, connection verified.
+            Path(path).unlink()  # macOS: bind refuses an existing file.
+            serving = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+
+            def serve():
+                try:
+                    while True:
+                        conn, _ = serving.accept()
+                        with conn:
+                            conn.sendall(b'{"hello": true}\n')
+                except OSError:
+                    pass
+
+            serving.bind(path)
+            serving.listen(1)
+            self.addCleanup(serving.close)
+            import threading
+            thread = threading.Thread(target=serve, daemon=True)
+            thread.start()
+            self.addCleanup(lambda: thread.join(timeout=2))
+            routes = self.routes(CdpStatusClient)
+            self.assertEqual(routes['native_patch']['state'], 'prête')
+            self.assertEqual(routes['native_patch']['connection'], 'ok')
+            self.assertIn('greeting', routes['native_patch']['reason'])
 
     def test_status_payload_stays_backward_compatible(self):
         with patch('claude_desktop_rpc.Client', CdpStatusClient):

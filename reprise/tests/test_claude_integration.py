@@ -48,6 +48,16 @@ class ClaudeIntegrationTests(unittest.TestCase):
         self.project.mkdir()
         _, self.config, self.managed = integration.paths(self.home)
 
+    def test_new_managed_claude_connector_shares_chatgpt_state(self):
+        _, _, _, configured, _, _, _ = integration.desired(
+            self.root, self.home, self.project, False)
+        args = configured['mcpServers'][integration.CONNECTOR_NAME]['args']
+        self.assertIn('--chatgpt-state', args)
+        index = args.index('--chatgpt-state')
+        self.assertEqual(args[index + 1],
+                         str(integration.state_location(self.root, 'chatgpt-state').absolute()))
+        self.assertNotIn('--chatgpt-socket', args)
+
     def plan(self, **kwargs):
         return integration.plan(self.root, self.home, self.project, **kwargs)
 

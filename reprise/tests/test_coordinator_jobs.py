@@ -254,15 +254,21 @@ class JobsTests(unittest.TestCase):
 
     def test_post_replace_fsync_failure_is_explicitly_uncertain_and_recoverable(self):
         operation = uid()
-        original = jobs.os.fsync
-        calls = 0
+        original_fsync, original_replace = jobs.os.fsync, jobs.os.replace
+        replaced = [False]
+        def count_replace(src, dst, *args, **kwargs):
+            result = original_replace(src, dst, *args, **kwargs)
+            if str(dst).endswith('jobs.enc'):
+                replaced[0] = True
+            return result
         def fail_directory_sync(fd):
-            nonlocal calls
-            calls += 1
-            if calls == 3:
+            # The first-write marker adds its own folder sync before replace;
+            # target the post-replace directory sync, not a call index.
+            if replaced[0]:
                 raise OSError('simulated directory fsync failure')
-            return original(fd)
-        with patch.object(jobs.os, 'fsync', side_effect=fail_directory_sync):
+            return original_fsync(fd)
+        with patch.object(jobs.os, 'fsync', side_effect=fail_directory_sync), \
+             patch.object(jobs.os, 'replace', side_effect=count_replace):
             with self.assertRaises(jobs.WriteUncertainError):
                 self.store.prepare_proposal(self.p1, operation, PROPOSAL)
         recovered = jobs.Jobs(self.state, crypt=fake_crypt).recover(self.p1, operation)
@@ -425,14 +431,23 @@ class JobsTests(unittest.TestCase):
 
     def test_failed_directory_fsync_requires_resync_before_replay_receipt(self):
         operation = uid()
-        real_fsync = jobs.os.fsync
-        failed = [False]
-        def fail_first_folder_sync(fd):
-            if stat.S_ISDIR(os.fstat(fd).st_mode) and os.fstat(fd).st_ino == (self.state / 'coordinator-jobs.noindex').stat().st_ino and not failed[0]:
+        real_fsync, real_replace = jobs.os.fsync, jobs.os.replace
+        replaced = [False]
+        def mark_replaced(*args, **kwargs):
+            result = real_replace(*args, **kwargs)
+            replaced[0] = True
+            return result
+        def fail_folder_sync(fd):
+            # Fail the first folder sync that follows replace: the marker's own
+            # folder sync precedes replace and stranding it is covered by
+            # test_first_jobs_write_marker_stranded_before_replace.
+            if replaced[0] and stat.S_ISDIR(os.fstat(fd).st_mode) and os.fstat(fd).st_ino == (self.state / 'coordinator-jobs.noindex').stat().st_ino and not failed[0]:
                 failed[0] = True
                 raise OSError('simulated directory sync failure')
             return real_fsync(fd)
-        with patch.object(jobs.os, 'fsync', side_effect=fail_first_folder_sync):
+        failed = [False]
+        with patch.object(jobs.os, 'fsync', side_effect=fail_folder_sync), \
+             patch.object(jobs.os, 'replace', side_effect=mark_replaced):
             with self.assertRaises(OSError): self.prepare(operation)
         self.assertTrue(failed[0])
         # Recover first performs the missing directory sync, then confirms the receipt.
@@ -441,7 +456,44 @@ class JobsTests(unittest.TestCase):
         self.assertEqual(self.prepare(operation), recovered)
         self.assertEqual(len(self.store.list(self.p1)), 1)
 
+    def test_missing_jobs_ciphertext_with_marker_fails_closed(self):
+        row = self.prepare()
+        folder = self.state / 'coordinator-jobs.noindex'
+        self.assertEqual((folder / 'initialized').stat().st_size, 0)
+        (folder / 'jobs.enc').unlink()
+        with self.assertRaises(jobs.registry_marker.RegistryMissing):
+            self.store.get(self.p1, row['job_id'])
+        with self.assertRaises(jobs.registry_marker.RegistryMissing):
+            self.prepare()
+        self.assertFalse((folder / 'jobs.enc').exists())
+
+    def test_legacy_jobs_are_read_only_until_explicit_adoption(self):
+        row = self.prepare()
+        folder = self.state / 'coordinator-jobs.noindex'
+        before = (folder / 'jobs.enc').read_bytes()
+        (folder / 'initialized').unlink()
+        self.assertEqual(self.store.get(self.p1, row['job_id']), row)
+        with self.assertRaises(jobs.registry_marker.LegacyRegistry):
+            self.prepare()
+        self.assertEqual((folder / 'jobs.enc').read_bytes(), before)
+        self.assertEqual(self.store.adopt_legacy_registry(), {'status': 'adopted'})
+        self.assertEqual(self.store.adopt_legacy_registry(), {'status': 'adopted'})
+        self.assertEqual((folder / 'jobs.enc').read_bytes(), before)
+        self.prepare()
+        self.assertEqual(len(self.store.list(self.p1)), 2)
+
+    def test_first_jobs_write_marker_stranded_before_replace(self):
+        with patch.object(jobs.os, 'replace', side_effect=OSError('synthetic replace failure')):
+            with self.assertRaises(OSError):
+                self.prepare()
+        folder = self.state / 'coordinator-jobs.noindex'
+        self.assertTrue((folder / 'initialized').exists())
+        self.assertFalse((folder / 'jobs.enc').exists())
+        with self.assertRaises(jobs.registry_marker.RegistryMissing):
+            self.prepare()
+
     def test_crash_before_and_after_replace_recover_same_operation(self):
+        self.prepare()  # Ensure the first-write marker already has its snapshot.
         for when, code in (('before',70), ('after',71)):
             with self.subTest(when=when):
                 operation = uid()

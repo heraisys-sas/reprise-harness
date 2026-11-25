@@ -48,6 +48,10 @@ class CodexConfigUpdateTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
+        # Tests synthétiques : rétablir les droits des répertoires des releases
+        # publiées seulement lors du nettoyage de la fixture.
+        import harness_integration
+        self.addCleanup(harness_integration._restore_directory_writes, self.root)
         self.base = self.root / 'integration-releases'
         self.old = self.base / ('a' * 64)
         self.target = self.base / ('b' * 64)
@@ -136,6 +140,25 @@ class CodexConfigUpdateTests(unittest.TestCase):
             update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
         other = str(self.target / 'Contents/Resources/runtime/bin/python3')
         self.config.write_text(text.replace('/usr/bin/python3', other))
+        with self.assertRaisesRegex(ValueError, 'étranger'):
+            update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
+
+    def test_legacy_helper_name_is_rewritten(self):
+        # Installation d'avant renommage #258 : l'entrée pointe vers le shim
+        # codex_expert_mcp.py et doit être réécrite vers expert_mcp.py.
+        legacy = str(self.old / 'Contents/Resources/helpers/codex_expert_mcp.py')
+        text = self.config.read_text().replace(
+            str(self.old / 'Contents/Resources/helpers/expert_mcp.py'), legacy)
+        self.config.write_text(text)
+        value = update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
+        expected = str(self.target / 'Contents/Resources/helpers/expert_mcp.py')
+        self.assertEqual(value['after']['reprise-harness']['args'][3], expected)
+
+    def test_unknown_helper_name_refused(self):
+        text = self.config.read_text().replace(
+            str(self.old / 'Contents/Resources/helpers/expert_mcp.py'),
+            str(self.old / 'Contents/Resources/helpers/autre_helper.py'))
+        self.config.write_text(text)
         with self.assertRaisesRegex(ValueError, 'étranger'):
             update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
 
@@ -390,7 +413,9 @@ class CodexConfigUpdateTests(unittest.TestCase):
         staged = self.base / identity
         harness_integration.stage_release(helpers, runtime, staged)
         self.assertEqual(update._release(staged, self.base), staged)
-        (staged / 'Contents/Resources/helpers/apple_expert.py').write_text('tampered')
+        tampered = staged / 'Contents/Resources/helpers/apple_expert.py'
+        tampered.chmod(tampered.stat().st_mode | 0o200)  # Fault injection, not a runtime write.
+        tampered.write_text('tampered')
         with self.assertRaises(ValueError):
             update._release(staged, self.base)
 

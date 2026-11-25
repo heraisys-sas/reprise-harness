@@ -96,6 +96,62 @@ class SchedulerTests(unittest.TestCase):
                 run_due.assert_called_once_with(db, None)
                 db.close()
 
+    def test_tick_resumes_due_delegations_with_trace(self):
+        # Lot C #239 : un job du a l'echeance est observe pendant le tick et la
+        # trace scheduler 'delegation_resume' le rapporte ; le job terminal est
+        # marque 'done'. Le garde reconcile mocke prouve qu'aucun contact natif
+        # n'a lieu pour un receipt disparu.
+        import delegation_resume
+        import delegation_reconcile
+        with tempfile.TemporaryDirectory() as folder, patch.object(module, 'STATE', Path(folder)):
+            db = module.database()
+            delegation_resume.schedule(db, 'resume-req-1', 'codex', folder, due_at=1.0)
+            with patch.object(module, 'database', return_value=db), \
+                 patch.object(module, 'codex_executable', return_value=None), \
+                 patch.object(module, 'run_due'), \
+                 patch.object(scheduler, 'refresh_external'), \
+                 patch.object(claude_quota, 'run_native'), \
+                 patch.object(private_search, 'cleanup'), \
+                 patch.object(reprise_health, 'watch'), \
+                 patch.object(delegation_reconcile, 'reconcile') as reconcile, \
+                 patch.object(sys, 'argv', ['reprise', 'tick']):
+                module.main()
+            with contextlib.closing(sqlite3.connect(Path(folder) / 'tasks.sqlite')) as reopened:
+                trace = scheduler.get(reopened, 'delegation_resume')
+            self.assertEqual(trace['status'], 'finished')
+            self.assertIsInstance(trace['checked_at'], float)
+            self.assertEqual(trace['processed'],
+                             [{'request_key': 'resume-req-1', 'status': 'done',
+                               'reason': 'receipt no longer exists'}])
+            with contextlib.closing(sqlite3.connect(Path(folder) / 'tasks.sqlite')) as reopened:
+                row = reopened.execute('SELECT status FROM delegation_resume_jobs WHERE request_key=?',
+                                       ('resume-req-1',)).fetchone()
+            self.assertEqual(row[0], 'done')
+            reconcile.assert_not_called()
+
+    def test_tick_survives_delegation_resume_failure_with_trace(self):
+        # Lot C #239 : une exception du moteur de reprise n'interrompt pas le
+        # tick ; la trace 'delegation_resume' porte l'erreur horodatee.
+        import delegation_resume
+        with tempfile.TemporaryDirectory() as folder, patch.object(module, 'STATE', Path(folder)):
+            db = module.database()
+            with patch.object(module, 'database', return_value=db), \
+                 patch.object(module, 'codex_executable', return_value=None), \
+                 patch.object(module, 'run_due'), \
+                 patch.object(scheduler, 'refresh_external'), \
+                 patch.object(claude_quota, 'run_native'), \
+                 patch.object(private_search, 'cleanup') as cleanup, \
+                 patch.object(reprise_health, 'watch'), \
+                 patch('delegation_resume.run_due', side_effect=RuntimeError('boom')), \
+                 patch.object(sys, 'argv', ['reprise', 'tick']):
+                module.main()
+            with contextlib.closing(sqlite3.connect(Path(folder) / 'tasks.sqlite')) as reopened:
+                trace = scheduler.get(reopened, 'delegation_resume')
+            self.assertEqual(trace['status'], 'error')
+            self.assertEqual(trace['error'], 'RuntimeError: boom')
+            self.assertIsInstance(trace['checked_at'], float)
+            cleanup.assert_called_once_with(Path(folder))
+
     def test_backup_restore_pauses_and_share_excludes_state(self):
         with tempfile.TemporaryDirectory() as folder:
             import os

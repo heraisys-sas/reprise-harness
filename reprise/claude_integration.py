@@ -170,11 +170,13 @@ def desired(root, home, project, replace_probe, action='install', enable_await=N
     if memory['access'] != 'off' and not (helpers / 'reprise_memory_mcp.py').is_file():
         raise ValueError('Reconstruire le bundle avec le connecteur mémoire.')
     quick_state = state_location(root, 'quick-state').absolute()
+    chatgpt_state = state_location(root, 'chatgpt-state').absolute()
     release = main_state.parent / 'integration-releases' / identity
     program = release / 'Contents/Resources/runtime/bin/python3'
     args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/claude_mcp.py'),
             '--project-root', str(project), '--state', str(quick_state), '--expert-state', str(main_state),
-            '--socket', str(home / '.codex/app-server-control/app-server-control.sock')]
+            '--socket', str(home / '.codex/app-server-control/app-server-control.sock'),
+            '--chatgpt-state', str(chatgpt_state)]
     if effective_enable_await:
         args.append('--enable-await')
     if effective_enable_queue:
@@ -353,6 +355,9 @@ def verify(root, home=None, project=None):
     with tempfile.TemporaryDirectory(prefix='reprise-claude-check-') as temporary:
         command += ['--state', str(Path(temporary) / 'quick'), '--expert-state', str(Path(temporary) / 'expert'),
                     '--socket', str(home / '.codex/app-server-control/app-server-control.sock')]
+        # The old installed Claude connector has no --chatgpt-state option.
+        if '--chatgpt-state' in args:
+            command += ['--chatgpt-state', str(Path(temporary) / 'chatgpt-state')]
         env = {k: v for k, v in os.environ.items() if not k.startswith(('PYTHON', 'DYLD_')) and k != 'AGENT_RESUME_STATE'}
         response = subprocess.run(command, input='\n'.join(json.dumps(r) for r in requests) + '\n',
                                   capture_output=True, text=True, timeout=20, env=env, check=True)

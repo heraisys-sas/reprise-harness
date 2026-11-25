@@ -6,6 +6,26 @@ L'hôte authentifie l'appelant et choisit explicitement projet, travail, provena
 
 Ces données sont **déclaratives** : elles ne prouvent ni identité, facturation, fraîcheur de la découverte, permission actuelle, ni compétence du harness. Le projet enregistré est vérifié, mais son UUID n'est pas une autorisation. Une intégration doit déterminer les droits à partir de l'identité effective, vérifier la configuration et la fraîcheur des capacités indépendamment du modèle, et préserver les politiques de facturation de l'opérateur. Un changement de rôles ou de configuration ne doit jamais entraîner de substitution automatique. `routing_actor` peut désigner un harness hyperviseur configuré, l'opérateur ou un coordinateur AFM optionnel ; le champ n'affirme pas que cet acteur a réellement exécuté un tour ni que sa sélection est déjà opérationnelle.
 
+## Protection de l'initialisation des jobs (#158)
+
+La première publication d'un `jobs.enc` crée et synchronise d'abord un
+marqueur privé vide `coordinator-jobs.noindex/initialized`, sous le
+verrou du registre. Le couple marqueur présent / snapshot absent
+est refusé sans recréer une liste de jobs vide. Un crash entre
+les deux publications demande une récupération manuelle.
+
+Un ancien `jobs.enc` sans marqueur reste lisible mais non modifiable
+jusqu'à l'adoption explicite, après quiescence des clients :
+`registry_adopt.py --state <état privé absolu> --registry jobs
+--confirm-existing-registry`. Cette opération vérifie l'ancien
+snapshot chiffré et son enveloppe de version, puis écrit le marqueur
+sans réécrire les jobs ou reçus. Une installation historique doit
+prévoir cette adoption avant toute nouvelle mutation.
+
+La suppression simultanée du snapshot et du marqueur et le rejeu
+d'un ancien chiffré authentifié ne sont pas détectés. Les tests
+et le déploiement restent à valider par l'agent local.
+
 ## Stockage et identités
 
 Le stockage distinct `coordinator-jobs.noindex/jobs.enc` chiffre les brouillons avec `Vault` et le purpose authentifié `coordinator-jobs-v1`. Il exige un répertoire d'état privé et un registre de projets existant ; aucun transcript ni prompt n'est écrit en clair par ce module. Les tests utilisent un faux coffre, qui ne démontre pas la confidentialité cryptographique du Trousseau réel. Comme pour la mémoire locale, l'opération Vault `seal` peut créer la clé locale si elle est absente, sans interaction ; un Trousseau indisponible échoue sans sauvegarde en clair. Aucune purge automatique ni effacement physique des sauvegardes et snapshots n'est promis.
@@ -62,6 +82,6 @@ La révocation écrit dans la même base et se sérialise avec l'admission : si 
 
 **Budgets.** Le compteur transactionnel borne les admissions du coordinateur dans ce registre et la limite de temps borne l'attente locale ; ils ne bornent ni les appels internes des sous-agents ni le coût ou la durée réelle côté fournisseur. Les autres routes non intégrées ne sont pas comptées. Une limite financière dure requiert une preuve fraîche et fiable qu'elle est réellement imposée par le fournisseur ; à défaut, refuser cette politique. Pour un abonnement explicitement autorisé, la politique sans surcoût requiert une preuve vérifiable que les usages supplémentaires facturables sont désactivés ; le coût exact de l'abonnement peut rester inconnu. Aucun mécanisme réel de preuve fournisseur n'est fourni ici : une valeur déclarative ou un test simulé ne la démontre pas.
 
-**Fichiers envisagés et critères d'acceptation.** Concevoir l'autorité dans un module dédié, l'intégrer à `delegation_store.py` et au chemin coordinateur de `codex_expert_mcp.py`, avec tests ciblés et contrat mis à jour ; conserver les interfaces et routes existantes. L'incrément est acceptable si, sans activation ni inférence réelle, les propriétés suivantes sont démontrées : migration additive et reprise sans perte ; admission et consommation indivisibles ; révocation ordonnée au commit ; clés et payloads immuables ; états incertains non rejoués ; droits d'écriture et route explicites conservés ; aucun verrou de politique pendant un appel simulé ; absence d'identifiants sensibles ou prompts dans les journaux. Un futur contrôle d'activation, une preuve d'identité opérateur, un vérificateur financier effectif et un lanceur isolé exigent chacun une étape distincte.
+**Fichiers envisagés et critères d'acceptation.** Concevoir l'autorité dans un module dédié, l'intégrer à `delegation_store.py` et au chemin coordinateur de `expert_mcp.py`, avec tests ciblés et contrat mis à jour ; conserver les interfaces et routes existantes. L'incrément est acceptable si, sans activation ni inférence réelle, les propriétés suivantes sont démontrées : migration additive et reprise sans perte ; admission et consommation indivisibles ; révocation ordonnée au commit ; clés et payloads immuables ; états incertains non rejoués ; droits d'écriture et route explicites conservés ; aucun verrou de politique pendant un appel simulé ; absence d'identifiants sensibles ou prompts dans les journaux. Un futur contrôle d'activation, une preuve d'identité opérateur, un vérificateur financier effectif et un lanceur isolé exigent chacun une étape distincte.
 
 **Tests proposés.** Utiliser des bases temporaires et doubles seulement : deux processus pour le dernier crédit ; barrières admission/révocation dans les deux ordres ; crash avant commit, après commit et avant effet, après effet et avant reçu ; erreurs SQLite/commit et reprise ; duplicata identique sans double comptage et conflit de payload ; scope/racine/socket, version et mode détournés ; parents inconnus, cycles, profondeur et incertitude conservés ; migration de bases historiques et routes existantes inchangées ; verrou libéré pendant attente simulée ; preuve financière absente ou expirée, abonnement et plafond dur distingués ; aucune fuite en logs. Exécuter ensuite les tests ciblés et la suite de régression prescrite avant toute publication ; aucun test simulé ne démontre une garantie fournisseur ou un arrêt distant.

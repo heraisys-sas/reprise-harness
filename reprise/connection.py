@@ -7,8 +7,7 @@ import engines
 def status(db, state):
     row = db.execute("SELECT options FROM engine_settings WHERE engine='codex'").fetchone()
     configured = json.loads(row[0]).get('socket') if row else None
-    paths = [(str(engines.SOCKET), 'Serveur Codex local'),
-             (str(Path(state)/'codex-expert.sock'), 'Serveur d’expertise dédié')]
+    paths = [(str(engines.SOCKET), 'Socket du démon codexd')]
     if configured and configured not in {p for p, _ in paths}:
         paths.insert(0, (configured, 'Chemin enregistré'))
     candidates = []

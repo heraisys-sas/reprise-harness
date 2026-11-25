@@ -14,7 +14,7 @@ Décisions utilisateur du 24 octobre 2026. Contrat de conception ; les capacité
 
 Le rôle est attribué explicitement au couple harness/profil ; le modèle peut changer sans perdre le rôle. Porter l’abonnement principal motive une préférence économique, pas une compétence garantie ou de nouvelles permissions. Ces affectations sont des valeurs initiales de cette installation, pas des constantes universelles.
 
-Dans l’onglet Dépôts (#57), choisir hyperviseur, référent technique et worker, puis afficher capacités, disponibilité et droits séparément. L’installation réutilise inspect/plan/apply/verify/remove et les instructions gérées ; aucun nouveau moteur de politique ou cascade d’orchestrateurs.
+Dans l’onglet « Dépôts » attendu par #57 (rouvert le 12/11 : non livré, registre de projets seul en place via project_registry.py), choisir hyperviseur, référent technique et worker, puis afficher capacités, disponibilité et droits séparément. L’installation réutilise inspect/plan/apply/verify/remove et les instructions gérées ; aucun nouveau moteur de politique ou cascade d’orchestrateurs.
 
 ## Worker permanent : premier pilote
 
@@ -26,12 +26,14 @@ Réutiliser l’identité durable du travail, les tentatives et les reçus exist
 
 ## Reprise après quota
 
-Cette décision remplace l’ancienne exigence générale « mesurer/confirmer le quota avant chaque reprise » et le gel de conception jusqu’à disponibilité d’un compteur.
+Cette décision remplace l’ancienne exigence générale « mesurer/confirmer le quota avant chaque reprise » et le gel de conception jusqu’à disponibilité d’un compteur. Le [contrat transverse](QUOTA-CONTINUATION-CONTRACT.md) prévaut pour la reconnaissance des événements, leur conservation, la première tentative native et les modes de panne. Un statut `unknown` du quota **courant** n'invalide pas un événement de quota reconnu et correctement rattaché à sa source. Un bandeau du mauvais Desktop ne prouve rien pour la session visée.
 
 1. Au refus initial, enregistrer moteur/profil, session/tentative, cause et source, échéance annoncée et fuseau lorsqu’ils existent. Programmer la continuation à cette échéance ; ne pas inventer de reset si absent.
 2. À l’échéance, tenter la continuation autorisée sans mesure de quota préalable obligatoire. Vérifier toujours la propriété, l’absence d’exécution active/arrêt volontaire, les permissions et l’incertitude des actions précédentes : ce sont des contrôles d’exécution, pas une sonde de quota.
 3. Si la reprise échoue, exploiter la nouvelle erreur/échéance ; lire le quota seulement si cela aide à diagnostiquer ou reprogrammer. Si l’échéance reste inconnue, proposer une attente ou des essais espacés selon une politique visible ; pas de boucle rapide.
 4. Acceptation par le transport, démarrage du tour, fin du tour et tâche métier achevée restent des preuves distinctes. Ni passage de l’échéance ni absence de compteur ne devient une preuve de succès.
+
+**Priorité à l'essai utile, pas à la sur-validation.** Conserver même les interruptions dont le canal de reprise n'est pas encore validé, et afficher `waiting_route` / `waiting_owner` sans les faire disparaître. Ne pas reclasser une erreur de quota clairement observée en « cause indéterminée » parce que le dernier compteur d'un autre canal est inconnu. Une tentative après échéance reste soumise à la bonne identité de chat, au consentement et à l'absence d'action concurrente. Le risque de doublon est secondaire par rapport à l'absence permanente de reprise, mais une seconde commande peut relancer des outils : réservation durable et réconciliation ciblée restent nécessaires.
 
 La connaissance des quotas (#16, #20, #54) reste utile à l’affichage et au diagnostic, sans être un préalable universel à la reprise. Les refus réels du fournisseur, les budgets autorisés et la pause globale restent respectés. Les gardes préalables encore dans le code doivent être adaptées et testées dans le chantier de reprise ; ce contrat ne les désactive pas. Pour le scheduler Codex, #64 l’applique déjà aux échéances annoncées (une seule tentative à l’échéance, sans lecture obligatoire du quota) ; restent à adapter les autres moteurs (#10) et le cas sans échéance, qui mesure encore. Les sondes d’admission de nouvelles expertises décrites dans CACHE-POLICY.md sont un comportement existant distinct, pas la politique cible d’une continuation programmée.
 
@@ -57,7 +59,7 @@ Action explicite de l’utilisateur, pas de nettoyage automatique. Utiliser l’
 - Rotation de session avec checkpoint et progrès ; refus répétés sans progrès → pas de boucle ; pas de plafond de sessions arbitraire.
 - Archivage sélectionné et confirmé, exclusions des sessions utiles/actives/incertaines, aucune suppression, réaffichage possible ; capacité native absente annoncée.
 
-#57 couvre l’interface de configuration, #48 les réservations/passations, #10 la reprise multi-harness, #54 les observations Morph, #28 le découplage GUI/service. #59 couvre l’adaptation de la politique de reprise ; #60 l’archivage proposé dans Sessions. Aucun service réel modifié par cette décision.
+#57 (rouvert 12/11, non livré) couvre l’interface de configuration, #48 les réservations/passations, #10 la reprise multi-harness, #54 les observations Morph, #28 le découplage GUI/service. #59 couvre l’adaptation de la politique de reprise ; #60 l’archivage proposé dans Sessions. Aucun service réel modifié par cette décision.
 
 ## Routage : corrections faisant autorité (revue croisée consolidée)
 

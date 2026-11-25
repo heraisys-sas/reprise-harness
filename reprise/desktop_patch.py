@@ -38,6 +38,7 @@ except ImportError:  # import top-level (tests)
 APP = Path('/Applications/Claude.app')
 COPY_APP = Path.home() / 'Applications' / 'ReClaude.app'  # copie patchée, app par défaut de patch()
 COPY_BUNDLE_ID = 'com.anthropic.claudefordesktop.reprise'  # distinct de l'originale : routage claude:// stable
+ORIGINAL_BUNDLE_ID = 'com.anthropic.claudefordesktop'
 ASAR = APP / 'Contents' / 'Resources' / 'app.asar'
 PLIST = APP / 'Contents' / 'Info.plist'
 PATCH_DIR = Path.home() / 'Library' / 'Application Support' / 'Reprise' / 'patches' / 'claude'
@@ -584,6 +585,9 @@ def restore(app=COPY_APP):
     with open(plist_path, 'rb') as handle:
         plist_new = plistlib.load(handle)
     plist_new['ElectronAsarIntegrity']['Resources/app.asar']['hash'] = hashlib.sha256(raw[16:16 + json_length]).hexdigest()
+    if Path(app) != APP:
+        # A managed clone already has its own ID before patch() saves the plist.
+        plist_new['CFBundleIdentifier'] = ORIGINAL_BUNDLE_ID
     with open(plist_path, 'wb') as handle:
         plistlib.dump(plist_new, handle, fmt=plistlib.FMT_BINARY)
     try:

@@ -6,12 +6,15 @@ allocation site, so the exercises below either drive a full lifecycle
 (build, use, close) or force collection before restoring the filter.
 """
 import gc
+import sys
 import tempfile
 import unittest
 import warnings
 from pathlib import Path
 
-import codex_expert_mcp
+sys.path.insert(0, str(Path(__file__).parents[1]))
+
+import expert_mcp
 import desktop_job_probe
 import desktop_task_store
 import ux_review_probe
@@ -66,7 +69,7 @@ class ExplicitCloseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / 'project'
             root.mkdir()
-            bridge = codex_expert_mcp.Bridge(root, {}, Path(folder) / 'state')
+            bridge = expert_mcp.Bridge(root, {}, Path(folder) / 'state')
             try:
                 self.assertIsNotNone(bridge.desktop_tasks)
             finally:

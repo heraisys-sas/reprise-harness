@@ -63,6 +63,19 @@ class CollectionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 collect(self.state, self.project, 'test')
 
+    def test_chatgpt_truncated_capture_rejected(self):
+        # Issue #236: the ChatGPT bridge now carries the same completeness
+        # flags as Codex; the collector must refuse an amputated ChatGPT
+        # capture with its capture-limit evidence, like any other backend.
+        change = {'output_truncated': True, 'output_complete': False,
+                  'capture_limit_characters': 58000, 'response_full_length': 90123,
+                  'status': 'needs_review'}
+        with closing(sqlite3.connect(self.database)) as db, db:
+            db.execute('UPDATE delegation_requests SET result=?',
+                       (json.dumps(dict(self.result, **change)),))
+        with self.assertRaises(ValueError):
+            collect(self.state, self.project, 'test')
+
     def test_indeterminate_rejected(self):
         with closing(sqlite3.connect(self.database)) as db, db:
             db.execute("UPDATE delegation_requests SET state='indeterminate'")

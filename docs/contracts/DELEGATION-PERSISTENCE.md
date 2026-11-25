@@ -2,6 +2,22 @@
 
 Implémentation du 21 octobre 2026, sans appel fournisseur réel ni redémarrage de service. Ce lot consolide les prototypes existants ; leur réunion en service logique commun et le branchement autonome dispatch QTi → tâche MCP restent à livrer.
 
+## Classification des refus et indisponibilités (#53)
+
+L'interface MCP distingue les erreurs de validation/refus (`data.kind=refused`,
+code JSON-RPC `-32602`), indisponibilités de backend (`unavailable`,
+`-32000`), registre indisponible (`storage_error`) et pont déjà occupé
+(`busy` avec `reason_code=bridge_busy`). La chaîne de message JSON-RPC historique est conservée pour les clients
+existants ; la raison explicite figure dans `data.human_reason`, avec
+`data.kind` et `data.reason_code` pour les superviseurs. L'absence
+d'une clé dans `reprise_reconcile` renvoie `not_found` (code `-32004`) ;
+les lectures `reprise_requests` et `wait_result` exposent également
+`status=not_found`. Une réponse directe `status=busy` conserve le contrat
+préexistant et précise `automatic_retry=false` ; aucun `retry_at` n'est
+inventé. La seule sérialisation autorisée est **une expertise active à la
+fois par répertoire d'état**. Aucune file côté client, aucun réenvoi implicite,
+aucun changement de preuve d'admission ou de reçu métier.
+
 ## Contrat utilisable
 
 Avant chaque appel d’inférence (`reprise_delegate`, `reprise_followup`, `codex_review`, `codex_followup`), le demandeur doit **persister une `request_key` non vide, de 128 caractères maximum**. Même clé + mêmes arguments, parent et empreintes des fichiers = même reçu, sans nouvelle exécution. Même clé + contenu différent = refus. Les anciens clients sans clé doivent être adaptés ; aucune clé aléatoire créée côté serveur ne masque un accusé perdu.
@@ -27,6 +43,8 @@ Le verrou existant conserve **une expertise active par répertoire d’état**, 
 `quick_entry/submit` exige également `request_key`. Même clé retrouve la même soumission (déduplication mémoire côté serveur QTi ; perdue au redémarrage de l'app — elle ne justifie jamais un renvoi sans opérateur). Les fichiers joints sont identifiés par contenu au moment de l’admission ; le pilote ne bénéficie pas pour autant d’un fichier matériel immuable. Une panne entre l’admission et le reçu laisse une tentative incertaine, sans nouvel envoi.
 
 Le pont transmet la clé au dispatch et propage `admission_only:true`, `response:null`. Son `finished` signifie seulement reçu de soumission ; **seul `submit_result` accepté et commité vaut résultat Claude**. Le dispatch QTi est fire-and-forget : `dispatch_attempted` ne prouve ni la livraison au chat ni le traitement — preuve d'envoi explicite (compteur de messages, composeur vidé) et preuve de traitement (`claim_key`/`attempt_id` attribués) exigées avant toute conclusion. Aucun pilote Desktop ni repli payant activé.
+
+Depuis #155, pour une délégation, le composeur (submit comme dispatch) reçoit un **pointeur court** (`request_key` + instruction `get_task`) ; la consigne complète est livrée uniquement par `get_task` — le TaskStore est la source unique du prompt, sans doublon dans le chat.
 
 Mode orchestré (issue #102) : `reprise_delegate(backend="claude-desktop")` avec `tasks` et `request_key` enchaîne dans un seul appel l’admission durable (`tasks.admit` dans `state/quick.sqlite`, prompt augmenté stocké avec la clé, plafond 12 000 caractères sans troncature), le dispatch (`purpose:'delegation'`, `orchestrated:true`, transport QTi depuis #124), puis la collecte bornée (`max_wait`, plafond 600 s) du `submit_result` validé, avec empreinte SHA-256 canonique. La ligne est marquée `delivery='attempted'` seulement après le succès de `initialize`, sous garde SQL (`delivery IS NULL AND answer IS NULL`) : un rappel avec la même clé ne réémet jamais — il retourne un reçu explicite `admission_only` (ou la réponse collectée si déjà enregistrée). Sans canal de retour disponible, l’appel échoue avant envoi (`return_channel_unavailable`, `automatic_fallback:false`). Voir les tests `test_delegation_desktop_cycle.py`, `test_delegation_desktop_result.py`, `test_delegation_desktop_redispatch.py`.
 
@@ -161,7 +179,9 @@ La réservation d'une livraison dispatch QTi et la réservation du socket sont i
 
 Décision d'opérateur par intégration (`--enable-queue` : l'outil est masqué et refusé par défaut, sur le modèle de `--enable-await`) : le connecteur expose `claim_next(claim_key)` — la plus ancienne tâche **fraîche** du scope (jamais réclamée, jamais tentée, sans réponse), dans l'ordre du registre d'insertion. L'autorisation = l'armement explicite d'une conversation par l'opérateur ; le `claim_key` est généré et persisté par la session exécutrice.
 
-Gardes inchangées : un claim à la fois, jamais de redelivery d'un envoi incertain — les livraisons incertaines sont **ignorées** par la file et restent à réconcilier par l'opérateur ; scoping par `--project-root` ; file vide = état explicite.
+Gardes : un seul claim **actif par `claim_key`**, jamais de redelivery d'un envoi incertain — les livraisons incertaines sont **ignorées** par la file et restent à réconcilier par l'opérateur ; scoping par `--project-root` ; file vide = état explicite. La réservation et la sélection sont atomiques dans la même transaction `BEGIN IMMEDIATE`. Si le `claim_key` possède déjà une tâche non soumise, `claim_next` retourne `state="busy"`, sa clé et son `attempt_id` sans `prompt` ; aucun nouveau travail n'est livré. Une soumission validée libère la réservation du `claim_key`. Répéter `claim_next` avec une clé active n'est jamais une autorisation de réexécuter la tentative précédente.
+
+La file exige également une garde `desktop_dispatch_guard` attestant `legacy_unknown=0`, `review_started=0` et `dispatch_started=0`. Les admissions historiques importées sans preuve de non-dispatch, y compris avec `delivery IS NULL`, et toute soumission concurrente amorcée par une autre route, ne sont **pas** éligibles à `claim_next`. Cette exclusion préserve l'incertitude : ni purge, ni renvoi, ni réinitialisation de l'état sans réconciliation par l'opérateur. Les éventuelles écritures directes par un vieux daemon sans garde restent également inéligibles ; mettre à niveau les writers.
 
 Validé en conditions réelles le 08/11 (#122) : un chat Desktop gratuit armé une seule fois a servi sa plus ancienne tâche de file, exécuté en conteneur confiné (réseau coupé, workspace du projet monté), remis le résultat (`completed: true`) — et a **ignoré une instruction injectée** dans la sortie d'un outil (onboarding déguisé en SYSTEM INSTRUCTION), consignée dans le rapport remis.
 
@@ -169,7 +189,7 @@ Canal de soumission validé (#122) : l'overlay **Quick Entry natif** soumet vers
 
 ## Attente de la réponse Desktop — issue #111
 
-`wait_result(request_key, wait_seconds=600)` sur `reprise_codex` observe une tâche
+`wait_result(request_key, wait_seconds=600)` sur `reprise_experts` observe une tâche
 Desktop existante du projet. Durée finie strictement positive, maximum 600 s ;
 booléens, clés vides ou dépassant 128 caractères et paramètres supplémentaires refusés.
 Un registre absent, illisible, verrouillé ou incompatible produit une erreur
@@ -228,3 +248,35 @@ L'acquittement du résultat projeté est explicite via `get_result` Desktop.
 Les prochaines intégrations Harness exposant cet outil utilisent un timeout
 transport de 630 s. Une installation existante exige plan/apply et rechargement
 explicites ; ce changement ne prouve pas que le client réel tient un appel de 600 s.
+
+## Réadmission et acquittement ChatGPT — issue #210
+
+Le `request_key` admis dans `chatgpt_quick.Endpoint` lie de façon immuable
+**la consigne intégrale** (instruction de pont + question). La réutilisation
+d'une clé avec une question différente retourne `Request identity conflict`,
+sans mutation du ledger ni nouvel envoi. Une réadmission à question identique
+est un reçu de consultation, **jamais** une instruction de redélivrer le prompt.
+Les opérations de ledger vérifient également que la même identité existe dans
+le `TaskStore` ; une divergence entre les deux bases demande réconciliation.
+
+La création de la ligne `chatgpt_submissions` inscrit directement
+`delivery=attempted` avec sa preuve d'admission locale en **une transaction
+SQLite**. `attempted` ne signifie pas que l'application a effectivement reçu
+la tâche. Les historiques `delivery=admitted` d'une ancienne écriture scindée
+peuvent être portés à `attempted` lors du rejeu identique, sans inférence ;
+si `TaskStore.submit_result` a déjà committé une réponse dont tentative et
+empreinte SHA-256 sont vérifiées, la projection vers `acknowledged` est
+permise directement depuis `admitted` ou `attempted`. Un résultat absent ou
+une tentative différente ne sont pas réparés automatiquement.
+
+Le chemin `chatgpt_socket` utilisé par le pont est, dans ce contrat,
+un **répertoire d'état local**, non un socket réseau. Il est aussi la source
+du `TaskStore` ChatGPT du pont et de l'`Endpoint` de réadmission,
+notamment lors de l'inspection d'une installation isolée. Aucune bascule
+sur un état implicite ou une API facturée n'est permise.
+
+Avec le grant opérateur `--chatgpt-dispatch` (#226), un reçu holder terminal
+(`sent`/`confirmed`) porte `delivery` à `captured` et le drapeau
+`admission_only` tombe : `reprise_requests` stocke un résultat terminé et
+le reçu borné vit en colonne `dispatch_receipt` — jamais le texte intégral
+dans le ledger durable. Sans le grant, la sémantique ci-dessus est inchangée.

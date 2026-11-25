@@ -1,0 +1,32 @@
+---
+# Ré-application des intégrations managées via l'API module Python (les CLI sont muettes).
+# Invariant du dépôt : les fichiers managés ne sont jamais écrits à la main —
+# on invoque toujours les outils propriétaires (plan -> apply -> verify).
+- name: Localiser le bundle courant
+  reprise_bundle:
+    builds_dir: "{{ reprise_build_app_path }}"
+  register: bundle
+
+- name: Dériver le répertoire helpers du bundle
+  ansible.builtin.set_fact:
+    reprise_app: "{{ bundle.app_path }}"
+    reprise_helpers: "{{ bundle.helpers }}"
+
+- name: Appliquer les intégrations managées (claude, harness)
+  reprise_integration:
+    integration: "{{ item }}"
+    helpers: "{{ reprise_helpers }}"
+    project: "{{ reprise_project_root }}"
+    harness_project: "{{ reprise_harness_project }}"
+    harness_profile: "{{ reprise_harness_profile }}"
+  loop: "{{ reprise_integrations }}"
+  register: integrations_results
+  tags: [integrations]
+
+- name: Restituer le résultat des intégrations
+  ansible.builtin.debug:
+    msg: "{{ item.item }} : verify={{ item.result.verify }} (apply={{ item.result.apply }})"
+  loop: "{{ integrations_results.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  tags: [integrations]

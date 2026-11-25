@@ -85,6 +85,31 @@ class SubmitTests(unittest.TestCase):
                 ironclaw.submit('ssh', self.values, 'x')
         self.assertEqual(ctx.exception.state, 'needs_review')
 
+    def test_multiline_markdown_and_literal_info_are_not_truncated(self):
+        body = '# Diagnostic\n\n- Premier point\n- Texte INFO ou WARN légitime\n\n' \
+               '    INFO block example\n\nFin'
+        with patch.object(ironclaw, '_run', return_value=_Proc(stdout='\n' + body + '\n')):
+            result = ironclaw.submit('ssh', self.values, 'x')
+        self.assertEqual(result['status'], 'finished')
+        self.assertEqual(result['response'], body)
+
+    def test_timestamped_runtime_logs_only_are_removed(self):
+        stdout = ('2026-11-13T12:01:02Z INFO runtime started\n'
+                  '## Réponse\nDétails avec INFO au milieu\n'
+                  '2026-11-13 12:01:03.051 WARN runtime closing\n')
+        with patch.object(ironclaw, '_run', return_value=_Proc(stdout=stdout)):
+            result = ironclaw.submit('ssh', self.values, 'x')
+        self.assertEqual(result['response'], '## Réponse\nDétails avec INFO au milieu')
+
+    def test_logs_only_or_oversized_output_cannot_be_marked_finished(self):
+        for stdout in ('2026-11-13T12:01:02Z INFO runtime started\n',
+                       'a' * (ironclaw.MAX_ANSWER_CHARS + 1)):
+            with self.subTest(size=len(stdout)), \
+                 patch.object(ironclaw, '_run', return_value=_Proc(stdout=stdout)):
+                with self.assertRaises(Unavailable) as caught:
+                    ironclaw.submit('ssh', self.values, 'x')
+            self.assertEqual(caught.exception.state, 'needs_review')
+
     def test_bytes_key_materialized_0600_then_removed(self):
         values = dict(self.values, key=b'\n-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n')
         seen = {}
@@ -108,7 +133,7 @@ class SubmitTests(unittest.TestCase):
 
 class ReviewTests(unittest.TestCase):
     def test_review_shape_matches_backends(self):
-        with patch.object(ironclaw, 'submit', return_value={'status': 'finished', 'response': 'Réponse'}) as submit:
+        with patch.object(ironclaw, '_submit_prompt', return_value={'status': 'finished', 'response': 'Réponse'}) as submit:
             result = ironclaw.review('/ssh', {'key': '/k'}, '/tmp', 'Question',
                                      kind='expertise', level='standard')
         self.assertEqual(result['status'], 'finished')
@@ -121,7 +146,7 @@ class ReviewTests(unittest.TestCase):
         self.assertIn('kind', result)
 
     def test_unavailable_is_mapped_to_status(self):
-        with patch.object(ironclaw, 'submit', side_effect=Unavailable('timed_out', 'non')):
+        with patch.object(ironclaw, '_submit_prompt', side_effect=Unavailable('timed_out', 'non')):
             result = ironclaw.review('/ssh', {'key': '/k'}, '/tmp', 'Question')
         self.assertEqual(result['status'], 'timed_out')
         self.assertEqual(result['reason'], 'non')
@@ -129,6 +154,24 @@ class ReviewTests(unittest.TestCase):
     def test_unbounded_question_rejected(self):
         with self.assertRaises(ValueError):
             ironclaw.review('/ssh', {'key': '/k'}, '/tmp', 'x' * 12001)
+
+    def test_review_question_and_context_not_bounded_together(self):
+        # Revue MAJEUR 4 : la borne 12000 porte sur la question seule ;
+        # question + contexte attaché partent sur le transport sans lever
+        # ValueError (submit direct reste borné, lui).
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / 'gros.txt').write_text('x' * 20000)
+            with patch.object(ironclaw, '_submit_prompt',
+                              return_value={'status': 'finished', 'response': 'Réponse'}) as transport:
+                result = ironclaw.review('/ssh', {'key': '/k'}, root, 'Question',
+                                         kind='expertise', level='standard', paths=['gros.txt'])
+        self.assertEqual(result['status'], 'finished')
+        self.assertGreater(len(transport.call_args.args[2]), 12000)
+
+    def test_submit_direct_still_bounded(self):
+        with self.assertRaises(ValueError):
+            ironclaw.submit('ssh', {'host': 'h', 'port': '1', 'user': 'u', 'key': '/k'}, 'x' * 12001)
 
 
 class ValuesTests(unittest.TestCase):

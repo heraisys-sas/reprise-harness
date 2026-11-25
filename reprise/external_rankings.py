@@ -30,6 +30,17 @@ DEFAULT_TTL_SECONDS = 86400
 SOURCES = ('artificial-analysis', 'openrouter', 'lmarena')
 METRICS = ('price_per_mtok', 'latency_ms', 'ttft_ms', 'quality_index')
 
+# Classes de tâche acceptées par route_choice (lot ① routeur de délégation).
+# None = comportement historique exact : moins cher parmi les admissibles.
+TASK_CLASSES = ('rapide', 'exigeant', 'interactif')
+
+# Seuils (lot ①) : échelle intelligence_index 0-100 des adaptateurs, ms
+# pour la latence (synthèse v3 : TTFT 1000 = réactivité perçue, 2000 = tâche).
+# Un candidat sous le seuil est éliminé, jamais interpolé ni replié payant.
+QUALITY_MIN_EXIGEANT = 70.0
+LATENCY_MAX_MS_INTERACTIF = 2000.0
+TTFT_MAX_MS_INTERACTIF = 1000.0
+
 # Liste fermée de colonnes ; aucun autre champ n'est jamais ingéré.
 _FIELDS = frozenset(('source', 'model', 'metric', 'value', 'fetched_at', 'source_url_hash'))
 _MODEL_RE = re.compile(r'^[A-Za-z0-9._-]{1,128}$')
@@ -411,14 +422,19 @@ def route_metrics(db, channel):
     La concordance se juge PAR MODÈLE entre sources : comparer les valeurs de
     modèles différents n'a pas de sens (AA publie un prix blended 3:1,
     OpenRouter un prix d'entrée — l'écart est normal, pas un conflit).
-    Divergence >50 % sur un même modèle → conflict=True et toutes les valeurs
-    externes sont abandonnées (None partout) : jamais de moyenne, jamais de
-    substitution.
+
+    Divergence >50 % sur un même modèle (lot ①) : sur quality_index, seule la
+    valeur divergente est abandonnée (None) et les autres métriques survivent
+    — le prix ne meurt jamais avec la qualité. Sur price_per_mtok,
+    latency_ms, ttft_ms, abandon historique global des valeurs externes :
+    jamais de moyenne, jamais de substitution. conflict=True dès qu'au moins
+    une métrique est en conflit (drapeau d'affichage, ne décide rien).
 
     Une clé par entrée de METRICS est toujours présente (dont ttft_ms)."""
     result = dict.fromkeys(METRICS)
     result.update(origin=None, conflict=False)
     external = {}
+    fatal = False
     for metric in METRICS:
         rows = db.execute(
             'SELECT r.source, r.model, r.value FROM external_rankings r '
@@ -428,33 +444,86 @@ def route_metrics(db, channel):
         for source, model, value in rows:
             per_model.setdefault(model, {})[source] = value
         values = []
+        divergent = False
         for model, by_source in per_model.items():
             corroborated = [v for v in by_source.values() if v]
             if len(by_source) >= 2 and corroborated:
                 spread = ((max(corroborated) - min(corroborated))
                           / min(abs(v) for v in corroborated))
                 if spread > 0.5:
-                    result['conflict'] = True
+                    divergent = True
                     break
-            values.extend(by_source.values())
-        if result['conflict']:
-            external.clear()
+        if divergent:
+            result['conflict'] = True
+            if metric == 'quality_index':
+                # La qualité divergente est jetée seule : les autres
+                # métriques continuent d'être collectées normalement.
+                continue
+            # Prix, latence, TTFT : abandon historique de toutes les valeurs
+            # externes — jamais de moyenne, jamais de substitution.
+            fatal = True
             break
+        for model, by_source in per_model.items():
+            values.extend(by_source.values())
         if values:
             external[metric] = min(values)
-    if not result['conflict'] and external:
+    if not fatal and external:
         result.update(external, origin='external-cache')
     return result
 
 
-def route_choice(db, channels, automatic=True):
+def route_choice(db, channels, automatic=True, task_class=None):
     """Choix ENTRE routes déjà admissibles uniquement. Pré-filtre par
     routing_events.admissible ; automatic=True ne peut retourner qu'une route
-    free/included. Retourne None si aucune route admissible ou mesurable."""
+    free/included. Retourne None si aucune route admissible ou mesurable.
+
+    task_class (lot ①) :
+    - None : comportement historique exact (moins cher parmi les survivants).
+    - 'exigeant' : exige un quality_index mesuré et >= QUALITY_MIN_EXIGEANT.
+    - 'interactif' : exige latency_ms et ttft_ms mesurés et sous leurs seuils.
+    - 'rapide' : préférence à une route locale free (hors ironclaw) au prix
+      corroboré, sinon moins cher.
+    Aucun repli payant implicite : un candidat éliminé disparaît, on ne
+    retombe jamais dessus. En automatic (défenses en profondeur) : ironclaw
+    jamais élu ; pour une classe explicite, les vetos de disponibilité de
+    routing_events sont consommés ici (jamais l'inverse : un veto n'élargit
+    rien). Le chemin None n'applique pas les vetos ; branchement expert_mcp
+    hors périmètre de ce lot."""
+    if task_class is not None and task_class not in TASK_CLASSES:
+        raise ValueError(f'Classe de tâche inconnue : {task_class!r}')
     import routing_events
     admissible = [ch for ch in channels if routing_events.admissible(db, ch, automatic)[0]]
+    if automatic:
+        # Défense en profondeur : ironclaw jamais élu en auto (les portes du
+        # manifeste restent l'application primaire du contrat).
+        admissible = [ch for ch in admissible if ch != 'ironclaw']
+        if task_class is not None:
+            # Un canal vetôé (disponibilité) disparaît des candidats d'une
+            # classe explicite — filtré avant route_metrics (économie de calcul).
+            admissible = [ch for ch in admissible if not routing_events.vetos(db, ch)]
     measured = [(ch, route_metrics(db, ch)) for ch in admissible]
-    scored = [(ch, m) for ch, m in measured if m['price_per_mtok'] is not None]
+    if task_class == 'rapide':
+        # Priorité au local free SANS exigence de prix corroboré (synthèse
+        # Meta AI : foundation-models n'a aucune cote externe, exiger un prix
+        # rendrait la priorité morte). Hors ironclaw (contractuel) ; en auto,
+        # les vetos ont déjà retiré les canaux indisponibles de admissible.
+        for ch in admissible:
+            if ch != 'ironclaw' and routing_events.admissible(db, ch, True)[1] == 'free':
+                return ch
+    scored = []
+    for ch, m in measured:
+        if m['price_per_mtok'] is None:
+            continue
+        if task_class == 'exigeant' and (
+                m['quality_index'] is None
+                or m['quality_index'] < QUALITY_MIN_EXIGEANT):
+            continue
+        if task_class == 'interactif' and (
+                m['latency_ms'] is None or m['ttft_ms'] is None
+                or m['latency_ms'] > LATENCY_MAX_MS_INTERACTIF
+                or m['ttft_ms'] > TTFT_MAX_MS_INTERACTIF):
+            continue
+        scored.append((ch, m))
     if not scored:
         return None
     return min(scored, key=lambda item: item[1]['price_per_mtok'])[0]

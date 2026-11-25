@@ -10,7 +10,7 @@ from unittest.mock import patch, Mock
 import sys
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-import codex_expert_mcp as mcp
+import expert_mcp as mcp
 from claude_mcp import ClaudeMCP
 from delegation_store import receipt_view
 from desktop_task_store import TaskStore
@@ -131,7 +131,7 @@ class PureWaitTests(unittest.TestCase):
         bridge.requests.lookup.return_value = historic
         snapshot = {'status': 'finished', 'request_key': 'k', 'state': 'recorded',
                     'completed': True, 'acknowledged': False, 'result': {'answer': 'late'}}
-        bridge._desktop_snapshot = Mock(return_value=snapshot)
+        bridge._task_snapshot = Mock(return_value=snapshot)
         full = bridge._lookup_requests({'request_key': 'k'})
         self.assertEqual(full['delegation_admission'], historic)
         self.assertEqual(full['response'], 'late')
