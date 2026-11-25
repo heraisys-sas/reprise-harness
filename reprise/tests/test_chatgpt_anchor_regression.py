@@ -4,9 +4,10 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
+sys.path.insert(0, str(Path(__file__).parent))
 import chatgpt_desktop_pipe as adapter
 import chatgpt_quick
-from tests import test_chatgpt_desktop_pipe as fixtures
+import test_chatgpt_desktop_pipe as fixtures
 
 
 class AnchorLossTests(unittest.TestCase):

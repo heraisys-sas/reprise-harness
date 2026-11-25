@@ -8,8 +8,9 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
+sys.path.insert(0, str(Path(__file__).parent))
 import chatgpt_desktop_pipe as adapter
-from tests.test_chatgpt_desktop_pipe import HolderHarness, TestGuardedSend
+from test_chatgpt_desktop_pipe import HolderHarness, TestGuardedSend
 
 CONVERSATION_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 OTHER_ID = '11111111-2222-3333-4444-555555555555'
