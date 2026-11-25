@@ -307,6 +307,7 @@ struct Dashboard: View {
                             if !app.verifyEverythingSummary.isEmpty && !app.verifyEverythingBusy {
                                 Text(app.verifyEverythingSummary).font(.callout).foregroundStyle(.secondary)
                             }
+                            quotaGauges
                             Integrations(app: app)
                             Divider()
                             sectionIntro("Liaisons entre applications", "Comprenez les liaisons et ouvrez leur diagnostic.")
@@ -629,7 +630,7 @@ struct Dashboard: View {
                     let running = app.scheduler["running"] as? Int ?? 0
                     let launching = app.scheduler["launching"] as? Int ?? 0
                     let pending = app.scheduler["pending"] as? Int ?? 0
-                    Text(running > 0 ? "\(running) tour(s) démarré(s)" : launching > 0 ? "Connexion au moteur · démarrage non confirmé" : pending > 0 ? "\(pending) reprise(s) en attente" : "Aucune reprise en attente").font(.title3.weight(.semibold))
+                    Text(running > 0 ? (running == 1 ? "1 tour démarré" : "\(running) tours démarrés") : launching > 0 ? "Connexion au moteur · démarrage non confirmé" : pending > 0 ? (pending == 1 ? "1 reprise en attente" : "\(pending) reprises en attente") : "Aucune reprise en attente").font(.title3.weight(.semibold))
                     Text(app.scheduler["auto_enabled"] as? Bool == true ? "Surveillance automatique activée" : "Automatisation en pause").foregroundStyle(.secondary)
                     if let due = app.scheduler["next_due"] as? Double {
                         Text("Prochaine reprise Codex : " + localDateTime(Date(timeIntervalSince1970: due))).font(.caption).foregroundStyle(.secondary)
@@ -697,6 +698,63 @@ struct Dashboard: View {
             }.buttonStyle(.link)
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
+    /// Amendement #263 : jauge par fournisseur et par harness — une ligne par
+    /// couple, avec dégradation gracieuse quand aucune jauge fiable n’existe.
+    func quotaGaugeRow(_ name: String, symbol: String, percent: Double?, note: String) -> some View {
+        HStack(spacing: 14) {
+            Label(name, systemImage: symbol).font(.callout.weight(.semibold)).frame(width: 210, alignment: .leading)
+            if let percent {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("\(Int(percent)) % restants").font(.callout.monospacedDigit())
+                    ProgressView(value: percent, total: 100)
+                        .tint(percent < 15 ? .orange : .accentColor)
+                        .frame(width: 180)
+                }
+            }
+            Spacer()
+            Text(note).font(percent == nil ? .callout : .caption).foregroundStyle(.secondary).lineLimit(2)
+        }
+        .accessibilityElement(children: .combine)
+    }
+    var quotaGauges: some View {
+        let codexFresh = app.quotaKnowledge["freshness"] as? String ?? "unobserved"
+        let codexPools = (app.quotaKnowledge["pools"] as? [[String: Any]] ?? []).flatMap { pool in
+            (pool["windows"] as? [[String: Any]] ?? []).compactMap { window -> (Double, String)? in
+                guard let used = window["used_percent"] as? Double, used.isFinite, (0...100).contains(used) else { return nil }
+                let minutes = (window["window_minutes"] ?? window["duration_minutes"]) as? Int ?? 0
+                let label = minutes == 300 ? "Codex CLI · fenêtre de 5 heures" : minutes == 10080 ? "Codex CLI · fenêtre hebdomadaire" : "Codex CLI · fenêtre rapportée"
+                return (100 - used, label)
+            }
+        }
+        let claudeState = (app.scheduler["claude_quota_state"] as? [String: Any])?["status"] as? String ?? ""
+        return Surface {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("Jauges de quota").font(.headline)
+                    Spacer()
+                    Button(app.quotaBusy ? "Lecture…" : "Actualiser les jauges") { app.refreshQuotas() }.disabled(app.quotaBusy)
+                }
+                if codexPools.isEmpty {
+                    quotaGaugeRow("Codex CLI", symbol: "terminal", percent: nil,
+                                  note: codexFresh == "recent_read" ? "Lecture récente sans fenêtre chiffrée" : "Pas de jauge fiable")
+                } else {
+                    ForEach(Array(codexPools.enumerated()), id: \.offset) { _, gauge in
+                        quotaGaugeRow(gauge.1, symbol: "terminal", percent: gauge.0,
+                                      note: codexFresh == "recent_read" ? "Lecture récente" : "Lecture à rafraîchir")
+                    }
+                }
+                quotaGaugeRow("Claude Desktop", symbol: "bubble.left.and.bubble.right", percent: nil,
+                              note: claudeState == "ok" ? "Aucun blocage de quota observé"
+                                : claudeState == "blocked" ? "Quota bloqué · rétablissement annoncé"
+                                : "Pas de jauge fiable")
+                quotaGaugeRow("ChatGPT Desktop", symbol: "globe", percent: nil, note: "Pas de jauge fiable")
+                quotaGaugeRow("DeepSeek et autres fournisseurs", symbol: "shippingbox", percent: nil, note: "Pas de jauge fiable")
+                quotaGaugeRow("Pilote Apple", symbol: "sparkles", percent: nil, note: "Sans quota · exécution sur l’appareil")
+                Text("Une jauge chiffrée provient d’une lecture locale de l’application concernée ; elle ne prouve pas l’état côté fournisseur.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
     func quotaRow(_ name: String, value: [String: Any]?, attributed: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             if let value {
@@ -709,7 +767,7 @@ struct Dashboard: View {
                 let date = reset.flatMap { $0.isFinite && $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
                 let expired = date.map { $0 <= Date() } ?? false
                 Text(title).font(.callout.weight(.semibold))
-                if let minutes, minutes > 0 { Text("Durée déclarée : \(minutes) min").font(.caption).foregroundStyle(.secondary) }
+                if let minutes, minutes > 0 { Text("Fenêtre observée : \(minutes) min").font(.caption).foregroundStyle(.secondary) }
                 if expired {
                     Text("Mesure périmée").font(.system(size: 27, weight: .semibold, design: .rounded)).foregroundStyle(.secondary)
                         .accessibilityLabel(title + " : reset dépassé, quota actuel inconnu")
@@ -807,7 +865,8 @@ struct Dashboard: View {
                 Text(presence == "open" ? "Ouvert observé" : presence == "not_open" ? "Non ouvert" : "Présence inconnue").font(.caption).foregroundStyle(.secondary)
             }
             if let lastSeen = observation["last_seen_at"] as? Double, lastSeen.isFinite, lastSeen > 0 {
-                Text("Présence observée le \(localDateTime(Date(timeIntervalSince1970: lastSeen))) · \(observation["target_count"] as? Int ?? 0) onglet(s) cible(s)").font(.caption).foregroundStyle(.secondary)
+                let targetCount = observation["target_count"] as? Int ?? 0
+                Text("Présence observée le \(localDateTime(Date(timeIntervalSince1970: lastSeen))) · \(targetCount == 1 ? "1 onglet cible" : "\(targetCount) onglets cibles")").font(.caption).foregroundStyle(.secondary)
             }
             let knowledge = quota["knowledge"] as? String ?? "unknown"
             let blocked = quota["blocked"] as? Bool
@@ -1168,7 +1227,7 @@ struct Dashboard: View {
             }
             SettingsBanner(
                 ok: verified && actionCount == 0,
-                title: verified ? (actionCount == 0 ? "Tout est sain" : "\(actionCount) élément(s) à examiner")
+                title: verified ? (actionCount == 0 ? "Tout est sain" : actionCount == 1 ? "1 élément à examiner" : "\(actionCount) éléments à examiner")
                                 : (app.healthCheckedAt == nil ? "Contrôle requis" : "Contrôle périmé"),
                 detail: verified && actionCount == 0
                     ? "Aucune action nécessaire après la dernière mise à jour."
@@ -1193,7 +1252,7 @@ struct Dashboard: View {
                     detail: "La relance recrée le processus de l’app depuis son bundle — disponible dans toutes les distributions. La relance par script reste réservée aux lancements de développement (archive runtime).")
             }
             SettingsCard(title: "Éléments à examiner",
-                         status: verified ? (actionCount == 0 ? "Rien à faire" : "\(actionCount) point(s)") : "Non vérifié",
+                         status: verified ? (actionCount == 0 ? "Rien à faire" : actionCount == 1 ? "1 point" : "\(actionCount) points") : "Non vérifié",
                          ok: verified && actionCount == 0) {
                 let actions = healthActions
                 if actions.isEmpty {
@@ -1222,7 +1281,7 @@ struct Dashboard: View {
                 }
             }
             SettingsCard(title: "Versions détectées",
-                         status: versions.isEmpty ? "Aucune" : "\(versions.count) application(s)",
+                         status: versions.isEmpty ? "Aucune" : (versions.count == 1 ? "1 application" : "\(versions.count) applications"),
                          ok: !versions.isEmpty) {
                 if versions.isEmpty { Text("Aucune version lue.").font(.callout).foregroundStyle(.secondary) }
                 ForEach(Array(versions.keys.sorted()), id: \.self) { key in

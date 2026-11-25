@@ -818,7 +818,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
                 let codexAnomalies = self.health["codex_anomalies"] as? [[String: Any]] ?? []
                 let humanActions = self.health["actions_for_human"] as? [String] ?? []
                 let healthCount = claudeAnomalies.count + codexAnomalies.count + humanActions.count
-                parts.append(healthCount == 0 ? "Santé : tout est sain" : "Santé : \(healthCount) élément(s) à examiner")
+                parts.append(healthCount == 0 ? "Santé : tout est sain" : healthCount == 1 ? "Santé : 1 élément à examiner" : "Santé : \(healthCount) éléments à examiner")
             }
             self.verifyEverythingSummary = parts.isEmpty
                 ? "Vérifications relancées ; les conclusions s’affinent dans quelques secondes."

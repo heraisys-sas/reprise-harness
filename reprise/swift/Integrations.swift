@@ -458,7 +458,7 @@ extension App {
             self.claudeInboxTasks = tasks
             self.claudeInboxStatus = tasks.isEmpty
                 ? "Aucune tâche dans le registre de ce projet."
-                : "\(tasks.count) tâche(s) du projet vérifié. Aucun prompt ni secret n’est affiché."
+                : (tasks.count == 1 ? "1 tâche du projet vérifié." : "\(tasks.count) tâches du projet vérifié.") + " Aucun prompt ni secret n’est affiché."
         }
     }
 
@@ -793,7 +793,7 @@ extension App {
             row["name"] = name
             return row
         }
-        appClonesMessage = "\(appClones.count) clone(s) géré(s)."
+        appClonesMessage = appClones.count == 1 ? "1 clone géré." : "\(appClones.count) clones gérés."
     }
 
     func refreshProjects(select projectID: String? = nil, completion: (() -> Void)? = nil) {
@@ -812,7 +812,7 @@ extension App {
                       !rows.contains(where: { $0["id"] as? String == self.selectedProjectID }) {
                 self.selectProject("")
             }
-            self.projectMessage = rows.isEmpty ? "Aucun projet enregistré." : "\(rows.count) projet(s) chargé(s)."
+            self.projectMessage = rows.isEmpty ? "Aucun projet enregistré." : (rows.count == 1 ? "1 projet chargé." : "\(rows.count) projets chargés.")
             completion?()
         }
     }
