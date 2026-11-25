@@ -462,10 +462,35 @@ def wait_content(result, ident):
     return content
 
 
+def load_default_chain(path=None):
+    """Charge le champ optionnel `default_chain` (liste ordonnée d'ids de
+    backends) du manifeste. Fichier/champ absent → [] (repli legacy) ; ids
+    invalides, non uniques ou inconnus des backends déclarés → ValueError."""
+    manifest_path = Path(path) if path is not None else EXPERTS_MANIFEST_PATH
+    if not manifest_path.exists():
+        return []
+    with open(manifest_path, encoding='utf-8') as handle:
+        document = json.load(handle)
+    chain = document.get('default_chain')
+    if chain is None:
+        return []
+    if not isinstance(chain, list) or not chain or not all(isinstance(b, str) and b for b in chain):
+        raise ValueError('default_chain must be a nonempty list of backend ids')
+    if len(set(chain)) != len(chain):
+        raise ValueError('default_chain must not repeat a backend')
+    declared = set(document.get('backends') or {})
+    unknown = [b for b in chain if b not in declared]
+    if unknown:
+        raise ValueError(f'default_chain references unknown backends: {unknown}')
+    return list(chain)
+
+
 class Bridge:
-    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, codex_workspace_write=False, chatgpt_socket=None, chatgpt_dispatch=False, metaai_values=None):
+    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, codex_workspace_write=False, chatgpt_socket=None, chatgpt_dispatch=False, metaai_values=None, automatic_fallback_enabled=False):
         if type(codex_workspace_write) is not bool:
             raise ValueError('Explicit workspace-write grant required')
+        if type(automatic_fallback_enabled) is not bool:
+            raise ValueError('Explicit automatic-fallback grant required')
         if type(chatgpt_dispatch) is not bool:
             raise ValueError('Explicit ChatGPT dispatch grant required')
         if chatgpt_socket is not None and (not isinstance(chatgpt_socket, str) or not Path(chatgpt_socket).is_absolute()):
@@ -473,6 +498,7 @@ class Bridge:
         self.chatgpt_socket = chatgpt_socket
         self.chatgpt_dispatch = chatgpt_dispatch
         self.codex_workspace_write = codex_workspace_write
+        self.automatic_fallback_enabled = automatic_fallback_enabled
         known_tools = {item['name'] for item in TOOLS}
         if allowed_tools is not None and (not allowed_tools or set(allowed_tools) - known_tools):
             raise ValueError('Unknown or empty tool selection')
@@ -523,6 +549,7 @@ class Bridge:
         # Manifeste expert déclaratif (#258 lot 2) : échec de schéma = bridge
         # refusé au démarrage ; fichier absent = repli legacy ({}).
         self.experts = load_experts_manifest()
+        self.default_chain = load_default_chain()
         # Canal de retour MCP (get_task/submit_result) : TaskStore durable, ou
         # None si l'état Quick Apply n'est pas initialisable — le pont doit
         # alors refuser l'orchestration plutôt que promettre un aller-retour.
@@ -574,8 +601,10 @@ class Bridge:
 
     def reload_experts_manifest(self):
         """Recharge experts-manifest.json (validation stricte identique au
-        démarrage ; lève ValueError sur schéma/type invalide)."""
+        démarrage ; lève ValueError sur schéma/type invalide) ainsi que la
+        default_chain du routeur."""
         self.experts = load_experts_manifest()
+        self.default_chain = load_default_chain()
         return self.experts
 
     def close(self):
@@ -909,6 +938,49 @@ class Bridge:
             WHERE r.state IN ('recorded','indeterminate'))''', (scope,))
         self.db.commit()
 
+    def attempt_substitution(self, name, args, mode, attach, result, key=None):
+        """Substitution automatique de délégation (opt-in, flag OFF par
+        défaut). Sur un refus déclencheur (quota_blocked, billing_unverified,
+        engine_unavailable — hors portes manifeste définitives, jamais
+        substituées), route vers le meilleur backend admissible, configuré et
+        non exclu : cible explicite défaillante → external_rankings.route_choice ;
+        aucune cible appelante → default_chain du manifeste, résolue au temps T.
+        Aucun candidat → refus d'origine retourné INCHANGÉ. Une substitution
+        effective journalise routing_substituted (requested_route ET
+        served_route non nuls) et porte automatic_fallback/requested_route/
+        served_route sur le résultat. Une seule substitution par délégation :
+        un échec du backend servi n'est jamais re-substitué ici."""
+        if not self.automatic_fallback_enabled or not isinstance(result, dict):
+            return result
+        import expert_router
+        if not expert_router.is_trigger(result):
+            return result
+        explicit = args.get('backend') is not None
+        failed = args.get('backend') or result.get('backend') or 'codex'
+        # L'implémentation est réservée à codex (execution_mode) : la cible
+        # défaillante étant exclue, aucun candidat ne peut la servir.
+        if mode == 'implementation':
+            return result
+        if explicit:
+            served = expert_router.substitute_for_target(self, failed)
+        else:
+            served = expert_router.chain_candidates(self, self.default_chain, exclude=failed)
+        if served is None or served == failed:
+            return result
+        dispatch_args = dict(args)
+        dispatch_args['backend'] = served
+        if served != 'codex':
+            # Le modèle demandé appartient au catalogue de la cible défaillante.
+            dispatch_args.pop('model', None)
+        served_result = self._call(name, dispatch_args, on_turn=attach)
+        if isinstance(served_result, dict) and served_result.get('status') == 'busy':
+            return result
+        expert_router.trace_substitution(
+            self, name, failed, served, level=args.get('level'),
+            request_key=key or args.get('request_key'), thread_id=args.get('thread_id'),
+            reason=f'automatic fallback: {failed} refused ({result.get("status")})')
+        return expert_router.annotate(served_result, failed, served)
+
     def call(self, name, args):
         if name not in self.allowed_tools:
             raise ValueError('Tool not enabled for this integration')
@@ -1009,6 +1081,7 @@ class Bridge:
                 result = self._call(name, clean, on_turn=attach)
             finally:
                 self.requests.release(key, self.owner)
+            result = self.attempt_substitution(name, clean, mode, attach, result, key)
             try:
                 changed = before_evidence != file_evidence(self.root, args.get('paths'), args.get('filePaths'))
             except (ValueError, OSError):
@@ -1259,7 +1332,9 @@ class Bridge:
                  'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': workspace_writes('codex')}
             if catalog['error']:
                 codex_entry['models_error'] = catalog['error']
-            return {'status': 'finished', 'project_root': str(self.root), 'result_transport': {
+            return {'status': 'finished', 'project_root': str(self.root),
+                    'automatic_fallback_enabled': bool(self.automatic_fallback_enabled),
+                    'result_transport': {
                     'receipt': True, 'pagination': True, 'followup_receipt': True,
                     'format': 'receipt-json-v1', 'transport_limit': TRANSPORT_LIMIT}, 'backends': [
                 codex_entry,
@@ -1507,8 +1582,9 @@ class Bridge:
             return {'status': 'billing_unverified', 'backend': backend, 'reason': 'Operator must confirm paid usage credits disabled before enabling Claude.', 'automatic_fallback': False}
         import routing_events
         # Admissibilité (lot ②) : la route demandée est explicite (consentement
-        # porté par l'appel) ; les remplacements automatiques restent gelés, et
-        # admissible(automatic=True) n'est jamais appelée ici.
+        # porté par l'appel). admissible(automatic=False) est appelée ici ;
+        # la substitution automatique éventuelle est résolue APRÈS le tour
+        # réel, dans call(), via expert_router (jamais en preflight).
         allowed, billing = routing_events.admissible(self.db, backend, automatic=False)
         if not allowed:
             return {'status': 'admissibility_refused', 'backend': backend, 'billing_class': billing,
@@ -1516,7 +1592,8 @@ class Bridge:
         if preflight:
             return
         # Journal additif de la décision de routage (contrat §7.5 révisé §7.6) ;
-        # aucune substitution n'est produite : le type routing_substituted reste réservé.
+        # le type routing_substituted est écrit par expert_router via call()
+        # quand une substitution automatique devient effective.
         import routing_events
         requested = {}
         if isinstance(args.get('model'), str):
