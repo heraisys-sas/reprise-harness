@@ -1073,30 +1073,35 @@ struct Integrations: View {
                     detail: "L’inspection n’écrit rien et ne lance aucune inférence. Elle relève les profils présents, les outils déjà exposés et le dernier plan éventuellement en attente.")
             }
             SettingsCard(title: "Délégation vers un expert externe",
-                         status: app.integrationDelegate ? "Exposée" : "Désactivée",
+                         status: app.integrationDelegate ? "Outils d’action exposés" : "Observation seule",
                          ok: true) {
-                Toggle("Exposer les outils de délégation", isOn: $app.integrationDelegate)
+                Toggle("Exposer les outils de délégation (reprise_delegate, reprise_followup, reprise_reconcile)", isOn: $app.integrationDelegate)
+                SettingsHint(
+                    text: "Sans cette option, le profil n’expose que la lecture ; avec, trois outils d’action s’ajoutent au même bloc géré.",
+                    detail: "Concrètement : cette carte pilote le bloc de configuration géré que Reprise écrit dans le profil Harness choisi ; en ligne de commande, cela correspond à l’option --delegate de l’installation du profil. Sans l’option, ce bloc ne permet que d’observer (reprise_backends, reprise_requests, reprise_quotas, approval_list, wait_result) : rien ne peut être exécuté. Avec l’option, trois outils s’ajoutent : reprise_delegate (confier une expertise, une revue ou un lot borné à un moteur local, Codex par défaut, Claude Code s’il est configuré), reprise_followup (poursuivre la session ouverte par une délégation) et reprise_reconcile (rattacher une demande à son tour natif et récupérer un résultat tardif). L’installation copie aussi la documentation de délégation dans la compétence reprise-delegation de votre dossier Harness. Après application, rechargez le profil dans Harness pour que les outils soient visibles.")
                 if let verification = app.integrationVerification,
                    verification["status"] as? String == "verified" {
                     let capability = (verification["bridge_capabilities"] as? [String: Any])?["delegation"] as? [String: Any] ?? [:]
                     let needsUpdate = verification["update_required"] as? Bool == true
+                    let modeRaw = capability["mode"] as? String ?? "inconnu"
+                    let modeLabel = modeRaw == "delegate" ? "délégation exposée" : (modeRaw == "observe_only" ? "observation seule" : modeRaw)
                     SettingsHint(
                         text: needsUpdate ? "Mise à jour des connecteurs nécessaire" : "Pont de délégation configuré et sondé",
-                        detail: "Mode installé : " + (capability["mode"] as? String ?? "inconnu")
+                        detail: "Mode installé : " + modeLabel
                             + " · Outils manquants : " + ((verification["missing_delegation_tools"] as? [String] ?? []).joined(separator: ", "))
                             + ". Le chargement par Harness reste non observé ; rechargez le profil après application.",
                         detailLabel: "Contrôle de délégation")
                 }
                 SettingsHint(
-                    text: "Par défaut, seuls l’observation et les reçus sont exposés. La délégation peut consommer du quota.",
+                    text: "Par défaut, le profil n’expose que l’observation et les reçus ; la délégation expose des outils qui peuvent consommer du quota.",
                     detail: "Autoriser l’exposition n’exécute aucune inférence : c’est le client qui décide d’appeler. Configurer un outil ne vaut pas autorisation de l’utiliser.")
-                Toggle("Autoriser l’écriture dans le projet sélectionné", isOn: $app.integrationCodexWorkspaceWrite)
+                Toggle("Autoriser l’écriture dans le projet sélectionné (mode implémentation Codex)", isOn: $app.integrationCodexWorkspaceWrite)
                     .disabled(!app.integrationDelegate)
                 SettingsHint(
                     text: app.integrationCodexWorkspaceWriteInstalled
                         ? "Actuellement autorisée ; sans opt-in dans ce plan, elle sera révoquée."
                         : "Actuellement désactivée ; l’écriture exige un opt-in dans ce plan.",
-                    detail: "Le mode implémentation autorise les modifications et vérifications locales dans ce projet. Les approbations natives restent requises ; cette option n’autorise pas implicitement un push, une fusion ou un déploiement.")
+                    detail: "L’outil reprise_delegate reste en lecture seule sur votre projet tant que ce choix n’est pas fait. Avec cette option, il peut modifier et vérifier des fichiers dans le projet affiché. Les approbations natives restent requises ; cette option n’autorise pas implicitement un push, une fusion ou un déploiement.")
                 Toggle("Reprendre après une limite de tokens de sortie", isOn: $app.integrationOutputResume)
                 if app.integrationOutputResume {
                     TextField("Projet de reprise (vide : projet du connecteur)", text: $app.integrationOutputResumeProject)
@@ -1442,7 +1447,7 @@ struct Integrations: View {
                     if let project = plan["output_resume_project"] as? String { path("Projet de reprise", project) }
                     Text("Reprise après limite de sortie : " + ((plan["output_resume"] as? Bool == true) ? "autorisée" : "désactivée"))
                     Text("Effort ASI1 bas : " + ((plan["asi1_effort"] as? Bool == true) ? "installé" : "non installé"))
-                    Text("Délégation : " + ((plan["delegate"] as? Bool == true) ? "exposée" : "non exposée"))
+                    Text("Délégation : " + ((plan["delegate"] as? Bool == true) ? "les outils d’action seront exposés" : "observation seule, aucun outil d’action"))
                     if let release = plan["release"], let state = plan["state"] {
                         SettingsHint(text: "Version et état utilisés par le connecteur.",
                                      detail: planDetail(release) + "\n\n" + planDetail(state), detailLabel: "Détail technique")
