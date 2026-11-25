@@ -186,6 +186,8 @@ def load_experts_manifest(path=None):
     backends = document.get('backends')
     if not isinstance(backends, dict) or not backends:
         raise ValueError('experts manifest requires a nonempty backends object')
+    if 'automatic_fallback' in document and type(document['automatic_fallback']) is not bool:
+        raise ValueError('automatic_fallback must be a boolean')
     validated = {}
     for backend, entry in backends.items():
         if not isinstance(backend, str) or not backend or not isinstance(entry, dict):
@@ -485,11 +487,28 @@ def load_default_chain(path=None):
     return list(chain)
 
 
+def load_fallback_flag(path=None):
+    """Charge le champ optionnel `automatic_fallback` (bool) du manifeste.
+    Fichier/champ absent → False (défaut code inchangé) ; type non-bool →
+    ValueError (fail-fast, même contrat que le manifeste)."""
+    manifest_path = Path(path) if path is not None else EXPERTS_MANIFEST_PATH
+    if not manifest_path.exists():
+        return False
+    with open(manifest_path, encoding='utf-8') as handle:
+        document = json.load(handle)
+    flag = document.get('automatic_fallback')
+    if flag is None:
+        return False
+    if type(flag) is not bool:
+        raise ValueError('automatic_fallback must be a boolean')
+    return flag
+
+
 class Bridge:
-    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, codex_workspace_write=False, chatgpt_socket=None, chatgpt_dispatch=False, metaai_values=None, automatic_fallback_enabled=False):
+    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, codex_workspace_write=False, chatgpt_socket=None, chatgpt_dispatch=False, metaai_values=None, automatic_fallback_enabled=None):
         if type(codex_workspace_write) is not bool:
             raise ValueError('Explicit workspace-write grant required')
-        if type(automatic_fallback_enabled) is not bool:
+        if automatic_fallback_enabled is not None and type(automatic_fallback_enabled) is not bool:
             raise ValueError('Explicit automatic-fallback grant required')
         if type(chatgpt_dispatch) is not bool:
             raise ValueError('Explicit ChatGPT dispatch grant required')
@@ -498,7 +517,6 @@ class Bridge:
         self.chatgpt_socket = chatgpt_socket
         self.chatgpt_dispatch = chatgpt_dispatch
         self.codex_workspace_write = codex_workspace_write
-        self.automatic_fallback_enabled = automatic_fallback_enabled
         known_tools = {item['name'] for item in TOOLS}
         if allowed_tools is not None and (not allowed_tools or set(allowed_tools) - known_tools):
             raise ValueError('Unknown or empty tool selection')
@@ -550,6 +568,11 @@ class Bridge:
         # refusé au démarrage ; fichier absent = repli legacy ({}).
         self.experts = load_experts_manifest()
         self.default_chain = load_default_chain()
+        # Flag automatic_fallback : kwarg explicite (True/False) gagne ; None
+        # (sentinel, kwarg omis) → dérivation depuis le manifeste, re-dérivée
+        # au rechargement sauf kwarg explicite (automatic_fallback_explicit).
+        self.automatic_fallback_explicit = automatic_fallback_enabled is not None
+        self.automatic_fallback_enabled = automatic_fallback_enabled if automatic_fallback_enabled is not None else load_fallback_flag()
         # Canal de retour MCP (get_task/submit_result) : TaskStore durable, ou
         # None si l'état Quick Apply n'est pas initialisable — le pont doit
         # alors refuser l'orchestration plutôt que promettre un aller-retour.
@@ -602,9 +625,12 @@ class Bridge:
     def reload_experts_manifest(self):
         """Recharge experts-manifest.json (validation stricte identique au
         démarrage ; lève ValueError sur schéma/type invalide) ainsi que la
-        default_chain du routeur."""
+        default_chain du routeur et le flag automatic_fallback (re-dérivé
+        du manifeste sauf kwarg explicite)."""
         self.experts = load_experts_manifest()
         self.default_chain = load_default_chain()
+        if not self.automatic_fallback_explicit:
+            self.automatic_fallback_enabled = load_fallback_flag()
         return self.experts
 
     def close(self):

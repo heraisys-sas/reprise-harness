@@ -73,10 +73,15 @@ class ExpertRouterTests(unittest.TestCase):
         self.manifest.write_text(json.dumps(document), encoding='utf-8')
 
     def bridge(self, document=None, **kwargs):
-        """Bridge prêt pour substitution : flag opt-in via automatic_fallback_enabled."""
+        """Bridge prêt pour substitution : flag opt-in via automatic_fallback_enabled
+        (True par défaut) ; automatic_fallback_enabled=None = sentinel → kwarg
+        omis, le flag est dérivé du manifeste (load_fallback_flag)."""
         if document is not None:
             self.write_manifest(document)
-        kwargs.setdefault('automatic_fallback_enabled', True)
+        if 'automatic_fallback_enabled' in kwargs and kwargs['automatic_fallback_enabled'] is None:
+            kwargs.pop('automatic_fallback_enabled')
+        else:
+            kwargs.setdefault('automatic_fallback_enabled', True)
         with self.patched_path():
             bridge = Bridge(self.root, {}, self.state, **kwargs)
         bridge.program = 'codex'
@@ -121,6 +126,65 @@ class ExpertRouterTests(unittest.TestCase):
         on = self.bridge(FULL_MANIFEST, automatic_fallback_enabled=True)
         self.assertIs(off.call('reprise_backends', {})['automatic_fallback_enabled'], False)
         self.assertIs(on.call('reprise_backends', {})['automatic_fallback_enabled'], True)
+
+    # — Dérivation manifeste du flag (sentinel : kwarg omis) —
+
+    def test_flag_derived_from_manifest_when_kwarg_omitted(self):
+        derived_on = self.bridge({**FULL_MANIFEST, 'automatic_fallback': True},
+                                 automatic_fallback_enabled=None)
+        self.assertIs(derived_on.automatic_fallback_enabled, True)
+        self.assertIs(derived_on.call('reprise_backends', {})['automatic_fallback_enabled'], True)
+        derived_off = self.bridge({**FULL_MANIFEST, 'automatic_fallback': False},
+                                  automatic_fallback_enabled=None)
+        self.assertIs(derived_off.automatic_fallback_enabled, False)
+
+    def test_flag_defaults_to_false_when_manifest_field_absent(self):
+        bridge = self.bridge(FULL_MANIFEST, automatic_fallback_enabled=None)
+        self.assertIs(bridge.automatic_fallback_enabled, False)
+
+    def test_explicit_kwarg_overrides_manifest_flag(self):
+        bridge = self.bridge({**FULL_MANIFEST, 'automatic_fallback': True},
+                             automatic_fallback_enabled=False)
+        self.assertIs(bridge.automatic_fallback_enabled, False)
+
+    def test_derived_flag_enables_substitution_end_to_end(self):
+        # Même parcours que test_explicit_failure_substitutes… mais SANS kwarg :
+        # le True dérivé du manifeste arme la substitution (garde 957).
+        bridge = self.bridge({**FULL_MANIFEST, 'automatic_fallback': True},
+                             automatic_fallback_enabled=None)
+        self.codex_admissible(bridge)
+        bridge.claude_program = None
+        seed_ranking(bridge.db, 'codex', 'openai_gpt-6.1-sol-pro', 2.0)
+        external_rankings.populate_model_map(bridge.db)
+        with patch.object(apple_expert, 'configured', return_value=True), \
+             patch.object(apple_expert, 'review',
+                          return_value={'status': 'engine_unavailable',
+                                        'reason': 'fm unavailable for test'}), \
+             patch.object(expert_mcp, 'review',
+                          return_value={'status': 'finished', 'response': 'ok',
+                                        'thread_id': 't1', 'resumable': True}):
+            result = self.delegate(bridge, backend='foundation-models')
+        self.assertEqual(result['status'], 'finished')
+        self.assertIs(result['automatic_fallback'], True)
+        self.assertEqual(result['requested_route'], 'foundation-models')
+        self.assertEqual(result['served_route'], 'codex')
+
+    def test_reload_rederives_flag_only_when_not_explicit(self):
+        derived = self.bridge({**FULL_MANIFEST, 'automatic_fallback': True},
+                              automatic_fallback_enabled=None)
+        self.assertIs(derived.automatic_fallback_enabled, True)
+        self.write_manifest({**FULL_MANIFEST, 'automatic_fallback': False})
+        with self.patched_path():
+            derived.reload_experts_manifest()
+        self.assertIs(derived.automatic_fallback_enabled, False)
+        # Kwarg explicite : la re-dérivation est sautée, même si le manifeste
+        # demande True entre-temps.
+        explicit = self.bridge({**FULL_MANIFEST, 'automatic_fallback': False},
+                               automatic_fallback_enabled=False)
+        self.write_manifest({**FULL_MANIFEST, 'automatic_fallback': True})
+        with self.patched_path():
+            explicit.reload_experts_manifest()
+        self.assertIs(explicit.automatic_fallback_enabled, False)
 
     # — Déclencheurs et portes manifeste définitives —
 

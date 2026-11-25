@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import expert_mcp
-from expert_mcp import BACKEND_MODELS, Bridge, load_experts_manifest
+from expert_mcp import BACKEND_MODELS, Bridge, load_experts_manifest, load_fallback_flag
 
 
 def seed_catalog(bridge):
@@ -107,6 +107,7 @@ class ExpertsManifestTests(unittest.TestCase):
             {'schema_version': 1, 'backends': {'codex': {'session': 'stdio_thread', 'capacity': 1.5}}},
             {'schema_version': 1, 'backends': {'codex': {'session': 'carrier_pigeon'}}},
             {'schema_version': 1, 'backends': {'codex': 'not-a-dict'}},
+            {'schema_version': 1, 'backends': {'codex': CODEX}, 'automatic_fallback': 'yes'},
         ]
         for document in cases:
             self.write_manifest(document)
@@ -115,6 +116,30 @@ class ExpertsManifestTests(unittest.TestCase):
             with self.patched_path():
                 with self.assertRaises(ValueError, msg=json.dumps(document)):
                     Bridge(self.root, {}, self.state)
+
+    # — Flag automatic_fallback : dérivation manifeste (sentinel) —
+
+    def test_flag_derived_by_bridge_from_manifest(self):
+        on = self.bridge({'schema_version': 1, 'backends': {'codex': CODEX},
+                          'automatic_fallback': True})
+        self.assertIs(on.automatic_fallback_enabled, True)
+        off = self.bridge({'schema_version': 1, 'backends': {'codex': CODEX},
+                           'automatic_fallback': False})
+        self.assertIs(off.automatic_fallback_enabled, False)
+
+    def test_flag_absent_defaults_false(self):
+        # Champ absent du manifeste, ou fichier manifeste absent : False.
+        bridge = self.bridge({'schema_version': 1, 'backends': {'codex': CODEX}})
+        self.assertIs(bridge.automatic_fallback_enabled, False)
+        self.assertIs(load_fallback_flag(self.manifest), False)
+        self.manifest.unlink()
+        self.assertIs(load_fallback_flag(self.manifest), False)
+
+    def test_load_fallback_flag_rejects_non_bool(self):
+        self.write_manifest({'schema_version': 1, 'backends': {'codex': CODEX},
+                             'automatic_fallback': 'yes'})
+        with self.assertRaises(ValueError):
+            load_fallback_flag(self.manifest)
 
     # — Capacité par backend (#259) —
 
