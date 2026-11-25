@@ -379,5 +379,42 @@ class SyntheseV3Tests(DatabaseTestCase):
             bridge, 'claude-desktop', task_class='exigeant'))
 
 
+class RoutesGratuitesTests(DatabaseTestCase):
+    """Déclarations opérateur (25/11/2026) : chatgpt reste ouvert et gratuit
+    même quand la jauge codex est épuisée (limites propres au free tier à
+    affiner plus tard) ; asi1/asi1-mini (route CUDOS) toujours gratuites."""
+
+    def test_canal_gratuit_admissible_sans_veto(self):
+        db = self.memory_db()
+        routing_events.seed_local(db)
+        for canal in ('chatgpt', 'asi1', 'asi1-mini', 'foundation-models'):
+            allowed, billing = routing_events.admissible(db, canal, True)
+            self.assertTrue(allowed, canal)
+            self.assertEqual(billing, 'free', canal)
+            self.assertEqual(routing_events.vetos(db, canal), [])
+
+    def test_rapide_auto_bascule_sur_chatgpt_si_jauge_epuisee(self):
+        # Jauge codex épuisée : included sans observation récente → veto
+        # quota-perime → la classe rapide retombe sur chatgpt (gratuit, sans
+        # prix corroboré requis) ; foundation-models garde la priorité tant
+        # qu'il précède chatgpt dans l'ordre des canaux fourni (ordre du
+        # manifeste). Chemin historique (task_class=None) inchangé : chatgpt,
+        # sans prix corroboré, n'y est jamais élu.
+        db = self.memory_db()
+        routing_events.seed_local(db)
+        routing_events.declare(db, 'codex', 'included')
+        db.execute(
+            "UPDATE route_admissibility SET updated_at=? WHERE channel='codex'",
+            (time.time() - routing_events.DEFAULT_VETO_TTL_S - 60,))
+        self.assertEqual(external_rankings.route_choice(
+            db, ['codex', 'foundation-models', 'chatgpt'],
+            automatic=True, task_class='rapide'), 'foundation-models')
+        self.assertEqual(external_rankings.route_choice(
+            db, ['codex', 'chatgpt'], automatic=True, task_class='rapide'),
+            'chatgpt')
+        self.assertIsNone(external_rankings.route_choice(
+            db, ['chatgpt'], automatic=True))
+
+
 if __name__ == '__main__':
     unittest.main()
