@@ -10,6 +10,7 @@ même fonction de pseudonymisation des deux côtés.
 La substitution de route reste gelée : admissible() définit la règle pour un
 usage futur, aucun remplacement automatique n'est activé ni appelé ici.
 """
+import backend_registry
 import hashlib
 import hmac
 import json
@@ -27,11 +28,14 @@ DEFAULT_RETENTION_DAYS = 180
 BILLING_CLASSES = ('free', 'included', 'paid', 'unknown')
 # Valeurs codées pour les routes certaines déclarées par l'opérateur
 # (édition directe ou lot dédié) ; tout le reste = unknown.
+# Pré-lot A0 : dérivé du registre unique des backends (backend_registry) —
+# une seule source de vérité ; contenu identique à l'ancien dictionnaire
+# codé en dur. « codex » n'y figure pas : facturation unknown tant que
+# populate_from_quota n'a pas observé d'inclusion (jamais free par défaut).
 # 25/11/2026 (Olivier) : chatgpt reste ouvert et gratuit même quand la jauge
 # codex est épuisée (limites propres au free tier à affiner plus tard) ;
 # asi1/asi1-mini (route CUDOS) toujours gratuites.
-LOCAL_BILLING = {'foundation-models': 'free', 'ironclaw': 'free',
-                 'chatgpt': 'free', 'asi1': 'free', 'asi1-mini': 'free'}
+LOCAL_BILLING = dict(backend_registry.LOCAL_BILLING)
 
 SCHEMA_V2 = ('CREATE TABLE IF NOT EXISTS routing_events ('
              'id INTEGER PRIMARY KEY, ts REAL NOT NULL, '

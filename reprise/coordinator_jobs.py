@@ -12,6 +12,7 @@ import sys
 import time
 import uuid
 
+import backend_registry
 import orchestrator_memory
 import vault
 import registry_marker
@@ -287,8 +288,9 @@ class Jobs:
     def consent(self, project_id, operation_id, *, authorization_id, expected_revision,
                 expected_proposal_sha256, host_context, expected_context_sha256, backend="codex"):
         """Record operator consent only, atomically and without an execution authority."""
-        if backend not in ("codex", "foundation-models"):
-            raise ValueError("Explicit supported consent backend required")
+        # Garde portée par le registre unique (pré-lot A0) ; même message que
+        # la garde historique codée en dur, mais une seule source de vérité.
+        backend_registry.require_consent_backend(backend)
         project, operation, authorization = _uuid(project_id), _uuid(operation_id), _uuid(authorization_id)
         if type(expected_revision) is not int or expected_revision < 0:
             raise ValueError('Invalid expected revision')
@@ -311,7 +313,8 @@ class Jobs:
                 if 'clarifications' in row:
                     identity['clarifications_sha256'] = hashlib.sha256(_json(row['clarifications']).encode()).hexdigest()
                 if 'memory_selection' in row:
-                    if backend != 'foundation-models': raise ValueError('Explicit local consent required')
+                    if not backend_registry.entry(backend)['memory_snapshot']:
+                        raise ValueError('Explicit local consent required')
                     memory = row['memory_selection']
                     if memory['work_id'] != host_context['work_id']:
                         raise ValueError('Host context changed')
