@@ -275,6 +275,27 @@ class DaemonDispatchTests(unittest.TestCase):
         self.assertNotIn('Consigne delegation', delivered['text'])
         self.assertEqual(endpoint.tasks.claim(key, "claim-same")["prompt"], "Consigne delegation")
 
+    def test_submit_orchestrated_relays_pointer_but_admits_task_prompt(self):
+        # Issue #269 : en orchestré aussi, le relais/composeur ne voit que le
+        # pointeur get_task ; l'admission porte le prompt complet (taskPrompt).
+        self.patch_apply(state_sequence=[composer_state()])
+        self.patch_cdp()
+        endpoint = self.endpoint()
+        key = str(uuid.uuid4())
+        question = 'Question orchestree longue ' * 40
+        full = claude_desktop_quick.task_pointer(key) + '\n\n' + question
+        endpoint.submit({'request_key': key, 'prompt': claude_desktop_quick.task_pointer(key),
+                         'chatId': CHAT_ID, 'purpose': 'delegation', 'orchestrated': True,
+                         'taskPrompt': full})
+        row = endpoint.db.execute(
+            'SELECT payload FROM quick_submissions WHERE scope=?',
+            (endpoint.scope,)).fetchone()
+        delivered = json.loads(row[0])
+        self.assertEqual(delivered['text'].strip(),
+                         claude_desktop_quick.task_pointer(key).strip())
+        self.assertNotIn(question, delivered['text'])
+        self.assertIn(question, endpoint.tasks.claim(key, 'claim-orch-269')['prompt'])
+
     def test_dispatch_cold_start_creates_target_then_attaches(self):
         prompt = 'Démarrage à froid'
         self.patch_apply(
@@ -393,10 +414,12 @@ class DaemonDispatchTests(unittest.TestCase):
 class _FakeRpcClient:
     def __init__(self, *args, **kw):
         self.calls = []
+        self.params = []
         _FakeRpcClient.last = self
 
     def call(self, method, params):
         self.calls.append(method)
+        self.params.append((method, params))
         if method == 'quick_entry/submit':
             return {'status': 'finished', 'submission_id': 'sub-1'}
         if method == 'quick_entry/capabilities':
@@ -444,6 +467,70 @@ class ReviewDispatchTests(unittest.TestCase):
         self.assertFalse(result['dispatch_ok'])
         self.assertEqual(result['dispatch_error'], 'refusé')
         self.assertTrue(result['admission_only'])
+
+    def test_orchestrated_quick_prompt_carries_instruction_only(self):
+        # Issue #269 : le prompt Quick ne porte que l'instruction MCP ; la
+        # question complète part dans taskPrompt (admission durable, get_task).
+        from desktop_task_store import TaskStore
+        tasks = TaskStore(self.directory.name, self.directory.name)
+        self.addCleanup(tasks.close)
+        question = 'Question orchestree longue ' * 30
+        with mock.patch.object(claude_desktop_rpc, 'Client', _FakeRpcClient):
+            result = claude_desktop.review(self.directory.name, question, kind='expertise',
+                                           level='standard', request_key='rk-quick', tasks=tasks)
+        self.assertEqual(result['status'], 'finished')
+        submit = [params for method, params in _FakeRpcClient.last.params
+                  if method == 'quick_entry/submit'][0]
+        self.assertNotIn(question, submit['prompt'])
+        self.assertIn(json.dumps('rk-quick'), submit['prompt'])
+        self.assertIn(question, submit['taskPrompt'])
+        claimed = tasks.claim('rk-quick', 'claim-quick')
+        self.assertIn(question, claimed['prompt'])
+
+    def test_orchestrated_question_beyond_composer_limit_is_admitted(self):
+        # Issue #269 : la limite de 12 000 caractères ne lie plus
+        # l'orchestration ; la borne d'admission (96 000) gouverne.
+        from desktop_task_store import TaskStore, MAX_ADMISSION_PROMPT_CHARS
+        tasks = TaskStore(self.directory.name, self.directory.name)
+        self.addCleanup(tasks.close)
+        question = 'x' * 15000
+        with mock.patch.object(claude_desktop_rpc, 'Client', _FakeRpcClient):
+            result = claude_desktop.review(self.directory.name, question, kind='expertise',
+                                           level='standard', request_key='rk-large', tasks=tasks)
+        self.assertEqual(result['status'], 'finished')
+        self.assertIn(question, tasks.claim('rk-large', 'claim-large')['prompt'])
+        with self.assertRaises(ValueError):
+            claude_desktop.review(self.directory.name, 'x' * (MAX_ADMISSION_PROMPT_CHARS + 1),
+                                  kind='expertise', level='standard',
+                                  request_key='rk-huge', tasks=tasks)
+
+    def test_validated_result_overrides_failed_dispatch_evidence(self):
+        # Issue #269 : une réponse validée par submit_result EST la preuve de
+        # dispatch de bout en bout ; un dispatch composeur refusé ne doit plus
+        # contredire le résultat validé.
+        from desktop_task_store import TaskStore
+
+        class AutoAnswer(TaskStore):
+            def reserve_review_dispatch(self, request_key):
+                reserved = super().reserve_review_dispatch(request_key)
+                if reserved:
+                    claimed = super().claim(request_key, 'claim-269')
+                    super().submit(request_key, claimed['attempt_id'], 'Réponse orchestrée')
+                return reserved
+
+        tasks = AutoAnswer(self.directory.name, self.directory.name)
+        self.addCleanup(tasks.close)
+        _FakeRpcClient.dispatch = {'dispatch_ok': False, 'dispatch_error': 'Composeur indisponible',
+                                   'stage': 'composeur'}
+        with mock.patch.object(claude_desktop_rpc, 'Client', _FakeRpcClient):
+            result = claude_desktop.review(self.directory.name, 'Question orchestrée', kind='expertise',
+                                           level='standard', request_key='rk-dispatch',
+                                           tasks=tasks, max_wait=2)
+        self.assertEqual(result['status'], 'finished')
+        self.assertEqual(result['response'], 'Réponse orchestrée')
+        self.assertFalse(result.get('admission_only', True))
+        self.assertTrue(result['dispatch_ok'])
+        self.assertNotIn('dispatch_error', result)
 
     def test_no_dispatch_without_capability(self):
         _FakeRpcClient.capabilities = {'dispatch_supported': False}

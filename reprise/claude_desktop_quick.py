@@ -162,7 +162,7 @@ class Endpoint:
         """Validate, bound and record a submission; returns the routed payload."""
         if not isinstance(args, dict):
             raise ValueError('Objet de soumission requis')
-        allowed = {'prompt', 'images', 'filePaths', 'chatId', 'request_key', 'parent_request_key', 'purpose', 'orchestrated'}
+        allowed = {'prompt', 'images', 'filePaths', 'chatId', 'request_key', 'parent_request_key', 'purpose', 'orchestrated', 'taskPrompt'}
         if args.keys() - allowed:
             raise ValueError('Champs de soumission non pris en charge')
         orchestrated = bool(args.get('orchestrated'))
@@ -183,7 +183,10 @@ class Endpoint:
         if existing:
             return existing
         delivery = payload
-        if self.tasks and purpose == 'delegation' and not orchestrated:
+        if self.tasks and purpose == 'delegation':
+            # Règle du pointeur (#155), étendue à l'orchestré (issue #269) :
+            # le composeur/relais ne reçoit JAMAIS le prompt complet, seulement
+            # le pointeur get_task ; l'admission reste la source unique.
             delivery = dict(payload, text=task_pointer(args['request_key']))
         day = int(time.time() // 86400)
         with self.db:
@@ -192,7 +195,13 @@ class Endpoint:
             self.db.execute('INSERT INTO quick_submissions VALUES (?,?,?,?)',
                             (self.scope, ident, json.dumps(delivery, ensure_ascii=False), day))
         if self.tasks and purpose == 'delegation':
-            self.tasks.admit(args['request_key'], payload['text'], payload['chatId'])
+            # Issue #269 : en orchestré, le client admet le prompt COMPLET via
+            # taskPrompt (question + instantanés) ; le texte du composeur n'est
+            # que le pointeur. Sans taskPrompt, comportement inchangé.
+            admitted = payload['text']
+            if orchestrated and isinstance(args.get('taskPrompt'), str) and args['taskPrompt'].strip():
+                admitted = args['taskPrompt']
+            self.tasks.admit(args['request_key'], admitted, payload['chatId'])
         receipt = self.requests.finish(args['request_key'], {'status': 'finished', 'submission_id': ident, 'chatId': payload['chatId'],
                 'images': len(payload['images']), 'files': len(payload['filePaths']),
                 'dispatch': 'dispatchOnQuickEntrySubmit',

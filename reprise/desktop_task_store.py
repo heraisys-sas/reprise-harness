@@ -13,6 +13,12 @@ from delegation_store import receipt_view, validate_lookup
 
 SQLITE_INT_MAX = (1 << 63) - 1
 
+# Issue #269 (26 nov. 2026) : en orchestré, le prompt complet voyage par
+# l'admission durable (get_task), pas par le composeur ; la borne passe de
+# 12 000 à 96 000 caractères, alignée sur le budget d'instantanés des
+# backends CLI (context_files).
+MAX_ADMISSION_PROMPT_CHARS = 96000
+
 
 def bounded(value, name, maximum):
     if not isinstance(value, str) or not value.strip() or len(value) > maximum:
@@ -277,7 +283,7 @@ class TaskStore:
 
     def admit(self, request_key, prompt, chat_id=None):
         bounded(request_key, 'request_key', 128)
-        bounded(prompt, 'prompt', 12000)
+        bounded(prompt, 'prompt', MAX_ADMISSION_PROMPT_CHARS)
         if chat_id is not None:
             bounded(chat_id, 'chat_id', 256)
         with self.db:

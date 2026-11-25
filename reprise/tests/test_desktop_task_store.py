@@ -12,7 +12,7 @@ import sqlite3
 from pathlib import Path
 import unittest
 from unittest import mock
-from desktop_task_store import TaskStore
+from desktop_task_store import TaskStore, MAX_ADMISSION_PROMPT_CHARS
 
 
 def _open_and_admit_in_process(state, project, index, barrier):
@@ -50,6 +50,17 @@ class TaskStoreTests(unittest.TestCase):
             with self.assertRaises(ValueError): other.result('k')
             other.admit('k', 'independent')
             other.close(); store.close()
+
+    def test_admission_bound_is_max_admission_prompt_chars(self):
+        # Issue #269 : en orchestré le prompt complet voyage par l'admission
+        # (get_task) ; la borne est relevée à 96 000 caractères, pas 12 000.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); (root/'a').mkdir()
+            store = TaskStore(root/'state', root/'a')
+            store.admit('k-borne', 'x' * MAX_ADMISSION_PROMPT_CHARS)
+            with self.assertRaises(ValueError):
+                store.admit('k-trop', 'x' * (MAX_ADMISSION_PROMPT_CHARS + 1))
+            store.close()
 
     def test_bounds(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -278,20 +278,30 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
     validated submit_result; max_wait=0 means no wait.
     """
     root = Path(root).resolve(strict=True)
-    if not root.is_dir() or not isinstance(question, str) or not question.strip() or len(question) > 12000:
+    if not root.is_dir() or not isinstance(question, str) or not question.strip():
         raise ValueError('Project directory and bounded question required')
     if kind not in ('expertise', 'review', 'batch') or level not in ('standard', 'deep'):
         raise ValueError('Invalid delegation kind or level')
-    # Attach only explicit project file snapshots, as the CLI backends do.
-    snapshots = context_files(root, paths)
-    prompt_full = question + snapshots
+    # Issue #269 : en orchestré la question voyage par l'admission durable
+    # (get_task), pas par le composeur ; la limite de 12 000 caractères ne
+    # lie plus le prompt Quick, seule la borne d'admission gouverne.
     orchestrated = tasks is not None and bool(request_key)
     if not orchestrated and tasks is not None:
         raise ValueError('Durable task admission requires a request_key')
+    if not orchestrated and len(question) > 12000:
+        raise ValueError('Project directory and bounded question required')
+    # Attach only explicit project file snapshots, as the CLI backends do.
+    snapshots = context_files(root, paths)
+    prompt_full = question + snapshots
     if orchestrated:
-        prompt = MCP_TASK_INSTRUCTION.format(key=json.dumps(request_key)) + '\n\n' + question + snapshots
-        if len(prompt) > 12000:
-            raise ValueError('Orchestrated Quick prompt exceeds limit; no truncation')
+        # Règle du pointeur (#155) étendue à l'orchestré : le composeur ne
+        # reçoit que l'instruction MCP ; la question complète est admise
+        # durablement (taskPrompt) et lue par get_task. Pas de troncature.
+        from desktop_task_store import MAX_ADMISSION_PROMPT_CHARS
+        prompt = MCP_TASK_INSTRUCTION.format(key=json.dumps(request_key))
+        prompt_admitted = prompt + '\n\n' + question + snapshots
+        if len(prompt_admitted) > MAX_ADMISSION_PROMPT_CHARS:
+            raise ValueError('Orchestrated admission exceeds limit; no truncation')
     else:
         prompt = prompt_full
     result = {'status': 'needs_review', 'resumable': False, 'project_root': str(root),
@@ -306,13 +316,16 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
         if orchestrated:
             # A separate durable barrier protects the outbound submission. MCP
             # delivery state is reserved exclusively for get_task/await_task.
-            tasks.admit(request_key, prompt, chat_id)
+            # Issue #269 : l'admission porte le prompt COMPLET (question +
+            # instantanés) ; le composeur ne voit que l'instruction MCP.
+            tasks.admit(request_key, prompt_admitted, chat_id)
             if not tasks.reserve_review_dispatch(request_key):
                 return _orchestrated_receipt(tasks, request_key, max_wait, clock)
         payload_args = {'prompt': prompt, 'request_key': request_key}
         if orchestrated:
             payload_args['purpose'] = 'delegation'
             payload_args['orchestrated'] = True
+            payload_args['taskPrompt'] = prompt_admitted
         if chat_id:
             payload_args['chatId'] = chat_id
         if file_paths:
@@ -352,6 +365,12 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
         answer = _collect(tasks, request_key, max_wait, clock)
         if answer is None:
             return finished
+        # Issue #269 : une réponse validée par submit_result EST la preuve de
+        # dispatch de bout en bout ; l'observation composeur reste un
+        # diagnostic secondaire et ne doit plus contredire le résultat.
+        finished['dispatch_ok'] = True
+        finished.pop('dispatch_error', None)
+        finished['admission_only'] = False
         return finished | {'response': answer, 'result_sha256': _fingerprint(answer)}
     except engines.Unavailable as error:
         return result | {'status': error.state, 'reason': error.reason}
