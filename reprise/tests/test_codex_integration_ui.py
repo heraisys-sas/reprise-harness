@@ -12,14 +12,14 @@ ROOT = Path(__file__).resolve().parents[1]
 class CodexIntegrationUISmokeTests(unittest.TestCase):
     def test_workspace_write_inspection_does_not_regrant_previous_opt_in(self):
         source = (ROOT / 'swift' / 'Integrations.swift').read_text()
-        inspect = source.split('    func inspectIntegration() {', 1)[1].split('    func previewIntegration', 1)[0]
+        inspect = source.split('    func inspectIntegration(completion: (() -> Void)? = nil) {', 1)[1].split('    func previewIntegration', 1)[0]
         self.assertIn('integrationCodexWorkspaceWriteInstalled = result["codex_workspace_write"] as? Bool ?? false', inspect)
         self.assertIn('integrationCodexWorkspaceWrite = false', inspect)
         self.assertIn('if integrationDelegate && integrationCodexWorkspaceWrite { args.append("--codex-workspace-write") }', source)
 
     def test_selection_consumes_plan_and_retains_verification_after_lost_reply(self):
         source = (ROOT / 'swift' / 'Integrations.swift').read_text()
-        methods = source.split('    var codexIntegrationEntries: [String] {', 1)[1].split('    func inspectClaudeIntegration()', 1)[0]
+        methods = source.split('    var codexIntegrationEntries: [String] {', 1)[1].split('    func inspectClaudeIntegration(completion', 1)[0]
         swift = '''import Foundation
 final class App {
  var stateReady = true, setupBusy = false
