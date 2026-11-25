@@ -164,6 +164,102 @@ class MetaaiBridgeTests(RequestCalls, unittest.TestCase):
         self.bridge.close()
         self.assertIsNone(self.bridge.metaai_tasks)
 
+    # --- Issue #267 : connexion avec bridge_root (format actuel) sans dav_root.
+    # Ces tests construisent le Bridge par le VRAI constructeur (kwarg
+    # metaai_values) : wire() réglait metaai_tasks/metaai_inbox à la main et
+    # court-circuitait __init__, ce qui a laissé passer le défaut (clé
+    # bridge_root seule → store et inbox restés None → TypeError au dispatch,
+    # refus ×2 live le 25/11).
+
+    def bridge_values(self):
+        root = Path(self.temp.name)
+        return {'enabled': True,
+                'taskstore': str(root / 'metaai-tasks.sqlite'),
+                'bridge_root': str(root / 'bridge')}
+
+    def rebuild(self, values):
+        # Nouveau Bridge par __init__ ; le précédent est fermé par son cleanup.
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state',
+                             daily_limit=2, metaai_values=values)
+        self.bridge.program = 'codex'
+        self.addCleanup(self.bridge.close)
+
+    def test_bridge_init_accepts_bridge_root_only_config(self):
+        # La connexion Reprise écrite par metaai-install.py porte bridge_root
+        # (pas dav_root) : l'init doit résoudre store ET inbox.
+        self.rebuild(self.bridge_values())
+        self.assertIsInstance(self.bridge.metaai_tasks, TaskStore)
+        self.assertEqual(self.bridge.metaai_inbox, Path(self.temp.name) / 'bridge' / 'inbox')
+        entry = next(row for row in self.bridge.call('reprise_backends', {})['backends']
+                     if row['id'] == 'metaai')
+        self.assertTrue(entry['configured'])
+        self.assertTrue(entry['task_return_supported'])
+
+    def test_bridge_init_accepts_legacy_dav_root_config(self):
+        # Ancien format de connexion (dav_root, avant le 24/11) : l'init doit
+        # encore le résoudre via le repli du helper metaai_bridge_root.
+        values = self.bridge_values()
+        del values['bridge_root']
+        values['dav_root'] = str(Path(self.temp.name) / 'webdav')
+        self.rebuild(values)
+        self.assertIsInstance(self.bridge.metaai_tasks, TaskStore)
+        self.assertEqual(self.bridge.metaai_inbox, Path(self.temp.name) / 'webdav' / 'inbox')
+
+    def test_retry_task_store_recreates_inbox_from_bridge_root(self):
+        self.rebuild(self.bridge_values())
+        self.bridge.metaai_tasks, self.bridge.metaai_inbox = None, None
+        self.assertTrue(self.bridge._retry_task_store('metaai'))
+        self.assertIsInstance(self.bridge.metaai_tasks, TaskStore)
+        self.assertEqual(self.bridge.metaai_inbox, Path(self.temp.name) / 'bridge' / 'inbox')
+
+    def test_delegate_metaai_with_bridge_root_only_config_materializes_inbox(self):
+        # Le défaut historique : config bridge_root sans dav_root → inbox None
+        # → TypeError au dispatch. Contracté : admission finished + inbox JSON
+        # avec les ancres du contrat v2, tâche dispatched dans le store.
+        self.rebuild(self.bridge_values())
+        result = self.call('reprise_delegate', {'question': 'Revue du lot A', 'kind': 'review',
+                                                'backend': 'metaai'})
+        self.assertEqual(result['status'], 'finished')
+        self.assertEqual(result['dispatch'], 'webdav_inbox')
+        inbox_file = Path(result['inbox_file'])
+        self.assertTrue(inbox_file.is_file())
+        materialized = json.loads(inbox_file.read_text())
+        self.assertEqual(materialized['task_id'], result['task_id'])
+        row = self.bridge.metaai_tasks.get(result['task_id'])
+        self.assertEqual(row['status'], 'dispatched')
+        payload = json.loads(row['payload'])
+        self.assertIn('FICHIER:', payload['question'])
+        self.assertIn('REMPLACER PAR:', payload['question'])
+
+    def test_delegate_metaai_without_bridge_root_refuses_before_enqueue(self):
+        # Config avec taskstore mais aucun répertoire pont : refus
+        # return_channel_unavailable AVANT l'enfilement — aucune ligne
+        # dispatched sans inbox (pas de tâche bloquée), avec ou sans store.
+        values = self.bridge_values()
+        del values['bridge_root']
+        self.rebuild(values)
+        self.assertIsNone(self.bridge.metaai_tasks)
+        payload = self.call('reprise_delegate', {'question': 'Revue', 'kind': 'review',
+                                                 'backend': 'metaai'})
+        self.assertEqual(payload['status'], 'return_channel_unavailable')
+        self.assertIn('répertoire pont', payload['reason'])
+        self.assertFalse(payload['automatic_fallback'])
+        self.assertFalse((Path(self.temp.name) / 'bridge' / 'inbox').exists())
+        store = TaskStore(values['taskstore'])
+        self.addCleanup(store._conn.close)
+        self.assertEqual(store.list_tasks(), [])
+        # Store rétabli mais inbox toujours introuvable : même refus, levé
+        # avant le retry — aucune tâche enfilée, le store reste vide. (Une
+        # demande de même signature serait bloquée par l'anti-replay du
+        # registre, state indeterminate du 1er refus ; d'où une question
+        # distincte pour cette seconde admission.)
+        self.bridge.metaai_tasks = store
+        payload = self.call('reprise_delegate', {'question': 'Revue du lot B', 'kind': 'review',
+                                                 'backend': 'metaai'})
+        self.assertEqual(payload['status'], 'return_channel_unavailable')
+        self.assertIn('répertoire pont', payload['reason'])
+        self.assertEqual(store.list_tasks(), [])
+
 
 if __name__ == '__main__':
     unittest.main()

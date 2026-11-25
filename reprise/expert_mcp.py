@@ -57,6 +57,17 @@ class ThreadNotOwned(ValueError):
             'emitted, or open a new session with reprise_delegate.')
 
 
+def metaai_bridge_root(values):
+    """Répertoire pont du canal metaai : clé bridge_root (format actuel, écrit
+    par l'app depuis le pont fichiers du 24/11), repli dav_root (legacy,
+    lecteurs restés sur l'ancien nom — issue #267). None si aucune des deux
+    clés n'est une chaîne non vide."""
+    for key in ('bridge_root', 'dav_root'):
+        value = values.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
 
 def error_payload(exc):
     detail = f'{type(exc).__name__}: {exc}'[:200]
@@ -597,22 +608,22 @@ class Bridge:
             except (OSError, sqlite3.Error, ValueError):
                 self.chatgpt_tasks = None
         # Pont Meta AI (#258 lot 3) : TaskStore partagé avec le service metaaid
-        # + répertoire inbox du pont WebDAV, lus depuis la connexion Reprise
-        # (connections/metaai.json, clés taskstore/dav_root). Sans valeurs ou
-        # avec enabled:false → backend non configuré, déclaré honnête, jamais
-        # routé ailleurs ; une connexion incomplète est ignorée ici (le CLI
-        # affiche l'avertissement, pas de repli silencieux de routage).
+        # + répertoire inbox du pont fichiers, lus depuis la connexion Reprise
+        # (connections/metaai.json, clé bridge_root, repli legacy dav_root —
+        # issue #267). Sans valeurs ou avec enabled:false → backend non
+        # configuré, déclaré honnête, jamais routé ailleurs ; une connexion
+        # incomplète est ignorée ici (le CLI affiche l'avertissement, pas de
+        # repli silencieux de routage).
         self.metaai_values = metaai_values if isinstance(metaai_values, dict) else {}
         self.metaai_tasks = None
         self.metaai_inbox = None
         if self.metaai_values and self.metaai_values.get('enabled', True) is not False:
             store_path = self.metaai_values.get('taskstore')
-            dav_root = self.metaai_values.get('dav_root')
-            if isinstance(store_path, str) and store_path.strip() and \
-                    isinstance(dav_root, str) and dav_root.strip():
+            bridge_root = metaai_bridge_root(self.metaai_values)
+            if isinstance(store_path, str) and store_path.strip() and bridge_root:
                 try:
                     self.metaai_tasks = metaai_taskstore.TaskStore(store_path)
-                    self.metaai_inbox = Path(dav_root).expanduser() / 'inbox'
+                    self.metaai_inbox = Path(bridge_root).expanduser() / 'inbox'
                 except (OSError, sqlite3.Error, ValueError):
                     self.metaai_tasks = None
                     self.metaai_inbox = None
@@ -809,15 +820,20 @@ class Bridge:
                 self.desktop_tasks = None
                 return False
         if which == 'metaai':
-            if self.metaai_tasks is not None:
+            if self.metaai_tasks is not None and self.metaai_inbox is not None:
                 return True
             if not self.metaai_values or self.metaai_values.get('enabled', True) is False:
                 return False
             try:
                 self.metaai_tasks = metaai_taskstore.TaskStore(self.metaai_values['taskstore'])
+                bridge_root = metaai_bridge_root(self.metaai_values)
+                if not bridge_root:
+                    raise KeyError('bridge_root')
+                self.metaai_inbox = Path(bridge_root).expanduser() / 'inbox'
                 return True
             except (OSError, sqlite3.Error, ValueError, KeyError):
                 self.metaai_tasks = None
+                self.metaai_inbox = None
                 return False
         if self.chatgpt_tasks is not None:
             return True
@@ -1628,6 +1644,15 @@ class Bridge:
                                if self.metaai_values else
                                'Connexion Meta AI non configurée ; relancez le pont avec --metaai-config ou la connexion Reprise standard.'),
                     'automatic_fallback': False}
+        if backend == 'metaai' and self.metaai_values and \
+                self.metaai_values.get('enabled', True) is not False and \
+                metaai_bridge_root(self.metaai_values) is None:
+            # Connexion avec taskstore mais sans répertoire pont : l'inbox ne
+            # peut pas être matérialisée, refus AVANT enqueue (issue #267) pour
+            # ne plus laisser de tâches bloquées en dispatched sans réponse.
+            return {'status': 'return_channel_unavailable', 'backend': backend,
+                    'reason': "Connexion Meta AI sans répertoire pont (clé bridge_root, repli legacy dav_root) ; l'inbox ne peut pas être écrite. Corrigez connections/metaai.json ou relancez metaai-install.py.",
+                    'automatic_fallback': False}
         if backend == 'metaai' and self.metaai_tasks is None and not self._retry_task_store('metaai'):
             return {'status': 'return_channel_unavailable', 'backend': backend,
                     'reason': 'Canal de retour Meta AI indisponible (TaskStore non initialisé) ; aucun aller-retour garanti.',
@@ -1715,6 +1740,12 @@ class Bridge:
             if task is None:
                 routing_events.finalize(self.db, event_id, 'dispatch_refused')
                 raise ValueError('Meta AI task ' + task_id + ' already claimed by another bridge process')
+            if self.metaai_inbox is None:
+                # Garde défensive : ne jamais arriver à dispatch_write_inbox
+                # avec une inbox non résolue (Path(None) levait un TypeError
+                # générique, issue #267).
+                routing_events.finalize(self.db, event_id, 'dispatch_refused')
+                raise ValueError("Répertoire inbox Meta AI non résolu (bridge_root/dav_root) ; corrigez la connexion Reprise metaai.json avant de redéléguer.")
             inbox_file = self.metaai_tasks.dispatch_write_inbox(task, self.metaai_inbox)
             result = {'status': 'finished', 'response': None, 'task_id': task_id,
                       'task_type': 'expert_delegate', 'inbox_file': inbox_file,
@@ -2020,7 +2051,7 @@ def main():
     parser.add_argument('--chatgpt-dispatch', action='store_true',
                         help='Operator grant: admitted ChatGPT tasks are pushed to the CDP holder (profil dédié) for capture')
     parser.add_argument('--metaai-config',
-                        help='JSON de connexion Meta AI (taskstore, dav_root) ; défaut : connexion Reprise standard si présente')
+                        help='JSON de connexion Meta AI (taskstore, bridge_root ; repli legacy dav_root) ; défaut : connexion Reprise standard si présente')
     parser.add_argument('--ironclaw-config', help='JSON 0600: {host,port,user,key} du point d’acceptation IronClaw')
     args = parser.parse_args()
     ironclaw_values = {}
@@ -2043,8 +2074,9 @@ def main():
             if not isinstance(metaai_values, dict):
                 raise ValueError('objet JSON attendu')
             if metaai_values and not (isinstance(metaai_values.get('taskstore'), str)
-                                      and isinstance(metaai_values.get('dav_root'), str)):
-                print('Warning: connexion Meta AI sans taskstore/dav_root valides, backend metaai non configuré', file=sys.stderr)
+                                      and metaai_values.get('taskstore', '').strip()
+                                      and metaai_bridge_root(metaai_values)):
+                print('Warning: connexion Meta AI sans taskstore ou répertoire pont (bridge_root, repli dav_root) valides, backend metaai non configuré', file=sys.stderr)
         except (OSError, ValueError) as detail:
             if args.metaai_config is not None:
                 raise SystemExit('--metaai-config doit être un JSON lisible : ' + str(detail))
