@@ -45,7 +45,7 @@ struct CodexThreadsSection: View {
                      status: app.codexThreadsBusy ? "Lecture…" : "Lecture locale",
                      ok: !app.codexThreadRows.isEmpty) {
             HStack {
-                Text("L’index local et une lecture RPC éventuelle ne donnent aucun contrôle sur les conversations.")
+                Text("Reprise peut lire vos conversations Codex, pas les modifier.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Actualiser") { app.loadCodexThreads() }
@@ -131,8 +131,8 @@ private struct ClaudeQuotaRendererObservation: View {
 
     private var eventStatusLabel: String {
         switch observation["event_status"] as? String ?? "not_checked" {
-        case "recognized": "événement quota reconnu"
-        case "no_event": "aucun événement quota reconnu"
+        case "recognized": "événement de quota reconnu"
+        case "no_event": "aucun événement de quota reconnu"
         case "no_event_in_tail": "aucun événement reconnu dans la partie lue (journal tronqué)"
         case "not_checked": "événement non vérifié"
         default: "événement indisponible"

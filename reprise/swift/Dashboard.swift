@@ -316,7 +316,7 @@ struct Dashboard: View {
                             sectionIntro("Connexions", "Configurez l’accès aux services Codex, Claude Desktop et IronClaw.")
                             connections
                             Divider()
-                            sectionIntro("Après une mise à jour", "Ce qu’il faut relancer, ce qui reste à recontrôler, et les actions humaines.")
+                            sectionIntro("Après une mise à jour", "Ce qu’il faut relancer et ce que vous devez faire vous-même.")
                             health
                             Divider()
                             sectionIntro("Confidentialité", "Vos données restent sous votre contrôle.")
@@ -345,16 +345,9 @@ struct Dashboard: View {
     }
     var subtitle: String {
         switch app.page {
-        case "ecosystem": return "Comprenez les liaisons et ouvrez leur diagnostic."
-        case "sessions": return "Distinguez les interruptions récentes des arrêts et de l’historique."
-        case "resumptions": return "Les tentatives sont regroupées par cause. Les détails restent accessibles à la demande."
-        case "analysis": return "Un second regard sur les comptes rendus, sur votre Mac."
+        case "sessions": return "Voyez les interruptions récentes, les arrêts et l’historique."
         case "apple-pilot": return "Un assistant local expérimental pour examiner un contexte choisi."
-        case "search": return "Retrouvez un élément sans vous souvenir de l’application."
-        case "connections": return "Connectez Reprise aux sockets codexd (codex-desktop) et Quick Apply (claude-desktopd)."
-        case "integrations": return "Préparez explicitement les outils MCP et les consignes de votre profil Harness."
-        case "health": return "Après une mise à jour : ce qu’il faut relancer, ce qui reste à parser, et les actions humaines."
-        case "privacy": return "Vos données de recherche restent sous votre contrôle."
+        case "integrations": return "Préparez les outils et les consignes de votre profil Harness. Rien n’est activé sans votre accord."
         default: return "L’essentiel de vos sessions, sans les interrompre."
         }
     }
@@ -418,7 +411,7 @@ struct Dashboard: View {
         return VStack(alignment: .leading, spacing: 18) {
             Surface {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("Les couleurs concernent l’observation indiquée : elles ne prouvent ni le chargement des outils par un client, ni la réussite d’une tâche.")
+                    Text("Les couleurs disent ce que Reprise a vu. Elles ne prouvent pas que l’outil est chargé ni que la tâche a réussi.")
                         .font(.caption).foregroundStyle(.secondary)
                     HStack(alignment: .center, spacing: 0) {
                         VStack(spacing: 8) {
@@ -440,13 +433,13 @@ struct Dashboard: View {
                         ecosystemLink("Quick Apply · adaptateur", symbol: "bolt.horizontal", value: quick) { app.connectionTab = "quickapply" }
                     }
                     if applicationPresent("com.anthropic.claudefordesktop") {
-                        ecosystemLink("Claude Desktop", symbol: "bubble.left.and.bubble.right", value: .init(level: .attention, label: app.running.contains("com.anthropic.claudefordesktop") ? "Application ouverte" : "Application présente", detail: "La connexion du relais et le chargement des outils ne sont pas confirmés.")) { app.connectionTab = "quickapply" }
+                        ecosystemLink("Claude Desktop", symbol: "bubble.left.and.bubble.right", value: .init(level: .attention, label: app.running.contains("com.anthropic.claudefordesktop") ? "Application ouverte" : "Application présente", detail: "Reprise n’a pas vérifié la connexion ni le chargement des outils.")) { app.connectionTab = "quickapply" }
                     }
                     if FileManager.default.fileExists(atPath: app.root.appendingPathComponent("claude_cdp_pipe.py").path), (routes["cdp_web"] as? [String: Any])?["enabled"] as? Bool == true {
                         ecosystemLink("CDP web · via Quick Apply", symbol: "globe", value: cdp) { app.connectionTab = "quickapply" }
                     }
                     if EcosystemStatus.present(installed: applicationPresent("com.deepseek.dsh"), detected: harnessCLI) {
-                        ecosystemLink("Harness · outils MCP", symbol: "hammer", value: .init(level: .attention, label: "Client non vérifié", detail: "L’installation ou l’ouverture de Harness ne confirme pas le chargement des outils.")) { app.verifyEverything() }
+                        ecosystemLink("Harness · outils MCP", symbol: "hammer", value: .init(level: .attention, label: "Client non vérifié", detail: "L’installation ou l’ouverture de Harness ne prouve pas que les outils sont chargés.")) { app.verifyEverything() }
                     }
                     if applicationPresent("com.zhipuai.autoclaw") {
                         ecosystemLink("AutoClaw", symbol: "bolt", value: .init(level: .attention, label: "Présent · lien non vérifié", detail: "La présence de l’application ne confirme pas un échange avec Reprise.")) { app.verifyEverything() }
@@ -465,7 +458,7 @@ struct Dashboard: View {
                     }
                 }
             }
-            Text("Vert : observation confirmée · Orange : attente ou preuve manquante · Rouge : erreur observée. Les tests de connexion ne lancent pas de modèle.")
+            Text("Vert : vu et confirmé · Orange : en attente ou preuve manquante · Rouge : erreur vue. Les tests ne lancent pas de modèle.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -510,16 +503,16 @@ struct Dashboard: View {
                         }
                         let knowledge = app.quotaKnowledge
                         let freshness = knowledge["freshness"] as? String ?? "unobserved"
-                        Text(freshness == "recent_read" ? "Lecture récente · aucune reprise déduite" : "Jauge indisponible · dernière lecture absente ou périmée").font(.caption).foregroundStyle(.secondary)
+                        Text(freshness == "recent_read" ? "Lu récemment · aucune reprise à prévoir" : "Reprise n’a pas lu votre quota récemment").font(.caption).foregroundStyle(.secondary)
                         if let stamp = knowledge["observed_at"] as? Double { Text("Lu le " + localDateTime(Date(timeIntervalSince1970: stamp))).font(.caption).foregroundStyle(.secondary) }
                         if let pools = knowledge["pools"] as? [[String: Any]], !pools.isEmpty {
                             ForEach(Array(pools.enumerated()), id: \.offset) { _, pool in
                                 VStack(alignment: .leading, spacing: 8) {
-                                    Text("Offre : " + (pool["limit_id"] as? String ?? "inconnue")).font(.callout.weight(.semibold))
+                                    Text("Formule de quota : " + (pool["limit_id"] as? String ?? "inconnue")).font(.callout.weight(.semibold))
                                     if let windows = pool["windows"] as? [[String: Any]] {
                                         HStack(alignment: .top, spacing: 28) {
                                             ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
-                                                quotaRow(window["name"] as? String == "secondary" ? "Fenêtre secondaire" : "Fenêtre principale", value: window, attributed: pool["quota_pool_key"] as? String != nil)
+                                                quotaRow(window["name"] as? String == "secondary" ? "Quota secondaire" : "Quota principal", value: window, attributed: pool["quota_pool_key"] as? String != nil)
                                             }
                                         }
                                     }
@@ -527,10 +520,10 @@ struct Dashboard: View {
                             }
                         } else { Text("Aucune fenêtre fournisseur connue pour cette route.").foregroundStyle(.secondary) }
                         if let quota = app.snapshot["codex_quota"] as? [String: Any], let rates = quota["rates"] as? [String: Any] {
-                            DisclosureGroup("Dernier signal de session · compte non attribué") {
+                            DisclosureGroup("Dernier signal lu · sans nom de compte") {
                                 HStack(alignment: .top, spacing: 28) {
-                                    quotaRow("Fenêtre principale", value: rates["primary"] as? [String: Any])
-                                    quotaRow("Fenêtre secondaire", value: rates["secondary"] as? [String: Any])
+                                    quotaRow("Quota principal", value: rates["primary"] as? [String: Any])
+                                    quotaRow("Quota secondaire", value: rates["secondary"] as? [String: Any])
                                 }
                                 if let stamp = quota["measured_at"] as? String { Text("Événement du " + friendlyDate(stamp)).font(.caption).foregroundStyle(.secondary) }
                             }
@@ -541,9 +534,9 @@ struct Dashboard: View {
                             if let quotaState = app.scheduler["claude_quota_state"] as? [String: Any], let stateStatus = quotaState["status"] as? String, !stateStatus.isEmpty {
                                 let stateLabel = { () -> String in
                                     switch stateStatus {
-                                    case "ok": return "État : aucun blocage de quota"
-                                    case "blocked": return "État : quota bloqué"
-                                    default: return "État : incertain"
+                                    case "ok": return "Quota Claude · tout va bien"
+                                    case "blocked": return "Quota Claude · bloqué pour le moment"
+                                    default: return "Quota Claude · Reprise n’a pas pu vérifier"
                                     }
                                 }()
                                 Text(stateLabel).font(.callout.weight(stateStatus == "blocked" ? .bold : .semibold)).foregroundStyle(stateStatus == "blocked" ? Color.orange : .primary)
@@ -630,7 +623,7 @@ struct Dashboard: View {
                     let running = app.scheduler["running"] as? Int ?? 0
                     let launching = app.scheduler["launching"] as? Int ?? 0
                     let pending = app.scheduler["pending"] as? Int ?? 0
-                    Text(running > 0 ? (running == 1 ? "1 tour démarré" : "\(running) tours démarrés") : launching > 0 ? "Connexion au moteur · démarrage non confirmé" : pending > 0 ? (pending == 1 ? "1 reprise en attente" : "\(pending) reprises en attente") : "Aucune reprise en attente").font(.title3.weight(.semibold))
+                    Text(running > 0 ? (running == 1 ? "1 tour démarré" : "\(running) tours démarrés") : launching > 0 ? "Connexion en cours · pas encore confirmée" : pending > 0 ? (pending == 1 ? "1 reprise en attente" : "\(pending) reprises en attente") : "Aucune reprise en attente").font(.title3.weight(.semibold))
                     Text(app.scheduler["auto_enabled"] as? Bool == true ? "Surveillance automatique activée" : "Automatisation en pause").foregroundStyle(.secondary)
                     if let due = app.scheduler["next_due"] as? Double {
                         Text("Prochaine reprise Codex : " + localDateTime(Date(timeIntervalSince1970: due))).font(.caption).foregroundStyle(.secondary)
@@ -767,16 +760,18 @@ struct Dashboard: View {
                 let date = reset.flatMap { $0.isFinite && $0 > 0 ? Date(timeIntervalSince1970: $0) : nil }
                 let expired = date.map { $0 <= Date() } ?? false
                 Text(title).font(.callout.weight(.semibold))
-                if let minutes, minutes > 0 { Text("Fenêtre observée : \(minutes) min").font(.caption).foregroundStyle(.secondary) }
+                if let minutes, minutes > 0 {
+                    Text(minutes == 43200 ? "Valable 30 jours" : minutes == 10080 ? "Valable 7 jours" : "Fenêtre observée : \(minutes) min").font(.caption).foregroundStyle(.secondary)
+                }
                 if expired {
                     Text("Mesure périmée").font(.system(size: 27, weight: .semibold, design: .rounded)).foregroundStyle(.secondary)
                         .accessibilityLabel(title + " : reset dépassé, quota actuel inconnu")
-                } else if let remaining {
-                    Text("\(Int(remaining)) % observés restants" + (remaining < 15 ? " ⚠" : "")).font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit()
-                        .accessibilityLabel(title + " : " + String(Int(remaining)) + " % observés restants")
+                } else if let remaining, remaining > 0 {
+                    Text("\(Int(remaining)) % restants" + (remaining < 15 ? " ⚠" : "")).font(.system(size: 27, weight: .semibold, design: .rounded)).monospacedDigit()
+                        .accessibilityLabel(title + " : " + String(Int(remaining)) + " % restants")
                     ProgressView(value: remaining, total: 100).tint(remaining < 15 ? .orange : .accentColor)
                 } else {
-                    Text("Quantité inconnue").font(.callout).foregroundStyle(.secondary)
+                    Text("Reprise n’a pas pu mesurer le quota restant").font(.callout).foregroundStyle(.secondary)
                 }
                 Text(attributed ? "Compte associé à cette observation" : "Compte non attribué").font(.caption).foregroundStyle(.secondary)
                 if let date {
