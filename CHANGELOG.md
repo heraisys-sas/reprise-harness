@@ -2,6 +2,13 @@
 
 Historique des versions, consolidé depuis les notes de release et les notes produit datées (détails complets dans l'historique Git, commits et balises).
 
+## 0.1.26 — routeur : routes gratuites chatgpt/asi1/asi1-mini ; garde-fou VERSION vs CHANGELOG
+
+- **Routeur de délégation — extension `LOCAL_BILLING` (déclaration opérateur 25/11)** : `chatgpt` gratuit et ouvert même quand la jauge Codex est épuisée ; `asi1` et `asi1-mini` (route ASI:Cloud CUDOS) gratuites. Le routeur `rapide` automatique peut élire `chatgpt` en substitution sur jauge codex épuisée ; le chemin historique `task_class=None` reste inchangé (chatgpt jamais élu sans prix corroboré). Tests `RoutesGratuitesTests` (`test_route_vetos.py`) : admission sans veto + bascule automatique rapide sur chatgpt.
+- **Garde-fou numéro de bundle (#264)** : `reprise/VERSION` (source unique du CFBundleShortVersionString via native-install) doit être ≥ la première entrée `## X.Y.Z` du `CHANGELOG.md` — `test_version_guard.py` (cas synthétiques + garde réel sur l'arbre, skip si fichier absent, chemins résolus depuis `__file__` pour les shards CI).
+- **Fix CI** : imports de `test_chatgpt_desktop_pipe` en top-level dans `test_chatgpt_anchor_regression.py` et `test_chatgpt_conversation_anchor.py` (fin du double `sys.path` provoquant un double run des modules sous certains discover).
+- Suite complète sur dev : **2447 tests OK / skipped=5** (290,8 s).
+
 ## 0.1.25 — routeur de délégation automatique : substitution entre backends sur refus quota/facturation/moteur
 
 - **Routeur maison `reprise/expert_router.py` (lot 4, zéro dépendance)** — motifs empruntés au routeur LiteLLM avec attribution (chaînes de repli ordonnées, cooldown par cible comme préférence d'ordre uniquement — [reliability](https://docs.litellm.ai/docs/router/learn/reliability), [routing](https://docs.litellm.ai/docs/routing)) ; anti-patterns expressément refusés : réessayer la même cible après un refus de quota (contrat QUOTA-CONTINUATION : travail conservé, continuation native), repli implicite vers une route payante (ironclaw exclu contractuellement via `NEVER_AUTO_BACKENDS`).
