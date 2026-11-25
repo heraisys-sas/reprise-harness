@@ -650,7 +650,10 @@ COMPLETION_TIMEOUT_SECONDS = 180
 # spaced by CAPTURE_REREAD_INTERVAL_SECONDS. Stop early once two successive
 # reads are identical AND the read passes _usable_reply; a budget exhausted
 # without that yields captured_incomplete with the cause preserved.
-CAPTURE_REREAD_BUDGET_SECONDS = 8.0
+# Tune (26 nov. 2026): 8 s never saw two identical reads on long replies
+# (digest kept changing while the painted cursor/labels settled); the budget
+# is raised to 30 s and the digest ignores animated glyphs (_capture_digest).
+CAPTURE_REREAD_BUDGET_SECONDS = 30.0
 CAPTURE_REREAD_INTERVAL_SECONDS = 0.5
 RESPONSE_EXCERPT_CHARS = 1500
 MAX_PROMPT_CHARS = 20000
@@ -692,6 +695,10 @@ CONVERSATION_ID_PATTERN = re.compile(r'"conversation_id"\s*:\s*"([0-9a-fA-F-]{8,
 # JSON control characters can expand to six ASCII bytes, even with ensure_ascii=False.
 MAX_REQUEST_BYTES = 6 * MAX_PROMPT_CHARS + 1024
 MAX_RESPONSE_BYTES = 6 * (MAX_CAPTURE_CHARS + RESPONSE_EXCERPT_CHARS) + 16384
+# Tune (26 nov. 2026): durable receipts now carry the captured reply text
+# (bounded by MAX_CAPTURE_CHARS), so the loader accepts receipts up to the
+# same worst-case JSON size instead of the old 32 KiB window.
+MAX_RECEIPT_BYTES = 6 * MAX_CAPTURE_CHARS + 32768
 # Distinct window title for the dedicated instance (visible in Mission Control
 # and window switchers); re-applied at dispatch start — the client resets it.
 WINDOW_TITLE = 'ReChatGPT'
@@ -815,6 +822,22 @@ def install_stream_observer(transport):
 
 def _normalize(text):
     return ' '.join((text or '').split())
+
+
+# Tune (26 nov. 2026): the re-read digest must ignore glyphs the client
+# animates while painting the reply (braille spinner frames, block cursors,
+# zero-width joiners, variation selectors); otherwise a finished reply never
+# shows two identical reads and the budget exhausts with the text in hand.
+_CAPTURE_UNSTABLE_RE = re.compile(
+    '[\u2800-\u28ff\u200b-\u200f\u2060\ufe0e\ufe0f\u258b\u258d]')
+
+
+def _capture_digest(evidence):
+    # Stable digest of one DOM read: whitespace-normalized, animated glyphs
+    # stripped. Any real content change still changes the digest.
+    return hashlib.sha256(
+        _CAPTURE_UNSTABLE_RE.sub('', _normalize(evidence)).encode('utf-8')
+    ).hexdigest()
 
 
 def _cut_chrome_lines(rest):
@@ -1012,18 +1035,22 @@ def _load_receipt(path, prompt_hash):
     fd = os.open(path, flags)
     with os.fdopen(fd, 'rb') as stored:
         info = os.fstat(stored.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_size > 32768:
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_RECEIPT_BYTES:
             raise ValueError('Invalid receipt type or size')
-        data = json.loads(stored.read(32769))
+        data = json.loads(stored.read(MAX_RECEIPT_BYTES + 1))
     if not isinstance(data, dict) or data.get('prompt_sha256') != prompt_hash:
         raise ValueError('Request key belongs to another prompt or malformed receipt')
     return data
 
 
 def _persist_receipt(path, receipt, *, initial=False):
-    # The durable receipt keeps bounded evidence only: never the full reply
-    # text (response_text is an in-memory field for the synchronous caller).
-    durable = {k: v for k, v in receipt.items() if k != 'response_text'}
+    # Tune (26 nov. 2026): the durable receipt now carries the captured reply
+    # text (bounded by MAX_CAPTURE_CHARS) so a captured_incomplete receipt
+    # can be reconciled later without re-reading the conversation. The
+    # excerpt, the sha256 and every completion gate field are unchanged.
+    durable = dict(receipt)
+    if isinstance(durable.get('response_text'), str):
+        durable['response_text'] = durable['response_text'][:MAX_CAPTURE_CHARS]
     payload = json.dumps(durable, sort_keys=True, ensure_ascii=False).encode('utf-8')
     if initial:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0)
@@ -1215,7 +1242,7 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
                     best = (reply, anchor, reply_total)
                     best_source, best_selector = read_source, read_selector
                 evidence = reply if reply is not None else text
-                digest = hashlib.sha256(_normalize(evidence).encode('utf-8')).hexdigest()
+                digest = _capture_digest(evidence)
                 stable_streak = stable_streak + 1 if previous == digest else 0
                 previous = digest
                 quiet_ms = probe.get('quiet_ms') if isinstance(probe, dict) else None

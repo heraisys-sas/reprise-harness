@@ -830,15 +830,50 @@ class TestGuardedSend(unittest.TestCase):
         self.assertTrue(replayed['replayed'])
         self.assertEqual(replayed['status'], 'confirmed')
 
-    def test_durable_receipt_never_stores_full_reply(self):
+    def test_durable_receipt_keeps_captured_reply_bounded(self):
+        # Tune (26 nov. 2026): the durable receipt carries the captured reply
+        # text so a captured_incomplete receipt can be reconciled later
+        # without re-reading the conversation. Excerpt kept for diagnosis.
         self.invoke(self.fake(), request='req-receipt-strip')
         path = adapter._receipt_path(self.root / 'dedicated', 'req-receipt-strip')
         data = json.loads(path.read_text())
-        self.assertNotIn('response_text', data)
+        self.assertEqual(data['response_text'], 'Assistant reply body with '
+                                                'enough useful content to pass '
+                                                'the usable-reply threshold of '
+                                                'the capture contract.')
         self.assertEqual(data['response_excerpt'], 'Assistant reply body with '
                                                    'enough useful content to pass '
                                                    'the usable-reply threshold of '
                                                    'the capture contract.')
+
+    def test_durable_receipt_large_reply_roundtrip(self):
+        # Tune (26 nov. 2026): a receipt holding a full-size captured reply
+        # (up to MAX_CAPTURE_CHARS) persists and reloads; the old 32 KiB
+        # loader window is replaced by MAX_RECEIPT_BYTES.
+        reply = 'x' * adapter.MAX_CAPTURE_CHARS
+        receipt = dict(adapter._send_receipt())
+        receipt['prompt_sha256'] = 'a' * 64
+        receipt['response_text'] = reply
+        receipt['response_excerpt'] = reply[:adapter.RESPONSE_EXCERPT_CHARS]
+        path = adapter._receipt_path(self.root / 'dedicated',
+                                     'req-large-roundtrip')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        adapter._persist_receipt(path, receipt, initial=True)
+        reloaded = adapter._load_receipt(path, 'a' * 64)
+        self.assertEqual(reloaded['response_text'], reply)
+        self.assertEqual(reloaded['response_excerpt'],
+                         receipt['response_excerpt'])
+
+    def test_capture_digest_ignores_animated_glyphs(self):
+        # Tune (26 nov. 2026): spinner frames and painted cursors do not
+        # change the digest; real content changes always do.
+        base = 'Réponse complète du délégué.'
+        self.assertEqual(adapter._capture_digest(base + ' ⠋'),
+                         adapter._capture_digest(base + ' ⠙'))
+        self.assertEqual(adapter._capture_digest(base + '\u258d'),
+                         adapter._capture_digest(base))
+        self.assertNotEqual(adapter._capture_digest(base),
+                            adapter._capture_digest(base + ' suite'))
 
     def test_click_transport_loss_is_durable_uncertainty_without_retry(self):
         transport = self.fake(enter=RuntimeError('lost after dispatch'),
