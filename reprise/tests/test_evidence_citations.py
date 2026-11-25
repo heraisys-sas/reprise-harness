@@ -2,9 +2,9 @@
 import hashlib
 import os
 import sys
+from pathlib import Path
 import tempfile
 import unittest
-from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from evidence_citations import CitationError, verify_citation, require_cited_evidence
