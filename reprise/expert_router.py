@@ -88,16 +88,19 @@ def _exclude(bridge, requested_backend, configured, exclude=None):
     return candidates
 
 
-def substitute_for_target(bridge, requested_backend, exclude=None):
+def substitute_for_target(bridge, requested_backend, exclude=None, task_class=None):
     """Choisit le meilleur remplaçant pour une cible défaillante : candidats
     configurés et admissibles (free/included), ordonnés par
-    external_rankings.route_choice (prix corroboré le plus bas). Retourne le
-    backend élu ou None (aucun candidat mesurable → refus d'origine inchangé)."""
+    external_rankings.route_choice (prix corroboré le plus bas) ; None si
+    aucun candidat mesurable (refus d'origine inchangé). task_class (lot ①)
+    est passée telle quelle à route_choice ; branchement automatique hors
+    périmètre de ce lot."""
     import external_rankings
     candidates = _exclude(bridge, requested_backend, _configured_backends(bridge), exclude)
     if not candidates:
         return None
-    return external_rankings.route_choice(bridge.db, candidates, automatic=True)
+    return external_rankings.route_choice(bridge.db, candidates, automatic=True,
+                                          task_class=task_class)
 
 
 def chain_candidates(bridge, chain, exclude=None):

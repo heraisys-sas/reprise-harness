@@ -50,6 +50,12 @@ ADMISSIBILITY_SCHEMA = (
     "identity_status TEXT NOT NULL CHECK(identity_status IN ('known','unknown')), "
     'updated_at REAL NOT NULL)')
 
+# Lot ① : durées de veto explicites (pas des préférences d'ordre). TTL du
+# quota included sans observation ; cooldown après un refus observé
+# (synthèse v3 : 30 min, un refus de disponibilité est en général transitoire).
+DEFAULT_VETO_TTL_S = 86400
+REFUSAL_COOLDOWN_S = 1800
+
 
 def _meta_value(db, key):
     row = db.execute('SELECT value FROM routing_meta WHERE key=?', (key,)).fetchone()
@@ -124,6 +130,11 @@ def setup(db):
         for index in INDEXES:
             db.execute(index)
         db.execute(ADMISSIBILITY_SCHEMA)
+        # Registre des refus (lot ①) : table additive, aucun bump user_version.
+        db.execute('CREATE TABLE IF NOT EXISTS route_refusals ('
+                   'channel TEXT NOT NULL, reason TEXT NOT NULL, ts REAL NOT NULL)')
+        db.execute('CREATE INDEX IF NOT EXISTS route_refusals_channel_ts '
+                   'ON route_refusals(channel, ts)')
         db.execute('CREATE INDEX IF NOT EXISTS route_admissibility_class ON route_admissibility(billing_class)')
         db.execute("INSERT OR IGNORE INTO routing_meta VALUES ('local_salt',?)", (os.urandom(32).hex(),))
         db.execute("INSERT OR IGNORE INTO routing_meta VALUES ('retention_days',?)", (str(DEFAULT_RETENTION_DAYS),))
@@ -170,6 +181,44 @@ def admissible(db, channel, automatic):
     if automatic:
         return billing in ('free', 'included'), billing
     return True, billing
+
+
+def record_refusal(db, channel, reason):
+    """Enregistre un refus de route observé (lot ①). reason : chaîne non vide
+    (trim), sinon ValueError ; alimente le veto refus-recent. Aucun
+    branchement automatique dans expert_mcp ce lot."""
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError('Raison de refus requise (chaine non vide)')
+    with db:
+        db.execute('INSERT INTO route_refusals(channel, reason, ts) VALUES (?,?,?)',
+                   (channel, reason.strip(), time.time()))
+
+
+def vetos(db, channel, ttl_s=None):
+    """Raisons de veto d'un canal (lot ①) ; liste vide = pas de veto. Jamais
+    un passe-droit : un veto ne fait que renforcer le fail-closed.
+    - 'paid' / 'unknown' : cohérent avec admissible(automatic=True) ;
+    - 'quota-perime' : included sans observation depuis ttl_s (défaut
+      DEFAULT_VETO_TTL_S) ; la donnée périmée vaut unknown, jamais extrapolée ;
+    - 'refus-recent' : refus enregistré il y a moins de REFUSAL_COOLDOWN_S."""
+    reasons = []
+    row = db.execute('SELECT billing_class, updated_at FROM route_admissibility WHERE channel=?',
+                     (channel,)).fetchone()
+    billing = row[0] if row else 'unknown'
+    if billing in ('paid', 'unknown'):
+        reasons.append(billing)
+    if billing == 'included':
+        if ttl_s is None:
+            ttl_s = DEFAULT_VETO_TTL_S
+        updated_at = row[1]
+        if updated_at is None or (time.time() - updated_at) > ttl_s:
+            reasons.append('quota-perime')
+    recent = db.execute(
+        'SELECT 1 FROM route_refusals WHERE channel=? AND ts > ? LIMIT 1',
+        (channel, time.time() - REFUSAL_COOLDOWN_S)).fetchone()
+    if recent:
+        reasons.append('refus-recent')
+    return reasons
 
 
 def populate_from_quota(db, quota_status):
