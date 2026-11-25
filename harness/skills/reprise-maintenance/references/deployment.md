@@ -72,6 +72,19 @@ plan général. Un `daemon.binding=mismatch` interdit de conclure au succès.
 Pour un rebind de daemon, appliquer les contrôles de
 [migration.md](migration.md), pas un kill depuis un fichier PID.
 
+## Playbook Ansible (dépannage humain)
+
+Le playbook `deploy/ansible/deploy.yml` encadre ces opérations pour un
+opérateur humain, même quand la chaîne AI est enrayée. Premier réflexe :
+`--tags diag` (état complet lecture seule, rapport markdown horodaté).
+Récupération ciblée par tag : `services` (scheduler + claude-desktopd),
+`integrations` (claude/harness), `metaai` (pont metaaid), `metaai-copy`
+(redéploiement de la copie patchée, double consentement), `update`
+(managed_update avec lecture du plan avant apply). Voir
+[deploy/ansible/README.md](../../../deploy/ansible/README.md) — la carte
+symptôme → tag y fait foi ; ce guide reste l'autorité sur les preuves et
+les reçus.
+
 ## Échec, restauration et nettoyage
 
 Conserver le plan, le reçu et les sauvegardes. Une opération pending se reprend

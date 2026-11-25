@@ -34,3 +34,6 @@
 
 reprise/chatgpt-state/
 /reprise/build/
+
+# Pont Meta AI (dossier partage au connecteur, donnees de transport locales)
+/workspaces/metaai-bridge/

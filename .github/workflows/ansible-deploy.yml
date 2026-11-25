@@ -1,0 +1,42 @@
+name: Ansible deploy
+on:
+  push:
+    branches: ['**']
+    paths: ['deploy/**', '.github/workflows/ansible-deploy.yml']
+  pull_request:
+    paths: ['deploy/**', '.github/workflows/ansible-deploy.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ansible-deploy-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  checks:
+    # Validation seulement : les déploiements réels s'exécutent localement
+    # sur le Mac de l'opérateur (pas de runner auto-hébergé, #225).
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # ansible-core 2.21 ne supporte pas Python 3.15 (dataclasses._is_type,
+      # ansible/ansible#87677) : épingler 3.14 tant que runner = 3.15 par défaut.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Installer Ansible et ansible-lint
+        run: python3 -m pip install --quiet ansible ansible-lint
+      - name: Vérifier la syntaxe du playbook
+        working-directory: deploy/ansible
+        run: ansible-playbook deploy.yml --syntax-check
+      - name: Lint
+        working-directory: deploy/ansible
+        run: ansible-lint deploy.yml
+      - name: Vérifier la syntaxe des modules Python
+        run: |
+          python3 -m py_compile deploy/ansible/library/reprise_bundle.py \
+            deploy/ansible/roles/reprise_diag/library/reprise_diag.py \
+            deploy/ansible/roles/reprise_integrations/library/reprise_integration.py \
+            deploy/ansible/roles/reprise_services/library/reprise_quick_daemon.py \
+            deploy/ansible/roles/reprise_verify/library/reprise_verify.py \
+            deploy/ansible/roles/reprise_verify/library/reprise_daemon_release.py

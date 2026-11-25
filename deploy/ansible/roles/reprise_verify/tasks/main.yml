@@ -1,0 +1,33 @@
+---
+# Vérification post-déploiement : preuve par lsof et par connexion, pas par existence.
+- name: Localiser le bundle courant
+  reprise_bundle:
+    builds_dir: "{{ reprise_build_app_path }}"
+  register: bundle
+
+- name: Identifier le PID et le binaire du daemon Quick Apply
+  reprise_daemon_release:
+  register: daemon_release
+
+- name: Contrôler que le daemon tourne sur le release attendu
+  ansible.builtin.assert:
+    that:
+      - (reprise_release_sha | length == 0) or (reprise_release_sha in daemon_release.binary)
+      - bundle.release_sha in daemon_release.binary
+    fail_msg: "Daemon sur un autre release : {{ daemon_release.binary }} vs bundle {{ bundle.release_sha }}"
+    success_msg: "Daemon OK : {{ daemon_release.binary }}"
+  tags: [verify]
+
+- name: Sondes de vérification via API module (verify des intégrations)
+  reprise_verify:
+    helpers: "{{ bundle.helpers }}"
+    project: "{{ reprise_project_root }}"
+    harness_project: "{{ reprise_harness_project }}"
+    harness_profile: "{{ reprise_harness_profile }}"
+  register: verify_result
+  tags: [verify]
+
+- name: Restituer les vérifications
+  ansible.builtin.debug:
+    msg: "{{ verify_result.statuses }}"
+  tags: [verify]

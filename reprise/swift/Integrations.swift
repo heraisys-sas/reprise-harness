@@ -41,11 +41,11 @@ struct CodexThreadsSection: View {
     }
 
     var body: some View {
-        SettingsCard(title: "Conversations Codex récentes",
+        SettingsCard(title: "Fils Codex récents",
                      status: app.codexThreadsBusy ? "Lecture…" : "Lecture locale",
                      ok: !app.codexThreadRows.isEmpty) {
             HStack {
-                Text("L’index local et une lecture RPC éventuelle ne donnent aucun contrôle sur les conversations.")
+                Text("Reprise peut lire vos conversations Codex, pas les modifier.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Actualiser") { app.loadCodexThreads() }
@@ -131,8 +131,8 @@ private struct ClaudeQuotaRendererObservation: View {
 
     private var eventStatusLabel: String {
         switch observation["event_status"] as? String ?? "not_checked" {
-        case "recognized": "événement quota reconnu"
-        case "no_event": "aucun événement quota reconnu"
+        case "recognized": "événement de quota reconnu"
+        case "no_event": "aucun événement de quota reconnu"
         case "no_event_in_tail": "aucun événement reconnu dans la partie lue (journal tronqué)"
         case "not_checked": "événement non vérifié"
         default: "événement indisponible"
@@ -203,7 +203,7 @@ private struct ClaudeQuotaRendererObservation: View {
             readAtView
             Text("Fraîcheur de l’événement : \(freshnessLabel)")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("Quota actuel, quantité et attribution compte/chat : inconnus.")
+            Text("Jauge Claude Desktop indisponible ici : lisez la jauge sur la page Sessions.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -458,7 +458,7 @@ extension App {
             self.claudeInboxTasks = tasks
             self.claudeInboxStatus = tasks.isEmpty
                 ? "Aucune tâche dans le registre de ce projet."
-                : "\(tasks.count) tâche(s) du projet vérifié. Aucun prompt ni secret n’est affiché."
+                : (tasks.count == 1 ? "1 tâche du projet vérifié." : "\(tasks.count) tâches du projet vérifié.") + " Aucun prompt ni secret n’est affiché."
         }
     }
 
@@ -793,7 +793,7 @@ extension App {
             row["name"] = name
             return row
         }
-        appClonesMessage = "\(appClones.count) clone(s) géré(s)."
+        appClonesMessage = appClones.count == 1 ? "1 clone géré." : "\(appClones.count) clones gérés."
     }
 
     func refreshProjects(select projectID: String? = nil, completion: (() -> Void)? = nil) {
@@ -812,7 +812,7 @@ extension App {
                       !rows.contains(where: { $0["id"] as? String == self.selectedProjectID }) {
                 self.selectProject("")
             }
-            self.projectMessage = rows.isEmpty ? "Aucun projet enregistré." : "\(rows.count) projet(s) chargé(s)."
+            self.projectMessage = rows.isEmpty ? "Aucun projet enregistré." : (rows.count == 1 ? "1 projet chargé." : "\(rows.count) projets chargés.")
             completion?()
         }
     }
@@ -1178,7 +1178,7 @@ struct Integrations: View {
                                  detail: planDetail(app.codexIntegrationResult), detailLabel: "Réponse complète")
                 }
             }
-            SettingsCard(title: "Copie Meta AI Reprise",
+            SettingsCard(title: "Copie ReMetaAI",
                          status: app.metaaiIntegrationResult["status_label"] as? String ?? "État inconnu",
                          ok: app.metaaiIntegrationResult["ok"] as? Bool == true) {
                 SettingsHint(text: "Redéploie la copie patchée après une mise à jour de Meta AI.app.",

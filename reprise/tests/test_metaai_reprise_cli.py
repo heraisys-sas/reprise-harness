@@ -26,7 +26,7 @@ class MetaaiCliTestCase(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         base = Path(tmp.name)
         self.src = base / 'src' / 'Meta AI.app'
-        self.dst = base / 'home' / 'Applications' / 'Meta AI Reprise.app'
+        self.dst = base / 'home' / 'Applications' / 'ReMetaAI.app'
         runtime = base / 'home' / '.reprise'
         (self.src / 'Contents/MacOS').mkdir(parents=True)
         (self.src / 'Contents/Info.plist').write_text(
@@ -55,16 +55,29 @@ class MetaaiCliTestCase(unittest.TestCase):
         (self.dst / 'Contents/MacOS').mkdir(parents=True)
         sparkle = self.dst / 'Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle'
         binary = self.dst / 'Contents/MacOS/Meta AI'
+        plist = self.dst / 'Contents/Info.plist'
         if patched:
             sparkle.write_bytes(b'MACHO .reprise/Sparkle-real')
             binary.write_bytes(b'MACHO .reprise/sec-shim.dylib')
+            plist.write_text(
+                '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0">'
+                '<dict><key>CFBundleShortVersionString</key><string>14.0</string>'
+                '<key>CFBundleExecutable</key><string>Meta AI</string>'
+                '<key>CFBundleIdentifier</key><string>' + build.DST_BUNDLE_ID + '</string>'
+                '</dict></plist>')
         else:
             sparkle.write_bytes(b'MACHO-ORIGINAL')
             binary.write_bytes(b'MACHO-ORIGINAL')
+            # Copie périmée (déploiement pré-identité) : ni exécutable ni identité.
+            plist.write_text(
+                '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0">'
+                '<dict><key>CFBundleShortVersionString</key><string>13.0</string>'
+                '</dict></plist>')
 
     def stub_signature(self, ok=True):
         patcher = mock.patch.object(build, 'patched_state', mock.Mock(return_value={
             'present': True, 'sparkle_patched': True, 'binary_patched': True,
+            'plist_executable': True, 'plist_identity': True,
             'signature_ok': ok, 'version': '14.0'}))
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -202,7 +215,8 @@ class MetaaiCliTestCase(unittest.TestCase):
                  'prepare_sparkle_real': lambda: {'step': 'sparkle-real'},
                  'compile_dylibs': lambda: {'step': 'compile'},
                  'swap_sparkle': lambda: {'step': 'swap-sparkle'},
-                 'patch_security_path': lambda: {'step': 'patch-security'}}
+                 'patch_security_path': lambda: {'step': 'patch-security'},
+                 'patch_info_plist': lambda: {'step': 'patch-info-plist'}}
         for name, fn in steps.items():
             patcher = mock.patch.object(build, name, lambda _f=fn, _n=name: called.append(_n) or _f())
             patcher.start()
@@ -214,7 +228,7 @@ class MetaaiCliTestCase(unittest.TestCase):
         out = build.apply_payload(plan)
         self.assertTrue(out['ok'])
         self.assertEqual(called, ['refresh_app', 'prepare_sparkle_real', 'compile_dylibs',
-                                  'swap_sparkle', 'patch_security_path', 'sign'])
+                                  'swap_sparkle', 'patch_security_path', 'patch_info_plist', 'sign'])
         state = build.load_state()
         self.assertEqual(state['last_plan_id'], plan['id'])
         self.assertEqual(state['original_version'], '14.0')

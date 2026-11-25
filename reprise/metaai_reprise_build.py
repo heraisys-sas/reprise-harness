@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and deploy the patched « Meta AI Reprise.app » copy (UI bridge).
+"""Build and deploy the patched « ReMetaAI.app » copy (UI bridge).
 
 Construit et déploie la copie patchée de Meta AI Desktop qui porte le pont UI
 (invocation rapide) : dylib injectée par remplacement du binaire Sparkle
@@ -7,10 +7,14 @@ Construit et déploie la copie patchée de Meta AI Desktop qui porte le pont UI
 pour les tokens de session) + socket de contrôle ~/.reprise/.
 
 Sequence (chaque étape est idempotente) :
-  1. copie sans xattrs de /Applications/Meta AI.app vers ~/Applications/Meta AI Reprise.app
+  1. copie sans xattrs de /Applications/Meta AI.app vers ~/Applications/ReMetaAI.app
   2. extraction du vrai Sparkle vers ~/.reprise/Sparkle-real (LC_ID absolu + re-signature)
   3. compilation des deux dylibs depuis ce dépôt (metaai_reprise.m, metaai_sec_shim.m)
   4. remplacement de Sparkle dans la copie + réécriture du chemin Security.framework
+  4bis. insertion de CFBundleExecutable dans le Info.plist de la copie (l'app
+        originale s'en passe : LaunchServices retombe sur le nom du bundle,
+        « Meta AI » — la copie s'appelle « ReMetaAI » et devient
+        introuvable au clic ; la clé explicite supprime cette ambiguïté)
   5. signature Apple Development (runtime durci désactivé) + chmod 755
 
 Le script n'exécute JAMAIS l'app ni launchctl : la commande de lancement est
@@ -33,7 +37,8 @@ from pathlib import Path
 REPRISE = Path(__file__).resolve().parent
 HOME = Path.home()
 SRC_APP = Path('/Applications/Meta AI.app')
-DST_APP = HOME / 'Applications' / 'Meta AI Reprise.app'
+DST_APP = HOME / 'Applications' / 'ReMetaAI.app'
+DST_BUNDLE_ID = 'com.reprise.remetaai'
 RUNTIME = HOME / '.reprise'
 SPARKLE_REAL = RUNTIME / 'Sparkle-real'
 SEC_SHIM = RUNTIME / 'sec-shim.dylib'
@@ -154,6 +159,43 @@ def patch_security_path() -> dict:
     return {'step': 'patch-security', 'changed': True, 'detail': out.stdout.strip()}
 
 
+def patch_info_plist() -> dict:
+    """Poser les clés d'identité de la copie (dépendances du lancement LaunchServices).
+
+    - CFBundleExecutable : l'originale de Meta s'en passe (LaunchServices
+      retombe sur le nom du bundle) ; la copie renommée en a besoin
+      explicitement, sinon « executable is missing » au clic.
+    - CFBundleIdentifier : identité DISTINCTE de l'originale. Partagée, macOS
+      confond les deux apps (TCC, items de connexion, single-instance par
+      bundle id) : un droit accordé « à la copie » est résolu vers
+      l'originale, et tout lancement de l'originale tue la copie.
+    - CFBundleName/CFBundleDisplayName « ReMetaAI » pour distinguer la
+      fenêtre et la barre des menus.
+    """
+    plist_path = DST_APP / 'Contents/Info.plist'
+    with plist_path.open('rb') as handle:
+        payload = plistlib.load(handle)
+    changes = []
+    if payload.get('CFBundleExecutable') != 'Meta AI':
+        payload['CFBundleExecutable'] = 'Meta AI'
+        changes.append('CFBundleExecutable')
+    if payload.get('CFBundleIdentifier') != DST_BUNDLE_ID:
+        payload['CFBundleIdentifier'] = DST_BUNDLE_ID
+        changes.append('CFBundleIdentifier')
+    if payload.get('CFBundleName') != 'ReMetaAI':
+        payload['CFBundleName'] = 'ReMetaAI'
+        changes.append('CFBundleName')
+    if payload.get('CFBundleDisplayName') != 'ReMetaAI':
+        payload['CFBundleDisplayName'] = 'ReMetaAI'
+        changes.append('CFBundleDisplayName')
+    if not changes:
+        return {'step': 'patch-info-plist', 'changed': False}
+    with plist_path.open('wb') as handle:
+        plistlib.dump(payload, handle)
+    return {'step': 'patch-info-plist', 'changed': True,
+            'detail': 'clés posées : ' + ', '.join(changes)}
+
+
 def sign(identity: str) -> dict:
     sh('codesign', '--force', '--deep', '--sign', identity, str(DST_APP))
     binary = DST_APP / 'Contents/MacOS/Meta AI'
@@ -241,6 +283,14 @@ def patched_state(app: Path) -> dict:
             checks[key] = marker in (app / rel).read_bytes()
         except OSError:
             checks[key] = False
+    try:
+        with (app / 'Contents/Info.plist').open('rb') as handle:
+            plist = plistlib.load(handle)
+        checks['plist_executable'] = bool(plist.get('CFBundleExecutable'))
+        checks['plist_identity'] = plist.get('CFBundleIdentifier') == DST_BUNDLE_ID
+    except OSError:
+        checks['plist_executable'] = False
+        checks['plist_identity'] = False
     verify = subprocess.run(['codesign', '--verify', '--deep', str(app)],
                             capture_output=True, text=True)
     return dict(checks, present=True, signature_ok=verify.returncode == 0, version=read_version(app))
@@ -281,7 +331,9 @@ def inspect_payload() -> dict:
     copy = patched_state(DST_APP)
     state = load_state()
     up_to_date = bool(src_digest and copy.get('present') and state.get('original_tree_digest') == src_digest
-                      and copy.get('sparkle_patched') and copy.get('binary_patched') and copy.get('signature_ok'))
+                      and copy.get('sparkle_patched') and copy.get('binary_patched')
+                      and copy.get('plist_executable') and copy.get('plist_identity')
+                      and copy.get('signature_ok'))
     tools = missing_tools()
     if not src_present:
         ok, label, message = False, 'Originale introuvable', f'{SRC_APP} introuvable — rien à redéployer.'
@@ -313,6 +365,7 @@ def plan_payload() -> dict:
         {'step': 'compile', 'detail': 'compilation des dylibs (fake Sparkle, shim Security)'},
         {'step': 'swap-sparkle', 'detail': 'remplacement du binaire Sparkle de la copie'},
         {'step': 'patch-security', 'detail': 'réécriture du chemin Security.framework vers le shim'},
+        {'step': 'patch-info-plist', 'detail': 'insertion de CFBundleExecutable (lancement LaunchServices)'},
         {'step': 'sign', 'detail': 're-signature Apple Development de la copie'},
     ])
     plan = {'names': list(PLAN_NAMES), 'action': 'redeploy', 'id': uuid.uuid4().hex,
@@ -350,7 +403,7 @@ def apply_payload(plan) -> dict:
         return refused(str(error))
     try:
         steps = [refresh_app(), prepare_sparkle_real(), compile_dylibs(),
-                 swap_sparkle(), patch_security_path(), sign(identity)]
+                 swap_sparkle(), patch_security_path(), patch_info_plist(), sign(identity)]
     except SystemExit as error:
         return refused('Redéploiement interrompu : ' + str(error))
     except subprocess.CalledProcessError as error:
@@ -371,6 +424,8 @@ def verify_payload(plan) -> dict:
     checks = {'copy_present': copy.get('present') is True,
               'sparkle_patched': copy.get('sparkle_patched') is True,
               'binary_patched': copy.get('binary_patched') is True,
+              'plist_executable': copy.get('plist_executable') is True,
+              'plist_identity': copy.get('plist_identity') is True,
               'signature_ok': copy.get('signature_ok') is True,
               'state_digest_current': bool(src_digest) and state.get('original_tree_digest') == src_digest,
               'plan_id_matches': bool(plan.get('id')) and state.get('last_plan_id') == plan.get('id')}
