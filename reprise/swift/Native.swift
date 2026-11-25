@@ -297,9 +297,9 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @objc func quit() { stopAndQuit() }
     /// Chantier ① (issue #263) : arrêt propre depuis l’interface — le daemon
     /// codexd et le scheduler restent en place, seule l’interface se ferme.
+    /// NSApp.terminate seul : toute note affichée ici ne serait jamais rendue
+    /// (la boucle d’événements se ferme aussitôt).
     func stopAndQuit() {
-        let note = "Fermeture de l’interface…"
-        relaunchNote = note
         NSApp.terminate(nil)
     }
     @objc func reload() { refresh() }
@@ -806,7 +806,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         checkVaultAvailability()
         let deadline = Date().addingTimeInterval(20)
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { timer in
-            let quiet = !self.busy && !self.connectionBusy && !self.desktopConnectionBusy && !self.vaultChecking
+            let quiet = !self.busy && !self.connectionBusy && !self.desktopConnectionBusy && !self.vaultChecking && !self.quotaBusy
             guard quiet || Date() > deadline else { return }
             timer.invalidate()
             var parts: [String] = []
