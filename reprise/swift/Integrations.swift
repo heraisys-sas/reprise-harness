@@ -41,7 +41,7 @@ struct CodexThreadsSection: View {
     }
 
     var body: some View {
-        SettingsCard(title: "Conversations Codex récentes",
+        SettingsCard(title: "Fils Codex récents",
                      status: app.codexThreadsBusy ? "Lecture…" : "Lecture locale",
                      ok: !app.codexThreadRows.isEmpty) {
             HStack {
@@ -203,7 +203,7 @@ private struct ClaudeQuotaRendererObservation: View {
             readAtView
             Text("Fraîcheur de l’événement : \(freshnessLabel)")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("Quota actuel, quantité et attribution compte/chat : inconnus.")
+            Text("Jauge Claude Desktop indisponible ici : lisez la jauge sur la page Sessions.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

@@ -153,6 +153,7 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var snapshot: [String: Any] = [:]
     @Published var navigationNote = ""
     @Published var page = "overview"
+    @Published var searchSheet = false
     @Published var sessionFilter = "Récentes"
     @Published var resumeFilter = "À examiner"
     @Published var connection: [String: Any] = [:]
@@ -204,6 +205,8 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var observerStartupFailed = false
     var refreshPending = false
     @Published var busy = false
+    @Published var verifyEverythingBusy = false
+    @Published var verifyEverythingSummary = ""
     @Published var vaultBusy = false
     @Published var vaultChecking = false
     @Published var vaultAvailability: [String: Any] = [:]
@@ -265,6 +268,13 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "arrow.clockwise.circle", accessibilityDescription: "Reprise")
         item.button?.target = self; item.button?.action = #selector(show)
+        // Chantier ① (issue #263) : le menu de l’icône de barre expose l’ouverture
+        // de l’interface et l’arrêt propre (le daemon codexd et le scheduler restent en place).
+        let statusMenu = NSMenu()
+        statusMenu.addItem(withTitle: "Ouvrir Reprise", action: #selector(show), keyEquivalent: "").target = self
+        statusMenu.addItem(.separator())
+        statusMenu.addItem(withTitle: "Quitter Reprise", action: #selector(quit), keyEquivalent: "").target = self
+        item.menu = statusMenu
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1010, height: 720), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "Reprise"
         window.titlebarAppearsTransparent = true
@@ -284,7 +294,14 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { _ in self.analyzeLocal() }
     }
     @objc func show() { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
-    @objc func quit() { NSApp.terminate(nil) }
+    @objc func quit() { stopAndQuit() }
+    /// Chantier ① (issue #263) : arrêt propre depuis l’interface — le daemon
+    /// codexd et le scheduler restent en place, seule l’interface se ferme.
+    func stopAndQuit() {
+        let note = "Fermeture de l’interface…"
+        relaunchNote = note
+        NSApp.terminate(nil)
+    }
     @objc func reload() { refresh() }
     func execute(_ args: [String]) -> [String: Any]? {
         guard runtimeError == nil, stateReady || ["state-status", "state-plan", "state-apply"].contains(args.first ?? "") else { return nil }
@@ -774,6 +791,39 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             }
             self.cloneResultAt = Date()
             self.loadAppClones()
+        }
+    }
+    /// Chantier ② (issue #263) : « Vérifier tout » — relance toutes les
+    /// vérifications locales et distantes puis résume les conclusions.
+    func verifyEverything() {
+        guard stateReady, !verifyEverythingBusy, !busy else { return }
+        verifyEverythingBusy = true
+        verifyEverythingSummary = "Vérification en cours…"
+        refresh()
+        refreshQuotas()
+        testConnection()
+        testDesktopConnection()
+        checkVaultAvailability()
+        let deadline = Date().addingTimeInterval(20)
+        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { timer in
+            let quiet = !self.busy && !self.connectionBusy && !self.desktopConnectionBusy && !self.vaultChecking
+            guard quiet || Date() > deadline else { return }
+            timer.invalidate()
+            var parts: [String] = []
+            if self.connectionVerified { parts.append("Codex connecté") } else if !self.connectionNote.isEmpty { parts.append("Codex : " + self.connectionNote) }
+            if self.desktopConnectionVerified { parts.append("Claude Desktop connecté") } else if !self.desktopConnectionNote.isEmpty { parts.append("Claude Desktop : " + self.desktopConnectionNote) }
+            if self.vaultAccessVerified { parts.append("Clé de chiffrement accessible") }
+            if self.healthVerified {
+                let claudeAnomalies = ((self.health["quick_entry_features"] as? [String: Any])?["anomalies"] as? [String: Any])?["anomalies"] as? [[String: Any]] ?? []
+                let codexAnomalies = self.health["codex_anomalies"] as? [[String: Any]] ?? []
+                let humanActions = self.health["actions_for_human"] as? [String] ?? []
+                let healthCount = claudeAnomalies.count + codexAnomalies.count + humanActions.count
+                parts.append(healthCount == 0 ? "Santé : tout est sain" : "Santé : \(healthCount) élément(s) à examiner")
+            }
+            self.verifyEverythingSummary = parts.isEmpty
+                ? "Vérifications relancées ; les conclusions s’affinent dans quelques secondes."
+                : parts.joined(separator: " · ")
+            self.verifyEverythingBusy = false
         }
     }
     func checkVaultAvailability() {
