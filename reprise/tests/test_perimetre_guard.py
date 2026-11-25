@@ -5,7 +5,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 sys.path.insert(0, str(Path(__file__).parents[1]))
+import perimetre_guard
 from perimetre_guard import verifier_perimetre_diff
 
 
@@ -145,6 +147,71 @@ class TestPerimetreGuard(unittest.TestCase):
                 if os.path.exists(regles):
                     os.remove(regles)
 
+
+    def test_etoile_simple_ne_traverse_pas_les_dossiers(self):
+        # allowed src/*.py ne couvre pas src/sub/x.py (fail-open fnmatch corrige).
+        with tempfile.TemporaryDirectory() as dossier:
+            base = self._init(dossier)
+            self._ecrire(dossier, "src/sub/x.py", "x = 1\n")
+            self._git(dossier, "add", ".")
+            resultat = verifier_perimetre_diff(dossier, base, ["src/*.py"])
+            self.assertFalse(resultat["ok"])
+            self.assertEqual(resultat["refuse"], "HORS_PERIMETRE")
+
+    def test_double_etoile_traverse_les_dossiers(self):
+        # src/**/*.py couvre les sous-dossiers.
+        with tempfile.TemporaryDirectory() as dossier:
+            base = self._init(dossier)
+            self._ecrire(dossier, "src/sub/x.py", "x = 1\n")
+            self._git(dossier, "add", ".")
+            resultat = verifier_perimetre_diff(dossier, base, ["src/**/*.py"])
+            self.assertTrue(resultat["ok"])
+            self.assertIsNone(resultat["refuse"])
+
+    def test_interdit_sans_slash_toute_profondeur(self):
+        # CHANGELOG* attrape un CHANGELOG dans un sous-dossier.
+        with tempfile.TemporaryDirectory() as dossier:
+            base = self._init(dossier)
+            self._ecrire(dossier, "docs/CHANGELOG.md", "x\n")
+            self._git(dossier, "add", ".")
+            resultat = verifier_perimetre_diff(dossier, base, ["docs/**"])
+            self.assertFalse(resultat["ok"])
+            self.assertEqual(resultat["refuse"], "CHEMIN_INTERDIT")
+
+    def test_sensible_sans_acteur_refuse(self):
+        # Regle sensible + acteur absent : refuse (fail-open acteur=None corrige).
+        with tempfile.TemporaryDirectory() as dossier:
+            base = self._init(dossier)
+            self._ecrire(dossier, "cle.pem", "secret\n")
+            self._git(dossier, "add", ".")
+            regles = os.path.join(tempfile.gettempdir(), "regles-sensibles-test-absent.txt")
+            with open(regles, "w", encoding="utf-8") as f:
+                f.write("*.pem\n")
+            try:
+                resultat = verifier_perimetre_diff(dossier, base, ["*.pem"], fichier_regles_sensibles=regles)
+                self.assertFalse(resultat["ok"])
+                self.assertEqual(resultat["refuse"], "ACTEUR_ABSENT")
+            finally:
+                if os.path.exists(regles):
+                    os.remove(regles)
+
+    def test_parse_numstat_entree_corrompue_comptee(self):
+        # Une entree numstat non parseable est comptee, jamais jetee.
+        parse = perimetre_guard._parse_numstat(b"10\t2\tok.txt\x00corrompu-sans-tab\x00")
+        self.assertEqual(len(parse["entrees"]), 1)
+        self.assertEqual(parse["entrees_ignorees"], ["corrompu-sans-tab"])
+
+    def test_numstat_illisible_refuse(self):
+        # Entree illisible dans le diff : refuse NUMSTAT_ILLISIBLE, digest garde.
+        with tempfile.TemporaryDirectory() as dossier:
+            base = self._init(dossier)
+            faux = {"entrees": [], "binaire": [], "entrees_ignorees": ["entree-corrompue"], "texte_brut": b"corrompu"}
+            with mock.patch.object(perimetre_guard, "calculer_diff", return_value=faux):
+                resultat = verifier_perimetre_diff(dossier, base, ["**"])
+            self.assertFalse(resultat["ok"])
+            self.assertEqual(resultat["refuse"], "NUMSTAT_ILLISIBLE")
+            self.assertEqual(resultat["entrees_ignorees"], ["entree-corrompue"])
+            self.assertTrue(len(resultat["digest_diff"]) > 0)
 
 if __name__ == "__main__":
     unittest.main()

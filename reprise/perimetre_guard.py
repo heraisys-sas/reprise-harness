@@ -1,5 +1,9 @@
-"""Garde de perimetre du diff, pre-garde machine avant E5."""
-import fnmatch
+"""Garde de perimetre du diff, pre-garde machine avant E5.
+
+Fail-closed : motifs glob chemins (* ne traverse pas les dossiers, ** traverse),
+entrees numstat illisibles refusees (jamais ignorees), acteur obligatoire sur
+chemin sensible (revue AutoCoder 26/11).
+"""
 import hashlib
 import json
 import os
@@ -40,15 +44,57 @@ def _normaliser_motif(motif):
         while texte.startswith("./"):
             texte = texte[2:]
         return texte
+_MOTIFS_COMPILE = {}
+
+def _motif_vers_regex(motif):
+    # Compile un motif glob chemin : * et ? restent dans un segment, ** traverse.
+    if motif not in _MOTIFS_COMPILE:
+        parties = []
+        for segment in motif.split("/"):
+            if segment == "**":
+                parties.append("(?:[^/]+/)*[^/]+")
+                continue
+            buf = []
+            for ch in segment:
+                if ch == "*":
+                    buf.append("[^/]*")
+                elif ch == "?":
+                    buf.append("[^/]")
+                else:
+                    buf.append(re.escape(ch))
+            parties.append("".join(buf))
+        _MOTIFS_COMPILE[motif] = re.compile("^" + "/".join(parties) + "$")
+    return _MOTIFS_COMPILE[motif]
+
 def _apparie(chemin_norm, motifs):
-    # True si le chemin apparie un motif, **/ optionnel en tete.
+    # True si le chemin apparie un motif ; * ne traverse pas les dossiers, ** traverse.
     for motif in motifs:
         if not isinstance(motif, str) or not motif:
             continue
         motif_norm = _normaliser_motif(motif)
-        if fnmatch.fnmatchcase(chemin_norm, motif_norm):
+        if _motif_vers_regex(motif_norm).match(chemin_norm):
             return True
-        if "**/" in motif_norm and fnmatch.fnmatchcase(chemin_norm, motif_norm.replace("**/", "")):
+    return False
+
+def _apparie_interdit(chemin_norm, motifs):
+    # Interdits : motif sans slash = toute profondeur (gitignore, fail-closed) ;
+    # motif avec slash = glob chemin strict.
+    for motif in motifs:
+        if not isinstance(motif, str) or not motif:
+            continue
+        motif_norm = _normaliser_motif(motif)
+        if "/" not in motif_norm:
+            parties = []
+            for ch in motif_norm:
+                if ch == "*":
+                    parties.append("[^/]*")
+                elif ch == "?":
+                    parties.append("[^/]")
+                else:
+                    parties.append(re.escape(ch))
+            motif_norm = "**/" + motif_norm
+            _MOTIFS_COMPILE[motif_norm] = re.compile("^(?:[^/]+/)*" + "".join(parties) + "$")
+        if _motif_vers_regex(motif_norm).match(chemin_norm):
             return True
     return False
 def charger_regles_sensibles(chemin_fichier):
@@ -74,44 +120,53 @@ def chemin_est_sensible(chemin, regles):
     except ValueError:
         return False
     return _apparie(chemin_norm, regles)
-def calculer_diff(repo, base_sha):
-    # Calcule le diff avec git, parse numstat -z.
-    resultat = subprocess.run(["git", "diff", "--no-renames", "--numstat", "-z", base_sha], cwd=str(repo), stdout=subprocess.PIPE, check=True)
-    texte_brut = resultat.stdout
+def _parse_numstat(texte_brut):
+    # Parse numstat -z ; les entrees illisibles sont comptees, jamais ignorees en silence.
     entrees = []
     binaire = []
-    if not texte_brut:
-        return {"entrees": entrees, "binaire": binaire, "texte_brut": texte_brut}
+    entrees_ignorees = []
     for partie in texte_brut.split(b"\x00"):
         if not partie:
             continue
         champs = partie.decode("utf-8", errors="replace").split("\t")
         if len(champs) != 3:
+            entrees_ignorees.append(partie.decode("utf-8", errors="replace"))
             continue
         ajoutees_txt, supprimees_txt, chemin = champs
         if ajoutees_txt == "-" or supprimees_txt == "-":
             binaire.append(chemin)
             entrees.append({"ajoutees": 0, "supprimees": 0, "chemin": chemin})
-        else:
-            try:
-                ajoutees = int(ajoutees_txt)
-                supprimees = int(supprimees_txt)
-            except ValueError:
-                continue
-            entrees.append({"ajoutees": ajoutees, "supprimees": supprimees, "chemin": chemin})
-    return {"entrees": entrees, "binaire": binaire, "texte_brut": texte_brut}
+            continue
+        try:
+            ajoutees = int(ajoutees_txt)
+            supprimees = int(supprimees_txt)
+        except ValueError:
+            entrees_ignorees.append(partie.decode("utf-8", errors="replace"))
+            continue
+        entrees.append({"ajoutees": ajoutees, "supprimees": supprimees, "chemin": chemin})
+    return {"entrees": entrees, "binaire": binaire, "entrees_ignorees": entrees_ignorees}
+
+def calculer_diff(repo, base_sha):
+    # Calcule le diff avec git, parse numstat -z.
+    resultat = subprocess.run(["git", "diff", "--no-renames", "--numstat", "-z", base_sha], cwd=str(repo), stdout=subprocess.PIPE, check=True, timeout=30)
+    parse = _parse_numstat(resultat.stdout)
+    parse["texte_brut"] = resultat.stdout
+    return parse
 def verifier_perimetre_diff(repo, base_sha, allowed_paths, prohibited=None, fichier_regles_sensibles=None, acteur=None, acteurs_locaux=("ironclaw",), max_diff_files=None, max_diff_lines=None):
     # Verifie le diff entier, refus net, aucune troncature.
     diff = calculer_diff(repo, base_sha)
     entrees = diff["entrees"]
     binaire_brut = diff["binaire"]
     texte_brut = diff["texte_brut"]
+    entrees_ignorees = diff.get("entrees_ignorees", [])
     hors_perimetre = []
     interdits = []
     sensibles = []
     binaires = []
     symlinks = []
     refuse = None
+    if entrees_ignorees:
+        refuse = "NUMSTAT_ILLISIBLE"
     if prohibited is None:
         prohibited = []
     if allowed_paths is None:
@@ -133,8 +188,8 @@ def verifier_perimetre_diff(repo, base_sha, allowed_paths, prohibited=None, fich
             hors_perimetre.append(chemin_norm)
             if refuse is None:
                 refuse = "HORS_PERIMETRE"
-        # Regle 2 : interdit, prioritaire sur allowed.
-        if _apparie(chemin_norm, INTERDITS_IMPLICITES) or _apparie(chemin_norm, prohibited):
+        # Regle 2 : interdit, prioritaire sur allowed (toute profondeur si sans slash).
+        if _apparie_interdit(chemin_norm, INTERDITS_IMPLICITES) or _apparie_interdit(chemin_norm, prohibited):
             interdits.append(chemin_norm)
             if refuse is None:
                 refuse = "CHEMIN_INTERDIT"
@@ -148,11 +203,13 @@ def verifier_perimetre_diff(repo, base_sha, allowed_paths, prohibited=None, fich
             symlinks.append(chemin_norm)
             if refuse is None:
                 refuse = "SYMLINK_INTERDIT"
-        # Regle 5 : sensible.
+        # Regle 5 : sensible, acteur obligatoire (absent = refus, fail-closed).
         if fichier_regles_sensibles is not None and chemin_est_sensible(chemin_norm, regles_sensibles):
             sensibles.append(chemin_norm)
-            if acteur is not None and acteur not in acteurs_locaux:
-                if refuse is None:
+            if refuse is None:
+                if acteur is None:
+                    refuse = "ACTEUR_ABSENT"
+                elif acteur not in acteurs_locaux:
                     refuse = "SENSIBLE_ACTOR_INTERDIT"
     n_fichiers = len(entrees)
     lignes_ajoutees = sum(e["ajoutees"] for e in entrees)
@@ -168,7 +225,7 @@ def verifier_perimetre_diff(repo, base_sha, allowed_paths, prohibited=None, fich
     digest_diff = hashlib.sha256(texte_brut).hexdigest()
     ok = refuse is None
     if refuse is not None:
-        message = json.dumps({"garde": "PERIMETRE_DIFF", "etape": "pre-E5", "champ": "diff", "recu": {"refuse": refuse, "hors_perimetre": hors_perimetre[:5], "interdits": interdits[:5], "sensibles": sensibles[:5], "n_fichiers": n_fichiers, "lignes": lignes_ajoutees + lignes_supprimees}, "attendu": "diff inclus dans allowed_paths, hors interdits"}, ensure_ascii=True, sort_keys=True)
+        message = json.dumps({"garde": "PERIMETRE_DIFF", "etape": "pre-E5", "champ": "diff", "recu": {"refuse": refuse, "hors_perimetre": hors_perimetre[:5], "interdits": interdits[:5], "sensibles": sensibles[:5], "n_fichiers": n_fichiers, "lignes": lignes_ajoutees + lignes_supprimees, "n_ignorees": len(entrees_ignorees)}, "attendu": "diff inclus dans allowed_paths, hors interdits"}, ensure_ascii=True, sort_keys=True)
     else:
         message = ""
-    return {"ok": ok, "refuse": refuse, "hors_perimetre": hors_perimetre, "interdits": interdits, "sensibles": sensibles, "binaires": binaires, "symlinks": symlinks, "n_fichiers": n_fichiers, "lignes_ajoutees": lignes_ajoutees, "lignes_supprimees": lignes_supprimees, "digest_diff": digest_diff, "message": message}
+    return {"ok": ok, "refuse": refuse, "hors_perimetre": hors_perimetre, "interdits": interdits, "sensibles": sensibles, "binaires": binaires, "symlinks": symlinks, "entrees_ignorees": entrees_ignorees, "n_fichiers": n_fichiers, "lignes_ajoutees": lignes_ajoutees, "lignes_supprimees": lignes_supprimees, "digest_diff": digest_diff, "message": message}
