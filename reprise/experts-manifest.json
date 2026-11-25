@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "default_chain": ["codex", "foundation-models"],
   "backends": {
     "codex": {
       "capacity": 2,
