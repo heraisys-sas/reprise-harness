@@ -125,7 +125,7 @@ def review(program, root, question, *, model, effort='medium', paths=None,
               'requested_model': model, 'effort': effort, 'quota_remaining': None,
               'automatic_fallback': False}
     if not subscription_only:
-        return result | {'status': 'billing_unverified', 'reason':
+        return result | {'status': 'billing_unverified', 'backend': 'claude-code', 'reason':
                          'Confirm subscription access and disable paid extra usage before enabling Claude.'}
     env = child_environment()
     deadline = time.monotonic() + timeout

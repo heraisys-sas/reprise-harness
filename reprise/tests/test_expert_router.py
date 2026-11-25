@@ -215,6 +215,81 @@ class ExpertRouterTests(unittest.TestCase):
         self.assertEqual(event['channel'], 'claude-code')
         self.assertIn('automatic fallback', event['reason'])
 
+    def test_substitution_to_desktop_finished_without_response_is_admission_only(self):
+        bridge = self.bridge(FULL_MANIFEST)
+        # claude-desktop élu seul : déclaré included et configuré (socket +
+        # canal de retour) ; codex reste non déclaré (unknown) pour ne jamais
+        # être élu par route_choice.
+        routing_events.declare(bridge.db, 'claude-desktop', 'included')
+        bridge.desktop_values = {'socket': 'test'}
+        seed_ranking(bridge.db, 'claude-desktop', 'claude-opus-5', 1.0)
+        external_rankings.populate_model_map(bridge.db)
+        with patch.object(apple_expert, 'configured', return_value=True), \
+             patch.object(apple_expert, 'review',
+                          return_value={'status': 'engine_unavailable',
+                                        'reason': 'fm unavailable for test'}), \
+             patch.object(expert_mcp.claude_desktop, 'review',
+                          return_value={'status': 'finished', 'response': None}):
+            result = self.delegate(bridge, backend='foundation-models')
+        # Backend SERVI (posé par le handler) : une admission d'un backend
+        # atteint par substitution doit aussi porter admission_only.
+        self.assertEqual(result['status'], 'finished')
+        self.assertIs(result['admission_only'], True)
+        self.assertIs(result['automatic_fallback'], True)
+        self.assertEqual(result['backend'], 'claude-desktop')
+        self.assertEqual(result['served_route'], 'claude-desktop')
+        events = [e for e in routing_events.recent(bridge.db)
+                  if e['type'] == 'routing_substituted']
+        self.assertEqual(len(events), 1)
+        self.assertEqual(json.loads(events[0]['served_route']),
+                         {'backend': 'claude-desktop'})
+
+    def test_substitution_drops_foreign_model_instead_of_catalog_error(self):
+        bridge = self.bridge(FULL_MANIFEST)
+        bridge.claude_program = 'claude'
+        # Porte de facturation (subscription_only False) : refus
+        # billing_unverified sur la cible explicite claude-code ; codex
+        # admissible et seul mesurable doit être servi.
+        self.codex_admissible(bridge)
+        seed_ranking(bridge.db, 'codex', 'openai_gpt-6.1-sol-pro', 2.0)
+        external_rankings.populate_model_map(bridge.db)
+        with patch.object(expert_mcp, 'review',
+                          return_value={'status': 'finished', 'response': 'ok',
+                                        'thread_id': 't1', 'resumable': True}):
+            result = self.delegate(bridge, backend='claude-code', model='opus')
+        # Le modèle 'opus' est valide pour la cible défaillante claude-code
+        # mais étranger au catalogue codex : retiré sans condition, sinon
+        # _codex_admit_model lève ValueError sur l'élu codex et la
+        # substitution meurt en incertain.
+        self.assertEqual(result['status'], 'finished')
+        self.assertIs(result['automatic_fallback'], True)
+        self.assertEqual(result['requested_route'], 'claude-code')
+        self.assertEqual(result['served_route'], 'codex')
+        self.assertEqual(result['backend'], 'codex')
+
+    def test_served_dispatch_exception_returns_original_refusal(self):
+        bridge = self.bridge(FULL_MANIFEST)
+        self.codex_admissible(bridge)
+        seed_ranking(bridge.db, 'codex', 'openai_gpt-6.1-sol-pro', 2.0)
+        external_rankings.populate_model_map(bridge.db)
+        with patch.object(apple_expert, 'configured', return_value=True), \
+             patch.object(apple_expert, 'review',
+                          return_value={'status': 'engine_unavailable',
+                                        'reason': 'fm unavailable for test'}), \
+             patch.object(expert_mcp, 'review', side_effect=RuntimeError('boom')):
+            result = self.delegate(bridge, backend='foundation-models')
+        # Une exception du backend servi : le refus d'origine est retourné
+        # inchangé (request_key mis à part, posé par finish) — aucune clé de
+        # substitution, aucun événement routing_substituted.
+        self.assertEqual(result['status'], 'engine_unavailable')
+        self.assertEqual(result['reason'], 'fm unavailable for test')
+        self.assertEqual(result['request_key'], 'probe-router')
+        self.assertNotIn('automatic_fallback', result)
+        self.assertNotIn('requested_route', result)
+        self.assertNotIn('served_route', result)
+        self.assertEqual([e for e in routing_events.recent(bridge.db)
+                          if e['type'] == 'routing_substituted'], [])
+
     def test_paid_or_unknown_billing_never_substituted(self):
         bridge = self.bridge(FULL_MANIFEST)
         bridge.claude_program = 'claude'

@@ -945,7 +945,11 @@ class Bridge:
         substituées), route vers le meilleur backend admissible, configuré et
         non exclu : cible explicite défaillante → external_rankings.route_choice ;
         aucune cible appelante → default_chain du manifeste, résolue au temps T.
-        Aucun candidat → refus d'origine retourné INCHANGÉ. Une substitution
+        served par attach() sous le backend D'ORIGINE (limitation connue :
+        le contexte de l'événement n'est pas re-threadé vers le backend servi).
+        Aucun candidat → refus d'origine retourné INCHANGÉ (de même qu'une
+        exception du backend servi : le refus d'origine est retourné inchangé
+        pour que l'appelant termine la requête proprement). Une substitution
         effective journalise routing_substituted (requested_route ET
         served_route non nuls) et porte automatic_fallback/requested_route/
         served_route sur le résultat. Une seule substitution par délégation :
@@ -969,10 +973,14 @@ class Bridge:
             return result
         dispatch_args = dict(args)
         dispatch_args['backend'] = served
-        if served != 'codex':
-            # Le modèle demandé appartient au catalogue de la cible défaillante.
-            dispatch_args.pop('model', None)
-        served_result = self._call(name, dispatch_args, on_turn=attach)
+        # Le modèle demandé appartient au catalogue de la cible défaillante :
+        # retiré sans condition (un élu codex refuserait un modèle claude-code).
+        dispatch_args.pop('model', None)
+        try:
+            served_result = self._call(name, dispatch_args, on_turn=attach)
+        except Exception:
+            # L'appelant finit la requête avec le refus d'origine inchangé.
+            return result
         if isinstance(served_result, dict) and served_result.get('status') == 'busy':
             return result
         expert_router.trace_substitution(
@@ -1097,9 +1105,12 @@ class Bridge:
                 result = dict(result, status='needs_review', original_status=result.get('status'),
                               original_reason=result.get('reason'),
                               reason='Input files changed during delegation; result requires reconciliation.', input_changed=True)
-            if clean.get('backend') in ('claude-desktop', 'chatgpt', 'metaai') and result.get('status') == 'finished' \
+            if (result.get('backend') or clean.get('backend')) in ('claude-desktop', 'chatgpt', 'metaai') \
+                    and result.get('status') == 'finished' \
                     and result.get('response') is None:
                 # A desktop submission is only admitted: the MCP round-trip (submit_result) completes it.
+                # Backend SERVI (posé par le handler) : une admission d'un
+                # backend atteint par substitution doit aussi être marquée.
                 result = dict(result, admission_only=True)
             result = self.requests.finish(key, result)
             if return_mode == 'receipt':
