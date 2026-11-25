@@ -105,8 +105,9 @@ def substitute_for_target(bridge, requested_backend, exclude=None, task_class=No
 
 def chain_candidates(bridge, chain, exclude=None):
     """Résout la default_chain au temps T : premier backend admissible
-    (admissible(automatic=True)) ET configuré ET non exclu, dans l'ordre
-    déclaré. Retourne None si aucun."""
+    (admissible(automatic=True)) ET configuré ET non exclu ET sans veto
+    (refus-recent / quota-perime — même filtre que route_choice, lot 3 #258),
+    dans l'ordre déclaré. Retourne None si aucun."""
     import routing_events
     configured = set(_configured_backends(bridge))
     for backend in chain or []:
@@ -115,8 +116,11 @@ def chain_candidates(bridge, chain, exclude=None):
         if backend not in configured or not _manifest_admits(bridge, backend):
             continue
         ok, _ = routing_events.admissible(bridge.db, backend, True)
-        if ok:
-            return backend
+        if not ok:
+            continue
+        if routing_events.vetos(bridge.db, backend):
+            continue  # refus-recent / quota-perime : même filtre que route_choice
+        return backend
     return None
 
 

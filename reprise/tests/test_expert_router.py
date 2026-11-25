@@ -227,6 +227,76 @@ class ExpertRouterTests(unittest.TestCase):
             {'status': 'engine_unavailable',
              'reason': 'Backend metaai désactivé dans experts-manifest.json (#258 lot 2).'}))
 
+    # — Branchement record_refusal (lot 3 #258) : observation, jamais re-routage —
+
+    def test_observed_refusal_recorded_without_optin(self):
+        # Flag OFF : le refus est OBSERVÉ (route_refusals) même sans opt-in —
+        # l'observation est un fait, pas un choix de routage ; le refus
+        # d'origine reste inchangé (aucune annotation de substitution).
+        bridge = self.bridge(FULL_MANIFEST, automatic_fallback_enabled=False)
+        self.codex_admissible(bridge)
+        with patch.object(apple_expert, 'configured', return_value=False):
+            result = self.delegate(bridge, backend='foundation-models')
+        self.assertEqual(result['status'], 'engine_unavailable')
+        self.assertNotIn('requested_route', result)
+        self.assertNotIn('served_route', result)
+        self.assertEqual(bridge.db.execute(
+            'SELECT channel, reason FROM route_refusals').fetchone(),
+            ('foundation-models', 'engine_unavailable'))
+
+    def test_observed_refusal_manifest_gate_never_recorded(self):
+        # Les trois portes manifeste restent définitives : le marqueur lot 2
+        # fait échouer is_trigger → AUCUN refus journalisé (refus structurel,
+        # pas une indisponibilité transitoire).
+        bridge = self.bridge(FULL_MANIFEST)
+        self.codex_admissible(bridge)
+        result = self.delegate(bridge, backend='metaai')
+        self.assertEqual(result['status'], 'engine_unavailable')
+        self.assertIsNone(bridge.db.execute(
+            'SELECT 1 FROM route_refusals').fetchone())
+
+    def test_final_payload_unchanged_by_observation(self):
+        # Porte socket chatgpt (refus déclencheur, backend résolu de la
+        # requête) : journalisée, mais l'enveloppe finale reste identique au
+        # contrat — l'observation n'ajoute aucune clé au résultat.
+        bridge = self.bridge(FULL_MANIFEST)
+        result = self.delegate(bridge, backend='chatgpt', request_key='probe-chatgpt')
+        self.assertEqual(result, {'status': 'engine_unavailable',
+                                  'reason': '--chatgpt-state non configuré',
+                                  'request_key': 'probe-chatgpt'})
+        self.assertEqual(bridge.db.execute(
+            'SELECT channel, reason FROM route_refusals').fetchone(),
+            ('chatgpt', 'engine_unavailable'))
+
+    def test_default_chain_skips_vetoed_backend(self):
+        # chain_candidates applique le même filtre vetos() que route_choice :
+        # un backend avec un refus observé récent est sauté au profit du
+        # suivant ; sans refus, il reste premier éligible.
+        import expert_router
+        bridge = self.bridge(FULL_MANIFEST)
+        self.codex_admissible(bridge)
+        routing_events.declare(bridge.db, 'foundation-models', 'free')
+        with patch.object(apple_expert, 'configured', return_value=True):
+            self.assertEqual(expert_router.chain_candidates(
+                bridge, ['foundation-models', 'codex']), 'foundation-models')
+            routing_events.record_refusal(bridge.db, 'foundation-models', 'engine_unavailable')
+            self.assertEqual(expert_router.chain_candidates(
+                bridge, ['foundation-models', 'codex']), 'codex')
+
+    def test_recorded_refusal_expires_after_cooldown(self):
+        # Cooldown = durée (1800 s), pas une préférence d'ordre définitive :
+        # après expiration, la route redevient éligible dans la chaîne.
+        import expert_router
+        bridge = self.bridge(FULL_MANIFEST)
+        self.codex_admissible(bridge)
+        routing_events.record_refusal(bridge.db, 'codex', 'quota_blocked')
+        self.assertIsNone(expert_router.chain_candidates(bridge, ['codex']))
+        bridge.db.execute(
+            'UPDATE route_refusals SET ts=?',
+            (time.time() - routing_events.REFUSAL_COOLDOWN_S - 1.0,))
+        bridge.db.commit()
+        self.assertEqual(expert_router.chain_candidates(bridge, ['codex']), 'codex')
+
     # — Substitution explicite : ordre depuis external_rankings —
 
     def test_explicit_failure_substitutes_to_cheapest_ranked_candidate(self):

@@ -964,6 +964,20 @@ class Bridge:
             WHERE r.state IN ('recorded','indeterminate'))''', (scope,))
         self.db.commit()
 
+    def _record_observed_refusal(self, backend, result):
+        """Lot 3 #258 : tout refus déclencheur final (hors portes manifeste
+        définitives) est journalisé via routing_events.record_refusal →
+        veto refus-recent. Opt-in automatique ou non : l'observation est
+        un fait, pas un choix de routage. Borné try/except : ne lève jamais."""
+        try:
+            import expert_router
+            import routing_events
+            if expert_router.is_trigger(result):
+                resolved = backend or result.get('backend') or 'codex'
+                routing_events.record_refusal(self.db, resolved, str(result.get('status')))
+        except Exception:
+            pass
+
     def attempt_substitution(self, name, args, mode, attach, result, key=None):
         """Substitution automatique de délégation (opt-in, flag OFF par
         défaut). Sur un refus déclencheur (quota_blocked, billing_unverified,
@@ -1009,6 +1023,10 @@ class Bridge:
             return result
         if isinstance(served_result, dict) and served_result.get('status') == 'busy':
             return result
+        # Lot 3 #258 : le refus du backend servi est observé lui aussi (attribué
+        # au servi, pas à la cible d'origine) — un échec du servi n'est jamais
+        # réessayé silencieusement au tour suivant (veto refus-recent).
+        self._record_observed_refusal(served, served_result)
         expert_router.trace_substitution(
             self, name, failed, served, level=args.get('level'),
             request_key=key or args.get('request_key'), thread_id=args.get('thread_id'),
@@ -1072,6 +1090,9 @@ class Bridge:
                 known = self.db.execute('SELECT 1 FROM delegation_requests WHERE scope=? AND request_key=?',
                                         (self.requests.scope, args.get('request_key'))).fetchone()
                 if not known:
+                    # Lot 3 #258 : ce refus ne passe jamais par le tour réel
+                    # (court-circuit preflight) — observation ici, avant retour.
+                    self._record_observed_refusal(clean.get('backend'), preflight_result)
                     return preflight_result
             key = args.get('request_key')
             payload = {'tool': name, **clean}
@@ -1115,6 +1136,7 @@ class Bridge:
                 result = self._call(name, clean, on_turn=attach)
             finally:
                 self.requests.release(key, self.owner)
+            self._record_observed_refusal(clean.get('backend'), result)
             result = self.attempt_substitution(name, clean, mode, attach, result, key)
             try:
                 changed = before_evidence != file_evidence(self.root, args.get('paths'), args.get('filePaths'))
