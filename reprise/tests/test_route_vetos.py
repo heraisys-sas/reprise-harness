@@ -346,6 +346,20 @@ class SyntheseV3Tests(DatabaseTestCase):
         self.assertEqual(external_rankings.route_choice(
             db, ['codex'], automatic=True), 'codex')
 
+    def test_rapide_priorise_local_free_sans_prix(self):
+        # Synthèse Meta AI : foundation-models n'a aucune cote externe — la
+        # priorité rapide doit l'élire sans prix corroboré, puis retomber
+        # sur le moins cher si le local est vetôé.
+        db = self.memory_db()
+        routing_events.declare(db, 'fm', 'free')
+        routing_events.declare(db, 'codex', 'included')
+        seed_channel(db, 'codex', 'gpt-6', 'price_per_mtok', 2.0)
+        self.assertEqual(external_rankings.route_choice(
+            db, ['codex', 'fm'], automatic=True, task_class='rapide'), 'fm')
+        routing_events.record_refusal(db, 'fm', 'engine_unavailable')
+        self.assertEqual(external_rankings.route_choice(
+            db, ['codex', 'fm'], automatic=True, task_class='rapide'), 'codex')
+
     def test_substitute_for_target_passe_task_class(self):
         import expert_router
         db = self.memory_db()

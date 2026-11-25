@@ -502,6 +502,14 @@ def route_choice(db, channels, automatic=True, task_class=None):
             # classe explicite — filtré avant route_metrics (économie de calcul).
             admissible = [ch for ch in admissible if not routing_events.vetos(db, ch)]
     measured = [(ch, route_metrics(db, ch)) for ch in admissible]
+    if task_class == 'rapide':
+        # Priorité au local free SANS exigence de prix corroboré (synthèse
+        # Meta AI : foundation-models n'a aucune cote externe, exiger un prix
+        # rendrait la priorité morte). Hors ironclaw (contractuel) ; en auto,
+        # les vetos ont déjà retiré les canaux indisponibles de admissible.
+        for ch in admissible:
+            if ch != 'ironclaw' and routing_events.admissible(db, ch, True)[1] == 'free':
+                return ch
     scored = []
     for ch, m in measured:
         if m['price_per_mtok'] is None:
@@ -518,10 +526,4 @@ def route_choice(db, channels, automatic=True, task_class=None):
         scored.append((ch, m))
     if not scored:
         return None
-    if task_class == 'rapide':
-        locales_free = [ch for ch, _ in scored
-                        if ch != 'ironclaw'
-                        and routing_events.admissible(db, ch, True)[1] == 'free']
-        if locales_free:
-            scored = [(ch, m) for ch, m in scored if ch in locales_free]
     return min(scored, key=lambda item: item[1]['price_per_mtok'])[0]
