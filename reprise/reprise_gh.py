@@ -17,7 +17,10 @@ reponse concrete a sa demande d'un « acces en lecture, stable » et d'un
 
 Fail-closed partout : politique absente = lecture seule pour tous ; acteur
 inconnu en ecriture = refus avant tout appel reseau ; toute reprise apres echec
-passe par un nouvel appel explicite (pas de relance automatique).
+passe par un nouvel appel explicite (pas de relance automatique). `init`
+n'auto-eleve jamais un acteur : soit l'acteur est deja liste en ecriture dans
+la politique courante, soit bootstrap operateur par consent nominatif trace
+(`--consent`, journalise) — sinon refus (revue AutoCoder 26/11).
 
 Usage CLI :
     python3 reprise_gh.py --actor autoclaw api GET /repos/OWNER/REPO/issues/270
@@ -130,7 +133,38 @@ def check_permission(policy, actor, method):
         )
 
 
-def audit(audit_path, actor, method, path, status, error=None):
+def init_policy(actor, write_actors, consent=None, policy_path=None, audit_path=None):
+    """Ecrit la politique, sans auto-elevation (revue AutoCoder 26/11).
+
+    Deux voies, jamais une troisieme :
+    - l'acteur est deja liste en ecriture dans la politique courante ;
+    - bootstrap operateur : consent nominatif (--consent), trace au journal.
+    Politique absente = write_actors vide = aucun acteur ne peut s'auto-elever :
+    le premier amorcage passe par le consent de l'operateur, journalise.
+    """
+    policy_path = policy_path or DEFAULT_POLICY_PATH
+    audit_path = audit_path or DEFAULT_AUDIT_PATH
+    acteurs = [x.strip() for x in (write_actors or []) if x and x.strip()]
+    consent = (consent or '').strip()
+    try:
+        check_permission(load_policy(policy_path), actor, 'POST')
+        voie = 'acteur_liste'
+    except GhError as exc:
+        if not consent:
+            audit(audit_path, actor, 'INIT', policy_path, 'refused', error=str(exc))
+            raise GhError(
+                "init refuse pour « %s » : acteur non liste en ecriture et "
+                "aucun consent operateur (--consent) : pas d'auto-elevation" % actor)
+        voie = 'consentement_operateur'
+    save_policy({'enabled': True, 'write_actors': acteurs}, policy_path)
+    extra = {'voie': voie}
+    if consent:
+        extra['consent_ref'] = consent[:128]
+    audit(audit_path, actor, 'INIT', policy_path, 'ok', extra=extra)
+    return voie
+
+
+def audit(audit_path, actor, method, path, status, error=None, extra=None):
     entry = {
         'ts': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         'actor': actor,
@@ -140,6 +174,8 @@ def audit(audit_path, actor, method, path, status, error=None):
     }
     if error:
         entry['error'] = error[:200]
+    if extra:
+        entry.update(extra)
     os.makedirs(os.path.dirname(audit_path) or '.', exist_ok=True)
     with open(audit_path, 'a', encoding='utf-8') as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + '\n')
@@ -249,10 +285,10 @@ def _cmd_create_issue(args):
 
 
 def _cmd_init(args):
-    actors = [x.strip() for x in (args.write_actors or '').split(',') if x.strip()]
-    save_policy({'enabled': True, 'write_actors': actors})
-    print('Politique ecrite : %s' % DEFAULT_POLICY_PATH)
-    print('Acteurs en ecriture : %s' % (actors or '(aucun — lecture seule globale)'))
+    acteurs = [x.strip() for x in (args.write_actors or '').split(',') if x.strip()]
+    voie = init_policy(args.actor, acteurs, consent=getattr(args, 'consent', None))
+    print('Politique ecrite : %s (voie : %s)' % (DEFAULT_POLICY_PATH, voie))
+    print('Acteurs en ecriture : %s' % (acteurs or '(aucun — lecture seule globale)'))
     return 0
 
 
@@ -277,8 +313,10 @@ def build_parser():
     p_new.add_argument('--body-file', required=True)
     p_new.add_argument('--labels', default='')
     p_new.set_defaults(func=_cmd_create_issue)
-    p_init = sub.add_parser('init', help='ecrire la politique (ecriture des acteurs listes)')
+    p_init = sub.add_parser('init', help='ecrire la politique (sans auto-elevation)')
     p_init.add_argument('--write-actors', default='')
+    p_init.add_argument('--consent', default='',
+                        help='bootstrap operateur : consent nominatif trace')
     p_init.set_defaults(func=_cmd_init)
     return parser
 

@@ -200,5 +200,61 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0)
 
 
+class InitTest(unittest.TestCase):
+    # init sans auto-elevation : acteur liste, ou consent operateur trace.
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.policy = os.path.join(self.dir, 'gh-policy.json')
+        self.audit = os.path.join(self.dir, 'gh-audit.jsonl')
+
+    def test_init_acteur_non_liste_refuse_sans_auto_elevation(self):
+        reprise_gh.save_policy({'enabled': True, 'write_actors': ['claude']}, self.policy)
+        with self.assertRaises(reprise_gh.GhError):
+            reprise_gh.init_policy('metaai', ['metaai'],
+                                   policy_path=self.policy, audit_path=self.audit)
+        self.assertEqual(reprise_gh.load_policy(self.policy)['write_actors'], ['claude'])
+        lines = [json.loads(x) for x in open(self.audit) if x.strip()]
+        self.assertEqual(lines[-1]['status'], 'refused')
+
+    def test_init_politique_absente_refuse_sans_consent(self):
+        with self.assertRaises(reprise_gh.GhError):
+            reprise_gh.init_policy('metaai', ['metaai'],
+                                   policy_path=self.policy, audit_path=self.audit)
+        self.assertFalse(os.path.exists(self.policy))
+
+    def test_init_acteur_liste_ok(self):
+        reprise_gh.save_policy({'enabled': True, 'write_actors': ['autoclaw']}, self.policy)
+        voie = reprise_gh.init_policy('autoclaw', ['autoclaw', 'claude'],
+                                      policy_path=self.policy, audit_path=self.audit)
+        self.assertEqual(voie, 'acteur_liste')
+        self.assertEqual(
+            reprise_gh.load_policy(self.policy)['write_actors'], ['autoclaw', 'claude'])
+        lines = [json.loads(x) for x in open(self.audit) if x.strip()]
+        self.assertEqual(lines[-1]['status'], 'ok')
+        self.assertEqual(lines[-1]['voie'], 'acteur_liste')
+
+    def test_init_bootstrap_consent_operateur_trace(self):
+        voie = reprise_gh.init_policy(
+            'autoclaw', ['autoclaw'], consent='olivier 2026-11-26',
+            policy_path=self.policy, audit_path=self.audit)
+        self.assertEqual(voie, 'consentement_operateur')
+        lines = [json.loads(x) for x in open(self.audit) if x.strip()]
+        self.assertEqual(lines[-1]['consent_ref'], 'olivier 2026-11-26')
+
+    def test_init_cli_refuse_et_n_ecrit_pas(self):
+        ancien = (reprise_gh.DEFAULT_POLICY_PATH, reprise_gh.DEFAULT_AUDIT_PATH)
+        reprise_gh.DEFAULT_POLICY_PATH = self.policy
+        reprise_gh.DEFAULT_AUDIT_PATH = self.audit
+        try:
+            with mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake:
+                code = reprise_gh.main([
+                    '--actor', 'metaai', 'init', '--write-actors', 'metaai'])
+            self.assertEqual(code, 1)
+            fake.assert_not_called()
+            self.assertFalse(os.path.exists(self.policy))
+        finally:
+            reprise_gh.DEFAULT_POLICY_PATH, reprise_gh.DEFAULT_AUDIT_PATH = ancien
+
+
 if __name__ == '__main__':
     unittest.main()
