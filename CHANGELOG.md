@@ -2,6 +2,15 @@
 
 Historique des versions, consolidé depuis les notes de release et les notes produit datées (détails complets dans l'historique Git, commits et balises).
 
+## 0.1.25 — routeur de délégation automatique : substitution entre backends sur refus quota/facturation/moteur
+
+- **Routeur maison `reprise/expert_router.py` (lot 4, zéro dépendance)** — motifs empruntés au routeur LiteLLM avec attribution (chaînes de repli ordonnées, cooldown par cible comme préférence d'ordre uniquement — [reliability](https://docs.litellm.ai/docs/router/learn/reliability), [routing](https://docs.litellm.ai/docs/routing)) ; anti-patterns expressément refusés : réessayer la même cible après un refus de quota (contrat QUOTA-CONTINUATION : travail conservé, continuation native), repli implicite vers une route payante (ironclaw exclu contractuellement via `NEVER_AUTO_BACKENDS`).
+- **Déclencheurs arbitrés opérateur** : les trois statuts `quota_blocked`, `billing_unverified`, `engine_unavailable` déclenchent une substitution post-tour réel (jamais en preflight) ; les trois portes manifeste (#258 lot 2 : backend désactivé, déclaré sans handler, inconnu du manifeste) restent des **refus définitifs jamais substitués** ; mode `implementation` jamais substitué (choix conservateur).
+- **Choix du remplaçant** : cible explicite → candidats configurés à l'instant T et admissibles (free/included, `routing_events.admissible`), ordonnés par `external_rankings.route_choice(automatic=True)` ; délégation sans cible → `default_chain` déclarée dans `experts-manifest.json` (`["codex", "foundation-models"]`, validation stricte : liste non vide, ids uniques et déclarés), résolue post-déclencheur avec exclusion de la cible défaillante. Aucun candidat → refus d'origine préservé byte-identique ; seul un `busy` du substitut renvoie le refus d'origine.
+- **Traçabilité** : type `routing_substituted` (réservé depuis routing_events v4) écrit avec `requested_route` ET `served_route` non nuls ; résultat annoté `automatic_fallback: true` + routes — jamais silencieux.
+- **Activation délibérée** : `Bridge(automatic_fallback_enabled=False)` — OFF par défaut, bool strict, état réel reflété dans `reprise_backends` ; le flip se fait au déploiement avec l'opérateur.
+- 21 tests nouveaux (`test_expert_router.py`) ; `expert_router.py` ajouté à l'export release (`share_files`). Suite complète sur dev : **2392 tests OK / skipped=5**.
+
 ## 0.1.24 — catalogue experts déclaratif : failover last-known-good, manifeste, followup ChatGPT
 
 - **Catalogue Codex dynamique avec failover last-known-good persisté (#253, #242)** : résolution ordonnée des routes codex et admission des modèles explicites contre `model/list` (proxy RPC, cache TTL) ; le dernier catalogue valide est persisté atomiquement (`CATALOG_PATH`) et sert de repli — absent, corrompu ou sans modèle valide = ignoré ; admission refusée avant toute insertion en base ; un échec d'écriture du last-known-good est journalisé sans invalider le catalogue live.
