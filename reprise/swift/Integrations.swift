@@ -220,7 +220,7 @@ extension App {
         codexIntegrationPlan = nil
         codexIntegrationAcknowledged = false
     }
-    func inspectCodexIntegration() {
+    func inspectCodexIntegration(completion: (() -> Void)? = nil) {
         guard stateReady, !setupBusy else { return }
         setupCommand(["codex-integration-inspect"]) { result in
             self.codexIntegrationResult = result
@@ -228,6 +228,7 @@ extension App {
             if !self.codexIntegrationOperations.contains(where: { $0["id"] as? String == self.codexIntegrationOperationID }) {
                 self.codexIntegrationOperationID = ""
             }
+            completion?()
         }
     }
     func verifyCodexIntegrationOperation() {
@@ -268,10 +269,11 @@ extension App {
             self.codexIntegrationResult = result
         }
     }
-    func inspectMetaaiIntegration() {
+    func inspectMetaaiIntegration(completion: (() -> Void)? = nil) {
         guard stateReady, !setupBusy else { return }
         setupCommand(["metaai-integration-inspect"]) { result in
             self.metaaiIntegrationResult = result
+            completion?()
         }
     }
     func invalidateMetaaiIntegrationPlan() {
@@ -306,10 +308,11 @@ extension App {
             self.metaaiIntegrationResult = result
         }
     }
-    func inspectClaudeIntegration() {
+    func inspectClaudeIntegration(completion: (() -> Void)? = nil) {
         guard stateReady, !setupBusy else { return }
         setupCommand(["claude-integration-inspect"]) { result in
             self.claudeIntegrationResult = result
+            completion?()
         }
     }
     func previewClaudeIntegration(_ action: String) {
@@ -357,53 +360,6 @@ extension App {
             return
         }
         setupCommand(["claude-integration-verify", "--project", claudeIntegrationProject]) { self.claudeIntegrationResult = $0 }
-    }
-
-    func inspectChatgptIntegration() {
-        guard stateReady, !setupBusy else { return }
-        setupCommand(["chatgpt-integration-inspect"]) { result in
-            self.chatgptIntegrationResult = result
-        }
-    }
-    func previewChatgptIntegration(_ action: String) {
-        guard stateReady, !setupBusy else { return }
-        guard !chatgptIntegrationProject.isEmpty else { return }
-        let args = ["chatgpt-integration-plan", "--project", chatgptIntegrationProject, "--action", action]
-        setupCommand(args) { result in
-            self.chatgptIntegrationResult = result
-            self.chatgptIntegrationPlan = result["plan"] as? [String: Any]
-            self.chatgptIntegrationAcknowledged = false
-        }
-    }
-    func applyChatgptIntegration() {
-        guard stateReady, !setupBusy, chatgptIntegrationAcknowledged, let plan = chatgptIntegrationPlan else { return }
-        guard plan["project"] as? String == chatgptIntegrationProject else { invalidateChatgptIntegrationPlan(); return }
-        setupCommand(["chatgpt-integration-apply"], input: ["plan": plan]) { result in
-            var displayedResult = result
-            displayedResult["action"] = plan["action"]
-            displayedResult["project"] = plan["project"]
-            self.chatgptIntegrationResult = displayedResult
-            self.chatgptIntegrationAcknowledged = false
-            if result["status"] as? String == "completed" {
-                self.chatgptIntegrationPlan = nil
-            }
-        }
-    }
-    func verifyChatgptIntegration() {
-        guard stateReady, !setupBusy else { return }
-        guard !chatgptIntegrationProject.isEmpty else {
-            chatgptIntegrationResult = ["status": "refused", "message": "Associez un projet avant la vérification du pont ChatGPT."]
-            return
-        }
-        setupCommand(["chatgpt-integration-verify", "--project", chatgptIntegrationProject]) { self.chatgptIntegrationResult = $0 }
-    }
-    func invalidateChatgptIntegrationPlan() {
-        chatgptIntegrationPlan = nil
-        chatgptIntegrationAcknowledged = false
-        let status = chatgptIntegrationResult["status"] as? String
-        if !["completed", "verified", "inspected"].contains(status ?? "") {
-            chatgptIntegrationResult = [:]
-        }
     }
 
     func invalidateClaudeInbox(clearTasks: Bool = true) {
@@ -653,13 +609,14 @@ extension App {
             invalidateIntegrationPlan()
         }
     }
-    func inspectIntegration() {
+    func inspectIntegration(completion: (() -> Void)? = nil) {
         guard stateReady, !setupBusy else { return }
         invalidateIntegrationPlan()
         let generation = integrationPlanGeneration, selection = harnessPlanContext
         var args = ["harness-integration-inspect", "--home", integrationHome]
         if !integrationProfile.isEmpty { args += ["--profile", integrationProfile] }
         setupCommand(args) { result in
+            completion?()
             guard generation == self.integrationPlanGeneration,
                   selection == self.harnessPlanContext else { return }
             self.integrationProfiles = result["profiles"] as? [String] ?? []
@@ -825,20 +782,16 @@ extension App {
             projectRenameDraft = ""
             integrationProject = ""
             claudeIntegrationProject = ""
-            chatgptIntegrationProject = ""
             invalidateIntegrationPlan()
             invalidateClaudeIntegrationPlan()
-            invalidateChatgptIntegrationPlan()
             return
         }
         projectRenameDraft = project["name"] as? String ?? ""
         let workspaces = project["workspaces"] as? [String: String] ?? [:]
         integrationProject = workspaces["harness"] ?? ""
         claudeIntegrationProject = workspaces["claude"] ?? ""
-        chatgptIntegrationProject = workspaces["claude"] ?? ""
         invalidateIntegrationPlan()
         invalidateClaudeIntegrationPlan()
-        invalidateChatgptIntegrationPlan()
     }
 
     func chooseProjectDirectory(_ target: String) {
@@ -1210,8 +1163,9 @@ struct Integrations: View {
             SettingsCard(title: "Connecteur Claude Desktop",
                          status: app.claudeIntegrationResult["status"] as? String == "verified" ? "Release vérifiée" :
                              app.claudeIntegrationResult["status"] as? String == "completed" ?
-                                 ((app.claudeIntegrationResult["action"] as? String == "remove") ? "Retrait appliqué" : "Plan appliqué") : "État inconnu",
-                         ok: ["completed", "verified"].contains(app.claudeIntegrationResult["status"] as? String ?? "")) {
+                                 ((app.claudeIntegrationResult["action"] as? String == "remove") ? "Retrait appliqué" : "Plan appliqué") :
+                             app.claudeIntegrationResult["status"] as? String == "inspected" ? "Inspection relancée" : "État inconnu",
+                         ok: ["completed", "verified", "inspected"].contains(app.claudeIntegrationResult["status"] as? String ?? "")) {
                 HStack {
                     path("Workspace Claude du projet sélectionné", app.claudeIntegrationProject)
                 }
@@ -1337,55 +1291,6 @@ struct Integrations: View {
                     }
                 }
             }.disabled(app.setupBusy)
-            SettingsCard(title: "Connecteur ChatGPT (pont MCP)",
-                         status: app.chatgptIntegrationResult["status"] as? String == "verified" ? "Release vérifiée" :
-                             app.chatgptIntegrationResult["status"] as? String == "completed" ?
-                                 ((app.chatgptIntegrationResult["action"] as? String == "remove") ? "Retrait appliqué" : "Plan appliqué") : "État inconnu",
-                         ok: ["completed", "verified"].contains(app.chatgptIntegrationResult["status"] as? String ?? "")) {
-                HStack {
-                    path("Projet du pont", app.chatgptIntegrationProject)
-                }
-                HStack(spacing: 10) {
-                    Button("Relire l’état") { app.inspectChatgptIntegration() }
-                    Button("Installer ou mettre à jour…") { app.previewChatgptIntegration("install") }.disabled(app.chatgptIntegrationProject.isEmpty)
-                    Button("Retirer…") { app.previewChatgptIntegration("remove") }.disabled(app.chatgptIntegrationProject.isEmpty)
-                    Button("Vérifier") { app.verifyChatgptIntegration() }.disabled(app.chatgptIntegrationProject.isEmpty)
-                }
-                SettingsHint(
-                    text: "Reprise écrit la table [mcp_servers.reprise] dans ~/.codex/config.toml, partagée avec ChatGPT desktop.",
-                    detail: "ChatGPT desktop partage la configuration MCP de Codex : le même fichier ~/.codex/config.toml (tables [mcp_servers.<nom>]) lu par son sélecteur Réglages → MCP servers. Reprise ne modifie que la table gérée reprise et préserve le reste du fichier. Après application, redémarrez ChatGPT (Réglages → MCP servers → Restart) pour qu’il relise config.toml. La vérification exécute initialize/tools/list sur la release, sans inférence ; le chargement dans ChatGPT reste non observé.",
-                    detailLabel: "Consigne de redémarrage et limites")
-                if let plan = app.chatgptIntegrationPlan {
-                    SettingsHint(text: "Un plan est prêt ; il attend votre accord.",
-                                 detail: planDetail(plan), detailLabel: "Plan exact du connecteur")
-                    Text("Empreinte du plan : " + (plan["fingerprint"] as? String ?? "indisponible")).font(.caption)
-                    Toggle("J’ai vérifié le projet et les changements du connecteur", isOn: $app.chatgptIntegrationAcknowledged)
-                    Button("Appliquer le plan") { app.applyChatgptIntegration() }.disabled(!app.chatgptIntegrationAcknowledged)
-                }
-                if app.chatgptIntegrationResult["status"] as? String == "completed" {
-                    let changed = app.chatgptIntegrationResult["changed"] as? Bool == true
-                    let action = app.chatgptIntegrationResult["action"] as? String ?? "install"
-                    SettingsHint(text: action == "remove"
-                                    ? (changed ? "Table gérée retirée de config.toml." : "Le connecteur était déjà retiré.")
-                                    : (changed ? "Table [mcp_servers.reprise] écrite dans config.toml ; redémarrez ChatGPT desktop (Réglages → MCP servers → Restart)."
-                                               : "Configuration déjà conforme ; aucune écriture."),
-                                 detail: "Ce résultat concerne le dernier plan appliqué. Chargement par ChatGPT : non observé.",
-                                 detailLabel: "Dernier résultat")
-                } else if app.chatgptIntegrationResult["status"] as? String == "verified" {
-                    SettingsHint(text: "Vérification locale : les outils du pont répondent dans la release testée.",
-                                 detail: "La release a répondu à initialize/tools/list sans inférence. Chargement par ChatGPT : non observé ; redémarrez ChatGPT desktop (Réglages → MCP servers → Restart) puis vérifiez les outils dans le client.",
-                                 detailLabel: "Dernière vérification")
-                } else if app.chatgptIntegrationResult["status"] as? String == "inspected" {
-                    SettingsHint(text: (app.chatgptIntegrationResult["managed"] as? Bool == true)
-                                    ? "Configuration gérée active et conforme."
-                                    : "Aucune configuration gérée active.",
-                                 detailLabel: "Dernière inspection")
-                }
-                if !app.chatgptIntegrationResult.isEmpty {
-                    SettingsHint(text: app.chatgptIntegrationResult["message"] as? String ?? "Dernier résultat du pont ChatGPT.",
-                                 detail: planDetail(app.chatgptIntegrationResult), detailLabel: "Réponse complète")
-                }
-            }
             SettingsCard(title: "Reprise après quota Claude Desktop",
                          status: app.claudeQuotaState["enabled"] as? Bool == true ? "Active" : "En pause",
                          ok: true) {
@@ -1500,7 +1405,6 @@ struct Integrations: View {
         }
         .onChange(of: app.claudeAwaitChoice) { _, _ in app.invalidateClaudeIntegrationPlan() }
         .onChange(of: app.claudeReplaceProbe) { _, _ in app.invalidateClaudeIntegrationPlan() }
-        .onChange(of: app.chatgptIntegrationProject) { _, _ in app.invalidateChatgptIntegrationPlan() }
     }
 }
 

@@ -307,6 +307,10 @@ struct Dashboard: View {
                             if !app.verifyEverythingSummary.isEmpty && !app.verifyEverythingBusy {
                                 Text(app.verifyEverythingSummary).font(.callout).foregroundStyle(.secondary)
                             }
+                            Divider()
+                            sectionIntro("Liaisons entre applications", "Comprenez les liaisons et ouvrez leur diagnostic.")
+                            ecosystem
+                            Divider()
                             quotaGauges
                 Surface {
                     VStack(alignment: .leading, spacing: 18) {
@@ -391,9 +395,6 @@ struct Dashboard: View {
                     }
                 }
                             Integrations(app: app)
-                            Divider()
-                            sectionIntro("Liaisons entre applications", "Comprenez les liaisons et ouvrez leur diagnostic.")
-                            ecosystem
                             Divider()
                             sectionIntro("Connexions", "Configurez l’accès aux services Codex, Claude Desktop et IronClaw.")
                             connections
@@ -515,7 +516,7 @@ struct Dashboard: View {
                         ecosystemLink("Quick Apply · adaptateur", symbol: "bolt.horizontal", value: quick) { app.connectionTab = "quickapply" }
                     }
                     if applicationPresent("com.anthropic.claudefordesktop") {
-                        ecosystemLink("Claude Desktop", symbol: "bubble.left.and.bubble.right", value: .init(level: .attention, label: app.running.contains("com.anthropic.claudefordesktop") ? "Application ouverte" : "Application présente", detail: "Reprise n’a pas vérifié la connexion ni le chargement des outils.")) { app.connectionTab = "quickapply" }
+                        ecosystemLink("Claude Desktop", symbol: "bubble.left.and.bubble.right", value: quick) { app.connectionTab = "quickapply" }
                     }
                     if FileManager.default.fileExists(atPath: app.root.appendingPathComponent("claude_cdp_pipe.py").path), (routes["cdp_web"] as? [String: Any])?["enabled"] as? Bool == true {
                         ecosystemLink("CDP web · via Quick Apply", symbol: "globe", value: cdp) { app.connectionTab = "quickapply" }

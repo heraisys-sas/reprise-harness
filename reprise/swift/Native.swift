@@ -60,10 +60,6 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var claudeIntegrationPlan: [String: Any]?
     @Published var claudeIntegrationResult: [String: Any] = [:]
     @Published var claudeIntegrationAcknowledged = false
-    @Published var chatgptIntegrationProject = ""
-    @Published var chatgptIntegrationPlan: [String: Any]?
-    @Published var chatgptIntegrationResult: [String: Any] = [:]
-    @Published var chatgptIntegrationAcknowledged = false
     @Published var claudeReplaceProbe = false
     @Published var claudeAwaitChoice = "preserve"
     @Published var claudeInboxTasks: [[String: Any]] = []
@@ -793,10 +789,14 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
             self.loadAppClones()
         }
     }
-    /// Chantier ② (issue #263) : « Vérifier tout » — relance toutes les
-    /// vérifications locales et distantes puis résume les conclusions.
+    /// Chantier ② (issue #263) : « Vérifier tout » — relance réellement la
+    /// vérification de chaque composant de la page : connexions, quotas,
+    /// clé de chiffrement, santé, liaisons Codex / Claude Desktop / ReMetaAI,
+    /// profil Harness et échange avec les clones d'app (AutoClaw).
+    /// Les inspections passent par le processus de préparation (une commande
+    /// à la fois) : elles sont chaînées par completion, jamais en parallèle.
     func verifyEverything() {
-        guard stateReady, !verifyEverythingBusy, !busy else { return }
+        guard stateReady, !verifyEverythingBusy, !busy, !setupBusy, cloneActionBusy.isEmpty else { return }
         verifyEverythingBusy = true
         verifyEverythingSummary = "Vérification en cours…"
         refresh()
@@ -804,15 +804,37 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
         testConnection()
         testDesktopConnection()
         checkVaultAvailability()
-        let deadline = Date().addingTimeInterval(20)
+        cloneInspect()
+        inspectCodexIntegration {
+            self.inspectClaudeIntegration {
+                self.inspectMetaaiIntegration {
+                    self.inspectIntegration()
+                }
+            }
+        }
+        let deadline = Date().addingTimeInterval(40)
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { timer in
-            let quiet = !self.busy && !self.connectionBusy && !self.desktopConnectionBusy && !self.vaultChecking && !self.quotaBusy
+            let quiet = !self.busy && !self.connectionBusy && !self.desktopConnectionBusy
+                && !self.vaultChecking && !self.quotaBusy && self.cloneActionBusy.isEmpty && !self.setupBusy
             guard quiet || Date() > deadline else { return }
             timer.invalidate()
+            // Une liaison est résumée seulement si sa commande a répondu ;
+            // sans réponse, elle reste absente du résumé plutôt que déclarée bonne.
+            func statutLiaison(_ nom: String, _ result: [String: Any]) -> String? {
+                guard !result.isEmpty, let status = result["status"] as? String, !status.isEmpty else { return nil }
+                if ["verified", "completed", "ok", "inspected", "clean"].contains(status) { return nom + " vérifiée" }
+                if ["failed", "refused", "error", "drift", "unstable"].contains(status) { return nom + " : problème (" + status + ")" }
+                return nom + " : " + status
+            }
             var parts: [String] = []
             if self.connectionVerified { parts.append("Codex connecté") } else if !self.connectionNote.isEmpty { parts.append("Codex : " + self.connectionNote) }
             if self.desktopConnectionVerified { parts.append("Claude Desktop connecté") } else if !self.desktopConnectionNote.isEmpty { parts.append("Claude Desktop : " + self.desktopConnectionNote) }
             if self.vaultAccessVerified { parts.append("Clé de chiffrement accessible") }
+            if let ligne = statutLiaison("Liaison Codex", self.codexIntegrationResult) { parts.append(ligne) }
+            if let ligne = statutLiaison("Liaison Claude Desktop", self.claudeIntegrationResult) { parts.append(ligne) }
+            if let ligne = statutLiaison("Copie ReMetaAI", self.metaaiIntegrationResult) { parts.append(ligne) }
+            if let ligne = statutLiaison("Profil Harness", self.integrationResult ?? [:]) { parts.append(ligne) }
+            if let ligne = statutLiaison("Clones d'app", self.cloneResult) { parts.append(ligne) }
             if self.healthVerified {
                 let claudeAnomalies = ((self.health["quick_entry_features"] as? [String: Any])?["anomalies"] as? [String: Any])?["anomalies"] as? [[String: Any]] ?? []
                 let codexAnomalies = self.health["codex_anomalies"] as? [[String: Any]] ?? []
