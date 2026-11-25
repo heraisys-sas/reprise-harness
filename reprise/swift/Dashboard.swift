@@ -308,6 +308,88 @@ struct Dashboard: View {
                                 Text(app.verifyEverythingSummary).font(.callout).foregroundStyle(.secondary)
                             }
                             quotaGauges
+                Surface {
+                    VStack(alignment: .leading, spacing: 18) {
+                        HStack {
+                            Text("Suivi des quotas").font(.headline)
+                            Spacer()
+                            Button(app.quotaBusy ? "Lecture…" : "Lire les quotas") { app.refreshQuotas() }.disabled(app.quotaBusy)
+                        }
+                        let knowledge = app.quotaKnowledge
+                        let freshness = knowledge["freshness"] as? String ?? "unobserved"
+                        Text(freshness == "recent_read" ? "Lu récemment · aucune reprise à prévoir" : "Reprise n’a pas lu votre quota récemment").font(.caption).foregroundStyle(.secondary)
+                        if let stamp = knowledge["observed_at"] as? Double { Text("Lu le " + localDateTime(Date(timeIntervalSince1970: stamp))).font(.caption).foregroundStyle(.secondary) }
+                        if let pools = knowledge["pools"] as? [[String: Any]], !pools.isEmpty {
+                            ForEach(Array(pools.enumerated()), id: \.offset) { _, pool in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Formule de quota : " + (pool["limit_id"] as? String ?? "inconnue")).font(.callout.weight(.semibold))
+                                    if let windows = pool["windows"] as? [[String: Any]] {
+                                        HStack(alignment: .top, spacing: 28) {
+                                            ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
+                                                quotaRow(window["name"] as? String == "secondary" ? "Quota secondaire" : "Quota principal", value: window, attributed: pool["quota_pool_key"] as? String != nil)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else { Text("Aucune fenêtre fournisseur connue pour cette route.").foregroundStyle(.secondary) }
+                        if let quota = app.snapshot["codex_quota"] as? [String: Any], let rates = quota["rates"] as? [String: Any] {
+                            DisclosureGroup("Dernier signal lu · sans nom de compte") {
+                                HStack(alignment: .top, spacing: 28) {
+                                    quotaRow("Quota principal", value: rates["primary"] as? [String: Any])
+                                    quotaRow("Quota secondaire", value: rates["secondary"] as? [String: Any])
+                                }
+                                if let stamp = quota["measured_at"] as? String { Text("Événement du " + friendlyDate(stamp)).font(.caption).foregroundStyle(.secondary) }
+                            }
+                        }
+                        Divider()
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Quotas Claude").font(.headline)
+                            if let quotaState = app.scheduler["claude_quota_state"] as? [String: Any], let stateStatus = quotaState["status"] as? String, !stateStatus.isEmpty {
+                                let stateLabel = { () -> String in
+                                    switch stateStatus {
+                                    case "ok": return "Quota Claude · tout va bien"
+                                    case "blocked": return "Quota Claude · bloqué pour le moment"
+                                    default: return "Quota Claude · Reprise n’a pas pu vérifier"
+                                    }
+                                }()
+                                Text(stateLabel).font(.callout.weight(stateStatus == "blocked" ? .bold : .semibold)).foregroundStyle(stateStatus == "blocked" ? Color.orange : .primary)
+                                if let resumeAt = quotaState["resume_at"] as? Double, resumeAt.isFinite, resumeAt > 0 {
+                                    Text("Quota rétabli à " + localDateTime(Date(timeIntervalSince1970: resumeAt))).font(.caption).foregroundStyle(.secondary)
+                                }
+                                if let checkedAt = quotaState["checked_at"] as? Double, checkedAt.isFinite, checkedAt > 0 {
+                                    Text("Dernier contrôle : " + localDateTime(Date(timeIntervalSince1970: checkedAt))).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Divider()
+                            }
+                            if let claudeQuota = app.scheduler["claude_quota"] as? [String: Any] {
+                                let enabled = claudeQuota["enabled"] as? Bool == true
+                                    && app.scheduler["auto_enabled"] as? Bool == true
+                                Text(enabled ? "Reprise automatique Claude activée" : "Reprise automatique Claude en pause").font(.caption).foregroundStyle(.secondary)
+                                let events = claudeQuota["events"] as? [[String: Any]] ?? []
+                                if events.isEmpty {
+                                    Text("Aucune reprise Claude enregistrée.").foregroundStyle(.secondary)
+                                } else {
+                                    let recent = events.prefix(8).compactMap { event -> (String, [String: Any])? in
+                                        (event["event_key"] as? String).map { ($0, event) }
+                                    }
+                                ForEach(recent, id: \.0) { _, event in
+                                        let status = event["status"] as? String ?? "inconnu"
+                                        HStack {
+                                            Text(quotaStatusLabel(status)).font(.callout.weight(status == "uncertain" ? .bold : .semibold)).foregroundStyle(status == "uncertain" ? Color.orange : .primary)
+                                            Text(String((event["chat_id"] as? String ?? "").prefix(8))).font(.callout).foregroundStyle(.secondary)
+                                            Spacer()
+                                            if let due = event["due"] as? Double, due.isFinite, due > 0 { Text("Échéance : " + localDateTime(Date(timeIntervalSince1970: due))).font(.caption).foregroundStyle(.secondary) }
+                                        }.accessibilityElement(children: .combine)
+                                    }
+                                    if events.count > 8 { Text("+\(events.count - 8) autres reprises").font(.caption).foregroundStyle(.secondary) }
+                                }
+                            } else {
+                                Text("Données indisponibles.").foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
                             Integrations(app: app)
                             Divider()
                             sectionIntro("Liaisons entre applications", "Comprenez les liaisons et ouvrez leur diagnostic.")
@@ -424,7 +506,7 @@ struct Dashboard: View {
                         Rectangle().fill(Color.secondary.opacity(0.35)).frame(width: 24, height: 2).accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 18) {
                     if app.scheduler["installed"] as? Bool == true {
-                        ecosystemLink("Planificateur", symbol: "clock.arrow.circlepath", value: EcosystemStatus.scheduler(app.scheduler)) { app.resumeFilter = "À examiner" }
+                        ecosystemLink("Planificateur", symbol: "clock.arrow.circlepath", value: EcosystemStatus.scheduler(app.scheduler)) { app.page = "sessions"; app.resumeFilter = "À examiner" }
                     }
                     if EcosystemStatus.present(installed: applicationPresent("com.openai.codex"), detected: codexCLI || codex.level == .ready) {
                         ecosystemLink("Codex", symbol: "terminal", value: codex) { app.connectionTab = "codex" }
@@ -495,85 +577,14 @@ struct Dashboard: View {
                     }
                 }
                 Surface {
-                    VStack(alignment: .leading, spacing: 18) {
-                        HStack {
-                            Text("Quotas Codex").font(.headline)
-                            Spacer()
-                            Button(app.quotaBusy ? "Lecture…" : "Lire les quotas") { app.refreshQuotas() }.disabled(app.quotaBusy)
+                    HStack(spacing: 16) {
+                        Image(systemName: "gauge.with.needle").font(.title2).foregroundStyle(.secondary).accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Quotas").font(.headline)
+                            Text("Jauges par fournisseur et par harness sur la page Intégrations.").font(.callout).foregroundStyle(.secondary)
                         }
-                        let knowledge = app.quotaKnowledge
-                        let freshness = knowledge["freshness"] as? String ?? "unobserved"
-                        Text(freshness == "recent_read" ? "Lu récemment · aucune reprise à prévoir" : "Reprise n’a pas lu votre quota récemment").font(.caption).foregroundStyle(.secondary)
-                        if let stamp = knowledge["observed_at"] as? Double { Text("Lu le " + localDateTime(Date(timeIntervalSince1970: stamp))).font(.caption).foregroundStyle(.secondary) }
-                        if let pools = knowledge["pools"] as? [[String: Any]], !pools.isEmpty {
-                            ForEach(Array(pools.enumerated()), id: \.offset) { _, pool in
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text("Formule de quota : " + (pool["limit_id"] as? String ?? "inconnue")).font(.callout.weight(.semibold))
-                                    if let windows = pool["windows"] as? [[String: Any]] {
-                                        HStack(alignment: .top, spacing: 28) {
-                                            ForEach(Array(windows.enumerated()), id: \.offset) { _, window in
-                                                quotaRow(window["name"] as? String == "secondary" ? "Quota secondaire" : "Quota principal", value: window, attributed: pool["quota_pool_key"] as? String != nil)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        } else { Text("Aucune fenêtre fournisseur connue pour cette route.").foregroundStyle(.secondary) }
-                        if let quota = app.snapshot["codex_quota"] as? [String: Any], let rates = quota["rates"] as? [String: Any] {
-                            DisclosureGroup("Dernier signal lu · sans nom de compte") {
-                                HStack(alignment: .top, spacing: 28) {
-                                    quotaRow("Quota principal", value: rates["primary"] as? [String: Any])
-                                    quotaRow("Quota secondaire", value: rates["secondary"] as? [String: Any])
-                                }
-                                if let stamp = quota["measured_at"] as? String { Text("Événement du " + friendlyDate(stamp)).font(.caption).foregroundStyle(.secondary) }
-                            }
-                        }
-                        Divider()
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Quotas Claude").font(.headline)
-                            if let quotaState = app.scheduler["claude_quota_state"] as? [String: Any], let stateStatus = quotaState["status"] as? String, !stateStatus.isEmpty {
-                                let stateLabel = { () -> String in
-                                    switch stateStatus {
-                                    case "ok": return "Quota Claude · tout va bien"
-                                    case "blocked": return "Quota Claude · bloqué pour le moment"
-                                    default: return "Quota Claude · Reprise n’a pas pu vérifier"
-                                    }
-                                }()
-                                Text(stateLabel).font(.callout.weight(stateStatus == "blocked" ? .bold : .semibold)).foregroundStyle(stateStatus == "blocked" ? Color.orange : .primary)
-                                if let resumeAt = quotaState["resume_at"] as? Double, resumeAt.isFinite, resumeAt > 0 {
-                                    Text("Quota rétabli à " + localDateTime(Date(timeIntervalSince1970: resumeAt))).font(.caption).foregroundStyle(.secondary)
-                                }
-                                if let checkedAt = quotaState["checked_at"] as? Double, checkedAt.isFinite, checkedAt > 0 {
-                                    Text("Dernier contrôle : " + localDateTime(Date(timeIntervalSince1970: checkedAt))).font(.caption).foregroundStyle(.secondary)
-                                }
-                                Divider()
-                            }
-                            if let claudeQuota = app.scheduler["claude_quota"] as? [String: Any] {
-                                let enabled = claudeQuota["enabled"] as? Bool == true
-                                    && app.scheduler["auto_enabled"] as? Bool == true
-                                Text(enabled ? "Reprise automatique Claude activée" : "Reprise automatique Claude en pause").font(.caption).foregroundStyle(.secondary)
-                                let events = claudeQuota["events"] as? [[String: Any]] ?? []
-                                if events.isEmpty {
-                                    Text("Aucune reprise Claude enregistrée.").foregroundStyle(.secondary)
-                                } else {
-                                    let recent = events.prefix(8).compactMap { event -> (String, [String: Any])? in
-                                        (event["event_key"] as? String).map { ($0, event) }
-                                    }
-                                ForEach(recent, id: \.0) { _, event in
-                                        let status = event["status"] as? String ?? "inconnu"
-                                        HStack {
-                                            Text(quotaStatusLabel(status)).font(.callout.weight(status == "uncertain" ? .bold : .semibold)).foregroundStyle(status == "uncertain" ? Color.orange : .primary)
-                                            Text(String((event["chat_id"] as? String ?? "").prefix(8))).font(.callout).foregroundStyle(.secondary)
-                                            Spacer()
-                                            if let due = event["due"] as? Double, due.isFinite, due > 0 { Text("Échéance : " + localDateTime(Date(timeIntervalSince1970: due))).font(.caption).foregroundStyle(.secondary) }
-                                        }.accessibilityElement(children: .combine)
-                                    }
-                                    if events.count > 8 { Text("+\(events.count - 8) autres reprises").font(.caption).foregroundStyle(.secondary) }
-                                }
-                            } else {
-                                Text("Données indisponibles.").foregroundStyle(.secondary)
-                            }
-                        }
+                        Spacer()
+                        Button("Voir les jauges") { app.page = "integrations" }
                     }
                 }
                 claudeSessionsCard
@@ -728,13 +739,14 @@ struct Dashboard: View {
                     Button(app.quotaBusy ? "Lecture…" : "Actualiser les jauges") { app.refreshQuotas() }.disabled(app.quotaBusy)
                 }
                 if codexPools.isEmpty {
-                    quotaGaugeRow("Codex CLI", symbol: "terminal", percent: nil,
-                                  note: codexFresh == "recent_read" ? "Lecture récente sans fenêtre chiffrée" : "Pas de jauge fiable")
-                } else {
+                    quotaGaugeRow("Codex CLI", symbol: "terminal", percent: nil, note: "Pas de jauge fiable")
+                } else if codexFresh == "recent_read" {
                     ForEach(Array(codexPools.enumerated()), id: \.offset) { _, gauge in
-                        quotaGaugeRow(gauge.1, symbol: "terminal", percent: gauge.0,
-                                      note: codexFresh == "recent_read" ? "Lecture récente" : "Lecture à rafraîchir")
+                        quotaGaugeRow(gauge.1, symbol: "terminal", percent: gauge.0, note: "Lu récemment")
                     }
+                } else {
+                    quotaGaugeRow("Codex CLI", symbol: "terminal", percent: nil,
+                                  note: "Pas de jauge fiable · lecture à rafraîchir")
                 }
                 quotaGaugeRow("Claude Desktop", symbol: "bubble.left.and.bubble.right", percent: nil,
                               note: claudeState == "ok" ? "Aucun blocage de quota observé"
