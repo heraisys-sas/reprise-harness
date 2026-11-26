@@ -2,7 +2,8 @@
 
 - **Date** : 27 novembre 2026
 - **Auteur** : ASI1 (agent AutoClaw) — conception ; aucun code dans ce contrat
-- **Statut** : conception soumise à révision (questions opérateur en §9) ; révisable par l'opérateur
+- **Statut** : conception soumise à révision (questions opérateur en §10) ; révisable par l'opérateur
+- **Version** : 1.1 — ajoute l'intégration dans l'interface graphique (§8 : activité en cours, santé du dépôt, journal) et la maquette associée ; v1.0 = conception des deux services
 - **Base** : dev `a81c53b` ; branche `autoclaw/services-juge-depot-20261127`
 - **Précédent directeur** : issue #270 (service gh niveau Reprise) — « soit il centralise tout, soit il délivre un service à tous les harness dans leur workspace » ; décision tenue le 26/11 : **les deux combinés** (cœur central dans `reprise/`, livraison par shims `bin/` par harness). Le présent contrat applique ce schéma à deux nouveaux services.
 
@@ -13,7 +14,9 @@ L'app Reprise (l'orchestrateur Mac) fournit à **tous les harness** (AutoClaw, C
 1. **Service juge de paix** — exécution centralisée du vérificateur indépendant `reprise/ci_test.py` (`--parallel 4` sous le runtime 3.13 épinglé) comme **preuve de vérification commune** de l'étage E6 : droits, files d'attente, verrous, traces, refus nommés.
 2. **Service dépôt** — gestion du dépôt Git et du clone canonique `source/` : création/réservation/nettoyage des worktrees par harness, conventions de branches et de push (refspec explicite), alignement dev↔origin (fetch, merge-base, diff trois-points avant intégration), politique de fusion « Intégration X » et garde du FF de dev sur go opérateur explicite.
 
-**Hors périmètre** : le contenu des tests et leur écriture (SOD, contrat E4) ; les verdicts E6 (le juge produit des faits, jamais un verdict ; E6 seul écrivain de `delegation_verdicts` — spec WORKFLOW-REPRISE v1.2) ; les worktrees étrangers `codex/*` et les zones des autres agents (jamais touchés, cf. §5.3) ; la CI distante (les shards CI restent la référence avant fusion, USAGE.md) ; l'interface MCP/`reprise_delegate` (extension ultérieure, §8) ; tout élément des interdits E4 (VERSION/CHANGELOG, configuration CI, `ci_test.py`).
+L'état, les opérations en cours et les actions de ces deux services sont exposés à l'opérateur dans l'interface graphique de l'app (§8) — un service invisible est un service inutilisé.
+
+**Hors périmètre** : le contenu des tests et leur écriture (SOD, contrat E4) ; les verdicts E6 (le juge produit des faits, jamais un verdict ; E6 seul écrivain de `delegation_verdicts` — spec WORKFLOW-REPRISE v1.2) ; les worktrees étrangers `codex/*` et les zones des autres agents (jamais touchés, cf. §5.3) ; la CI distante (les shards CI restent la référence avant fusion, USAGE.md) ; l'interface MCP/`reprise_delegate` (extension ultérieure, §9) ; tout élément des interdits E4 (VERSION/CHANGELOG, configuration CI, `ci_test.py`).
 
 ## 1. Principes (hérités de reprise_gh.py et des gardes E4)
 
@@ -25,6 +28,9 @@ L'app Reprise (l'orchestrateur Mac) fournit à **tous les harness** (AutoClaw, C
 6. **Zéro dépendance** : stdlib uniquement, compatible Python 3.9 (contrainte daemon metaaid) ; les sous-processus de test tournent sous l'interpréteur épinglé que `ci_test.py` résout lui-même (3.13, `pinned_interpreter()` : archive `~/Library/Caches/Reprise/python` vérifiée par sha256, cache local par empreinte, verrou `.extract.lock`).
 7. **Coordination par origin** : les clones de travail restent privés ; origin fait foi ; le clone racine `source/` reste le seul clone de déploiement opérateur (AGENTS.md) — les services n'y écrivent que par les gardes de §6-§7.
 8. **État hors arbre** : tout l'état des deux services vit dans le state dir Reprise (précédent reprise_gh) ; l'arbre Git ne contient jamais de reçus, logs ou inventaires de poste.
+9. **Interface = surface de contrôle** : chaque service expose son état, son activité et ses actions dans l'app Reprise (§8) ; l'interface lit les reçus, le registre, le flux d'activité et les audits des services — jamais une source de vérité parallèle (les vues ne doublent pas plus l'état que les rôles ne doublent les routes) ; les actes sensibles y passent par confirmation unique avec go tracé : mêmes gardes en CLI et en GUI.
+10. **Grand public d'abord** : libellés sans jargon, preuves cliquables derrière chaque badge, refus nommés traduits en phrase d'action ; rien n'est déduit d'un état non prouvé (motif maquette #118).
+11. **Diagnostic ≠ verrou** : les indicateurs de suivi (santé du dépôt §8.5) éclairent l'opérateur sans jamais bloquer un service — seule une garde explicite (§2.5, §4.2, §7) refuse.
 
 ## 2. Service juge de paix
 
@@ -165,7 +171,69 @@ Norme en vigueur depuis le 27/11 (directives opérateur) : les intégrations à 
 
 **Exception FF** : un FF de dev (au lieu d'un commit de fusion) reste possible uniquement si (a) le go opérateur le demande explicitement, (b) `aligne` montre `RETARD` pur (dev local ancêtre strict d'origin/dev), (c) la pointe de branche est fille directe de dev. Sinon `DEPOT_FF_REFUSE` (non linéaire). Le service ne fait jamais de FF sans go tracé.
 
-## 8. Interfaces entre services
+## 8. Intégration dans l'interface graphique (app Reprise)
+
+**Principe d'abord** : un service invisible est un service inutilisé. Le juge de paix et le service dépôt exposent dans l'app leur état réel, leurs opérations en cours et leurs actions cadrées ; l'interface lit les reçus, le registre, le flux d'activité et les audits des services (aucune source de vérité parallèle) ; les actes sensibles passent par une confirmation unique tracée — mêmes gardes en CLI et en GUI ; libellés grand public, preuves cliquables, refus traduits en phrases d'action.
+
+### 8.1 Placement
+
+- Écran « Services » en **cinquième entrée du switcher** de l'onglet Connexions (après « Pilote Apple » ; précédent maquette #118 : switcher générique, une seule fenêtre, sidebar inchangée).
+- Bande d'activité en cours en tête d'écran, deux cartes principales (juge de paix, dépôt), carte de santé du dépôt, journal commun en bas ; tout est consultable sur place, jamais perdu dans un écran séparé (détails ▸).
+
+### 8.2 Carte « Juge de paix »
+
+- **En-tête** : état du service (`✓ actif` / `✗ désactivé` avec le refus nommé traduit), interpréteur épinglé (`3.13 vérifié` + digest court de l'archive), dernière vérification.
+- **File d'attente en direct** : « N en cours · M en attente » + chips par acteur — les données viennent du verrou et de la file du service, jamais d'un estimé.
+- **Derniers reçus** : badge d'état (vert `✓ vérifié` = fini, code 0, arbre propre ; rouge `✗ échec` ; gris `incertain` = expire/refus), acteur, branche + sha court, durée, shards, horodatage heure locale 24 h ; clic ⇒ détail du reçu (run_id, digest du reçu, digest du log, bouton « Ouvrir le log »).
+- **Actions** : « Vérifier maintenant » (sélecteur de worktree parmi les arbres du registre du service dépôt ; désactivé avec raison nommée si la file est pleine ou le service désactivé) ; « Journal du juge » ; `Avancé ▸` (politique : acteurs, concurrence, budget, rétention ; **coupe-circuit** : désactivation immédiate, opérateur seul, tracée).
+- **Refus affichés** : carte de refus fail-closed (motif `JUGE_*` + phrase d'action), même langage que la carte refus de #118.
+
+### 8.3 Carte « Dépôt »
+
+- **En-tête** : état dev↔origin (`✓ aligné` / `⏱ retard` / `⚠ divergence` / `⚠ avance locale` / `apport vide` + dernière synchronisation) ; bouton « Synchroniser » (`aligne`, lecture seule).
+- **Worktrees** : liste (chemin court, acteur, branche, âge, statut de réservation) ; les **étrangers** grisés avec cadenas « étranger — intouchable » (aucune action, lecture seule) ; les hors zone taggés « hors zone » (propriété opérateur).
+- **Branches prêtes à intégrer** : pour chaque branche poussée non intégrée, badge de preuve (`✓ preuve prête` si un reçu juge frais couvre le tip / `⚠ preuve à rafraîchir` sinon) ; le bouton d'intégration reste désactivé tant que la preuve manque — raison nommée affichée.
+- **Action « Intégrer sur dev »** : panneau de **confirmation unique** (motif #118 lot D) : branches, résumés « Intégration X », pointe avant, digest de la preuve juge, bouton unique « Confirmer l'intégration » qui **trace le go de l'opérateur** (qui, quand) ; après exécution, ligne `.applied` (sha après, statut du push). Si la pointe a bougé entre l'affichage et le clic, l'état frais est ré-affiché avant toute écriture (anti-TOCTOU visible).
+- **Garde FF** : l'option « fusion rapide (ff) » n'apparaît que si les trois conditions du §7 sont réunies ; sinon elle est absente, et son absence est expliquée dans les détails ▸.
+- `Avancé ▸` : politique (namespaces, zones, TTL), proposition de nettoyage (`worktree-gc`) avec bouton « Nettoyer » par élément — jamais les étrangers, jamais les hors zone.
+
+### 8.4 Activité en cours (tests et dépôt, en direct)
+
+- Une bande **« Activité en cours »** en tête d'écran : toute opération en cours des deux services, **synthétique et esthétique** — chaque opération est une carte compacte avec progression, durée écoulée et dernier événement ; jamais un mur de log (le log complet reste une action, pas un état par défaut).
+- **Vérification en cours** : progression par shard (chips `1 ✓ · 2 ✓ · 3 ▸ · 4 ○`), durée écoulée, **erreurs déjà visibles comptées et consultables sans attendre la fin** (les 3 dernières lignes d'échec en monospace, clic ⇒ log complet à la position) — un échec n'attend pas la fin du run pour être vu.
+- **Opération dépôt en cours** (aligne, fusion « Intégration X », push, claim, release, gc) : séquence d'étapes horodatées (`aligne ✓ → preuve ✓ → fusion ▸ → juge ○ → push ○`) ; un conflit ou un refus s'affiche dès qu'il survient, en carte de refus.
+- **Flux d'activité** : les services publient un `activity.json` atomique dans le state dir (file d'attente, opérations actives, derniers événements, erreurs courantes) que l'interface lit en continu — pas de copie d'état, pas d'estimé.
+- Interruption : aucune opération en cours n'est annulable par un bouton muet ; seul le coupe-circuit opérateur (tracé) peut arrêter un run (état `expire`) — la vue le rappelle.
+
+### 8.5 Santé du dépôt (structure seule)
+
+- Une carte **« Santé du dépôt »** avec un indicateur global (`✓ bonne tenue` / `⚠ à surveiller` / `✗ à corriger`) décomposé en contrôles **déterministes, structurels, sans jamais lire le code** : seuls Git et l'inventaire de l'arbre sont consultés :
+  1. **dev ↔ origin** : aligné, retard simple, divergence, avance locale, apport vide (§6) ;
+  2. **worktrees** : arbres propres, TTL respectés, aucun hors zone récent, étrangers intacts ;
+  3. **branches** : aucune branche fusionnée non supprimée sur origin, aucune branche de sujet sans activité ni push depuis plus de N jours ;
+  4. **preuves** : chaque branche poussée destinée à l'intégration porte une preuve juge à jour ;
+  5. **hygiène de l'arbre** : aucun fichier interdit dans l'arbre (reçus, logs, checkpoints de session — USAGE.md) ;
+  6. **intégrations** : commits « Intégration X » bien formés (message canonique, 2 parents), historique sain ;
+  7. **résidus** : branches distantes sans worktree ni issue liée.
+- Chaque contrôle affiche : badge, une ligne de preuve et une phrase « pour améliorer » ; **un score global sans détail est interdit**.
+- La santé est un **diagnostic, jamais un verrou** (principe 11) : aucun refus de service ne découle du score ; calcul sur demande (« Recalculer ») avec cache horodaté.
+
+### 8.6 Journal commun
+
+Section bas d'écran : audits juge + dépôt fusionnés en ordre chronologique (`juge-audit.jsonl` + `depot-audit.jsonl`), filtre par acteur et par type ; chaque ligne ouvre son reçu ou son log digesté. C'est la surface des « traces » exigée par ce contrat : rien de l'activité des services n'est muet.
+
+### 8.7 Règles d'implémentation de l'interface
+
+1. **Une seule source de vérité** : les vues SwiftUI appellent les modules des services (JSON sur stdout, `activity.json`, mêmes politiques) — jamais une copie d'état dans l'app.
+2. **Paramètres d'état réel, jamais de prose** (motif #118) : toute proposition d'action s'affiche en lignes structurées (acteur, arbre, preuve, budget), pas en texte rédigé.
+3. **Confirmation unique par acte sensible** (intégrer sur dev, ff, gc, coupe-circuit) : admission ≠ exécution, le clic trace le go ; un écran affiché sans clic ne prouve rien.
+4. **Refus traduits** : chaque refus `JUGE_*`/`DEPOT_*` a sa phrase grand public (« La file est pleine — réessayez dans quelques minutes ») ; le code nommé reste visible dans les détails ▸.
+5. **Preuves cliquables** : un badge sans preuve est interdit ; chaque badge ouvre sa preuve (reçu, log digesté).
+6. **Esthétique synthétique** : activité et santé tiennent sur un écran sans défilement — chips, steppers, badges ; le log complet reste une action, jamais l'état par défaut.
+7. **Port SwiftUI borné** : la maquette HTML (précédent #118) valide la structure avant tout .swift ; le port n'entreprend que la structure validée, chaque preuve consultable reste un écran existant.
+8. Maquette livrée avec ce contrat : `docs/design/interface-structure/maquette-services-juge-depot.html` (données fictives, langage visuel #118).
+
+## 9. Interfaces entre services
 
 - Le service dépôt **consomme** les reçus du juge (gardes §4.2 et §7) : les deux partagent le state dir et le format de reçu (digest sha256).
 - Le juge **ne connaît pas** le dépôt au-delà de l'arbre qu'il teste (pas de fetch, pas de push, pas de réseau).
@@ -173,14 +241,16 @@ Norme en vigueur depuis le 27/11 (directives opérateur) : les intégrations à 
 - **Routage** : aucun des deux services n'est une route du routeur interne (aucun modèle facturé, aucune admissibilité LLM) — ce sont des outils mécaniques locaux, comme reprise_gh.
 - **Extension ultérieure** (hors présent contrat) : outils MCP `reprise_juge`/`reprise_depot` exposés via `reprise_delegate`, et installation des shims par l'installeur (metaai-install).
 
-## 9. Questions opérateur restantes
+## 10. Questions opérateur restantes
 
 1. **Garde de preuve avant push** : politique par défaut `exigee` (un reçu juge frais avant tout push de branche) — confirmer, ou préférer `avertie` pour les branches de brouillon ?
 2. **TTL worktrees** : 14 jours avant proposition de gc — ajuster ?
 3. **Concurrence machine du juge** : 2 exécutions simultanées (4 shards chacune) — ajuster selon l'usage réel.
 4. **Rétention des preuves** : 90 jours proposé — ajuster ?
+5. **Place dans l'interface** : écran « Services » en cinquième entrée du switcher de Connexions (recommandé, précédent #118) ou cartes dans l'écran Intégrations ?
+6. **Contrôles de santé** : la liste des 7 contrôles structurels (§8.5) et le seuil « branche dormante » (N jours) sont ajustables — proposer vos seuils.
 
-## 10. Critères falsifiables
+## 11. Critères falsifiables
 
 Un critère est falsifié si la mise en œuvre observée le contredit ; chaque lot d'implémentation exécutera ces cas comme tests.
 
@@ -208,15 +278,30 @@ Un critère est falsifié si la mise en œuvre observée le contredit ; chaque l
 - **D9** Un FF de dev sans les trois conditions de l'exception (go explicite + RETARD pur + fille directe) ⇒ `DEPOT_FF_REFUSE`.
 - **D10** Le clone racine `source/` n'est jamais checkouté sur une autre branche par le service (statut de branche inchangé avant/après toute opération).
 
-## 11. Plan d'implémentation proposé (lots)
+**Interface graphique**
+
+- **I1** Tout ce que l'écran Services affiche provient des reçus, du registre, du flux `activity.json` ou des audits des services — aucune copie d'état dans l'app (une vue SwiftUI ne réimplémente jamais la logique du service).
+- **I2** Chaque acte sensible (intégrer sur dev, ff, gc, coupe-circuit) exige une confirmation unique ; le go tracé de l'opérateur apparaît dans l'audit correspondant.
+- **I3** Aucun bouton désactivé n'est muet : sa raison nommée est affichée (file pleine, preuve à rafraîchir, service désactivé…).
+- **I4** Les worktrees étrangers sont visibles et inertes : cadenas, zéro action mutante disponible, lecture seule.
+- **I5** Un badge sans preuve est impossible : chaque badge d'état ouvre sa preuve (reçu, log digesté).
+- **I6** Les refus `JUGE_*`/`DEPOT_*` sont traduits en phrase d'action dans l'interface, le code nommé restant consultable en Avancé ▸.
+- **I7** La maquette HTML est validée par l'opérateur avant tout port SwiftUI (précédent #118).
+- **I8** Une vérification en cours montre sa progression par shard et ses erreurs déjà visibles **avant la fin du run** ; une opération dépôt en cours montre son étape courante et son horodatage.
+- **I9** L'activité en cours se lit depuis le flux `activity.json` des services — aucun état d'activité réimplémenté dans l'app.
+- **I10** L'indicateur de santé ne lit jamais le code : ses contrôles portent uniquement sur Git et l'inventaire de l'arbre.
+- **I11** Chaque contrôle de santé affiche sa preuve et son « pour améliorer » ; un score global sans détail est interdit ; le score n'induit aucun refus de service (diagnostic, pas verrou).
+
+## 12. Plan d'implémentation proposé (lots)
 
 - **S1 — juge minimal** : `reprise/juge_paix.py` + CLI + politique initiale + reçus/audit + verrou/file ; tests L1.
 - **S2 — dépôt minimal** : `reprise/depot_service.py` + registre + zones + `worktree-claim/libere/liste` + `branche-cree` + `push` refspec ; tests L2.
 - **S3 — aligne + integre** : classification des cinq états, intégration « Intégration X » avec go tracé + garde anti-TOCTOU + juge sur pointe avant push ; tests L3 (hermétiques, HOME jetable, clones jetables).
 - **S4 — livraison par harness** : shims `bin/reprise-juge` + `bin/reprise-depot`, intégration installeur, doc USAGE/AGENTS ; consommation reçus juge par le dépôt (gardes D1/D6-D8).
+- **S5 — interface graphique** : maquette HTML (livrée avec ce contrat) validée par l'opérateur — puis sections SwiftUI natives lisant l'état via les modules services (JSON sur stdout, `activity.json`, mêmes politiques) : bande d'activité en cours (shards, étapes, erreurs visibles), cartes juge/dépôt, santé du dépôt (structure seule), journal commun, confirmation unique des actes sensibles, refus traduits ; jamais d'état parallèle.
 - SOD : auteur des tests ≠ auteur du code sur chaque lot (contrat E4) ; juge de paix avant push à chaque lot.
 
-## 12. Références
+## 13. Références
 
 - `docs/contracts/E4-TASK-CONTRACT.md` (Q7-Q13, SOD, interdits) ; `docs/contracts/E4-O1-COMPETENCE-CONTRACT.md` (routage mass code)
 - `docs/contracts/HARNESS-ROLES-CONTRACT.md` (rôles = chaînes de routes ; ironclaw non admissible)
@@ -224,4 +309,5 @@ Un critère est falsifié si la mise en œuvre observée le contredit ; chaque l
 - `docs/specs/WORKFLOW-REPRISE.md` v1.2 (E1-E8, écho-clé, anti-TOCTOU, go lié)
 - Issue #270 et le module `reprise/reprise_gh.py` (précédent service centralisé + shims + politique fail-closed + audit JSONL)
 - `reprise/ci_test.py` (verificateur épinglé 3.13, log `reprise/.runtime-py/test-parallel.log`, HOME jetable)
-- AGENTS.md §Workflow Git (worktrees `<workspace>/tmp/<sujet>`, coordination par origin) ; USAGE.md §Hygiène (empireinte de release : jamais de log/reçu dans l'arbre)
+- AGENTS.md §Workflow Git (worktrees `<workspace>/tmp/<sujet>`, coordination par origin) ; USAGE.md §Hygiène (empreinte de release : jamais de log/reçu dans l'arbre)
+- `docs/design/interface-structure/maquette-services-juge-depot.html` — maquette de l'écran « Services » (langage visuel #118, données fictives)

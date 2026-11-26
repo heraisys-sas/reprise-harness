@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reprise — maquette interface · écran Services (juge de paix &amp; dépôt) — contrat SERVICES-JUGE-DEPOT</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#ffffff; --line:#e3e3e6; --ink:#1d1d1f; --muted:#6e6e73;
+    --ok:#1d8a4b; --ok-bg:#e8f5ee; --warn:#9a6b00; --warn-bg:#fdf3dd;
+    --bad:#b3261e; --bad-bg:#fdeceb; --neutral:#5b5b60; --neutral-bg:#f0f0f2;
+    --accent:#0a66c2; --sidebar:#eceef1;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;
+       -webkit-font-smoothing:antialiased}
+  header.top{padding:20px 28px 6px}
+  header.top h1{font-size:19px;margin:0 0 4px}
+  header.top p{margin:0;color:var(--muted);font-size:13px;max-width:110ch}
+  nav.switcher{display:flex;gap:8px;padding:12px 28px 4px;flex-wrap:wrap}
+  nav.switcher button{border:1px solid var(--line);background:#fff;border-radius:999px;
+       padding:7px 16px;font-size:13px;cursor:pointer;color:var(--ink)}
+  nav.switcher button.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .window{max-width:1180px;margin:14px 28px 40px;background:var(--card);
+       border:1px solid var(--line);border-radius:12px;overflow:hidden;
+       box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  .chrome{display:flex;align-items:center;gap:8px;background:var(--sidebar);
+       padding:9px 14px;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}
+  .chrome .dot{width:11px;height:11px;border-radius:50%}
+  .layout{display:grid;grid-template-columns:210px 1fr}
+  .sidebar{background:var(--sidebar);padding:14px 10px;border-right:1px solid var(--line);min-height:640px}
+  .sidebar .brand{font-weight:600;font-size:13px;padding:4px 10px 10px}
+  .sidebar a{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;
+       color:var(--ink);text-decoration:none;font-size:13px}
+  .sidebar a.sel{background:#dfe3e8;font-weight:600}
+  .sidebar a .cnt{margin-left:auto;color:var(--muted);font-size:11px}
+  main{padding:20px 26px 30px}
+  h2.screen{font-size:17px;margin:0 0 2px}
+  p.sub{color:var(--muted);margin:0 0 16px;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px;background:#fff}
+  .card h3{font-size:14px;margin:0 0 8px;display:flex;align-items:center;gap:8px}
+  .badge{display:inline-block;border-radius:999px;padding:2px 10px;font-size:11px;font-weight:600}
+  .ok{color:var(--ok);background:var(--ok-bg)} .warn{color:var(--warn);background:var(--warn-bg)}
+  .bad{color:var(--bad);background:var(--bad-bg)} .neu{color:var(--neutral);background:var(--neutral-bg)}
+  .row{display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid #f0f0f2;font-size:13px}
+  .row:first-of-type{border-top:none}
+  .row .who{font-weight:600;min-width:150px}
+  .row .why{color:var(--muted);margin-left:auto;font-size:12px;text-align:right}
+  .chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);
+       border-radius:8px;padding:4px 10px;font-size:12px;background:#fafafa}
+  .chip b{font-weight:600}
+  .btn{display:inline-block;border-radius:8px;padding:7px 16px;font-size:13px;font-weight:600;
+       border:1px solid var(--line);background:#fff;cursor:pointer;color:var(--ink)}
+  .btn.primary{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .btn.ghost{font-weight:400}
+  .btn[disabled]{opacity:.45;cursor:not-allowed}
+  .applied{background:#f6f8fa;border:1px dashed var(--line);border-radius:8px;
+       padding:8px 12px;font-size:12px;color:var(--muted);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .applied b{color:var(--ink);font-weight:600}
+  details.adv{border:1px solid var(--line);border-radius:10px;margin-bottom:14px;background:#fcfcfd}
+  details.adv>summary{cursor:pointer;padding:10px 16px;font-size:13px;font-weight:600;color:var(--muted);
+       list-style:none;display:flex;align-items:center;gap:8px}
+  details.adv>summary::before{content:"▸";transition:transform .15s}
+  details.adv[open]>summary::before{content:"▾"}
+  details.adv .inner{padding:2px 16px 14px;font-size:12px}
+  details.adv .inner .row{color:var(--muted)}
+  details.adv input[type=text]{border:1px solid var(--line);border-radius:6px;padding:5px 8px;
+       font-size:12px;width:260px;background:#fff;color:var(--ink)}
+  details.adv select{border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;background:#fff}
+  .toggle{width:38px;height:22px;border-radius:999px;background:#d5d5da;position:relative;flex:none;transition:background .15s}
+  .toggle.on{background:#34c759}
+  .toggle::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;
+       background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25);transition:left .15s}
+  .toggle.on::after{left:18px}
+  .locked{opacity:.75}
+  .step{display:grid;grid-template-columns:26px 1fr auto;gap:10px;align-items:start;
+       padding:10px 0;border-top:1px solid #f0f0f2}
+  .step:first-of-type{border-top:none}
+  .step .n{width:22px;height:22px;border-radius:50%;background:var(--neutral-bg);color:var(--neutral);
+       font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-top:1px}
+  .step.done .n{background:var(--ok-bg);color:var(--ok)}
+  .step.warn .n{background:var(--warn-bg);color:var(--warn)}
+  .step.fail .n{background:var(--bad-bg);color:var(--bad)}
+  .step .t b{display:block}
+  .step .t .d{color:var(--muted);font-size:12px}
+  .step .dur{color:var(--muted);font-size:12px;white-space:nowrap}
+  .proof{margin-top:6px;background:#f6f8fa;border-radius:8px;padding:7px 10px;font-family:ui-monospace,Menlo,monospace;
+       font-size:11px;color:#3a3a3c;white-space:pre-wrap}
+  .pair{border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:12px}
+  .pair h4{margin:0 0 6px;font-size:13px;display:flex;align-items:center;gap:8px}
+  .anomaly{border-left:3px solid var(--warn);background:var(--warn-bg);border-radius:0 8px 8px 0;
+       padding:8px 12px;font-size:12px;margin-top:10px}
+  .anomaly b{color:var(--warn)}
+  .note{font-size:12px;color:var(--muted);margin:4px 0 14px;padding-left:2px}
+  .note b{color:var(--ink)}
+  .screen{display:none}
+  .screen.active{display:block}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:0 0 16px}
+  .pbar{height:6px;border-radius:3px;background:#eef0f2;overflow:hidden;flex:1;min-width:120px}
+  .pbar i{display:block;height:100%;background:#34c759}
+  .err{background:var(--bad-bg);border-radius:8px;padding:8px 12px;font-family:ui-monospace,Menlo,monospace;
+       font-size:11px;color:var(--bad);white-space:pre-wrap;margin:6px 0 2px}
+  .shards{display:flex;gap:5px}
+  .shards span{border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600;
+       background:var(--neutral-bg);color:var(--neutral)}
+  .shards span.done{background:var(--ok-bg);color:var(--ok)}
+  .shards span.run{background:var(--warn-bg);color:var(--warn)}
+  footer{max-width:1180px;margin:0 28px 50px;color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <h1>Reprise — écran « Services » (juge de paix &amp; dépôt)</h1>
+  <p>Maquette du contrat <b>SERVICES-JUGE-DEPOT</b> (§8) · cinquième écran du switcher de Connexions,
+     précédent <b>#118</b>. Contrat : l'état, l'activité et la santé viennent des reçus, du registre,
+     du flux <code>activity.json</code> et des audits des services — jamais d'une copie.
+     Un seul clic de confirmation pour les actes sensibles ; les preuves restent consultables derrière chaque badge ;
+     la santé est un diagnostic, jamais un verrou.</p>
+</header>
+
+<nav class="switcher">
+  <button data-s="a">A · Intégrations</button>
+  <button data-s="b">B · Test Apple Intelligence</button>
+  <button data-s="c">C · Activité des paires</button>
+  <button data-s="d">D · Pilote Apple</button>
+  <button class="active" data-s="e">E · Services — juge &amp; dépôt</button>
+</nav>
+
+<div class="window">
+  <div class="chrome">
+    <span class="dot" style="background:#ff5f57"></span><span class="dot" style="background:#febc2e"></span>
+    <span class="dot" style="background:#28c840"></span><span style="margin-left:8px">Reprise</span>
+  </div>
+  <div class="layout">
+    <div class="sidebar">
+      <div class="brand">Reprise</div>
+      <a>◧ Intégrations</a>
+      <a>⟳ Activité des paires</a>
+      <a>◔ Scheduler</a>
+      <a>🔍 Santé</a>
+      <a>✦ Pilote Apple</a>
+      <a class="sel">⚖ Services <span class="cnt">2</span></a>
+      <a>⚙ Réglages</a>
+    </div>
+
+    <!-- écrans A–D : couverts par la maquette #118 -->
+    <main class="screen" id="s-a">
+      <h2 class="screen">Intégrations</h2>
+      <p class="note">Écran couvert par la maquette <b>#118</b> (<code>maquette.html</code>) —
+        la présente maquette ne porte que l'écran <b>Services</b>.</p>
+    </main>
+    <main class="screen" id="s-b">
+      <h2 class="screen">Test Apple Intelligence</h2>
+      <p class="note">Écran couvert par la maquette <b>#118</b> (<code>maquette.html</code>).</p>
+    </main>
+    <main class="screen" id="s-c">
+      <h2 class="screen">Activité des paires</h2>
+      <p class="note">Écran couvert par la maquette <b>#118</b> (<code>maquette.html</code>).</p>
+    </main>
+    <main class="screen" id="s-d">
+      <h2 class="screen">Pilote Apple</h2>
+      <p class="note">Écran couvert par la maquette <b>#118</b> (<code>maquette.html</code>).</p>
+    </main>
+
+    <!-- ════════════════ E · SERVICES ════════════════ -->
+    <main class="screen active" id="s-e">
+      <h2 class="screen">Services — juge de paix &amp; dépôt</h2>
+      <p class="sub">Deux outils mécaniques de l'orchestrateur, visibles et cadrés : aucune opération muette,
+         aucune preuve déduite, aucun acte sensible sans confirmation unique tracée.</p>
+
+      <div class="legend">
+        <span><span class="badge ok">✓ vérifié</span> preuve complète (fini · code 0 · arbre propre)</span>
+        <span><span class="badge warn">⚠ à rafraîchir</span> preuve manquante ou périmée</span>
+        <span><span class="badge bad">✗ refusé</span> garde fail-closed active</span>
+        <span><span class="badge neu">⚖ juge</span> outil mécanique — aucun modèle facturé</span>
+      </div>
+
+      <!-- ACTIVITÉ EN COURS -->
+      <div class="card">
+        <h3>Activité en cours <span class="badge neu">2 opérations</span>
+            <span class="why" style="margin-left:auto">flux activity.json · lu en continu, jamais estimé</span></h3>
+
+        <div class="row">
+          <span class="who">Vérification</span>
+          <span class="shards"><span class="done">1 ✓</span><span class="done">2 ✓</span><span class="run">3 ▸</span><span>4 ○</span></span>
+          <div class="pbar"><i style="width:58%"></i></div>
+          <span class="why">autoclaw · services-juge-depot-20261127 · 1 min 12 s</span>
+        </div>
+        <div class="row">
+          <span class="who">Erreurs déjà visibles</span><span class="badge bad">2</span>
+          <span class="why">consultables avant la fin du run — un échec n'attend pas la fin pour être vu</span>
+        </div>
+        <div class="err">FAIL: test_evidence_citations (reprise.tests.test_evidence_citations)
+AssertionError: ECHO_CLE_ABSENTE — la réponse ne répète pas la request_key
+FAIL: test_depot_gardes (reprise.tests.test_depot_service)
+AssertionError: DEPOT_ARBRE_ETRANGER attendu, refus absent</div>
+        <div class="applied">Ouvrir le log complet ▸ · interruption : coupe-circuit opérateur seul (tracé)</div>
+
+        <div class="row" style="margin-top:10px">
+          <span class="who">Intégration sur dev</span>
+          <span>autoclaw/e5-o5-citations-20261126</span>
+          <span class="why">débutée aujourd'hui 14:41 · un commit « Intégration X » par branche</span>
+        </div>
+        <div class="step done">
+          <div class="n">✓</div>
+          <div class="t"><b>aligne</b> <div class="d">dev ↔ origin vérifiés avant de conclure</div></div>
+          <div class="dur">14:41</div>
+        </div>
+        <div class="step done">
+          <div class="n">✓</div>
+          <div class="t"><b>preuve juge</b>
+            <div class="d">reçu frais lié au tip · 4 shards vert · arbre propre</div>
+            <div class="proof">run=8f31c2a4 · sha_arbre=e5c1…02 · log=sha256:9b41…d7 · code 0</div></div>
+          <div class="dur">14:42</div>
+        </div>
+        <div class="step warn">
+          <div class="n">▸</div>
+          <div class="t"><b>fusion « Intégration X »</b>
+            <div class="d">merge --no-ff en cours · message canonique posé · conflit éventuel affiché ici dès qu'il survient</div></div>
+          <div class="dur">14:44</div>
+        </div>
+        <div class="step">
+          <div class="n">○</div>
+          <div class="t"><b>juge sur la pointe intégrée</b> <div class="d">avant tout push — jamais de push sur rouge</div></div>
+          <div class="dur">—</div>
+        </div>
+        <div class="step">
+          <div class="n">○</div>
+          <div class="t"><b>push dev</b> <div class="d">refspec explicite dev:refs/heads/dev · go tracé requis</div></div>
+          <div class="dur">—</div>
+        </div>
+      </div>
+
+      <!-- JUGE DE PAIX -->
+      <div class="card">
+        <h3>Juge de paix <span class="badge ok">✓ actif</span> <span class="badge neu">⚖ mécanique</span></h3>
+        <div class="row"><span class="who">Interpréteur épinglé</span><span class="badge ok">3.13 vérifié</span>
+          <span class="why">archive ci-matchée · sha256 4f2e…a1 · HOME jetable</span></div>
+        <div class="row"><span class="who">File d'attente</span><span>1 en cours · 0 en attente</span>
+          <span class="why">verrou par arbre · concurrence machine 2 · équité par acteur</span></div>
+        <div class="row"><span class="who">Dernière preuve</span><span class="badge ok">✓ vérifié</span>
+          <span class="why">autoclaw · 4 shards · 3 min 42 s · aujourd'hui 14:58 · <u>détail du reçu</u></span></div>
+        <div style="display:flex;gap:10px;margin:12px 0 4px;align-items:center">
+          <button class="btn primary">Vérifier maintenant</button>
+          <button class="btn">Journal du juge</button>
+          <span class="badge neu">file 1/8</span>
+        </div>
+        <details class="adv">
+          <summary>Avancé — politique &amp; coupe-circuit</summary>
+          <div class="inner">
+            <div class="row"><span class="who">Acteurs</span><span>autoclaw · codex · claude · chatgpt · metaai · harness</span>
+              <span class="why">acteur inconnu = refus JUGE_ACTEUR_INCONNU</span></div>
+            <div class="row"><span class="who">Concurrence machine</span><select><option>2</option><option>1</option><option>3</option></select>
+              <span class="why">chaque run lance 4 shards — 2 runs au-delà = JUGE_FILE_PLEINE</span></div>
+            <div class="row"><span class="who">Budget d'un run</span><span>1800 s</span><span class="why">dépassement = expire, jamais une preuve</span></div>
+            <div class="row"><span class="who">Rétention des reçus</span><span>90 jours</span><span class="why">logs digestés, audits intacts</span></div>
+            <div class="row"><div class="toggle on"></div><span class="who">Juge actif</span>
+              <span class="why">coupe-circuit opérateur — désactivation tracée, immédiate</span></div>
+          </div>
+        </details>
+      </div>
+
+      <!-- REFUS -->
+      <div class="card">
+        <h3>Refus fail-closed — exemple <span class="badge bad">✗ bloqué</span></h3>
+        <div class="row"><span class="who">Action demandée</span><span>Vérifier maintenant · 3ᵉ demande simultanée</span>
+          <span class="why">la file ne grandit pas sans fin</span></div>
+        <div class="row"><span class="who">Décision</span><span class="badge bad">mise en file refusée</span>
+          <span class="why">JUGE_FILE_PLEINE — concurrence machine 2</span></div>
+        <div class="row"><span class="who">Pour débloquer</span><span>attendre la fin d'un run en cours, ou relever la concurrence dans la politique</span>
+          <span class="why">toute politique modifiée est tracée dans l'audit</span></div>
+      </div>
+
+      <!-- DÉPÔT -->
+      <div class="card">
+        <h3>Dépôt — worktrees, branches, intégration <span class="badge neu">clone source/</span></h3>
+        <div class="row"><span class="who">dev ↔ origin</span><span class="badge ok">✓ aligné</span>
+          <span class="why">a81c53b = origin/dev · dernière synchronisation aujourd'hui 14:52 · <button class="btn ghost" style="padding:2px 10px">Synchroniser</button></span></div>
+        <div class="row"><span class="who">services-juge-depot-20261127</span><span>autoclaw · <span class="badge ok">✓ réservé</span></span>
+          <span class="why">branche autoclaw/services-juge-depot-20261127 · depuis origin/dev · <u>ouvrir</u></span></div>
+        <div class="row"><span class="who">claude-client-a11c</span><span>autoclaw · <span class="badge neu">libre · 2 j</span></span>
+          <span class="why">TTL 14 j — nettoyage proposé au gc, jamais automatique</span></div>
+        <div class="row locked"><span class="who">workspaces/codex/tmp/issue-104</span><span>🔒 <span class="badge neu">étranger</span></span>
+          <span class="why">acteur codex — visible, intouchable : aucune action disponible</span></div>
+        <div class="row locked"><span class="who">tmp/rel-b241</span><span>⌂ <span class="badge neu">hors zone</span></span>
+          <span class="why">détaché — propriété opérateur, jamais touché</span></div>
+
+        <div class="step done" style="margin-top:10px">
+          <div class="n">✓</div>
+          <div class="t"><b>autoclaw/services-juge-depot-20261126</b>
+            <div class="d">preuve juge fraîche sur le tip · arbre propre · éligible E6</div>
+            <div class="proof">tip=1d1746a · preuve=run 8f31c2a4 · log=sha256:9b41…d7 · arbre_sale=false</div></div>
+          <div class="dur"><button class="btn primary">Intégrer sur dev</button></div>
+        </div>
+        <div class="step warn">
+          <div class="n">⚠</div>
+          <div class="t"><b>autoclaw/spec-brouillon-x</b>
+            <div class="d">preuve à rafraîchir — la pointe a bougé depuis le run (anti-TOCTOU)</div>
+            <div class="proof">preuve=run 5c88e0d1 · tip actuel ≠ sha du reçu · preuve non éligible</div></div>
+          <div class="dur"><button class="btn" disabled>Preuve à rafraîchir</button></div>
+        </div>
+      </div>
+
+      <!-- SANTÉ DU DÉPÔT -->
+      <div class="card">
+        <h3>Santé du dépôt <span class="badge warn">⚠ à surveiller · 5/7</span>
+            <span class="why" style="margin-left:auto">diagnostic structurel — le code n'est jamais lu</span></h3>
+        <div class="row"><span class="who">1 · dev ↔ origin</span><span class="badge ok">✓ aligné</span>
+          <span class="why">a81c53b = origin/dev · fetch 14:52</span></div>
+        <div class="row"><span class="who">2 · worktrees</span><span class="badge ok">✓ sains</span>
+          <span class="why">6 actifs · 0 arbre sale persistant · TTL respectés · étrangers intacts</span></div>
+        <div class="row"><span class="who">3 · branches</span><span class="badge ok">✓ propres</span>
+          <span class="why">0 branche fusionnée non supprimée sur origin</span></div>
+        <div class="row"><span class="who">4 · preuves</span><span class="badge warn">⚠ 1 manque</span>
+          <span class="why">spec-brouillon-x : pointe bougée depuis le run — relancer une vérification</span></div>
+        <div class="row"><span class="who">5 · hygiène de l'arbre</span><span class="badge ok">✓ propre</span>
+          <span class="why">aucun reçu / log / checkpoint de session dans l'arbre (USAGE)</span></div>
+        <div class="row"><span class="who">6 · intégrations</span><span class="badge ok">✓ bien formées</span>
+          <span class="why">12 commits « Intégration X » · 2 parents · messages canoniques</span></div>
+        <div class="row"><span class="who">7 · résidus</span><span class="badge warn">⚠ 2 branches</span>
+          <span class="why">2 branches distantes sans worktree ni issue liée — à trier ou supprimer</span></div>
+        <div style="display:flex;gap:10px;margin:12px 0 2px;align-items:center">
+          <button class="btn">Recalculer la santé</button>
+          <span class="why">calcul sur demande · cache horodaté · diagnostic, jamais un verrou</span>
+        </div>
+      </div>
+
+      <!-- CONFIRMATION UNIQUE -->
+      <div class="card">
+        <h3>Confirmation unique — intégration sur dev <span class="badge warn">1 clic requis</span></h3>
+        <div class="row"><span class="who">Branche</span><b>autoclaw/services-juge-depot-20261126</b>
+          <span class="why">identique à la proposition — contrôlé à nouveau au clic</span></div>
+        <div class="row"><span class="who">Commit</span>« Intégration autoclaw/services-juge-depot-20261126 (contrat services) »
+          <span class="why">fusion 2 parents — un commit d'intégration par branche</span></div>
+        <div class="row"><span class="who">Pointe avant</span>1d1746a
+          <span class="why">si la pointe a bougé entre l'affichage et le clic, l'état frais est ré-affiché — DEPOT_CONSENT_EXPIRE</span></div>
+        <div class="row"><span class="who">Preuve</span><span class="badge ok">reçu juge 8f31c2a4 · sha256 lié</span>
+          <span class="why">périmé si la pointe bouge — anti-TOCTOU visible</span></div>
+        <div class="row"><span class="who">Fusion rapide (ff)</span><span class="badge neu">non proposée</span>
+          <span class="why">dev a bougé depuis la base de la branche — conditions §7 non réunies</span></div>
+        <div class="row"><span class="who">Go</span><span class="badge neu">tracé : Olivier · écran Services · 27/11</span>
+          <span class="why">le clic trace le go opérateur dans l'audit — admission ≠ exécution</span></div>
+        <div class="applied" style="margin-top:10px">Vérifications appliquées avant push&nbsp;:
+          <b>aligne frais</b> · <b>preuve liée au sha</b> · <b>juge sur la pointe intégrée</b> ·
+          <b>refspec explicite dev:refs/heads/dev</b> · <b>jamais de force</b></div>
+        <div style="display:flex;gap:10px;margin:12px 0 4px">
+          <button class="btn primary">Confirmer l'intégration</button>
+          <button class="btn">Annuler</button>
+        </div>
+        <p class="note" style="margin-bottom:2px">Une seule confirmation par intégration. Un conflit de fusion
+        s'arrête proprement (<b>DEPOT_CONFLIT</b>) et revient à l'auteur — le service ne résout jamais un conflit.</p>
+      </div>
+
+      <div class="applied">Intégration appliquée le 26/11&nbsp;: <b>a306600</b> · preuve 4 shards vert sur la pointe ·
+        push dev ✓ (refspec explicite) · worktree d'intégration libéré — <u>voir le reçu</u></div>
+
+      <!-- JOURNAL -->
+      <div class="card">
+        <h3>Journal — audits juge + dépôt <span class="badge neu">chronologique</span></h3>
+        <div class="row"><span class="who">14:58</span><span>autoclaw — run 8f31c2a4 fini · 4 shards · code 0</span>
+          <span class="why">juge-audit.jsonl · <u>reçu</u></span></div>
+        <div class="row"><span class="who">14:52</span><span>autoclaw — aligne dev → ✓ aligné (a81c53b)</span>
+          <span class="why">depot-audit.jsonl · <u>rapport</u></span></div>
+        <div class="row"><span class="who">14:47</span><span>autoclaw — worktree-claim refusé · <b>DEPOT_EMPLACEMENT_PRIS</b></span>
+          <span class="why">chemin déjà réservé — autre sujet choisi</span></div>
+        <div class="row"><span class="who">14:41</span><span>autoclaw — intégration démarrée · go tracé (Olivier)</span>
+          <span class="why">depot-audit.jsonl</span></div>
+        <div style="display:flex;gap:10px;margin:12px 0 2px">
+          <button class="btn ghost">Ouvrir le journal complet</button>
+          <span class="why">filtre par acteur et par type · chaque ligne ouvre son reçu ou son log digesté</span>
+        </div>
+      </div>
+
+      <p class="note"><b>Pourquoi</b> : deux services invisibles seraient deux services inutilisés. L'écran montre
+      l'activité en cours (shards, étapes, erreurs déjà visibles), l'état des preuves et des worktrees, la santé
+      structurelle du dépôt — tout vient des reçus, du registre, du flux d'activité et des audits des services,
+      jamais d'une copie. Les actes sensibles restent à confirmation unique tracée ; les refus expliquent toujours
+      la garde qui les a produits ; la santé éclaire sans jamais verrouiller.</p>
+    </main>
+  </div>
+</div>
+
+<footer>Maquette du contrat SERVICES-JUGE-DEPOT (§8) — écran Services · mocks statiques, données fictives,
+aucune donnée réelle · langage visuel #118 · le port SwiftUI n'entreprend que la structure validée :
+chaque preuve consultable reste un écran existant, aucune copie d'état dans l'app.</footer>
+
+<script>
+  document.querySelectorAll('nav.switcher button').forEach(b=>{
+    b.addEventListener('click',()=>{
+      document.querySelectorAll('nav.switcher button').forEach(x=>x.classList.remove('active'));
+      b.classList.add('active');
+      document.querySelectorAll('main.screen').forEach(m=>m.classList.remove('active'));
+      document.getElementById('s-'+b.dataset.s).classList.add('active');
+    });
+  });
+  document.querySelectorAll('.toggle:not(.locked)').forEach(t=>{
+    t.style.cursor='pointer';
+    t.addEventListener('click',()=>t.classList.toggle('on'));
+  });
+</script>
+</body>
+</html>
