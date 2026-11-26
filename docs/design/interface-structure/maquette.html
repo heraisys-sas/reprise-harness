@@ -107,7 +107,7 @@
 
 <header class="top">
   <h1>Reprise — structure « défauts appliqués sauf avis contraire »</h1>
-  <p>Maquette pour l'issue <b>#118</b> · trois écrans prioritaires. Contrat : Reprise détecte, applique et
+  <p>Maquette pour l'issue <b>#118</b> · quatre écrans prioritaires. Contrat : Reprise détecte, applique et
      <b>montre</b> ; l'opérateur arbitre ; un champ n'est demandé que si la détection échoue, et l'écran explique pourquoi.
      Les preuves restent consultables derrière chaque badge — rien n'est déduit d'un état non prouvé.</p>
 </header>
@@ -116,6 +116,7 @@
   <button class="active" data-s="a">A · Intégrations</button>
   <button data-s="b">B · Test Apple Intelligence</button>
   <button data-s="c">C · Activité des paires + triage sémantique</button>
+  <button data-s="d">D · Pilote Apple</button>
 </nav>
 
 <!-- ══════════════════════════ A · INTÉGRATIONS ══════════════════════════ -->
@@ -338,6 +339,92 @@
       (générée localement, fraîcheur et provenance affichées), les trois événements qui comptent, et les anomalies
       candidates du triage sémantique — NLEmbedding filtre d'abord (fenêtre, cadence, budget : pas de flood, pas de DOS),
       la FM n'analyse que ce qui est loin des clusters connus, et son verdict reste une hypothèse à confirmer.</p>
+    </main>
+  </div>
+</div>
+
+<!-- ══════════════════════════ D · PILOTE APPLE ══════════════════════════ -->
+<div class="window">
+  <div class="layout">
+    <div class="sidebar">
+      <div class="brand">Reprise</div>
+      <a>◧ Intégrations</a>
+      <a>⟳ Activité des paires</a>
+      <a>◔ Scheduler</a>
+      <a>🔍 Santé</a>
+      <a class="sel">✦ Pilot Apple</a>
+      <a>⚙ Réglages</a>
+    </div>
+    <main class="screen" id="s-d">
+      <h2 class="screen">Pilote Apple — proposition d'action et confirmation</h2>
+      <p class="sub">Le pilote propose une action sous forme de <b>paramètres d'état réel</b> — jamais de prose déléguée.
+         Une seule confirmation avant lancement : elle affiche le backend, le mode, la facturation et le périmètre d'écriture.
+         L'éligibilité est un contrôle déterministe du registre ; un verdict FM resterait une hypothèse affichée comme telle.</p>
+
+      <div class="legend">
+        <span><span class="badge ok">✓ éligible</span> contrôle déterministe passé</span>
+        <span><span class="badge neu">auto</span> décision appliquée par défaut</span>
+        <span><span class="badge bad">✗ bloqué</span> garde fail-closed active</span>
+      </div>
+
+      <div class="card">
+        <h3>Proposition · Synthèse hebdo « Atlas » <span class="badge ok">✓ éligible</span> <span class="badge neu">auto</span></h3>
+        <div class="row"><span class="who">Backend</span><span>foundation-models</span><span class="why">modèle local Apple · registre : gratuit, expertise</span></div>
+        <div class="row"><span class="who">Mode</span><span>expertise</span><span class="why">jalon 1 : expertise seule — l'implémentation attend le grant par mission</span></div>
+        <div class="row"><span class="who">Facturation</span><span class="badge ok">free · déclarée</span><span class="why">jamais « unknown » au lancement — sinon refus</span></div>
+        <div class="row"><span class="who">Écriture workspace</span><span class="badge ok">aucune</span><span class="why">lecture seule par défaut ; le grant s'installe explicitement, jamais déduit</span></div>
+        <div class="row"><span class="who">Budget</span><span>5 requêtes · 300 s · 0,00 EUR</span><span class="why">plafonds stricts, appliqués par l'hôte</span></div>
+        <div class="row"><span class="who">Preuves</span><span><span class="badge ok">admission ok</span> <span class="badge ok">registre consulté</span> <span class="badge neu">reçu durable</span></span><span class="why">consultables au clic — rien n'est déduit d'un état non prouvé</span></div>
+        <div class="proof">admission: ok · scope=session · budget=5/jour · restants=5 · registry=foundation-models(free; expertise; write=off)</div>
+
+        <div class="applied" style="margin-top:10px">Réglages appliqués sauf avis contraire&nbsp;:
+          <b>expertise seule</b> · <b>facturation connue (free)</b> · <b>écriture OFF</b> ·
+          <b>consentement lié au contenu</b> · <b>aucun repli payant</b></div>
+
+        <div style="display:flex;gap:10px;margin:14px 0 4px">
+          <button class="btn primary">Préparer la confirmation</button>
+          <button class="btn">Écarter</button>
+        </div>
+
+        <details class="adv">
+          <summary>Avancé — mécanismes de la proposition</summary>
+          <div class="inner">
+            <div class="row"><span class="who">Job</span><input type="text" value="job-9f21c7 · révision 2" style="width:220px"></div>
+            <div class="row"><span class="who">Digest du brief</span><input type="text" value="sha256:7c9a…e2" style="width:220px"><span class="why">le consentement couvre ce contenu précis</span></div>
+            <div class="row"><span class="who">Invalidation</span><span>révision du job (job_revise) ⇒ consentement et confirmation périmés</span></div>
+            <div class="row"><span class="who">Registre backend</span><span>foundation-models → free · expertise · écriture OFF · snapshot mémoire admis</span></div>
+            <div class="row"><span class="who">Coupe-circuit</span><div class="toggle on"></div><span class="why">révocation immédiate — non négociable</span></div>
+            <div class="row"><span class="who">Analyse FM</span><span class="badge neu">hypothèse, jamais conclusion</span><span class="why">aucune décision tirée d'une sortie générée</span></div>
+          </div>
+        </details>
+      </div>
+
+      <div class="card">
+        <h3>Confirmation unique — lancement <span class="badge warn">1 clic requis</span></h3>
+        <div class="row"><span class="who">Backend</span><b>foundation-models</b><span class="why">identique à la proposition — contrôlé à nouveau au clic</span></div>
+        <div class="row"><span class="who">Mode</span><b>expertise</b><span class="why">aucune écriture associée</span></div>
+        <div class="row"><span class="who">Facturation</span><span class="badge ok">free (déclarée)</span><span class="why">« unknown » ne passe pas — garde registre</span></div>
+        <div class="row"><span class="who">Périmètre d'écriture</span><span class="badge ok">aucun — lecture seule</span><span class="why">affiché noir sur blanc à chaque confirmation</span></div>
+        <div class="row"><span class="who">Preuve de consentement</span><span class="badge ok">sha256 lié au contenu</span><span class="why">7c9a…e2 · périmé si le job est révisé</span></div>
+        <div style="display:flex;gap:10px;margin:12px 0 4px">
+          <button class="btn primary">Confirmer et lancer</button>
+          <button class="btn">Annuler</button>
+        </div>
+        <p class="note" style="margin-bottom:2px">Une seule confirmation par action. <b>Aucune relance après une réponse perdue</b> :
+        un nouveau request_key est exigé, et une admission sans envoi ne prouve rien (admission ≠ dispatch, contrat Quick Apply).</p>
+      </div>
+
+      <div class="card">
+        <h3>Refus fail-closed — exemple <span class="badge bad">✗ bloqué</span></h3>
+        <div class="row"><span class="who">Action demandée</span><span>backend « codex » · facturation « unknown »</span><span class="why">registre : codex n'est jamais gratuit par défaut</span></div>
+        <div class="row"><span class="who">Décision</span><span class="badge bad">lancement refusé</span><span class="why">absent du registre = inexistant ; pas d'implicite</span></div>
+        <div class="row"><span class="who">Pour débloquer</span><span>faire observer une inclusion quota, ou choisir un autre backend</span><span class="why">la facturation devient « included » par preuve, jamais par déduction</span></div>
+      </div>
+
+      <p class="note"><b>Pourquoi</b> : la proposition du lot C est une liste de paramètres d'état réel (backend, mode, facturation,
+      écriture, budget) — pas un texte que le modèle aurait rédigé ; la confirmation unique du lot D ré-affiche les quatre
+      paramètres structurants avant l'unique clic. Les preuves restent en badges consultables, les mécanismes en « Avancé ▸ »,
+      et un refus explique toujours la garde qui l'a produit.</p>
     </main>
   </div>
 </div>
