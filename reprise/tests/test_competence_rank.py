@@ -79,11 +79,14 @@ def _wilson_ref(succes, n, z=1.6449):
 
 
 def _stats(succes, n):
+    # Stats FABRIQUEES et MESUREES (non_mesure=False) pour les tests de
+    # classement ; la voie non mesure est couverte par stats=None et par
+    # NonMesureFlagTest (drapeau non_mesure force a True).
     if n <= 0:
         return None
     return {'sample_count': n, 'succes': succes, 'echecs': n - succes,
             'incertains': 0, 'taux': (succes / n) if n else None,
-            'wilson': _wilson_ref(succes, n), 'non_mesure': n < 20}
+            'wilson': _wilson_ref(succes, n), 'non_mesure': False}
 
 
 def _cand(actor, backend='codex', billing_class='free', ecriture=True,
@@ -280,6 +283,22 @@ class DeterminismeTest(unittest.TestCase):
         s = competence_rank.classer([], _demande())
         self.assertIsNone(s['choisi'])
         self.assertEqual(s['refus'], 'REGISTRE_ABSENT')
+
+
+class NonMesureFlagTest(unittest.TestCase):
+    def test_non_mesure_flag_reste_non_mesure(self):
+        # Un drapeau non_mesure=True fait foi : la route reste hors mesure
+        # locale (gate N_MIN), meme si un intervalle wilson est present.
+        stats_nm = _stats(10, 10)
+        stats_nm['non_mesure'] = True
+        nm_flag = _cand('nm_flag', stats=stats_nm, prior={'note': 1.0})
+        mesure = _cand('mesure', backend='metaai', stats=_stats(6, 12))
+        s = competence_rank.classer([nm_flag, mesure], _demande())
+        self.assertIsNone(s['refus'])
+        self.assertEqual(s['choisi'], 'mesure')
+        codes = [(m['code'], m['actor']) for m in s['motifs']]
+        self.assertIn(('STATIQUE', 'nm_flag'), codes)
+        self.assertIn('MESURE_LOCALE', _motif_codes(s))
 
 
 class CompatTest(unittest.TestCase):
