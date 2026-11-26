@@ -41,6 +41,20 @@ class HarnessReconciliationTests(unittest.TestCase):
         return integration.reconcile_plan(self.root, self.home, 'desktop', self.project,
                                            self.project, True, accepted)
 
+    def divergent_without_resume(self):
+        # Live repair shape: manifest without continuation, block with stale release paths.
+        self.install(delegate=True, codex_workspace_write=True)
+        text = self.config.read_bytes().decode()
+        span = integration._reconcile_span(text)
+        entries = integration.block_entries(span.group())
+        self.assertNotIn('reprise-output-resume', [entry['id'] for entry in entries])
+        self.assertIsNone(json.loads((self.managed / 'managed.json').read_bytes()).get('output_resume'))
+        entries[0]['config']['command'] = '/synthetic/broken-concatenated-release/runtime/bin/python3'
+        entries[0]['config']['args'][3] = '/synthetic/old-release/helpers/expert_mcp.py'
+        block = integration.START + '\n- insert: ' + json.dumps(entries) + '\n' + integration.END + '\n'
+        self.config.write_bytes(block.encode())
+        return integration.digest(block.encode())
+
     def test_explicit_plan_read_only_and_apply_preserves_outer_bytes_without_backups(self):
         accepted = self.divergent(crlf=True)
         before = integration.tree_files(self.folder)
@@ -76,6 +90,43 @@ class HarnessReconciliationTests(unittest.TestCase):
         # The ordinary route now recognizes ownership, with the write choice still explicit.
         integration.plan(self.root, self.home, 'desktop', self.project, delegate=True,
                          output_resume=True, output_resume_project=self.project, codex_workspace_write=True)
+
+    def test_adoption_without_resume_keeps_manifest_continuation_absent(self):
+        accepted = self.divergent_without_resume()
+        before = integration.tree_files(self.folder)
+        proposed = self.reconcile(accepted)
+        self.assertEqual(integration.tree_files(self.folder), before)
+        with patch.object(integration.subprocess, 'run', side_effect=AssertionError('No subprocess permitted')):
+            self.assertTrue(self.apply_plan(proposed)['changed'])
+        text = self.config.read_bytes().decode()
+        manifest = json.loads((self.managed / 'managed.json').read_bytes())
+        # The manifest owns the continuation choice: adoption neither adds nor drops it.
+        self.assertIsNone(manifest.get('output_resume'))
+        self.assertEqual(manifest['output_resume_project'], str(self.project))
+        self.assertEqual(manifest['reconciled_from_sha256'], accepted)
+        entries = integration.block_entries(integration._reconcile_span(text).group())
+        self.assertNotIn('reprise-output-resume', [entry['id'] for entry in entries])
+        self.assertTrue(Path(entries[0]['config']['command']).is_file())
+        self.assertIn('--codex-workspace-write', entries[0]['config']['args'])
+        # The ordinary route now recognizes ownership even without continuation options.
+        ordinary = integration.plan(self.root, self.home, 'desktop', self.project,
+                                    delegate=True, codex_workspace_write=True)
+        self.assertNotIn(str(self.config), [change['path'] for change in ordinary['changes']])
+
+    def test_resume_entry_in_block_without_manifest_continuation_is_refused(self):
+        accepted = self.divergent_without_resume()
+        span = integration._reconcile_span(self.config.read_bytes().decode())
+        entries = integration.block_entries(span.group())
+        entries.append({'id': 'reprise-output-resume',
+                        'name': str(self.root / 'runtime/helpers/harness-output-resume.cjs'),
+                        'config': {'enabled': True, 'projectRoot': str(self.project)}})
+        block = integration.START + '\n- insert: ' + json.dumps(entries) + '\n' + integration.END + '\n'
+        self.config.write_bytes(block.encode())
+        accepted = integration.digest(block.encode())
+        before = integration.tree_files(self.folder)
+        with self.assertRaisesRegex(ValueError, 'supplémentaires'):
+            self.reconcile(accepted)
+        self.assertEqual(integration.tree_files(self.folder), before)
 
     def test_choices_and_accepted_block_are_required(self):
         accepted = self.divergent()

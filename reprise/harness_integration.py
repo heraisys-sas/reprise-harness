@@ -1340,12 +1340,14 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
     manifest_before = file_hash(managed / 'managed.json')
     journal_before = file_hash(managed / 'operation.json')
     old = manifest(managed)
-    if not old or old.get('status') != 'installed' or not old.get('output_resume'):
-        raise ValueError('Intégration gérée avec continuation existante requise.')
+    if not old or old.get('status') != 'installed':
+        raise ValueError('Intégration gérée installée requise.')
+    # The manifest owns the continuation choice; adoption must never add or drop it.
+    resume = bool(old.get('output_resume', False))
     project = str(Path(project).expanduser().resolve(strict=True))
     resume_project = str(Path(resume_project).expanduser().resolve(strict=True))
     if project != old['project'] or not Path(project).is_dir() or not Path(resume_project).is_dir():
-        raise ValueError('Projet du pont inchangé et continuation existante explicitement choisie requis.')
+        raise ValueError('Projet du pont inchangé et répertoires de projet existants requis.')
     if write and 'reprise_delegate' not in old['tools']:
         raise ValueError('Write requiert la délégation déjà autorisée.')
     journal = read_journal(managed / 'operation.json')
@@ -1369,7 +1371,7 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
         raise ValueError('État Reprise préexistant requis ; aucun registre neuf implicite.')
     memory = memory_integration.selected(old)
     expected = _bridge_entries(Path(old['release']), old['state'], old['tools'], project, profile, managed,
-        True, old.get('output_resume_project'), old.get('codex_workspace_write', False),
+        resume, old.get('output_resume_project'), old.get('codex_workspace_write', False),
         old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory,
         old.get('chatgpt_state'), old.get('chatgpt_dispatch', False))
     actual = block_entries(block.replace('\r\n', '\n'))
@@ -1413,7 +1415,7 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
     release = Path(old['state']).parent / 'integration-releases' / identity
     memory_integration.validate_binding(old['state'], memory, project, 'harness')
     entries = _bridge_entries(release, old['state'], old['tools'], project, profile, managed,
-        True, resume_project, write, old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory,
+        resume, resume_project, write, old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory,
         old.get('chatgpt_state'), old.get('chatgpt_dispatch', False))
     _validate_target_entries(entries)
     if not _canonical_paths(entries):
