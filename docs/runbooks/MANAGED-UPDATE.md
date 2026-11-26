@@ -74,14 +74,16 @@ Relance : SIGTERM de l’ancien PID, puis démarrage avec le runtime de la nouve
 python3 -E -s -B <release>/Contents/Resources/helpers/claude_desktop_quick.py --project-root <projet>
 ```
 
-Le socket est recréé au démarrage. Après l’arrêt du daemon, le fichier socket peut
-rester présent sans détenteur et le daemon refuse alors de démarrer
-(« Socket déjà présent ; remplacement interdit sans réconciliation explicite »).
-Un socket dont `connect()` est refusé est orphelin — daemon arrêté ; c’est le
-diagnostic normal, jamais par existence du fichier. Après confirmation qu’aucun
-processus ne tient le socket (`lsof` vide + `connect()` refusé), supprimer le
-fichier socket orphelin est la réparation normale, puis relancer. Ne jamais
-supprimer un socket tenu par un daemon vivant.
+Le daemon ne remplace jamais un fichier socket existant : au démarrage il ne
+bind que si le fichier est absent, sinon il refuse de démarrer
+(« Socket déjà présent ; remplacement interdit sans réconciliation explicite »,
+code `claude_desktop_quick.py:743-750`). Le socket n’est donc recréé que
+lorsque le fichier est absent. Un socket dont `connect()` est refusé est
+orphelin — daemon arrêté ; c’est le diagnostic normal, jamais par existence
+du fichier. Preuve d’orphelinat obligatoire avant toute action : `lsof` sans
+détenteur, `connect()` refusé et verrou `<socket>.lock` libre. Dans ce cas,
+supprimer le fichier socket orphelin est la réparation documentée et normale,
+puis relancer. Ne jamais supprimer un socket tenu par un daemon vivant.
 
 ### Contrôle post-déploiement des outils de délégation (#216)
 
