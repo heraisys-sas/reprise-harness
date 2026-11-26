@@ -80,13 +80,12 @@ class BaseJuge(unittest.TestCase):
             h.write('arbre de test\n')
         _git(chemin, 'add', '.')
         _git(chemin, 'commit', '-q', '-m', 'init')
-        # Le drapeau du ci_test fictif est encodé dans le fichier même.
-        with open(os.path.join(chemin, 'reprise', 'ci_test.py'), 'a', encoding='utf-8') as h:
-            h.write('')
-        # Paramètres : on réécrit le fichier avec ses drapeaux.
-        drapeaux = ' '.join(['--code', str(code), '--dormir', str(dormir)] + ([] if log else ['--sans-log']))
+        # Paramètres : injectés AVANT le corps, car le fictif lit sys.argv en tête
+        # (un append après son sys.exit ne s'exécuterait jamais).
+        drapeaux = ['--code', str(code), '--dormir', str(dormir)] + ([] if log else ['--sans-log'])
         with open(os.path.join(chemin, 'reprise', 'ci_test.py'), 'w', encoding='utf-8') as h:
-            h.write(CI_TEST_FICTIF + "\nsys.argv += %r\n" % drapeaux.split())
+            h.write("import sys\nsys.argv += %r\n" % (drapeaux,))
+            h.write(CI_TEST_FICTIF)
         _git(chemin, 'add', '.')
         _git(chemin, 'commit', '-q', '-m', 'ci fictif')
         return chemin
@@ -330,7 +329,7 @@ class TestSodEtPolitique(BaseJuge):
         os.utime(vieux, (passe, passe))
         audit_chemin = juge_paix.audit_path(self.base)
         with open(audit_chemin, 'a', encoding='utf-8') as h:
-            h.write(json.dumps({'type': 'run', 'memo': 'à conserver'}) + '\n')
+            h.write(json.dumps({'type': 'run', 'memo': 'à conserver'}, ensure_ascii=False) + '\n')
         arbre = self.arbre(code=0)
         juge_paix.run('autoclaw', arbre, base=self.base)
         self.assertFalse(os.path.exists(vieux), 'preuve au-delà de retention_jours (10) doit être supprimée')

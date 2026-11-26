@@ -244,10 +244,16 @@ def infos_arbre(worktree):
         ['git', '-C', worktree, 'status', '--porcelain', '-uall'],
         capture_output=True, text=True, timeout=30,
     )
-    texte = statut.stdout or ''
+    # Contrat §2.5 : digest hors `.runtime-py/` (journal d'exécution, écrasé à
+    # chaque run) et hors fichiers ignorés (porcelain ne liste jamais les ignorés).
+    lignes = [
+        ligne for ligne in (statut.stdout or '').splitlines()
+        if '/.runtime-py/' not in '/' + ligne[3:]
+    ]
+    texte = '\n'.join(lignes) + ('\n' if lignes else '')
     return {
         'sha_arbre': head.stdout.strip(),
-        'arbre_sale': bool(texte.strip()),
+        'arbre_sale': bool(lignes),
         'digest_modifs': _sha256_texte(texte),
     }
 
@@ -431,6 +437,7 @@ def _snapshot_juge(base):
             })
             if recu.get('etat') == 'fini' and recu.get('code') not in (0, None):
                 log = os.path.join(dossier_runs, nom, 'test-parallel.log')
+                avant = len(erreurs)
                 if os.path.isfile(log):
                     try:
                         with open(log, 'r', encoding='utf-8', errors='replace') as handle:
@@ -441,6 +448,9 @@ def _snapshot_juge(base):
                                         break
                     except OSError:
                         pass
+                if len(erreurs) == avant:
+                    # sortie non nulle sans ligne FAIL/Error dans le log : fait brut du reçu
+                    erreurs.append('run %s : code de sortie %s' % (recu.get('run_id'), recu.get('code')))
             if len(erreurs) >= 3:
                 break
     return {'actifs': actifs, 'file': file, 'derniers': derniers[:5], 'erreurs': erreurs}
@@ -555,7 +565,7 @@ def run(
     _preparer_dossiers(base)
     audit_chemin = audit_path(base)
 
-    politique = charger_politique(base)
+    politique = charger_politique(policy_path(base))
     def refus(code, message):
         _audit(audit_chemin, {'type': 'refus', 'acteur': acteur, 'refus': code, 'worktree': worktree, 'message': message[:200]})
         raise JugeError(code, message)
@@ -722,6 +732,7 @@ def _executer_run(
     if digest_log is None:
         etat = 'incertain'
         refus_nom = JUGE_LOG_ABSENT  # J3 : log introuvable => jamais `fini`, jamais eligible E6
+        code = None  # sans log archivé, aucun code de sortie n'est attestable
 
     fin_ts = time.time()
     recu = {
