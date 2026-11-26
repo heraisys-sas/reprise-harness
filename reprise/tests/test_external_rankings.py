@@ -467,7 +467,7 @@ class RefreshDueTests(DatabaseTestCase):
         db = self.memory_db()
         self.seed(db)
         now = 5_000_000.0
-        first = external_rankings.refresh_due(db, sources=['openrouter'], now=now)
+        first = self.call(db, sources=['openrouter'], now=now)
         self.assertEqual(first['openrouter']['status'], 'ok')
         before = db.execute('SELECT COUNT(*), MAX(fetched_at) FROM external_rankings').fetchone()
         with mock.patch('openrouter_adapter.fetch') as fetch:

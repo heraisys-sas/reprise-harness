@@ -18,6 +18,8 @@ if (file.endsWith('.zstd')) {
     const consumed = decoded.engine.bytesWritten;
     if (!Number.isSafeInteger(consumed) || consumed <= 0 || consumed > raw.length - offset)
       throw Error('Invalid compressed frame');
+    // A frame cut inside its header decodes as empty: an append is in progress.
+    if (decoded.buffer.length === 0) throw Error('Incomplete compressed frame');
     parts.push(decoded.buffer);
     size += decoded.buffer.length;
     offset += consumed;
