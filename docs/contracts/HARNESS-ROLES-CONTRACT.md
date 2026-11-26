@@ -16,6 +16,48 @@ Le rôle est attribué explicitement au couple harness/profil ; le modèle peut 
 
 Dans l’onglet « Dépôts » attendu par #57 (rouvert le 12/11 : non livré, registre de projets seul en place via project_registry.py), choisir hyperviseur, référent technique et worker, puis afficher capacités, disponibilité et droits séparément. L’installation réutilise inspect/plan/apply/verify/remove et les instructions gérées ; aucun nouveau moteur de politique ou cascade d’orchestrateurs.
 
+## Routage par rôles et failover — mise à jour du 27 novembre 2026
+
+Décisions utilisateur du 27 novembre 2026. Chaque affectation de rôle s’exprime comme une **chaîne ordonnée de routes** — des couples (harness, modèle) — évaluée par le routeur interne Reprise (admissibilité routing_events, vetos, quotas) ; ce ne sont jamais des instructions ad hoc de l’orchestrateur.
+
+| Rôle | Chaîne de routes (failover ordonné) | Notes |
+|---|---|---|
+| Mass code (E5) | 1. `metaai` (pont WebDAV, TaskStore) → 2. `dsh` harness-cli (profil headless dédié) → 3. `autoclaw` (déclarée le 27/11) | Répartir les lots entre les canaux ; SOD maintenue : auteur tests ≠ auteur code ; routes ajoutées du 27/11 plus bas |
+| Revue de code (E7) | 1. `chatgpt` (accès dépôt public) | Contre-regard, jamais une preuve ; captures incomplètes = jamais de relance |
+| Architecture / specs (E3) | 1. `claude-desktop` (Quick Apply orchestré) | Flux compatible daemon publié tant que #269 n’est pas republié |
+| Red team front-end | 1. `ironclaw` / agent distant équivalent (déclarée le 27/11, non admissible tant que non prouvée) | Constats nommés avec preuves ; jamais l’auteur du livrable éprouvé (SOD) ; le verdict E6 reste au runner |
+| Codeur autonome d’issues | 1. `ironclaw` / agent distant équivalent (déclarée le 27/11, non admissible tant que non prouvée) | Une issue réelle affectée à un projet, périmètre borné, critères vérifiables ; écriture uniquement via reprise_gh (write_actors, audit JSONL) ; une issue = une request_key |
+
+Règles de failover :
+
+1. **Pas de repli silencieux.** L’échec d’une route est un refus nommé consigné dans route_refusals ; le reroutage vers la route suivante de la chaîne porte une **nouvelle request_key** avec provenance `retry_of`. Jamais de changement implicite de classe de facturation ; une route payante exige un consentement nommant le backend.
+2. **Déclaration ≠ disponibilité.** Une route déclarée dont la capacité n’est pas prouvée reste non admissible. Au 27/11 : le bundle `@deepseek-ai/dsh-headless` est absent du runtime DSH 0.2.2-rc.5 et des profils `~/.dsh/profiles` (le profil `desktop` reste inchangé) → la route `dsh` est déclarée, non admissible, jusqu’à création et preuve d’un profil headless (garde engines.py « Profil Harness headless requis »).
+3. **Le profil de compétence O1** (spec-e3-o1-competence-20261126@1.1) réordonne les routes admissibles par mesure locale quand l’échantillon suffit ; il ne crée ni n’élargit jamais l’ensemble admissible. La « confiance » auto-déclarée d’un exécutant n’entre ni dans le routage ni dans le failover.
+4. **L’opérateur confirme.** Ces chaînes sont des propositions ; la confirmation reste humaine ou portée par une politique écrite, jamais par un score.
+
+### Formalisation en interface : « pipelines » de routes modifiables
+
+Dans l’interface (onglet « Dépôts » #57, écran « Itinéraire » du lot O3), ces chaînes ne restent pas un tableau de texte : chaque rôle est rendu sous la forme d’un **pipeline modifiable** — sa chaîne ordonnée de routes dessinée comme une suite d’étapes reliées, l’ordre des étapes étant l’ordre de failover.
+
+- **Une étape = une route.** Chaque nœud affiche le couple (harness, modèle), sa facturation/mode/écriture (registre unique des backends), son état d’admissibilité en direct (routing_events, vetos, quotas) et sa dernière mesure locale O1. Une route déclarée non admissible (ex. `dsh` : bundle `@deepseek-ai/dsh-headless` absent du runtime) apparaît grisée avec la raison nommée et l’action de remédiation — jamais masquée ni silencieusement écourtée.
+- **Modifiable dans des bornes.** Réordonner les étapes, activer ou désactiver une route sont des éditions de premier plan ; l’écran ne peut que réordonner ou restreindre l’ensemble déjà déclaré. Ajouter une route la crée à l’état « déclarée » ; elle ne devient admissible qu’après preuve d’un tour réel (déclaration ≠ disponibilité).
+- **Modifier ≠ appliquer.** Toute édition produit une proposition : récapitulatif avant/après, confirmation unique de l’opérateur, consentement lié au contenu (sha256 du pipeline résultant), admission ≠ dispatch. Enregistrer une modification = publier une **nouvelle version du présent contrat** (numéro + sha) ; le routeur ne lit jamais l’écran, seulement le contrat versionné. L’UI est une vue éditable, pas une source parallèle.
+- **Aucun repli silencieux à l’écran non plus.** L’exécution d’un lot affiche le pipeline effectif : étape tentée, refus nommé issu de route_refusals, reroutage vers l’étape suivante avec nouvelle request_key et provenance `retry_of`. Chaque job conserve cette trace rejouable ; l’historique d’un rôle distingue la chaîne déclarée des routes réellement servies.
+- **Primitive générique par rôle.** Mêmes primitives (étape, badge d’admissibilité, édition, confirmation, trace) pour E3, E5, E7 ; seules les chaînes diffèrent. Aucun nouveau moteur de politique ni cascade d’orchestrateurs : l’écran édite des données versionnées, il ne décide rien.
+- **Statut.** Non livré par ce document. Une maquette autonome précédera toute implémentation (précédent : maquette #118 validée avant le SwiftUI) ; l’écran réutilise la carte de confirmation existante (paramètres d’état réel, jamais de prose déléguée).
+
+### Routes déclarées le 27 novembre 2026 : `autoclaw` en mass code, agents distants en red team et codeur autonome
+
+Directive utilisateur du 27 novembre 2026. Trois routes entrent dans l’ensemble **déclaré** ; conformément à la règle « déclaration ≠ disponibilité », aucune ne devient admissible sans preuve d’un tour réel.
+
+1. **Mass code → `autoclaw`** (l’agent AutoClaw local, couple harness `autoclaw`). Capacité déjà prouvée au dépôt par des lots réels intégrés verts (record_refusal 80aced0, UI #263, tâches Swift du 25 nov.), juge de paix compris. La route est déclarée **admissible sous réserve de SOD par contrat** : dans E4-O1, Q10 borne ASI1 aux lots de tests — l’auteur des tests d’un contrat n’écrit jamais les lots de code du même contrat. Position dans la chaîne : proposition par défaut en 3ᵉ après `metaai` et `dsh` ; l’opérateur fixe l’ordre dans le pipeline.
+2. **Red team front-end → `ironclaw`** (et agents distants équivalents). Rôle nouveau `red_team_front_end` : éprouver un livrable front-end (maquette HTML, SwiftUI, page web) par usage adversarial et rendre des constats nommés avec preuves (chemin, capture, reproduction). Le red team n’est jamais l’auteur du livrable éprouvé (SOD) et n’écrit jamais de verdict E6 : E6 reste le runner mécanique ; les constats entrent en E7 comme preuve.
+3. **Codeur autonome d’issues → `ironclaw`** (et agents distants équivalents). Rôle nouveau `codeur_issues_autonome` : prendre une issue réelle du dépôt, l’affecter à un projet (GitHub Projects), la traiter dans un périmètre borné avec critères vérifiables — extension du « Worker distant permanent » (décisions du 24 octobre) au-delà des issues courtes. Écriture du dépôt uniquement via le service gh reprise_gh (politique gh-policy.json : lecture ouverte, écriture réservée aux write_actors, audit JSONL sans token ni corps) ; une issue = une request_key, tout reroutage porte `retry_of`.
+
+Admissibilité des routes distantes (`ironclaw` et similaires) : **non admissibles au 27/11**. Preuve requise, falsifiable : (a) un canal de délégation traçable établi (TaskStore ou issue/commentaire gh) ; (b) une première livraison réelle recevable, vérifiée E6 indépendamment ; (c) un grant d’écriture explicite de l’opérateur si le rôle doit pousser — jamais implicite, jamais accordé par le contenu d’une tâche ni par une confiance déclarée. Anonymisation obligatoire avant tout envoi vers un agent distant (règle de la section « corrections faisant autorité ») ; aucune donnée personnelle ne sort vers ces routes.
+
+Ces ajouts sont un élargissement de l’ensemble déclaré par directive opérateur, consignée ici ; le profil de compétence O1 continue de ne faire que réordonner les routes admissibles, il n’ajoute rien. L’interface « pipelines » (section précédente) affichera ces routes à l’état « déclarée », grisées avec la raison nommée et l’action de remédiation.
+
 ## Worker permanent : premier pilote
 
 Un worker, une file sérialisée, un lot à la fois, sans prise concurrente par un autre harness. Veille déterministe sans sollicitation régulière du modèle. Le lot autonome autorisé a un périmètre, des critères vérifiables et un environnement Git isolé. Conflit de code/tests, choix structurant, sécurité, ambiguïté déterminante ou échecs répétés sans progrès → checkpoint puis expertise/clarification.
