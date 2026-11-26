@@ -16,6 +16,23 @@ Le rôle est attribué explicitement au couple harness/profil ; le modèle peut 
 
 Dans l’onglet « Dépôts » attendu par #57 (rouvert le 12/11 : non livré, registre de projets seul en place via project_registry.py), choisir hyperviseur, référent technique et worker, puis afficher capacités, disponibilité et droits séparément. L’installation réutilise inspect/plan/apply/verify/remove et les instructions gérées ; aucun nouveau moteur de politique ou cascade d’orchestrateurs.
 
+## Routage par rôles et failover — mise à jour du 27 novembre 2026
+
+Décisions utilisateur du 27 novembre 2026. Chaque affectation de rôle s’exprime comme une **chaîne ordonnée de routes** — des couples (harness, modèle) — évaluée par le routeur interne Reprise (admissibilité routing_events, vetos, quotas) ; ce ne sont jamais des instructions ad hoc de l’orchestrateur.
+
+| Rôle | Chaîne de routes (failover ordonné) | Notes |
+|---|---|---|
+| Mass code (E5) | 1. `metaai` (pont WebDAV, TaskStore) → 2. `dsh` harness-cli (profil headless dédié) | Répartir les lots entre les canaux ; SOD maintenue : auteur tests ≠ auteur code |
+| Revue de code (E7) | 1. `chatgpt` (accès dépôt public) | Contre-regard, jamais une preuve ; captures incomplètes = jamais de relance |
+| Architecture / specs (E3) | 1. `claude-desktop` (Quick Apply orchestré) | Flux compatible daemon publié tant que #269 n’est pas republié |
+
+Règles de failover :
+
+1. **Pas de repli silencieux.** L’échec d’une route est un refus nommé consigné dans route_refusals ; le reroutage vers la route suivante de la chaîne porte une **nouvelle request_key** avec provenance `retry_of`. Jamais de changement implicite de classe de facturation ; une route payante exige un consentement nommant le backend.
+2. **Déclaration ≠ disponibilité.** Une route déclarée dont la capacité n’est pas prouvée reste non admissible. Au 27/11 : le bundle `@deepseek-ai/dsh-headless` est absent du runtime DSH 0.2.2-rc.5 et des profils `~/.dsh/profiles` (le profil `desktop` reste inchangé) → la route `dsh` est déclarée, non admissible, jusqu’à création et preuve d’un profil headless (garde engines.py « Profil Harness headless requis »).
+3. **Le profil de compétence O1** (spec-e3-o1-competence-20261126@1.1) réordonne les routes admissibles par mesure locale quand l’échantillon suffit ; il ne crée ni n’élargit jamais l’ensemble admissible. La « confiance » auto-déclarée d’un exécutant n’entre ni dans le routage ni dans le failover.
+4. **L’opérateur confirme.** Ces chaînes sont des propositions ; la confirmation reste humaine ou portée par une politique écrite, jamais par un score.
+
 ## Worker permanent : premier pilote
 
 Un worker, une file sérialisée, un lot à la fois, sans prise concurrente par un autre harness. Veille déterministe sans sollicitation régulière du modèle. Le lot autonome autorisé a un périmètre, des critères vérifiables et un environnement Git isolé. Conflit de code/tests, choix structurant, sécurité, ambiguïté déterminante ou échecs répétés sans progrès → checkpoint puis expertise/clarification.
