@@ -193,7 +193,10 @@ class CliTest(unittest.TestCase):
         def fake_urlopen(req, timeout):
             return _FakeResponse({'number': 271})
 
-        with mock.patch.object(reprise_gh.urllib.request, 'urlopen', fake_urlopen):
+        # Token hermetique : ci_test tourne sous HOME jetable, sans trousseau.
+        identifiants = 'protocol=https\nhost=github.com\npassword=SECRET'
+        with mock.patch.object(reprise_gh, '_run_credential_fill', lambda host: identifiants), \
+                mock.patch.object(reprise_gh.urllib.request, 'urlopen', fake_urlopen):
             code = reprise_gh.main([
                 '--actor', 'autoclaw', 'api', 'POST', '/repos/o/r/issues',
                 '--body-file', body])
