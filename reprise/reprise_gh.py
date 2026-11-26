@@ -18,15 +18,20 @@ reponse concrete a sa demande d'un « acces en lecture, stable » et d'un
 Fail-closed partout : politique absente = lecture seule pour tous ; acteur
 inconnu en ecriture = refus avant tout appel reseau ; toute reprise apres echec
 passe par un nouvel appel explicite (pas de relance automatique). `init`
-n'auto-eleve jamais un acteur : soit l'acteur est deja liste en ecriture dans
-la politique courante, soit bootstrap operateur par consent nominatif trace
-(`--consent`, journalise) — sinon refus (revue AutoCoder 26/11).
+n'auto-eleve jamais un acteur : l'acteur doit deja etre liste en ecriture dans
+la politique courante ; le premier amorcage est une ecriture directe de
+gh-policy.json par l'operateur (hors CLI), jamais une option de la CLI
+(revue securite harness 26/11 : voie consent supprimee).
+
+L'acteur (`--actor`) est une etiquette d'audit declaree par l'appelant : elle
+n'est pas authentifiee et n'est pas une frontiere de securite. Toute ecriture
+de politique est operateur-only (fichier direct) ; la frontiere reelle est le
+compte Unix + le trousseau macOS, pas la chaine --actor.
 
 Usage CLI :
     python3 reprise_gh.py --actor autoclaw api GET /repos/OWNER/REPO/issues/270
     python3 reprise_gh.py --actor autoclaw comment 270 --repo OWNER/REPO \
         --body-file commentaire.md
-    python3 reprise_gh.py --actor autoclaw init --write-actors autoclaw,claude
 
 Convention du depot : compatible Python 3.9 (pas de PEP 604), zero dependance.
 """
@@ -133,35 +138,30 @@ def check_permission(policy, actor, method):
         )
 
 
-def init_policy(actor, write_actors, consent=None, policy_path=None, audit_path=None):
-    """Ecrit la politique, sans auto-elevation (revue AutoCoder 26/11).
+def init_policy(actor, write_actors, policy_path=None, audit_path=None):
+    """Ecrit la politique, sans auto-elevation.
 
-    Deux voies, jamais une troisieme :
-    - l'acteur est deja liste en ecriture dans la politique courante ;
-    - bootstrap operateur : consent nominatif (--consent), trace au journal.
-    Politique absente = write_actors vide = aucun acteur ne peut s'auto-elever :
-    le premier amorcage passe par le consent de l'operateur, journalise.
+    Une seule voie : l'acteur est deja liste en ecriture dans la politique
+    courante (check_permission OK). Sinon refus avant toute ecriture —
+    l'amorcage est une ecriture directe de gh-policy.json par l'operateur,
+    jamais une option de la CLI (revue securite harness 26/11 : voie consent
+    supprimee).
     """
     policy_path = policy_path or DEFAULT_POLICY_PATH
     audit_path = audit_path or DEFAULT_AUDIT_PATH
     acteurs = [x.strip() for x in (write_actors or []) if x and x.strip()]
-    consent = (consent or '').strip()
     try:
         check_permission(load_policy(policy_path), actor, 'POST')
-        voie = 'acteur_liste'
     except GhError as exc:
-        if not consent:
-            audit(audit_path, actor, 'INIT', policy_path, 'refused', error=str(exc))
-            raise GhError(
-                "init refuse pour « %s » : acteur non liste en ecriture et "
-                "aucun consent operateur (--consent) : pas d'auto-elevation" % actor)
-        voie = 'consentement_operateur'
+        audit(audit_path, actor, 'INIT', policy_path, 'refused', error=str(exc))
+        raise GhError(
+            "init refuse pour « %s » : acteur non liste en ecriture. "
+            "L'amorcage est une ecriture directe de gh-policy.json par "
+            "l'operateur, jamais une option de la CLI : pas d'auto-elevation"
+            % actor)
     save_policy({'enabled': True, 'write_actors': acteurs}, policy_path)
-    extra = {'voie': voie}
-    if consent:
-        extra['consent_ref'] = consent[:128]
-    audit(audit_path, actor, 'INIT', policy_path, 'ok', extra=extra)
-    return voie
+    audit(audit_path, actor, 'INIT', policy_path, 'ok', extra={'voie': 'acteur_liste'})
+    return 'acteur_liste'
 
 
 def audit(audit_path, actor, method, path, status, error=None, extra=None):
@@ -286,7 +286,7 @@ def _cmd_create_issue(args):
 
 def _cmd_init(args):
     acteurs = [x.strip() for x in (args.write_actors or '').split(',') if x.strip()]
-    voie = init_policy(args.actor, acteurs, consent=getattr(args, 'consent', None))
+    voie = init_policy(args.actor, acteurs)
     print('Politique ecrite : %s (voie : %s)' % (DEFAULT_POLICY_PATH, voie))
     print('Acteurs en ecriture : %s' % (acteurs or '(aucun — lecture seule globale)'))
     return 0
@@ -315,8 +315,6 @@ def build_parser():
     p_new.set_defaults(func=_cmd_create_issue)
     p_init = sub.add_parser('init', help='ecrire la politique (sans auto-elevation)')
     p_init.add_argument('--write-actors', default='')
-    p_init.add_argument('--consent', default='',
-                        help='bootstrap operateur : consent nominatif trace')
     p_init.set_defaults(func=_cmd_init)
     return parser
 

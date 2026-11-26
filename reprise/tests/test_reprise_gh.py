@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 import urllib.error
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -177,7 +178,8 @@ class CliTest(unittest.TestCase):
         body = os.path.join(self.dir, 'corps.md')
         with open(body, 'w', encoding='utf-8') as handle:
             handle.write('texte')
-        with mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake:
+        with mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake, \
+                redirect_stderr(io.StringIO()):
             code = reprise_gh.main([
                 '--actor', 'metaai', 'comment', '270', '--repo', 'o/r',
                 '--body-file', body])
@@ -194,9 +196,11 @@ class CliTest(unittest.TestCase):
             return _FakeResponse({'number': 271})
 
         # Token hermetique : ci_test tourne sous HOME jetable, sans trousseau.
+        # redirect_stdout : la CLI ecrit la reponse JSON sur stdout — ne pas fuiter dans le journal de tests.
         identifiants = 'protocol=https\nhost=github.com\npassword=SECRET'
         with mock.patch.object(reprise_gh, '_run_credential_fill', lambda host: identifiants), \
-                mock.patch.object(reprise_gh.urllib.request, 'urlopen', fake_urlopen):
+                mock.patch.object(reprise_gh.urllib.request, 'urlopen', fake_urlopen), \
+                redirect_stdout(io.StringIO()):
             code = reprise_gh.main([
                 '--actor', 'autoclaw', 'api', 'POST', '/repos/o/r/issues',
                 '--body-file', body])
@@ -204,7 +208,8 @@ class CliTest(unittest.TestCase):
 
 
 class InitTest(unittest.TestCase):
-    # init sans auto-elevation : acteur liste, ou consent operateur trace.
+    # init sans auto-elevation : l'acteur doit deja etre liste en ecriture ;
+    # l'amorcage est une ecriture directe de gh-policy.json par l'operateur.
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         self.policy = os.path.join(self.dir, 'gh-policy.json')
@@ -219,7 +224,7 @@ class InitTest(unittest.TestCase):
         lines = [json.loads(x) for x in open(self.audit) if x.strip()]
         self.assertEqual(lines[-1]['status'], 'refused')
 
-    def test_init_politique_absente_refuse_sans_consent(self):
+    def test_init_politique_absente_refuse_sans_ecriture(self):
         with self.assertRaises(reprise_gh.GhError):
             reprise_gh.init_policy('metaai', ['metaai'],
                                    policy_path=self.policy, audit_path=self.audit)
@@ -236,20 +241,27 @@ class InitTest(unittest.TestCase):
         self.assertEqual(lines[-1]['status'], 'ok')
         self.assertEqual(lines[-1]['voie'], 'acteur_liste')
 
-    def test_init_bootstrap_consent_operateur_trace(self):
-        voie = reprise_gh.init_policy(
-            'autoclaw', ['autoclaw'], consent='olivier 2026-11-26',
-            policy_path=self.policy, audit_path=self.audit)
-        self.assertEqual(voie, 'consentement_operateur')
+    def test_init_acteur_non_liste_refuse_sans_ecriture(self):
+        reprise_gh.save_policy({'enabled': True, 'write_actors': ['autoclaw']}, self.policy)
+        avant = open(self.policy, 'r', encoding='utf-8').read()
+        with self.assertRaises(reprise_gh.GhError):
+            reprise_gh.init_policy('metaai', ['metaai'],
+                                   policy_path=self.policy, audit_path=self.audit)
+        self.assertEqual(open(self.policy, 'r', encoding='utf-8').read(), avant)
+        self.assertEqual(
+            reprise_gh.load_policy(self.policy)['write_actors'], ['autoclaw'])
         lines = [json.loads(x) for x in open(self.audit) if x.strip()]
-        self.assertEqual(lines[-1]['consent_ref'], 'olivier 2026-11-26')
+        self.assertEqual(lines[-1]['status'], 'refused')
+        self.assertNotIn('consent', json.dumps(lines))
 
     def test_init_cli_refuse_et_n_ecrit_pas(self):
         ancien = (reprise_gh.DEFAULT_POLICY_PATH, reprise_gh.DEFAULT_AUDIT_PATH)
         reprise_gh.DEFAULT_POLICY_PATH = self.policy
         reprise_gh.DEFAULT_AUDIT_PATH = self.audit
         try:
-            with mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake:
+            # redirect_stderr : le refus CLI imprime « Erreur : ... » — ne pas fuiter dans le journal de tests.
+            with mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake, \
+                    redirect_stderr(io.StringIO()):
                 code = reprise_gh.main([
                     '--actor', 'metaai', 'init', '--write-actors', 'metaai'])
             self.assertEqual(code, 1)
