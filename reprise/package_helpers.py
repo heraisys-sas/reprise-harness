@@ -26,6 +26,7 @@ ASSETS += ('app_clones.py',)  # #255 : pilotage UI des clones d'app (clone-inspe
 ASSETS += ('codex_thread_observer.py',)  # #245 : observation lecture seule des conversations Codex récentes.
 ASSETS += ('metaai_reprise_build.py', 'metaai_reprise_client.py', 'metaai_ui_dispatch.py',
            'metaai_patch_dylib_path.py', 'metaai_reprise.m', 'metaai_sec_shim.m')  # Redéploiement ReMetaAI via reprise metaai-integration-* (GUI) ; sources .m requises par compile_dylibs().
+ASSETS += ('expert_router.py',)  # #271 : importé par expert_mcp après chaque délégation.
 # Documentation durable embarquée dans le payload ; résolue depuis la racine du dépôt.
 DOCS = (
     'docs/integrations/claude/CLAUDE-DESKTOP-APPLY.md',

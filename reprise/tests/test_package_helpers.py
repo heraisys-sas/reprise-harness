@@ -1,3 +1,4 @@
+import ast
 import hashlib
 import json
 import os
@@ -52,6 +53,30 @@ class PackageHelpersTests(unittest.TestCase):
     def test_registry_durability_helpers_are_packaged(self):
         for name in ('registry_marker.py', 'registry_adopt.py'):
             self.assertIn(name, ASSETS)
+
+    def test_bundle_ships_every_local_import(self):
+        """#255, #271 : un import local absent d'ASSETS ne casse qu'en release."""
+        local = {path.stem for path in SOURCE.glob('*.py')}
+        exempt = {'package_runtime'}  # importé par package_helpers seul, dont l'export est refusé dans le bundle
+        todo = [name for name in ASSETS if name.endswith('.py') or name == 'reprise']
+        seen, missing = set(), set()
+        while todo:
+            name = todo.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            for node in ast.walk(ast.parse((SOURCE / name).read_text(encoding='utf-8'))):
+                if isinstance(node, ast.Import):
+                    modules = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    modules = [node.module]
+                else:
+                    continue
+                for module in {module.split('.')[0] for module in modules} & local - exempt:
+                    if module + '.py' not in ASSETS:
+                        missing.add(module + '.py')
+                    todo.append(module + '.py')
+        self.assertEqual(missing, set())
 
     def test_desktop_apply_assets_preserve_current_packaging(self):
         for name in ('claude_desktop_apply.py',
