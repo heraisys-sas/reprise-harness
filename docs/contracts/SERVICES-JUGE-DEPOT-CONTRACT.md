@@ -3,7 +3,7 @@
 - **Date** : 27 novembre 2026
 - **Auteur** : ASI1 (agent AutoClaw) — conception ; aucun code dans ce contrat
 - **Statut** : conception soumise à révision (questions opérateur en §10) ; révisable par l'opérateur
-- **Version** : 1.1 — ajoute l'intégration dans l'interface graphique (§8 : activité en cours, santé du dépôt, journal) et la maquette associée ; v1.0 = conception des deux services
+- **Version** : 1.2 — décisions opérateur §10 (26/11 : les six défauts sont adoptés, rétention des preuves fixée à 10 jours) ; v1.1 = intégration dans l'interface graphique (§8 : activité en cours, santé du dépôt, journal) et maquette associée ; v1.0 = conception des deux services
 - **Base** : dev `a81c53b` ; branche `autoclaw/services-juge-depot-20261127`
 - **Précédent directeur** : issue #270 (service gh niveau Reprise) — « soit il centralise tout, soit il délivre un service à tous les harness dans leur workspace » ; décision tenue le 26/11 : **les deux combinés** (cœur central dans `reprise/`, livraison par shims `bin/` par harness). Le présent contrat applique ce schéma à deux nouveaux services.
 
@@ -82,14 +82,14 @@ Chaque exécution produit, dans `juge/runs/<run_id>/` :
 ```json
 {"actif": true,
  "acteurs": {"autoclaw": {}, "codex": {}, "claude": {}, "chatgpt": {}, "metaai": {}, "harness": {}},
- "concurrence_machine": 2, "file_max": 8, "delai_secondes": 1800, "retention_jours": 90}
+ "concurrence_machine": 2, "file_max": 8, "delai_secondes": 1800, "retention_jours": 10}
 ```
 
 Refus : `JUGE_DESACTIVE`, `JUGE_ACTEUR_INCONNU`, `JUGE_POLITIQUE_ABSENTE` (fail-closed), `JUGE_ARBRE_INVALIDE` (pas un worktree Git ou pas de `reprise/ci_test.py`), `JUGE_FILE_PLEINE`, `JUGE_DELAI_ATTENTE` (TTL de file épuisé), `JUGE_DELAI_DEPASSE` (budget de run), `JUGE_ENV_REFUSE`, `JUGE_LOG_ABSENT` (log introuvable à l'archivage ⇒ reçu `fini` refusé, état incertain).
 
 ### 2.6 Audit
 
-`juge-audit.jsonl` (append-only, state dir) : `{ts, acteur, run_id, worktree, sha_arbre, arbre_sale, code, digest_log, duree_s, refus?}` — sans secret, sans dump d'environnement. Rétention : reçus et logs conservés `retention_jours` (90 par défaut), audits intacts.
+`juge-audit.jsonl` (append-only, state dir) : `{ts, acteur, run_id, worktree, sha_arbre, arbre_sale, code, digest_log, duree_s, refus?}` — sans secret, sans dump d'environnement. Rétention : reçus et logs conservés `retention_jours` (10 par défaut — décision opérateur 26/11), audits intacts.
 
 ### 2.7 Cas limites
 
@@ -241,14 +241,14 @@ Section bas d'écran : audits juge + dépôt fusionnés en ordre chronologique (
 - **Routage** : aucun des deux services n'est une route du routeur interne (aucun modèle facturé, aucune admissibilité LLM) — ce sont des outils mécaniques locaux, comme reprise_gh.
 - **Extension ultérieure** (hors présent contrat) : outils MCP `reprise_juge`/`reprise_depot` exposés via `reprise_delegate`, et installation des shims par l'installeur (metaai-install).
 
-## 10. Questions opérateur restantes
+## 10. Questions opérateur — TRANCHÉES le 26/11/2026 (opérateur : « défauts adoptés, rétention de preuves 10 jours »)
 
-1. **Garde de preuve avant push** : politique par défaut `exigee` (un reçu juge frais avant tout push de branche) — confirmer, ou préférer `avertie` pour les branches de brouillon ?
-2. **TTL worktrees** : 14 jours avant proposition de gc — ajuster ?
-3. **Concurrence machine du juge** : 2 exécutions simultanées (4 shards chacune) — ajuster selon l'usage réel.
-4. **Rétention des preuves** : 90 jours proposé — ajuster ?
-5. **Place dans l'interface** : écran « Services » en cinquième entrée du switcher de Connexions (recommandé, précédent #118) ou cartes dans l'écran Intégrations ?
-6. **Contrôles de santé** : la liste des 7 contrôles structurels (§8.5) et le seuil « branche dormante » (N jours) sont ajustables — proposer vos seuils.
+1. **Garde de preuve avant push** : `exigee` — un reçu juge frais avant tout push de branche (défaut confirmé).
+2. **TTL worktrees** : 14 jours avant proposition de gc (défaut confirmé).
+3. **Concurrence machine du juge** : 2 exécutions simultanées (4 shards chacune) (défaut confirmé, à relire à l'usage).
+4. **Rétention des preuves** : **10 jours** (décision opérateur, remplace les 90 jours proposés).
+5. **Place dans l'interface** : écran « Services » en cinquième entrée du switcher de Connexions (recommandation suivie, précédent #118).
+6. **Contrôles de santé** : liste des 7 contrôles structurels (§8.5) et seuil « branche dormante » tels que proposés (§8.5) — ajustables à l'usage.
 
 ## 11. Critères falsifiables
 
