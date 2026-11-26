@@ -1,0 +1,13 @@
+{"schema": "sensitive-paths@1", "version": 1, "owner": "Olivier",
+ "semantique": {"non_liste": "non_sensible", "doute": "sensible"},
+ "regles": [
+  {"id": "cle-ssh", "classe": "cle-ssh", "glob": "~/.ssh/**"},
+  {"id": "cle-pem", "classe": "cle-pem", "glob": "**/*.pem"},
+  {"id": "cle-key", "classe": "cle-key", "glob": "**/*.key"},
+  {"id": "env", "classe": "env", "glob": "**/.env"},
+  {"id": "env-local", "classe": "env", "glob": "**/.env.*"},
+  {"id": "trousseau-app", "classe": "trousseau", "glob": "**/*keychain*"},
+  {"id": "trousseau-macos", "classe": "trousseau", "glob": "~/Library/Keychains/**"},
+  {"id": "jeton", "classe": "jeton", "glob": "**/*token*"},
+  {"id": "cookie", "classe": "cookie", "glob": "**/*cookie*"}
+ ]}
