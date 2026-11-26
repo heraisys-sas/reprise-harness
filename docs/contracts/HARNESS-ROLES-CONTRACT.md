@@ -33,6 +33,17 @@ Règles de failover :
 3. **Le profil de compétence O1** (spec-e3-o1-competence-20261126@1.1) réordonne les routes admissibles par mesure locale quand l’échantillon suffit ; il ne crée ni n’élargit jamais l’ensemble admissible. La « confiance » auto-déclarée d’un exécutant n’entre ni dans le routage ni dans le failover.
 4. **L’opérateur confirme.** Ces chaînes sont des propositions ; la confirmation reste humaine ou portée par une politique écrite, jamais par un score.
 
+### Formalisation en interface : « pipelines » de routes modifiables
+
+Dans l’interface (onglet « Dépôts » #57, écran « Itinéraire » du lot O3), ces chaînes ne restent pas un tableau de texte : chaque rôle est rendu sous la forme d’un **pipeline modifiable** — sa chaîne ordonnée de routes dessinée comme une suite d’étapes reliées, l’ordre des étapes étant l’ordre de failover.
+
+- **Une étape = une route.** Chaque nœud affiche le couple (harness, modèle), sa facturation/mode/écriture (registre unique des backends), son état d’admissibilité en direct (routing_events, vetos, quotas) et sa dernière mesure locale O1. Une route déclarée non admissible (ex. `dsh` : bundle `@deepseek-ai/dsh-headless` absent du runtime) apparaît grisée avec la raison nommée et l’action de remédiation — jamais masquée ni silencieusement écourtée.
+- **Modifiable dans des bornes.** Réordonner les étapes, activer ou désactiver une route sont des éditions de premier plan ; l’écran ne peut que réordonner ou restreindre l’ensemble déjà déclaré. Ajouter une route la crée à l’état « déclarée » ; elle ne devient admissible qu’après preuve d’un tour réel (déclaration ≠ disponibilité).
+- **Modifier ≠ appliquer.** Toute édition produit une proposition : récapitulatif avant/après, confirmation unique de l’opérateur, consentement lié au contenu (sha256 du pipeline résultant), admission ≠ dispatch. Enregistrer une modification = publier une **nouvelle version du présent contrat** (numéro + sha) ; le routeur ne lit jamais l’écran, seulement le contrat versionné. L’UI est une vue éditable, pas une source parallèle.
+- **Aucun repli silencieux à l’écran non plus.** L’exécution d’un lot affiche le pipeline effectif : étape tentée, refus nommé issu de route_refusals, reroutage vers l’étape suivante avec nouvelle request_key et provenance `retry_of`. Chaque job conserve cette trace rejouable ; l’historique d’un rôle distingue la chaîne déclarée des routes réellement servies.
+- **Primitive générique par rôle.** Mêmes primitives (étape, badge d’admissibilité, édition, confirmation, trace) pour E3, E5, E7 ; seules les chaînes diffèrent. Aucun nouveau moteur de politique ni cascade d’orchestrateurs : l’écran édite des données versionnées, il ne décide rien.
+- **Statut.** Non livré par ce document. Une maquette autonome précédera toute implémentation (précédent : maquette #118 validée avant le SwiftUI) ; l’écran réutilise la carte de confirmation existante (paramètres d’état réel, jamais de prose déléguée).
+
 ## Worker permanent : premier pilote
 
 Un worker, une file sérialisée, un lot à la fois, sans prise concurrente par un autre harness. Veille déterministe sans sollicitation régulière du modèle. Le lot autonome autorisé a un périmètre, des critères vérifiables et un environnement Git isolé. Conflit de code/tests, choix structurant, sécurité, ambiguïté déterminante ou échecs répétés sans progrès → checkpoint puis expertise/clarification.
