@@ -64,6 +64,18 @@ class TestPerimetreGuard(unittest.TestCase):
             self.assertTrue(len(resultat["hors_perimetre"]) > 0)
             self.assertTrue(len(resultat["digest_diff"]) > 0)
 
+    def test_allowed_paths_absent_ou_vide_refusent_tout(self):
+        # allowed_paths absent (None) ou vide : chaque entree refusee (fail-closed), aucun repli sur tout le depot.
+        with tempfile.TemporaryDirectory() as dossier:
+            base = self._init(dossier)
+            self._ecrire(dossier, "src/a.py", "a = 1\n")
+            self._git(dossier, "add", ".")
+            for autorises in (None, []):
+                resultat = verifier_perimetre_diff(dossier, base, autorises, max_diff_files=10, max_diff_lines=1000)
+                self.assertFalse(resultat["ok"])
+                self.assertEqual(resultat["refuse"], "HORS_PERIMETRE")
+                self.assertTrue(len(resultat["hors_perimetre"]) > 0)
+
     def test_interdit_implicite_VERSION(self):
         # VERSION modifiee meme si dans allowed.
         with tempfile.TemporaryDirectory() as dossier:

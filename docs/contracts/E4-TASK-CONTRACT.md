@@ -102,7 +102,7 @@ Fichier `plans/<plan_id>.json`, immuable une fois approuvé. **plan_id** : `<suj
 
 **5.2 Règles (toutes requises).**
 1. Chaque chemin touché (ajout, modification, suppression, renommage, changement de mode) ∈ allowed_paths.
-2. Aucun chemin ∈ prohibited **ni** dans l'interdit implicite : `.git/**`, `VERSION`, `CHANGELOG*` (règle opérateur : hors release), configuration CI et `ci_test.py`, **les tests indépendants** (SOD : l'auteur ne modifie pas ce qui le vérifie), la liste sensible.
+2. Aucun chemin ∈ prohibited **ni** dans l'interdit implicite de la garde : `.git/**`, `VERSION`, `CHANGELOG*` (règle opérateur : hors release), `.github/**`, `.gitlab-ci.yml`, `ci_test.py`, la liste sensible. **Les tests indépendants** ne sont pas un interdit de la garde : contrainte E4 — les `allowed_paths` du lot ne les déclarent pas (SOD : l'auteur ne modifie pas ce qui le vérifie), et la garde refuse toute entrée hors `allowed_paths`.
 3. Aucun symlink créé ou modifié, aucun sous-module, aucun fichier binaire, sauf autorisation nominative dans allowed_paths.
 4. Nombre de fichiers ≤ max_diff_files ; lignes ajoutées + supprimées ≤ max_diff_lines.
 5. sensitive=true recalculé sur le diff : même règle d'actor que §3.
