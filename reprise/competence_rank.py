@@ -1,7 +1,29 @@
-"""Classement de competence, module pur, sans effet de bord."""
-REFUS_RAISONS = ("ENTREE_INVALIDE", "REGISTRE_ABSENT", "FACTURATION_INCONNUE", "ECRITURE_NON_AUTORISEE", "QUOTA_EPUISE", "PAYANT_NON_CONSENTI", "ROLE_INTERDIT", "CHEMIN_SENSIBLE")
-MOTIF_CODES = ("ADMISSIBLE", "MESURE_LOCALE", "PRIOR_DEPARTAGE", "QUOTA", "STATIQUE", "REFUS")
+"""Classement de competence, module pur, sans effet de bord.
+
+Etape intermediaire O1 (L3) : les motifs emis {"code", "actor", "source"}
+sont une forme interne ; l'assemblage final (L5) les mappe vers le schema
+spec {"code", "valeur", "source": {"type", "ref"}} avant valide_sortie.
+Politique de refus global (E7-03) : QUOTA_EPUISE seulement si TOUS les
+candidats sont exclus pour QUOTA ; sinon le code le plus severe selon
+_PRIORITE_REFUS (ordre fixe documente, independant de l'ordre d'entree).
+Un refus embarque les motifs des exclusions rencontrees (codes d'exclusion
+REFUS_RAISONS et codes MOTIF_CODES comme QUOTA) ; ENTREE_INVALIDE,
+REGISTRE_ABSENT et DEFAUT_INTERNE arrivent avant tout candidat retenu,
+motifs vides (DEFAUT_INTERNE, E7-02 : exception interne inattendue,
+diagnostic type sur stderr, aucun candidat selectionne).
+"""
+import sys
+from competence_types import MOTIF_CODES, REFUS_RAISONS  # enums source unique, re-exportes
+from competence_stats import equivalentes as _recouvre
 _COUT = {"free": 0, "included": 1, "paid-named": 2}
+# Precedence fixe des refus globaux (E7-03) : meme ordre que le cycle
+# d'exclusion intra-candidat, le plus informatif d'abord, QUOTA en dernier
+# pour ne pas masquer une cause independante du quota.
+_PRIORITE_REFUS = ("ENTREE_INVALIDE", "ROLE_INTERDIT", "CHEMIN_SENSIBLE", "FACTURATION_INCONNUE", "PAYANT_NON_CONSENTI", "ECRITURE_NON_AUTORISEE", "QUOTA")
+class EntreeInvalide(Exception):
+    # Signal interne (E7-02) : la demande ou le registre viole le contrat
+    # d'entree ; distingue une erreur de donnees d'un defaut de programmation.
+    pass
 def _note_prior(prior):
     # Extrait la note de prior, -1 si absente ou hors 0 1.
     if prior is None:
@@ -57,11 +79,6 @@ def _mesure_info(stats):
         except Exception:
             taux_v = -1.0
     return ((float(bas), float(haut)), taux_v, True)
-def _recouvre(iv_a, iv_b):
-    # True si intervalles fermes se recouvrent.
-    a, b = iv_a
-    c, d = iv_b
-    return a <= d and c <= b
 def _motif(code, actor, source):
     # Construit un motif de sortie.
     return {"code": code, "actor": actor, "source": source}
@@ -69,27 +86,33 @@ def _refus(code, motifs):
     # Construit une sortie de refus.
     return {"choisi": None, "refus": code, "motifs": motifs}
 def classer(candidats, demande):
-    # Classe les candidats, jamais d exception.
+    # Classe les candidats, jamais d exception ; frontiere publique fail-closed.
+    # E7-02 : entree invalide -> refus controle ENTREE_INVALIDE ; exception
+    # inattendue -> DEFAUT_INTERNE, diagnostic type sur stderr (aucun detail
+    # sensible), aucun candidat selectionne.
     try:
         return _classer_interne(candidats, demande)
-    except Exception:
+    except EntreeInvalide:
         return _refus("ENTREE_INVALIDE", [])
+    except Exception as error:
+        sys.stderr.write("competence_rank: defaut interne: %s\n" % type(error).__name__)
+        return _refus("DEFAUT_INTERNE", [])
 def _classer_interne(candidats, demande):
     if not isinstance(demande, dict):
-        return _refus("ENTREE_INVALIDE", [])
+        raise EntreeInvalide()
     role = demande.get("role")
     mode = demande.get("mode")
     sensible = demande.get("sensible")
     if not isinstance(role, str) or not role:
-        return _refus("ENTREE_INVALIDE", [])
+        raise EntreeInvalide()
     if mode not in ("expertise", "implementation"):
-        return _refus("ENTREE_INVALIDE", [])
+        raise EntreeInvalide()
     if not isinstance(sensible, bool):
-        return _refus("ENTREE_INVALIDE", [])
+        raise EntreeInvalide()
     if "kind" in demande and not isinstance(demande["kind"], str):
-        return _refus("ENTREE_INVALIDE", [])
+        raise EntreeInvalide()
     if not isinstance(candidats, list):
-        return _refus("ENTREE_INVALIDE", [])
+        raise EntreeInvalide()
     if len(candidats) == 0:
         return _refus("REGISTRE_ABSENT", [])
     exclusions = []
@@ -138,17 +161,19 @@ def _classer_interne(candidats, demande):
         admissibles.append({"idx": idx, "actor": actor, "billing": billing, "cout": cout, "note": note, "iv": iv, "taux": taux_v, "mesurable": mesurable})
     if len(admissibles) == 0:
         motifs = []
+        codes = set()
         for idx, actor, code in exclusions:
             motifs.append(_motif(code, actor, "registre"))
-        a_quota = False
-        for idx, actor, code in exclusions:
-            if code == "QUOTA":
-                a_quota = True
-                break
-        if a_quota:
+            codes.add(code)
+        # E7-03 : QUOTA_EPUISE seulement si tous les candidats sont bloques
+        # par le quota ; sinon code le plus severe selon _PRIORITE_REFUS,
+        # independant de l'ordre d'entree.
+        if codes == {"QUOTA"}:
             return _refus("QUOTA_EPUISE", motifs)
-        premier = exclusions[0][2]
-        return _refus(premier, motifs)
+        for code in _PRIORITE_REFUS:
+            if code in codes:
+                return _refus(code, motifs)
+        return _refus("ENTREE_INVALIDE", motifs)
     motifs = []
     for idx, actor, code in exclusions:
         motifs.append(_motif(code, actor, "registre"))

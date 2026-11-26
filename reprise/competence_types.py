@@ -2,7 +2,7 @@
 import hashlib
 import json
 SPEC_ID = "spec-e3-o1-competence-20261126@1.1"
-REFUS_RAISONS = ("ENTREE_INVALIDE", "REGISTRE_ABSENT", "FACTURATION_INCONNUE", "ECRITURE_NON_AUTORISEE", "QUOTA_EPUISE", "PAYANT_NON_CONSENTI", "ROLE_INTERDIT", "CHEMIN_SENSIBLE")
+REFUS_RAISONS = ("ENTREE_INVALIDE", "REGISTRE_ABSENT", "FACTURATION_INCONNUE", "ECRITURE_NON_AUTORISEE", "QUOTA_EPUISE", "PAYANT_NON_CONSENTI", "ROLE_INTERDIT", "CHEMIN_SENSIBLE", "DEFAUT_INTERNE")
 MOTIF_CODES = ("ADMISSIBLE", "MESURE_LOCALE", "PRIOR_DEPARTAGE", "QUOTA", "STATIQUE", "REFUS")
 _CHAMPS_INTERDITS = frozenset(["request_key", "retry_of", "e2_ref", "context_paths", "allowed_paths", "prohibited", "acceptance", "output_form", "depends_on", "budget", "consent_ref", "quota_ceiling"])
 _HEX = set("0123456789abcdefABCDEF")

@@ -49,15 +49,22 @@ de contraintes deja calcules en entree, jamais sur le registre ni la base) :
   PRIOR_DEPARTAGE, QUOTA, STATIQUE, REFUS.
 - REFUS_RAISONS (spec) : ENTREE_INVALIDE, REGISTRE_ABSENT,
   FACTURATION_INCONNUE, ECRITURE_NON_AUTORISEE, QUOTA_EPUISE,
-  PAYANT_NON_CONSENTI, ROLE_INTERDIT, CHEMIN_SENSIBLE. P vide apres
-  exclusions -> refus QUOTA_EPUISE si au moins une exclusion QUOTA,
-  sinon le premier code d'exclusion rencontre ; candidats vides ->
-  REGISTRE_ABSENT.
+  PAYANT_NON_CONSENTI, ROLE_INTERDIT, CHEMIN_SENSIBLE, DEFAUT_INTERNE.
+  P vide apres exclusions -> QUOTA_EPUISE seulement si TOUS les candidats
+  sont exclus pour QUOTA (E7-03) ; sinon le code le plus severe selon la
+  precedence fixe ENTREE_INVALIDE > ROLE_INTERDIT > CHEMIN_SENSIBLE >
+  FACTURATION_INCONNUE > PAYANT_NON_CONSENTI > ECRITURE_NON_AUTORISEE >
+  QUOTA (independant de l'ordre d'entree) ; candidats vides ->
+  REGISTRE_ABSENT ; exception interne inattendue -> DEFAUT_INTERNE
+  (E7-02 : diagnostic type sur stderr, aucun candidat, jamais une
+  validation d'entree confondue avec un defaut de programmation).
 - Regle absolue (T1) : le prior externe n'entre qu'en departage dans le
   groupe d'equivalence du meilleur ; il ne surclasse jamais une mesure
   locale et ne hisse jamais un non-mesure au-dessus d'un mesure ; tout
   champ texte du prior est ignore et jamais copie en sortie.
 """
+import contextlib
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -299,6 +306,159 @@ class NonMesureFlagTest(unittest.TestCase):
         codes = [(m['code'], m['actor']) for m in s['motifs']]
         self.assertIn(('STATIQUE', 'nm_flag'), codes)
         self.assertIn('MESURE_LOCALE', _motif_codes(s))
+
+
+class EnumsSourceUniqueTest(unittest.TestCase):
+    def test_t12_enums_reexportes_depuis_types(self):
+        # Deduplication : rank n'a plus de tuples propres, il re-exporte ceux
+        # de competence_types (source unique des enums spec).
+        import competence_types
+        self.assertIs(competence_rank.REFUS_RAISONS, competence_types.REFUS_RAISONS)
+        self.assertIs(competence_rank.MOTIF_CODES, competence_types.MOTIF_CODES)
+
+
+class RefusPolicyTest(unittest.TestCase):
+    # E7-03 : precedence fixe des refus globaux, independante de l'ordre
+    # d'entree ; QUOTA_EPUISE seulement si TOUS les candidats sont QUOTA.
+    def test_tous_quota_epuise(self):
+        s = competence_rank.classer([_cand('a', quota=False), _cand('b', quota=False)],
+                                    _demande())
+        self.assertEqual(s['refus'], 'QUOTA_EPUISE')
+        self.assertIsNone(s['choisi'])
+
+    def test_tous_role_interdit(self):
+        s = competence_rank.classer([_cand('a', role_autorise=False),
+                                     _cand('b', role_autorise=False)], _demande())
+        self.assertEqual(s['refus'], 'ROLE_INTERDIT')
+
+    def test_role_plus_severe_que_quota(self):
+        cands = [_cand('a', role_autorise=False), _cand('b', quota=False)]
+        s = competence_rank.classer(cands, _demande())
+        self.assertEqual(s['refus'], 'ROLE_INTERDIT')
+        # les motifs embarquent toutes les exclusions, pas seulement le code retenu.
+        self.assertEqual(sorted(_motif_codes(s)), ['QUOTA', 'ROLE_INTERDIT'])
+
+    def test_precedence_independante_de_l_ordre_d_entree(self):
+        cands1 = [_cand('a', role_autorise=False), _cand('b', quota=False)]
+        cands2 = [_cand('b', quota=False), _cand('a', role_autorise=False)]
+        self.assertEqual(competence_rank.classer(cands1, _demande())['refus'],
+                         competence_rank.classer(cands2, _demande())['refus'])
+
+    def test_chemin_sensible_plus_severe_que_quota(self):
+        cands = [_cand('a', sensible_ok=False, quota=False), _cand('b', quota=False)]
+        s = competence_rank.classer(cands, _demande(sensible=True))
+        self.assertEqual(s['refus'], 'CHEMIN_SENSIBLE')
+
+    def test_payant_non_consentie_plus_severe_que_quota(self):
+        cands = [_cand('a', billing_class='paid-named', consentie=False, quota=False),
+                 _cand('b', quota=False)]
+        s = competence_rank.classer(cands, _demande())
+        self.assertEqual(s['refus'], 'PAYANT_NON_CONSENTI')
+
+    def test_ecriture_plus_severe_que_quota(self):
+        cands = [_cand('a', ecriture=False, quota=False), _cand('b', quota=False)]
+        s = competence_rank.classer(cands, _demande(mode='implementation'))
+        self.assertEqual(s['refus'], 'ECRITURE_NON_AUTORISEE')
+
+    def test_facturation_inconnue_plus_severe_que_quota(self):
+        cands = [_cand('a', billing_class='unknown', quota=False), _cand('b', quota=False)]
+        s = competence_rank.classer(cands, _demande())
+        self.assertEqual(s['refus'], 'FACTURATION_INCONNUE')
+
+    def test_entree_invalide_plus_severe_que_quota(self):
+        cands = [{'pas': 'dict'}, _cand('b', quota=False)]
+        s = competence_rank.classer(cands, _demande())
+        self.assertEqual(s['refus'], 'ENTREE_INVALIDE')
+
+
+class InternalErrorTest(unittest.TestCase):
+    # E7-02 : une exception interne inattendue doit rester identifiable
+    # (DEFAUT_INTERNE), sans detail sensible, sans candidat selectionne ;
+    # elle ne doit jamais etre confondue avec une validation d'entree.
+    def _classe_avec_panne(self, attribut, cand):
+        original = getattr(competence_rank, attribut)
+
+        def panne(_valeur):
+            raise RuntimeError('SECRET_PANNE_XYZ')
+
+        setattr(competence_rank, attribut, panne)
+        cap = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(cap):
+                s = competence_rank.classer([cand], _demande())
+        finally:
+            setattr(competence_rank, attribut, original)
+        return s, cap.getvalue()
+
+    def test_panne_dans_mesure_info_defaut_interne(self):
+        s, diag = self._classe_avec_panne('_mesure_info', _cand('a', stats=_stats(10, 10)))
+        self.assertIsNone(s['choisi'])
+        self.assertEqual(s['refus'], 'DEFAUT_INTERNE')
+        self.assertEqual(s['motifs'], [])
+        self.assertIn('RuntimeError', diag)
+        self.assertNotIn('SECRET_PANNE_XYZ', diag)
+
+    def test_panne_dans_note_prior_defaut_interne(self):
+        s, diag = self._classe_avec_panne('_note_prior',
+                                          _cand('a', stats=_stats(10, 10),
+                                                prior={'note': 0.5}))
+        self.assertEqual(s['refus'], 'DEFAUT_INTERNE')
+        self.assertIn('RuntimeError', diag)
+        self.assertNotIn('SECRET_PANNE_XYZ', diag)
+
+    def test_validation_entree_reste_entree_invalide(self):
+        s = competence_rank.classer([_cand('a')], None)
+        self.assertEqual(s['refus'], 'ENTREE_INVALIDE')
+
+
+class PieceInterneTest(unittest.TestCase):
+    # P1(e) c6 §5 : certification des pieces internes de classement.
+    def test_mesure_info_cas_limites(self):
+        M = competence_rank._mesure_info
+        self.assertEqual(M(None), (None, -1.0, False))
+        self.assertEqual(M('x'), (None, -1.0, False))
+        self.assertEqual(M({'non_mesure': True, 'wilson': (0.1, 0.9)}), (None, -1.0, False))
+        self.assertEqual(M({'non_mesure': False, 'wilson': None}), (None, -1.0, False))
+        self.assertEqual(M({'non_mesure': False, 'wilson': 'x'}), (None, -1.0, False))
+        self.assertEqual(M({'non_mesure': False, 'wilson': (0.1,)}), (None, -1.0, False))
+        self.assertEqual(M({'non_mesure': False, 'wilson': (True, 0.9)}), (None, -1.0, False))
+        self.assertEqual(M({'non_mesure': False, 'wilson': ('a', 0.9)}), (None, -1.0, False))
+        iv, taux, mesurable = M({'non_mesure': False, 'wilson': (0.1, 0.9), 'taux': 0.5})
+        self.assertEqual((iv, taux, mesurable), ((0.1, 0.9), 0.5, True))
+
+    def test_note_prior_cas_limites(self):
+        N = competence_rank._note_prior
+        self.assertEqual(N(None), -1.0)
+        self.assertEqual(N(True), -1.0)
+        self.assertEqual(N('x'), -1.0)
+        self.assertEqual(N(0.5), 0.5)
+        self.assertEqual(N(1), 1.0)
+        self.assertEqual(N(1.5), -1.0)
+        self.assertEqual(N(-0.1), -1.0)
+        self.assertEqual(N({'note': 0.7}), 0.7)
+        self.assertEqual(N({'note': True}), -1.0)
+        self.assertEqual(N({'note': 'x'}), -1.0)
+        self.assertEqual(N({'note': 2.0}), -1.0)
+        self.assertEqual(N({}), -1.0)
+
+    def test_cout_et_motif(self):
+        self.assertEqual(competence_rank._COUT,
+                         {'free': 0, 'included': 1, 'paid-named': 2})
+        self.assertEqual(competence_rank._motif('QUOTA', 'codex', 'registre'),
+                         {'code': 'QUOTA', 'actor': 'codex', 'source': 'registre'})
+
+
+class StaticPathTest(unittest.TestCase):
+    # E7-04 : 0 mesure + 20 incertains / 20 terminales -> non mesurable
+    # statistiquement (wilson None) -> voie statique, pas un refus.
+    def test_zero_mesure_sur_20_terminales_voie_statique(self):
+        stats0 = {'sample_count': 20, 'succes': 0, 'echecs': 0, 'incertains': 20,
+                  'taux': None, 'wilson': None, 'non_mesure': False}
+        s = competence_rank.classer([_cand('a', stats=stats0)], _demande())
+        self.assertEqual(s['choisi'], 'a')
+        self.assertIsNone(s['refus'])
+        self.assertIn('ADMISSIBLE', _motif_codes(s))
+        self.assertIn('STATIQUE', _motif_codes(s))
 
 
 class CompatTest(unittest.TestCase):

@@ -38,12 +38,15 @@ def fenetre(obs, maintenant):
     resultat = [o for dt, o in gardees]
     return resultat[:FENETRE_OBS]
 def wilson(succes, n_mesure):
-    # Intervalle de Wilson a 90 pour cent.
-    if not isinstance(n_mesure, (int, float)) or isinstance(n_mesure, bool):
-        return None
+    # Intervalle de Wilson a 90 pour cent ; fail-closed si succes hors [0, n].
+    # Comptages entiers stricts (E7-01) : bool exclu, tout flottant refuse
+    # (10.0, 10.5, nan, inf) — un nombre d'observations est un entier.
+    for compte in (succes, n_mesure):
+        if isinstance(compte, bool) or not isinstance(compte, int):
+            return None
     if n_mesure <= 0:
         return None
-    if not isinstance(succes, (int, float)) or isinstance(succes, bool):
+    if succes < 0 or succes > n_mesure:
         return None
     z = WILSON_Z
     n = float(n_mesure)
@@ -75,6 +78,7 @@ def stats_triplet(obs):
     succes = 0
     echecs = 0
     incertains = 0
+    terminales = 0
     for o in obs:
         if not isinstance(o, dict):
             continue
@@ -85,7 +89,10 @@ def stats_triplet(obs):
             echecs += 1
         elif issue == "incertain":
             incertains += 1
-    sample_count = len(obs)
+        else:
+            continue
+        terminales += 1
+    sample_count = terminales
     n_mesure = succes + echecs
     if n_mesure == 0:
         taux = None

@@ -9,7 +9,8 @@ Contrat du module (pur, aucune E/S) :
 - fenetre(obs, maintenant) : garde ts dans [maintenant - 30 j, maintenant]
   (bornes incluses) puis au plus les 50 plus recentes ; tri descendant par
   ts, egalite -> ordre d'entree conserve.
-- wilson(succes, n_mesure) -> (bas, haut) a 90 % (z = 1.6449), None si n <= 0.
+- wilson(succes, n_mesure) -> (bas, haut) a 90 % (z = 1.6449), None si n <= 0,
+  None aussi si succes hors [0, n] (fail-closed, jamais de sqrt negatif).
 - equivalentes(iv_a, iv_b) -> True si intervalles fermes recouvrent.
 - stats_triplet(obs) -> {'sample_count','succes','echecs','incertains',
   'taux','wilson','non_mesure'} ; issue dans {'succes_verifie','echec',
@@ -79,6 +80,16 @@ class FenetreTest(unittest.TestCase):
         # meme entree -> meme sortie
         self.assertEqual(competence_stats.fenetre(obs, _ts(0)), gardees)
 
+    def test_fenetre_entrees_degenerees(self):
+        # P1(e) c6 §5 : non-list -> [] ; maintenant non parseable -> []
+        # (fail-closed) ; obs a ts non parseable ignoree.
+        self.assertEqual(competence_stats.fenetre('x', _ts(0)), [])
+        self.assertEqual(competence_stats.fenetre(None, _ts(0)), [])
+        self.assertEqual(competence_stats.fenetre([_obs(0, 'echec')], 'pas-une-date'), [])
+        corrompue = _obs(0, 'echec')
+        corrompue['ts'] = 'x'
+        self.assertEqual(competence_stats.fenetre([corrompue], _ts(0)), [])
+
 
 class WilsonTest(unittest.TestCase):
     def test_wilson_formule_reference(self):
@@ -94,6 +105,18 @@ class WilsonTest(unittest.TestCase):
     def test_wilson_cas_degrades(self):
         self.assertIsNone(competence_stats.wilson(5, 0))
         self.assertIsNone(competence_stats.wilson(5, -1))
+
+    def test_e701_comptages_entiers_stricts(self):
+        # E7-01 : un nombre d'observations est un entier strict ; flottants
+        # (10.0, 10.5), NaN/inf et booleens refuses des deux cotes.
+        for args in [(10.0, 10), (10, 10.0), (10.5, 10), (10, 10.5),
+                     (True, 10), (10, False),
+                     (float('nan'), 10), (10, float('nan')),
+                     (float('inf'), 10), (10, float('-inf'))]:
+            self.assertIsNone(competence_stats.wilson(*args), args)
+        # entiers valides aux bornes restent mesures.
+        self.assertEqual(competence_stats.wilson(10, 10), _wilson_ref(10, 10))
+        self.assertEqual(competence_stats.wilson(0, 5), _wilson_ref(0, 5))
 
 
 class EquivalenceTest(unittest.TestCase):
@@ -182,6 +205,56 @@ class MappingTest(unittest.TestCase):
         self.assertEqual(set(groupes.keys()), {('metaai', 'mass_code', 'lot')})
         self.assertEqual(len(groupes[('metaai', 'mass_code', 'lot')]), 3)
         self.assertEqual(len(ignores), 2)
+
+
+class FailClosedTest(unittest.TestCase):
+    def test_t12_wilson_succes_hors_borne_none(self):
+        # succes > n ou < 0 : fail-closed (avant correctif : ValueError sqrt).
+        self.assertIsNone(competence_stats.wilson(15, 10))
+        self.assertIsNone(competence_stats.wilson(-1, 10))
+        self.assertIsNone(competence_stats.wilson(10.5, 10))
+        # bornes incluses restent mesurables.
+        self.assertEqual(competence_stats.wilson(10, 10), _wilson_ref(10, 10))
+        self.assertEqual(competence_stats.wilson(0, 5), _wilson_ref(0, 5))
+
+    def test_t13_sample_count_ne_compte_que_les_terminales(self):
+        # Les obs non terminales (issue inconnue, non-dict) n'inflechissent ni
+        # sample_count ni la porte N_MIN (spec §1.4 : 20 observations terminales).
+        valides = [_obs(0, 'succes_verifie', minutes=i) for i in range(19)]
+        valides.append(_obs(0, 'echec', minutes=19))
+        corrompus = [_obs(0, 'issue-inconnue', minutes=20),
+                     {'ts': _ts(0), 'issue': None, 'backend': 'metaai'}]
+        s = competence_stats.stats_triplet(valides + corrompus)
+        self.assertEqual(s['sample_count'], 20)
+        self.assertFalse(s['non_mesure'])
+        s19 = competence_stats.stats_triplet(valides[:19] + corrompus)
+        self.assertEqual(s19['sample_count'], 19)
+        self.assertTrue(s19['non_mesure'])
+
+
+    def test_e704_tableau_n_min_terminales(self):
+        # E7-04 : N_MIN porte sur les observations TERMINALES (spec §1.4, Q2
+        # CONFIRMED). Tableau c6 : 19+1/20 mesurable ; 20+0/20 mesurable ;
+        # 0+20/20 mesurable au sens N_MIN mais wilson None (voie statique au
+        # rang) ; 19+0/19 non mesurable.
+        obs = [_obs(0, 'succes_verifie', minutes=i) for i in range(19)]
+        obs.append(_obs(0, 'incertain', minutes=19))
+        s = competence_stats.stats_triplet(obs)
+        self.assertFalse(s['non_mesure'])
+        self.assertEqual((s['succes'], s['echecs'], s['incertains']), (19, 0, 1))
+        self.assertIsNotNone(s['wilson'])
+        obs_e = [_obs(0, 'echec', minutes=i) for i in range(20)]
+        se = competence_stats.stats_triplet(obs_e)
+        self.assertFalse(se['non_mesure'])
+        self.assertEqual(se['wilson'], competence_stats.wilson(0, 20))
+        obs0 = [_obs(0, 'incertain', minutes=i) for i in range(20)]
+        s0 = competence_stats.stats_triplet(obs0)
+        self.assertFalse(s0['non_mesure'])
+        self.assertIsNone(s0['wilson'])
+        self.assertIsNone(s0['taux'])
+        obs19 = [_obs(0, 'incertain', minutes=i) for i in range(19)]
+        s19 = competence_stats.stats_triplet(obs19)
+        self.assertTrue(s19['non_mesure'])
 
 
 class CompatTest(unittest.TestCase):
