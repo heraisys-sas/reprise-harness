@@ -237,7 +237,7 @@ POLICY_PROPERTIES = {
 }
 RECONCILE_SCHEMA = {'type': 'object', 'properties': {
     'request_key': {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': r'\S'},
-    'action': {'type': 'string', 'enum': ['observe', 'stop'], 'default': 'observe'},
+    'action': {'type': 'string', 'enum': ['observe', 'stop', 'release_undispatched'], 'default': 'observe'},
     'reason': {'type': 'string', 'enum': list(STOP_REASONS)}},
     'required': ['request_key'], 'additionalProperties': False}
 
@@ -1128,7 +1128,7 @@ class Bridge:
                         before_evidence = file_evidence(self.root, args.get('paths'), args.get('filePaths'))
                     except OSError as error:
                         raise ValueError('Implementation input unavailable; no request admitted') from error
-            existing = self.requests.begin(key, payload, parent)
+            existing = self.requests.begin(key, payload, parent, owner=self.owner)
             if existing:
                 pointer = existing.get('request_key', key)
                 completion = (self._desktop_completion(pointer, existing.get('backend'))
@@ -1839,6 +1839,29 @@ class Bridge:
         raise Unavailable('approval_disabled',
             'approval_respond est désactivé jusqu’à la tranche délégation (#117 T2b) : réponse opérateur requise.')
 
+    # Issue #265 : refus journalisés par routing_events.finalize avant tout
+    # envoi natif ; seuls ces états prouvent l'absence d'envoi d'une ligne
+    # héritée (sans propriétaire d'admission).
+    PRE_DISPATCH_REFUSALS = ('quota_blocked', 'billing_unverified', 'blocked_auth', 'engine_unavailable',
+                             'dispatch_refused', 'busy', 'blocked_owner', 'blocked_session')
+
+    def _release_undispatched(self, key):
+        """Prove the absence of a native send for one Codex admission (#265).
+
+        Codex persists its turn (on_turn « starting ») BEFORE turn/start, so a
+        request without a delegation_turns row never sent a prompt. Other
+        backends keep no such record: they are refused, never guessed.
+        """
+        event = self.db.execute(
+            'SELECT channel, terminal_state FROM routing_events WHERE request_key=? ORDER BY id DESC LIMIT 1',
+            (key,)).fetchone()
+        if event is None or event[0] != 'codex':
+            raise ValueError('Absence of dispatch is only provable for a routed Codex admission')
+        evidence = {'backend': 'codex', 'routing_terminal_state': event[1], 'native_turn': None,
+                    'pre_dispatch_refusal': event[1] in self.PRE_DISPATCH_REFUSALS}
+        result = self.requests.release_undispatched(key, evidence)
+        return self._bounded_full(key, dict(result, automatic_fallback=False))
+
     def _reconcile(self, args):
         if not isinstance(args, dict) or args.keys() - {'request_key', 'action', 'reason'}:
             raise ValueError('Invalid reconciliation arguments')
@@ -1846,7 +1869,7 @@ class Bridge:
         if not isinstance(key, str) or not key.strip() or len(key) > 128:
             raise ValueError('Persist a nonempty request_key (at most 128 characters)')
         action = args.get('action', 'observe')
-        if action not in ('observe', 'stop'):
+        if action not in ('observe', 'stop', 'release_undispatched'):
             raise ValueError('Unknown reconciliation action')
         if 'reason' in args and args['reason'] not in STOP_REASONS:
             raise ValueError('Explicit authorized stop reason required')
@@ -1862,6 +1885,8 @@ class Bridge:
             receipt = self.requests.lookup({'request_key': key})
             if receipt.get('status') == 'not_found':
                 raise RequestNotFound('Unknown request_key')
+            if action == 'release_undispatched':
+                return self._release_undispatched(key)
             native = self.requests.phase(key)
             previous = receipt.get('result') or {}
             if native is None and previous.get('thread_id') and previous.get('turn_id'):
