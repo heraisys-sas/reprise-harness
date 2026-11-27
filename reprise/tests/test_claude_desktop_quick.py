@@ -18,7 +18,7 @@ from claude_desktop_quick import Endpoint
 class EndpointTests(unittest.TestCase):
     def setUp(self):
         self.state = tempfile.mkdtemp(prefix='quick-test-')
-        self.endpoint = Endpoint(self.state, daily_limit=2)
+        self.endpoint = Endpoint(self.state)
         self.addCleanup(self.endpoint.close)
 
     def submit(self, args):
@@ -32,7 +32,7 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(result['dispatch'], 'dispatchOnQuickEntrySubmit')
         self.assertTrue(result['submission_id'])
 
-    def test_legacy_daily_limit_does_not_block(self):
+    def test_no_daily_cap_on_submissions(self):
         self.submit({'prompt': 'Un message valide'})
         self.submit({'prompt': 'Deuxième message valide'})
         result = self.submit({'prompt': 'Troisième message valide'})

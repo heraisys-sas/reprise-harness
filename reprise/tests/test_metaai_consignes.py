@@ -8,8 +8,7 @@
 #   2. le prompt d'injection UI (metaai_ui_dispatch.PROMPT_TEMPLATE, injecté par
 #      le pont metaaid) est cohérent avec ces consignes (mêmes chemins, même
 #      format de réponse) ;
-#   3. la config du pont MCP accepte bridge_root (format actuel) et dav_root
-#      (repli legacy).
+#   3. la config du pont MCP accepte bridge_root et refuse dav_root (#276).
 
 import json
 import sys
@@ -101,10 +100,9 @@ class LoadConfigTests(unittest.TestCase):
         cfg = self._config(bridge_root=str(self.root / "pont"))
         self.assertEqual(Path(cfg["bridge_root"]), self.root / "pont")
 
-    def test_dav_root_legacy_reconnu(self):
-        cfg = self._config(dav_root=str(self.root / "vieux"))
-        self.assertEqual(Path(cfg["bridge_root"]), self.root / "vieux")
-        self.assertNotIn("dav_root", cfg)
+    def test_dav_root_refuse_issue_276(self):
+        with self.assertRaisesRegex(ValueError, "dav_root supprimée"):
+            self._config(dav_root=str(self.root / "vieux"))
 
 
 class CircuitDemandeurTests(unittest.TestCase):

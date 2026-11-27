@@ -130,24 +130,6 @@ class ClaudeIntegrationTests(unittest.TestCase):
         with patch.object(integration.subprocess, 'run', return_value=self.bridge_response()):
             self.assertEqual(integration.verify(self.root, self.home)['status'], 'verified')
 
-    def test_legacy_managed_name_migrates_and_other_reprise_is_preserved(self):
-        self.install()
-        value = json.loads(self.config.read_text())
-        value['mcpServers']['reprise'] = value['mcpServers'].pop('reprise-harness')
-        self.config_write(value)
-        target = self.managed / 'managed.json'
-        old = json.loads(target.read_text())
-        old.pop('connector_name')
-        target.write_text(json.dumps(old))
-        self.install()
-        self.assertNotIn('reprise', json.loads(self.config.read_text())['mcpServers'])
-        value = json.loads(self.config.read_text())
-        value['mcpServers']['reprise'] = {'command': 'unrelated-store-connector'}
-        self.config_write(value)
-        self.install()
-        self.assertEqual(json.loads(self.config.read_text())['mcpServers']['reprise'],
-                         {'command': 'unrelated-store-connector'})
-
     def test_custom_entry_and_managed_edit_refused(self):
         self.config_write({'mcpServers': {'reprise-harness': {'command': 'custom'}}})
         with self.assertRaises(ValueError): self.plan()
@@ -159,51 +141,21 @@ class ClaudeIntegrationTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.plan()
         with self.assertRaises(ValueError): self.plan(action='remove')
 
-    def legacy_entry(self, modified=False):
+    def test_old_connector_name_is_not_adopted_issue_276(self):
+        # Suppression nette (#276) : une entrée « reprise » n'est plus reprise
+        # ni migrée ; seul reprise-harness est géré.
         self.install()
         value = json.loads(self.config.read_text())
-        entry = value['mcpServers'].pop('reprise-harness')
-        if modified:
-            entry['args'].append('--custom')
-        value['mcpServers']['reprise'] = entry
+        value['mcpServers']['reprise'] = value['mcpServers'].pop('reprise-harness')
         self.config_write(value)
-
-    def test_manifest_name_drift_migrates_only_hash_matched_legacy(self):
-        self.legacy_entry()
-        inspected = integration.inspect(self.root, self.home)
-        self.assertTrue(inspected['managed'])
-        self.assertEqual(inspected['connector_name'], 'reprise')
-        self.assertEqual(inspected['manifest_connector_name'], 'reprise-harness')
-        self.assertFalse(inspected['connector_name_matches'])
-        self.assertTrue(self.install()['changed'])
-        servers = json.loads(self.config.read_text())['mcpServers']
-        self.assertEqual(set(servers), {'reprise-harness'})
-        self.assertTrue(integration.inspect(self.root, self.home)['connector_name_matches'])
-        self.assertFalse(self.install()['changed'])
-
-    def test_manifest_name_drift_modified_legacy_refuses_install_and_remove(self):
-        self.legacy_entry(modified=True)
-        before = harness_integration.tree_files(self.home)
-        inspected = integration.inspect(self.root, self.home)
-        self.assertFalse(inspected['managed'])
-        self.assertFalse(inspected['connector_name_matches'])
-        for action in ('install', 'remove'):
-            with self.subTest(action=action), self.assertRaisesRegex(ValueError, 'réconciliation explicite'):
-                self.plan(action=action)
-        self.assertEqual(harness_integration.tree_files(self.home), before)
-
-    def test_manifest_name_drift_remove_only_hash_matched_legacy(self):
-        self.legacy_entry()
-        integration.apply(self.root, self.plan(action='remove'))
-        self.assertEqual(json.loads(self.config.read_text())['mcpServers'], {})
-        self.assertFalse(integration.apply(self.root, self.plan(action='remove'))['changed'])
-
-    def test_manifest_name_drift_verify_requires_migration_before_probe(self):
-        self.legacy_entry()
+        self.assertIsNone(integration.inspect(self.root, self.home)['connector_name'])
         with patch.object(integration.subprocess, 'run') as run:
-            with self.assertRaisesRegex(ValueError, 'migration gérée'):
+            with self.assertRaisesRegex(ValueError, 'absent ou modifié'):
                 integration.verify(self.root, self.home)
         run.assert_not_called()
+        self.install()
+        servers = json.loads(self.config.read_text())['mcpServers']
+        self.assertEqual(set(servers), {'reprise', 'reprise-harness'})
 
     def test_concurrent_configuration_and_tampered_plan_refused(self):
         proposed = self.plan()

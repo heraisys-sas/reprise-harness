@@ -37,19 +37,12 @@ INBOX = None  # Path, initialisé dans main()
 
 def load_config(path) -> dict:
     cfg = dict(CONFIG_DEFAULTS)
-    explicit = set()
     if path:
         raw = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
-        explicit = {k for k in raw}
+        if "dav_root" in raw:
+            raise ValueError("clé dav_root supprimée (#276) ; la renommer bridge_root dans " + str(path))
         cfg.update({k: v for k, v in raw.items()
-                    if k in ("bridge_root", "dav_root", "taskstore") and v is not None})
-    # Issue #277 (pont fichiers depuis le 24/11) : clé actuelle bridge_root ;
-    # dav_root (ère WebDAV) accepté en repli legacy, avec le même sens — mais
-    # une bridge_root explicite ne doit pas être écrasée par un dav_root résiduel.
-    if "dav_root" in cfg and "bridge_root" not in explicit:
-        cfg["bridge_root"] = cfg.pop("dav_root")
-    else:
-        cfg.pop("dav_root", None)
+                    if k in ("bridge_root", "taskstore") and v is not None})
     cfg["bridge_root"] = str(Path(cfg["bridge_root"]).expanduser())
     cfg["taskstore"] = str(Path(cfg["taskstore"]).expanduser())
     return cfg

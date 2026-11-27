@@ -41,7 +41,7 @@ class DurableTests(unittest.TestCase):
         self.state = self.root / 'state'
 
     def bridge(self):
-        bridge = Bridge(self.root, {}, self.state, daily_limit=0)
+        bridge = Bridge(self.root, {}, self.state)
         bridge.program = 'codex'
         seed_catalog(bridge)
         self.addCleanup(bridge.close)
@@ -220,7 +220,7 @@ class DurableTests(unittest.TestCase):
                 file_evidence(link, [bad])
 
     def test_oversized_implementation_result_is_bounded_like_any_full_result(self):
-        bridge = Bridge(self.root, {}, self.state, daily_limit=0)
+        bridge = Bridge(self.root, {}, self.state)
         bridge.program = 'codex'
         seed_catalog(bridge)
         self.addCleanup(bridge.close)
@@ -467,13 +467,13 @@ class DurableTests(unittest.TestCase):
             other.begin('child', {'question': 'B'}, 'key')
 
     def test_quick_ack_lost_and_legacy_counter_ignored_after_restart(self):
-        endpoint = Endpoint(self.state, daily_limit=0)
+        endpoint = Endpoint(self.state)
         self.addCleanup(endpoint.close)
         endpoint.db.execute('INSERT INTO quick_calls VALUES (?,?,?)', (endpoint.scope, 0, 999999))
         endpoint.db.commit()
         payload = {'request_key': 'quick', 'prompt': 'Review this contract'}
         receipt = endpoint.submit(payload)
-        other = Endpoint(self.state, daily_limit=-1)
+        other = Endpoint(self.state)
         self.addCleanup(other.close)
         self.assertEqual(other.submit(payload), receipt)
         self.assertTrue(receipt['admission_only'])
@@ -615,7 +615,7 @@ class DurableTests(unittest.TestCase):
         self.assertEqual(db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0], 1)
 
     def test_desktop_receipt_remains_admission_only_after_recovery(self):
-        bridge = Bridge(self.root, {}, self.state, daily_limit=0, desktop_socket='/private/tmp/quick.sock')
+        bridge = Bridge(self.root, {}, self.state, desktop_socket='/private/tmp/quick.sock')
         bridge.program = 'codex'
         seed_catalog(bridge)
         self.addCleanup(bridge.close)
