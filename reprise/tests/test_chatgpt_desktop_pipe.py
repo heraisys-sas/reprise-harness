@@ -1980,5 +1980,78 @@ class TestChatGptMode248(TestGuardedSend):
                                      for call in sent))
 
 
+# Issue #280: the review prompt cites the sentinel in its instruction; a
+# clipped or re-rendered echo then escaped every #246 guard and the cited
+# sentinel confirmed the echoed prompt as the reply (cas a2/a3, 27/11/2026).
+PROMPT_280 = ('Revue du commit f959fa0 : vérifie le budget d\'attente et '
+              'réponds par une ligne VERDICT: ACCORD ou VERDICT: REFUS suivie '
+              'de tes motifs, puis termine ta réponse par la ligne\n'
+              + adapter.REPLY_SENTINEL)
+# Rendered echo without its first words (collapsed user message).
+CLIPPED_ECHO_280 = PROMPT_280[len('Revue du commit f959fa0 : '):]
+
+
+class TestCapturePromptEcho280(unittest.TestCase):
+    """Issue #280: an echo of the prompt is never confirmed as the reply."""
+
+    def setUp(self):
+        self.holder = TestGuardedSend()
+        self.holder.setUp()
+        self.addCleanup(self.holder._folder.cleanup)
+
+    def send(self, body, request):
+        transport = self.holder.fake(body=body, quiet_ms=adapter.STREAM_QUIET_MS)
+        with HolderHarness(transport, self.holder.binary, self.holder.root), \
+                mock.patch.object(adapter, 'time', AcceleratedTime()):
+            receipt = adapter.send(PROMPT_280, self.holder.binary,
+                                   self.holder.root, 'dedicated',
+                                   request_key=request)
+        return transport, receipt
+
+    def test_body_text_clipped_echo_after_prior_turn_is_not_confirmed(self):
+        # Body path: the previous reply ends with the sentinel, the current
+        # echo is clipped and carries no «Vous avez dit» label, no reply yet.
+        body = ('ChatGPT a dit :\nRéponse du tour précédent '
+                + adapter.REPLY_SENTINEL + '\n' + CLIPPED_ECHO_280)
+        transport, receipt = self.send(body, 'req-280-body')
+        self.assertEqual(receipt['status'], 'captured_incomplete')
+        self.assertEqual(receipt['reason'], 'capture_is_prompt_echo')
+        self.assertFalse(receipt['response_complete'])
+        transport.insert_text.assert_called_once_with(PROMPT_280)
+
+    def test_assistant_container_echo_is_captured_incomplete(self):
+        # Anchor-independent gate: even a DOM-anchored capture made of the
+        # prompt words fails with the dedicated reason, never re-sent.
+        body = {'text': CLIPPED_ECHO_280, 'assistant_text': CLIPPED_ECHO_280}
+        transport, receipt = self.send(body, 'req-280-assistant')
+        self.assertEqual(receipt['status'], 'captured_incomplete')
+        self.assertEqual(receipt['reason'], 'capture_is_prompt_echo')
+        self.assertFalse(receipt['response_complete'])
+        transport.insert_text.assert_called_once_with(PROMPT_280)
+
+    def test_rendered_reply_is_still_confirmed(self):
+        body = ('Vous avez dit :\n' + PROMPT_280
+                + '\nChatGPT a dit :\nVERDICT: ACCORD\nLe budget est borné '
+                'et le reçu reste explicite en cas de dépassement. '
+                + adapter.REPLY_SENTINEL)
+        _transport, receipt = self.send(body, 'req-280-reply')
+        self.assertEqual(receipt['status'], 'confirmed')
+        self.assertTrue(receipt['response_text'].startswith('VERDICT: ACCORD'))
+
+    def test_is_prompt_echo_thresholds(self):
+        self.assertTrue(adapter.is_prompt_echo(CLIPPED_ECHO_280, PROMPT_280))
+        self.assertTrue(adapter.is_prompt_echo(PROMPT_280, PROMPT_280))
+        # A short verdict repeating proposed words is not judged.
+        self.assertFalse(adapter.is_prompt_echo('VERDICT: ACCORD', PROMPT_280))
+        # A reply quoting part of the prompt but adding its own content.
+        quoting = ('Tu demandes de vérifier le budget d\'attente. VERDICT: '
+                   'REFUS : le délai de 30 s est dépassé sur les longues '
+                   'réponses et le reçu ne signale pas la cause exacte.')
+        self.assertFalse(adapter.is_prompt_echo(quoting, PROMPT_280))
+        self.assertEqual(adapter._usable_reply(CLIPPED_ECHO_280, 'sentinel',
+                                               PROMPT_280),
+                         (False, 'capture_is_prompt_echo'))
+
+
 if __name__ == '__main__':
     unittest.main()

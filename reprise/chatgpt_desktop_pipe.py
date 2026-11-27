@@ -1002,11 +1002,47 @@ def extract_reply(text, prompt, assistant_text=None):
     return reply, anchor, total
 
 
-def _usable_reply(reply, anchor=None):
+# Issue #280: anchor-independent anti-echo gate. A capture whose words are
+# almost all covered by word shingles of the prompt brings nothing the prompt
+# did not already say: it is the echo (whole, clipped or re-rendered), never
+# the reply, whatever the anchor (the cited sentinel bypassed every guard).
+# Captures shorter than one shingle are not judged (a short «VERDICT: …»
+# legitimately repeats words the prompt proposed).
+ECHO_SHINGLE_WORDS = 5
+ECHO_COVERAGE_RATIO = 0.8
+_ECHO_NOISE = (REPLY_SENTINEL.lower(), 'vous avez dit', 'you said') + REPLY_LABELS
+
+
+def _echo_words(text):
+    lowered = _normalize(text).lower()
+    for noise in _ECHO_NOISE:
+        lowered = lowered.replace(noise, ' ')
+    return re.findall(r'\w+', lowered)
+
+
+def is_prompt_echo(reply, prompt):
+    """True when the capture adds no content of its own to the prompt."""
+    words = _echo_words(reply)
+    size = ECHO_SHINGLE_WORDS
+    if len(words) < size or not prompt:
+        return False
+    prompt_words = _echo_words(prompt)
+    shingles = {tuple(prompt_words[i:i + size])
+                for i in range(len(prompt_words) - size + 1)}
+    covered = [False] * len(words)
+    for i in range(len(words) - size + 1):
+        if tuple(words[i:i + size]) in shingles:
+            covered[i:i + size] = [True] * size
+    return sum(covered) >= ECHO_COVERAGE_RATIO * len(words)
+
+
+def _usable_reply(reply, anchor=None, prompt=None):
     if not reply:
         return False, 'no_reply_text'
     if anchor == 'cut_before_sentinel':
         return False, 'capture_cut_before_sentinel'
+    if prompt and is_prompt_echo(reply, prompt):
+        return False, 'capture_is_prompt_echo'
     if anchor != 'sentinel' and sum(not ch.isspace() for ch in reply) < MIN_USEFUL_REPLY_CHARS:
         return False, 'capture_too_short'
     return True, None
@@ -1229,6 +1265,10 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
             polls += 1
             if isinstance(text, str) and text:
                 chrome_seen = chrome_seen or probe.get('chrome_seen') is True
+                # Body text stays on the anchor-free path on purpose: the
+                # sentinel segment starts after the echo's own sentinel, so a
+                # missing echo there is expected. The echo case is caught by
+                # the anchor-independent gate of _usable_reply (issue #280).
                 reply, anchor, reply_total = extract_reply(
                     None, prompt, assistant_text=text) if isinstance(text, str) else (None, 'prompt_echo_missing', 0)
                 if reply is not None:
@@ -1259,7 +1299,7 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
                 # CAPTURE_REREAD_BUDGET_SECONDS, spaced by
                 # CAPTURE_REREAD_INTERVAL_SECONDS; stop once two successive
                 # reads are identical AND the read passes _usable_reply.
-                if _usable_reply(last[0], last[1])[0] and stable_streak >= 2:
+                if _usable_reply(last[0], last[1], prompt)[0] and stable_streak >= 2:
                     capture_reread_passes = max(1, stable_streak - 1)
                     break
                 if time.monotonic() - completed_at >= CAPTURE_REREAD_BUDGET_SECONDS:
@@ -1279,7 +1319,8 @@ def _dispatch(transport, prompt, profile, request_key, receipt):
         chosen_source = last_source if last is not None else best_source
         chosen_selector = last_selector if last is not None else best_selector
         usable, unusable_reason = _usable_reply(chosen[0] if chosen else None,
-                                                chosen[1] if chosen else None)
+                                                chosen[1] if chosen else None,
+                                                prompt)
         chrome_only = chosen is None and chrome_seen
         if chosen is not None:
             reply, anchor, reply_total = chosen

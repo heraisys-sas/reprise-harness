@@ -194,7 +194,8 @@ def _rewrite(entry, script, release_base, target):
     options = {
         'expert_mcp.py': ({'--project-root', '--socket', '--state', '--tools', '--daily-limit',
                                   '--claude-program', '--desktop-socket', '--ironclaw-config'},
-                                 {'--claude-included-quota-confirmed', '--codex-workspace-write'},
+                                 {'--claude-included-quota-confirmed', '--codex-workspace-write',
+                                  '--chatgpt-dispatch', '--no-chatgpt-dispatch'},
                                  {'--project-root', '--state'}),
     }
     valued, switches, required = options[script]

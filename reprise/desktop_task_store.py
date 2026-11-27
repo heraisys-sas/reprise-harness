@@ -26,6 +26,9 @@ def bounded(value, name, maximum):
     return value
 
 
+# Issue #278 : relivraisons autorisées après un échec composeur certain.
+MAX_COMPOSER_REDELIVERIES = 1
+
 class TaskStore:
     def __init__(self, state, project_root):
         root = Path(project_root).resolve(strict=True)
@@ -51,6 +54,10 @@ class TaskStore:
                 dispatch_started INTEGER NOT NULL DEFAULT 0,
                 dispatch_receipt TEXT,
                 PRIMARY KEY(scope,request_key))''')
+            guard_columns = {row[1] for row in self.db.execute('PRAGMA table_info(desktop_dispatch_guard)')}
+            if 'composer_redeliveries' not in guard_columns:
+                # Issue #278 : relivraisons bornées après un échec composeur certain.
+                self.db.execute('ALTER TABLE desktop_dispatch_guard ADD COLUMN composer_redeliveries INTEGER NOT NULL DEFAULT 0')
             if not dispatch_guard_exists:
                 # Old direct dispatches left no durable trace, even when delivery is NULL.
                 self.db.execute('''INSERT INTO desktop_dispatch_guard(scope,request_key,legacy_unknown)
@@ -320,7 +327,7 @@ class TaskStore:
         """
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
-            row = self.db.execute('''SELECT legacy_unknown,dispatch_started,dispatch_receipt
+            row = self.db.execute('''SELECT legacy_unknown,dispatch_started,dispatch_receipt,composer_redeliveries
                 FROM desktop_dispatch_guard WHERE scope=? AND request_key=?''',
                 (self.scope, request_key)).fetchone()
             if row is None or row[0]:
@@ -328,10 +335,18 @@ class TaskStore:
             if row[1]:
                 if row[2]:
                     receipt = json.loads(row[2])
-                    if receipt.get('stage') == 'profile_busy':
+                    # Issue #278 : un échec composeur CERTAIN (aucun clic) n'a
+                    # rien livré ; il rouvre la garde MAX_COMPOSER_REDELIVERIES
+                    # fois au plus, puis le reçu enregistré est rejoué.
+                    redeliver = (receipt.get('stage') == 'composeur'
+                                 and receipt.get('dispatch_ok') is not True
+                                 and receipt.get('click_observed') is not True
+                                 and row[3] < MAX_COMPOSER_REDELIVERIES)
+                    if receipt.get('stage') == 'profile_busy' or redeliver:
                         self.db.execute('''UPDATE desktop_dispatch_guard
-                            SET dispatch_started=0, dispatch_receipt=NULL
-                            WHERE scope=? AND request_key=?''', (self.scope, request_key))
+                            SET dispatch_started=0, dispatch_receipt=NULL,
+                                composer_redeliveries=composer_redeliveries+?
+                            WHERE scope=? AND request_key=?''', (int(redeliver), self.scope, request_key))
                     else:
                         return {'state': 'recorded', 'receipt': receipt}
                 if not row[2]:
@@ -343,6 +358,12 @@ class TaskStore:
                    AND t.attempt_id IS NULL AND t.delivery IS NULL AND t.answer IS NULL)''',
                 (self.scope, request_key)).rowcount
             return {'state': 'reserved' if changed == 1 else 'attempted'}
+
+    def dispatch_receipt(self, request_key):
+        """Stored socket dispatch receipt, or None when none was recorded (#278)."""
+        row = self.db.execute('''SELECT dispatch_receipt FROM desktop_dispatch_guard
+            WHERE scope=? AND request_key=?''', (self.scope, request_key)).fetchone()
+        return json.loads(row[0]) if row and row[0] else None
 
     def record_socket_dispatch(self, request_key, receipt):
         with self.db:
