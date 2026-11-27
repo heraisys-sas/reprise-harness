@@ -4,6 +4,19 @@ Validée live le **23 novembre 2026** (`tache-20261123-124609-84bf` : 17 × 23 =
 
 > **Bascule du 24/11/2026 — transport direct par dossier.** Meta AI partage désormais le dossier du pont **directement** (TCC connecteur fichiers) : le serveur WebDAV embarqué (wsgidav/cheroot, port 9770) et le mount webdavfs ont été **retirés** de metaaid — le seul client réel du serveur était le volume monté, et le partage direct du dossier rend les deux inutiles (plus de webdavfs : zombies de mount, creds d'URL, AppleDouble). Le watcher scrute le dossier en poll local, latence inchangée. L'historique WebDAV est conservé ci-dessous (leçons § webdavfs) pour référence.
 
+> **Arbitrage #277 (27/11/2026) — WebDAV vs fichiers JSON :** le transport fichiers est retenu (décision opérateur du 24/11 ci-dessus, validée en réel par le roundtrip du 26/11 `tache-20261126-avise7-202712`) ; aucune justification de conservation WebDAV n'existe — les mentions résiduelles « pont WebDAV » dans le code et le registre `reprise_backends` ont été nettoyées (`dispatch: files_inbox`, repli legacy `dav_root` conservé en lecture).
+
+## Circuit du harness demandeur (#277)
+
+La délégation metaai est **asynchrone** : le reçu de `reprise_delegate` est une **admission**, jamais une réponse. Le contrat est encodé dans `metaai_taskstore.CIRCUIT_DEMANDEUR` (versionné), **attaché à chaque reçu** (champ `circuit`) :
+
+1. `reprise_delegate` → admission (`response=null`, `admission_only=true`) + inbox écrite avec le bloc `consignes` versionné (`metaai_taskstore.CONSIGNES_ECHANGE`) ;
+2. injection du prompt d'instruction dans la session ReMetaAI par le **pont metaaid seul** (dispatcher UI + markers `.ui-state` idempotents — décision opérateur du 27/11 : Reprise n'injecte pas lui-même, metaaid est aussi le seul consommateur de l'outbox donc détenteur du roundtrip) ;
+3. le demandeur appelle **`wait_result`** avec la même `request_key` jusqu'à `status=finished` (attente réentrante, un timeout se reprend, jamais re-dispatché) ;
+4. réponse finale = `result.reponse` + `result.confiance` (0–1) ; watcher metaaid a fait `record_result`.
+
+Tests de régression : `reprise/tests/test_metaai_consignes.py` (présence + format consignes, cohérence prompt/consignes, `CIRCUIT_DEMANDEUR` sur le reçu, config `bridge_root`/`dav_root`).
+
 ## Ce qu'est Meta AI Desktop
 
 `/Applications/Meta AI.app` = app **native** SwiftUI/AppKit (`com.meta.endo.vanilla`, team V9WTTPBFK9, v14.0) : pas d'Electron → **pas de CDP** (la recette ChatGPT #156 inapplicable) ; route AX écartée (décision opérateur) ; historique serveur-side (capture obligatoirement par UI) ; tokens en Keychain (`V9WTTPBFK9.com.meta.endo`) — ne pas extraire. Le seul canal d'entrée/sortie exploitable **sans Accessibilité ni CDP** est le **connecteur fichiers natif** (`connectorAppleFinder`) : actions `list, read, write, mkdir, move, copy, trash` sur des dossiers partagés, remplacement de fichier et Trash toujours confirmés, rien supprimé définitivement, grants révoqués au logout.

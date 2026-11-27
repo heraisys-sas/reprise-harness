@@ -14,7 +14,8 @@
 #   list_tasks     — liste filtrée par statut
 #
 # Config : --config <chemin connexion> (défaut ~/Library/Application Support/Reprise/
-#          connections/metaai.json ; dav_root → inbox pour dispatch_task ; taskstore → SQLite).
+#          connections/metaai.json ; bridge_root → inbox pour dispatch_task (repli
+#          legacy dav_root) ; taskstore → SQLite).
 # L'argument --config permet aussi aux tests de tourner sur des répertoires temporaires.
 
 import argparse
@@ -26,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from metaai_taskstore import TaskStore, summary  # noqa: E402
 
 CONFIG_DEFAULTS = {
-    "dav_root": "~/MetaAI-bridge-test/webdav",
+    "bridge_root": "~/Library/Application Support/Reprise/metaaid-bridge",
     "taskstore": "~/Library/Application Support/Reprise/metaai-tasks.sqlite",
 }
 
@@ -36,10 +37,20 @@ INBOX = None  # Path, initialisé dans main()
 
 def load_config(path) -> dict:
     cfg = dict(CONFIG_DEFAULTS)
+    explicit = set()
     if path:
         raw = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
-        cfg.update({k: v for k, v in raw.items() if k in CONFIG_DEFAULTS and v is not None})
-    cfg["dav_root"] = str(Path(cfg["dav_root"]).expanduser())
+        explicit = {k for k in raw}
+        cfg.update({k: v for k, v in raw.items()
+                    if k in ("bridge_root", "dav_root", "taskstore") and v is not None})
+    # Issue #277 (pont fichiers depuis le 24/11) : clé actuelle bridge_root ;
+    # dav_root (ère WebDAV) accepté en repli legacy, avec le même sens — mais
+    # une bridge_root explicite ne doit pas être écrasée par un dav_root résiduel.
+    if "dav_root" in cfg and "bridge_root" not in explicit:
+        cfg["bridge_root"] = cfg.pop("dav_root")
+    else:
+        cfg.pop("dav_root", None)
+    cfg["bridge_root"] = str(Path(cfg["bridge_root"]).expanduser())
     cfg["taskstore"] = str(Path(cfg["taskstore"]).expanduser())
     return cfg
 
@@ -60,7 +71,7 @@ TOOLS = [
     },
     {
         "name": "dispatch_task",
-        "description": "Réserver une tâche pending et écrire inbox/<id>.json pour Meta AI (transport webdav). Sans task_id : la plus ancienne pending.",
+        "description": "Réserver une tâche pending et écrire inbox/<id>.json pour Meta AI (pont fichiers). Sans task_id : la plus ancienne pending.",
         "inputSchema": {
             "type": "object",
             "properties": {"task_id": {"type": "string"}},
@@ -155,7 +166,7 @@ def main() -> None:
     parsed = parser.parse_args()
     cfg = load_config(parsed.config)
     STORE = TaskStore(cfg["taskstore"])
-    INBOX = Path(cfg["dav_root"]) / "inbox"
+    INBOX = Path(cfg["bridge_root"]) / "inbox"
     for line in sys.stdin:
         line = line.strip()
         if not line:

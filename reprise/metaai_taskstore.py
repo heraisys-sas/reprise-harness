@@ -28,6 +28,53 @@ def new_task_id() -> str:
     return "tache-" + time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
 
 
+# Issue #277 — contrat de consignes d'échange : chaque inbox matérialisée par
+# dispatch_write_inbox embarque un bloc `consignes` autoportant (où lire la
+# tâche, où écrire la réponse, format attendu, task_id à reporter) pour que
+# la session Meta AI puisse répondre sans aucun contexte externe. Versionné :
+# toute évolution du protocole incrémente CONSIGNES_VERSION (test de
+# régression : présence + contenu dans test_metaai_taskstore.py et
+# test_metaai_consignes.py).
+CONSIGNES_VERSION = "1"
+CONSIGNES_ECHANGE = (
+    "Protocole d'échange du pont Reprise <-> Meta AI (version " + CONSIGNES_VERSION + ") :\n"
+    "1. Lis la tâche du fichier inbox/<task_id>.json du dossier partagé "
+    "(le champ `question` porte la demande ; les autres champs sont du contexte).\n"
+    "2. Calcule la réponse à la question posée.\n"
+    "3. Écris un fichier outbox/<task_id>.txt dans le dossier partagé, contenant "
+    "exactement trois lignes clé/valeur (pas de JSON) :\n"
+    "   task_id: <le task_id exact de la tâche>\n"
+    "   reponse: <ta réponse>\n"
+    "   confiance: <nombre entre 0 et 1>\n"
+    "4. Si la tâche embarque des pièces (`pieces`) ou pointe un chemin du dossier "
+    "partagé, base ton avis sur ce contenu borné avant de répondre ; si une pièce "
+    "manque, dis-le dans `reponse` et baisse `confiance`.\n"
+    "5. Reporte le task_id SANS le modifier : c'est la seule clé qui relie ta "
+    "réponse à la tâche ; un task_id faux ou absent = réponse perdue."
+)
+
+
+# Issue #277 — circuit du harness DEMANDEUR : le reçu de reprise_delegate est
+# une admission, pas une réponse. Les harnesses pressés lisent status=finished
+# comme une réponse finale et ne rappellent jamais wait_result — délégation
+# perdue en silence. Le texte versionné ci-dessous est attaché à CHAQUE reçu
+# metaai (champ `circuit`) : mode d'emploi autoportant, testé.
+CIRCUIT_DEMANDEUR_VERSION = "1"
+CIRCUIT_DEMANDEUR = (
+    "Circuit demandeur Meta AI (version " + CIRCUIT_DEMANDEUR_VERSION + ") :\n"
+    "1. Ce reçu est une ADMISSION, pas une réponse : response=null et "
+    "admission_only=true sont normaux — ne pas les traiter comme un résultat.\n"
+    "2. Appeler l'outil wait_result avec request_key=<le request_key de ce reçu> "
+    "et timeout_s (<= 600) jusqu'à status=finished ; sur timeout, rappeler "
+    "wait_result avec la MÊME clé (l'attente est réentrant, pas un re-dispatch).\n"
+    "3. La réponse finale vit dans result.reponse ; sa fiabilité annoncée est "
+    "result.confiance (0 à 1) — une confiance basse = à re-vérifier.\n"
+    "4. Ne JAMAIS re-dispatcher le même request_key : une relance = nouvelle clé "
+    "avec retry_of (sinon garde review_started).\n"
+    "5. task_id identifie la tâche dans le pont (get_status) ; ne pas le modifier."
+)
+
+
 class TaskStore:
     def __init__(self, path):
         self.path = Path(path).expanduser()
@@ -106,10 +153,22 @@ class TaskStore:
             return dict(self._conn.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone())
 
     def dispatch_write_inbox(self, task: dict, inbox_dir) -> str:
-        """Usage B : matérialiser la tâche pour Meta AI (inbox/<id>.json, format lu validé)."""
+        """Usage B : matérialiser la tâche pour Meta AI (inbox/<id>.json, format lu validé).
+
+        Issue #277 : l'inbox embarque systématiquement le bloc `consignes`
+        (version + texte autoportant) — la session Meta AI doit pouvoir boucler
+        l'échange sans contexte externe. Le contrat est IMPOSÉ : un bloc
+        appelant obsolète (version != CONSIGNES_VERSION) est remplacé par la
+        version courante, jamais rétrogradé (test de régression :
+        test_metaai_consignes.py).
+        """
         payload = json.loads(task["payload"]) if task["payload"] else {}
         payload.setdefault("task_id", task["id"])
         payload.setdefault("type", task["type"])
+        consignes = payload.get("consignes")
+        if not isinstance(consignes, dict) or consignes.get("version") != CONSIGNES_VERSION:
+            payload["consignes"] = {"version": CONSIGNES_VERSION,
+                                    "texte": CONSIGNES_ECHANGE}
         inbox = Path(inbox_dir).expanduser()
         inbox.mkdir(parents=True, exist_ok=True)
         target = inbox / f"{task['id']}.json"
