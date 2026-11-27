@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import metaai_reprise_build as build  # noqa: E402
+from support_portability import requires_tools
 
 
 class MetaaiCliTestCase(unittest.TestCase):
@@ -199,6 +200,7 @@ class MetaaiCliTestCase(unittest.TestCase):
         out = build.apply_payload({'names': ['metaai-reprise'], 'action': 'install', 'target': str(self.dst)})
         self.assertFalse(out['ok'])
 
+    @requires_tools('rsync')
     def test_refresh_app_rend_la_copie_inscriptible(self):
         # Meta AI distribue ses binaires en r-xr-xr-x ; sans réinscription,
         # codesign --deep échoue (Permission denied sur _CodeSignature/CodeResources).

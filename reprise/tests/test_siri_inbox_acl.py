@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 import siri_inbox_acl as acl
 import siri_inbox_store as store
 from test_siri_inbox_store import crypt
+from support_portability import requires_directory
 
 
 class ACLDoubleTests(unittest.TestCase):
@@ -171,6 +172,7 @@ class ACLDarwinTests(unittest.TestCase):
 
 
 class ACLPackagingTests(unittest.TestCase):
+    @requires_directory('/private/tmp')
     def test_relocated_payload_has_inspector_and_runs_with_embedded_python(self):
         import hashlib
         import json
