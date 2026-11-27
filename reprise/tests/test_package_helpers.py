@@ -57,7 +57,7 @@ class PackageHelpersTests(unittest.TestCase):
     def test_bundle_ships_every_local_import(self):
         """#255, #271 : un import local absent d'ASSETS ne casse qu'en release."""
         local = {path.stem for path in SOURCE.glob('*.py')}
-        exempt = {'package_runtime'}  # importé par package_helpers seul, dont l'export est refusé dans le bundle
+        exempt = {'package_helpers'}  # #274 : importé par l'export des sources seul, refusé dans le bundle
         todo = [name for name in ASSETS if name.endswith('.py') or name == 'reprise']
         seen, missing = set(), set()
         while todo:
