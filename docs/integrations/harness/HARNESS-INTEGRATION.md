@@ -26,7 +26,7 @@ Le mode développement reste disponible. Ce nouvel adaptateur exige néanmoins u
 
 ## Capacités et consignes
 
-**Dans le code actuel** (`reprise/harness_integration.py`, constantes `OBSERVE` et `DELEGATE`), l'installation sans délégation expose `reprise_backends`, `reprise_requests`, `reprise_quotas`, `approval_list` et `wait_result`. L'option explicite `--delegate` y ajoute `reprise_delegate`, `reprise_followup` et `reprise_reconcile`. `approval_respond` n'est pas exposé automatiquement. L'allowlist est vérifiée dans `tools/list` **et** avant `tools/call`, pas seulement dans l'affichage. Les alias anciens et les outils d'historique/santé ne sont pas exposés par ce parcours. Une installation plus ancienne peut présenter une allowlist différente : **vérifier les outils du profil DSH effectivement chargé**. Les interfaces des anciens ponts sans allowlist restent compatibles.
+**Dans le code actuel** (`reprise/harness_integration.py`, constantes `OBSERVE` et `DELEGATE`), l'installation expose `reprise_backends`, `reprise_requests`, `reprise_quotas`, `approval_list` et `wait_result`, ainsi que `reprise_delegate`, `reprise_followup` et `reprise_reconcile` (toujours exposés depuis #252 ; l'option `--delegate` n'existe plus). `approval_respond` n'est pas exposé automatiquement. L'allowlist est vérifiée dans `tools/list` **et** avant `tools/call`, pas seulement dans l'affichage. Les alias anciens et les outils d'historique/santé ne sont pas exposés par ce parcours. Une installation plus ancienne peut présenter une allowlist différente : **vérifier les outils du profil DSH effectivement chargé**. Les interfaces des anciens ponts sans allowlist restent compatibles.
 
 Les consignes enseignent découverte effective, projet vérifié, tâche bornée, contexte minimal, récupération d’un reçu avant renvoi, permissions et budgets explicites. Tous les modèles, économiques compris, doivent demander un fait bloquant avant répétition sans progrès ; l’escalade de raisonnement est une action distincte. Deux échecs sur un volet demandent changement d’approche ou d’auteur. Pas de cascade ni de cache partagé promis. Le protocole automatique de clarification durable reste **non implémenté** ; seuls les follow-ups effectivement disponibles et un repli manuel sont décrits. Aucun plafond quotidien ni changement de réserve/routage n’est introduit.
 
@@ -194,14 +194,12 @@ La capture ne doit être invoquée que pour une information explicitement sélec
 Le retrait préserve le stockage, les checkpoints, les reçus et les sauvegardes.
 
 La conservation des options ne transfère pas de permissions vers un autre projet :
-un changement de `--project` avec délégation, écriture workspace, continuation,
-rôle coordinator ou bash-sandbox désactivé exige des choix explicites pour le
-nouveau périmètre. Les inverses CLI, mutuellement exclusifs avec leurs positifs,
-permettent la révocation sans retrait complet : `--no-delegate`,
-`--no-codex-workspace-write`, `--no-output-resume`, `--no-asi1-effort` et
-`--enable-bash-sandbox`. Par exemple, révoquer délégation et écriture ensemble
-respecte la contrainte préexistante selon laquelle un grant workspace nécessite
-la délégation. Une modification de configuration ne révoque pas les processus
+un changement de `--project` avec continuation, rôle coordinator ou bash-sandbox
+désactivé exige des choix explicites pour le nouveau périmètre. Les inverses CLI,
+mutuellement exclusifs avec leurs positifs, permettent la révocation sans retrait
+complet : `--no-output-resume`, `--no-asi1-effort` et `--enable-bash-sandbox`.
+Délégation et écriture dans le projet ne sont plus des choix (#252) : toujours
+actives, elles suivent le projet du pont. Une modification de configuration ne révoque pas les processus
 MCP déjà chargés ; leur rechargement reste une opération distincte.
 
 
@@ -209,9 +207,9 @@ MCP déjà chargés ; leur rechargement reste une opération distincte.
 
 `harness-integration-reconcile-plan` est un parcours distinct de l’installation ordinaire.
 Il exige l’empreinte du bloc réellement observé, le projet inchangé du pont, un
-projet de continuation existant explicitement choisi et un choix explicite de
-`--codex-workspace-write` ou `--no-codex-workspace-write`. La présence d’un droit
-write dans un bloc divergent ne constitue jamais à elle seule une autorisation.
+projet de continuation existant explicitement choisi. Les interrupteurs retirés
+par #252 (`--codex-workspace-write`, `--chatgpt-dispatch`) présents dans un bloc
+divergent sont supprimés à l’adoption ; ils ne comptent pas comme une divergence.
 Le plan enregistre ces choix et les empreintes de configuration, manifeste,
 journal ordinaire et journal de réconciliation. `harness-integration-apply` applique le
 plan retourné ; aucune commande de chargement du client n’est exécutée.

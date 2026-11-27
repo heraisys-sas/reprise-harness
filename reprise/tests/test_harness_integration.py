@@ -1022,7 +1022,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertNotIn(str(self.app), config)
         shutil.rmtree(moved)
         result = integration.verify(self.home, 'desktop')
-        self.assertEqual(result['bridge_tools'], sorted(integration.OBSERVE))
+        self.assertEqual(result['bridge_tools'], sorted(integration.OBSERVE + integration.DELEGATE))
         self.assertIs(result['levels']['configuration_written'], True)
         for level in ('integration_loaded', 'client_tools_discovered', 'exchange_confirmed'):
             self.assertEqual(result['levels'][level], 'unknown')

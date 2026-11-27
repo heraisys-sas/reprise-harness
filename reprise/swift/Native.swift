@@ -41,9 +41,6 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var projectWorkspaceHarness = "harness"
     @Published var projectWorkspaceDraft = ""
     @Published var projectMessage = "Choisissez un projet ou créez-en un."
-    @Published var integrationDelegate = false
-    @Published var integrationCodexWorkspaceWrite = false
-    @Published var integrationCodexWorkspaceWriteInstalled = false
     @Published var codexIntegrationHarness = false
     @Published var codexIntegrationPlan: [String: Any]?
     @Published var codexIntegrationVerificationPlan: [String: Any]?
@@ -61,7 +58,6 @@ final class App: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var claudeIntegrationResult: [String: Any] = [:]
     @Published var claudeIntegrationAcknowledged = false
     @Published var claudeReplaceProbe = false
-    @Published var claudeAwaitChoice = "preserve"
     @Published var claudeInboxTasks: [[String: Any]] = []
     @Published var claudeInboxSelection = ""
     @Published var claudeInboxResult: [String: Any] = [:]
