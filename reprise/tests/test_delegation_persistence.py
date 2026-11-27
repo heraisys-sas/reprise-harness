@@ -62,6 +62,21 @@ class DurableTests(unittest.TestCase):
                 self.assertTrue(restarted.call('reprise_requests', {'request_key': 'one', 'acknowledge': True})['acknowledged'])
             self.assertEqual(len(restarted.call('reprise_requests', {})['requests']), 1)
 
+    def test_listing_exposes_thread_and_backend_for_followup(self):
+        # Issue #22 : after a lost answer the caller picks the session to
+        # continue from the listing alone, without reading expert_threads.
+        result = {'status': 'finished', 'response': 'answer', 'thread_id': 'thread-22', 'resumable': True}
+        with patch('expert_mcp.review', return_value=result):
+            bridge = self.bridge()
+            bridge.call('reprise_delegate', self.args('listed'))
+        bridge.requests.begin('pending-22', {'question': 'Autre', 'backend': 'codex'})
+        bridge.requests.attach('pending-22', {'phase': 'starting', 'thread_id': 'thread-native', 'turn_id': None})
+        rows = {row['request_key']: row for row in bridge.call('reprise_requests', {})['requests']}
+        self.assertEqual(rows['listed']['thread_id'], 'thread-22')
+        self.assertEqual(rows['listed']['backend'], 'codex')
+        self.assertEqual(rows['pending-22']['thread_id'], 'thread-native')
+        self.assertEqual(rows['pending-22']['state'], 'indeterminate')
+
     def test_crash_leaves_uncertain_even_with_a_new_key(self):
         with patch('expert_mcp.review', side_effect=OSError('lost after send')) as run:
             with self.assertRaises(OSError):
@@ -712,7 +727,7 @@ class ReceiptPaginationTests(unittest.TestCase):
                 self.assertFalse(self.db.in_transaction)
         self.assertEqual(self.store.lookup({}), {'status': 'finished', 'requests': [{
             'request_key': 'key', 'state': 'recorded', 'parent_request_key': None,
-            'acknowledged': 0}], 'limit': 100})
+            'acknowledged': 0, 'thread_id': None, 'backend': None}], 'limit': 100})
         self.assertEqual(self.store.lookup({'request_key': 'missing'}),
                          {'status': 'not_found', 'request_key': 'missing'})
 

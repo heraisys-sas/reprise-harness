@@ -256,3 +256,16 @@ Cancellation notifications and EOF release workers without changing task state.
 The next managed integration plan grants this tool and a 630000 ms call timeout;
 existing profiles require explicit plan/apply and client reload. Validate a real
 long-lived background call independently; source/schema checks do not prove it.
+
+## Reprise après réponse perdue (issue #22)
+
+- `reprise_requests` sans `request_key` liste les 100 dernières demandes avec
+  `thread_id` (tour natif, sinon résultat persisté) et `backend` : l'appelant
+  choisit la session à poursuivre via `reprise_followup` sans autre lecture.
+- `timed_out` ou une réponse perdue laissent la demande `indeterminate` ; la
+  barrière d'ancêtre et de signature de `begin()` refuse alors toute demande
+  équivalente jusqu'à réconciliation (`reprise_reconcile`, voir aussi
+  `release_undispatched`, #265). C'est voulu : jamais de double exécution.
+- Tactique validée le 23/10 : déléguer en **tranches bornées** (diff d'abord,
+  aucune commande de vérification dans le même tour). Un lot complet a produit
+  `timed_out` à réponse vide là où la même charge en tranches a abouti.
