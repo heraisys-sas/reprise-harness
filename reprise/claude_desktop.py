@@ -25,6 +25,28 @@ IMAGE_MIME = 'image/jpeg'
 
 DEFAULT_SOCKET = Path.home() / '.claude-desktop/quick-entry.sock'
 
+# Issue #277 — circuit du harness DEMANDEUR Claude Desktop : le reçu Quick Apply
+# est une admission (admission_only=True, response=None), pas une réponse. Les
+# harnesses prennent des initiatives malheureuses : ils traitent le reçu comme
+# un résultat final ou re-dispatchent la même clé (garde review_started). Le
+# texte versionné ci-dessous est attaché à CHAQUE reçu (champ `circuit`).
+CIRCUIT_DESKTOP_VERSION = "1"
+CIRCUIT_DESKTOP = (
+    "Circuit demandeur Claude Desktop (version " + CIRCUIT_DESKTOP_VERSION + ") :\n"
+    "1. Ce reçu est une ADMISSION, pas une réponse : response=null, "
+    "admission_only=true — ne jamais les traiter comme un résultat.\n"
+    "2. dispatch_ok=false (« Composeur indisponible ») n'est PAS un échec : "
+    "la réponse peut quand même arriver via submit_result ; seuls les états "
+    "quota/billing/manifeste sont des refus définitifs.\n"
+    "3. Appeler l'outil wait_result avec request_key=<celui de ce reçu> et "
+    "timeout_s (<= 600) jusqu'à status=finished ; sur timeout, rappeler "
+    "wait_result avec la MÊME clé (attente réentrante, pas un re-dispatch).\n"
+    "4. La réponse finale vit dans response, son empreinte dans result_sha256 "
+    "(admission_only repassé à false).\n"
+    "5. Ne JAMAIS re-soumettre le même request_key : une relance = nouvelle clé "
+    "avec retry_of (sinon garde review_started)."
+)
+
 
 class Unavailable(engines.Unavailable):
     pass
@@ -337,6 +359,7 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
         finished = result | {'status': 'finished', 'thread_id': submitted.get('submission_id'),
                              'resumable': False, 'model': 'claude-desktop', 'dispatch': submitted.get('dispatch'),
                              'response': None, 'admission_only': True,
+                             'circuit': CIRCUIT_DESKTOP,
                              'billing': 'Claude Desktop session; quota not reported'}
         # Capability permits a single attempt, including a cold applyd; it is
         # not proof of a usable browser session or a completed MCP result.
