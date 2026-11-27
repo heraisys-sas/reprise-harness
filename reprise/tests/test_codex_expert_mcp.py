@@ -63,6 +63,13 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         codex = self.call('reprise_backends', {})['backends'][0]
         self.assertTrue(codex['workspace_write_authorized'])
         self.assertEqual(codex['modes'], ['expertise', 'implementation'])
+        # L'écriture par défaut ne s'étend pas à l'expertise : sans mode ou en
+        # mode expertise, le tour Codex reste en lecture seule.
+        output = {'status': 'finished', 'resumable': True, 'thread_id': ID, 'response': 'Avis'}
+        for extra in ({}, {'mode': 'expertise'}):
+            with patch('expert_mcp.review', return_value=output.copy()) as review:
+                self.call('reprise_delegate', {'question': 'Review', 'kind': 'review', **extra})
+                self.assertFalse(review.call_args.kwargs.get('implementation', False))  # défaut read-only de codex_expert.review
         self.assertEqual(codex['implementation_scope'], str(Path(self.temp.name).resolve()))
         self.assertTrue(codex['writes'])
         self.assertNotIn('implementation_unavailable_reason', codex)
