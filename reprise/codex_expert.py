@@ -53,6 +53,42 @@ def quota_allowed(limits, reserve=5):
                                   and math.isfinite(v) and 0 <= v < 100-reserve for v in measured)
 
 
+def quota_at_refusal(limits, now=None, reserve=5):
+    """Pools known at refusal time (#20), so a caller can schedule the retry
+    without a separate reprise_quotas round-trip. Validated numbers only;
+    never an account identifier."""
+    def num(value, low=0, high=float('inf')):
+        return value if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                         and math.isfinite(value) and low <= value <= high) else None
+    limits = limits if isinstance(limits, dict) else {}
+    buckets = limits.get('rateLimitsByLimitId')
+    if not isinstance(buckets, dict):
+        bucket = limits.get('rateLimits')
+        buckets = {bucket.get('limitId') if isinstance(bucket, dict) else None: bucket}
+    pools = []
+    for limit_id, bucket in list(buckets.items())[:20]:
+        if not isinstance(bucket, dict):
+            continue
+        windows = [{'name': name, 'used_percent': num(w.get('usedPercent'), 0, 100),
+                    'resets_at': num(w.get('resetsAt'), 1), 'duration_minutes': num(w.get('windowDurationMins'), 1)}
+                   for name in ('primary', 'secondary') if isinstance(w := bucket.get(name), dict)]
+        if windows:
+            pools.append({'limit_id': limit_id if isinstance(limit_id, str) and len(limit_id) <= 160 else None,
+                          'windows': windows})
+    allowed = limits.get('ordinaryUsageAllowed')
+    # Same pool as quota_allowed: retry is plausible once every blocking window
+    # of it has reset. Unknown when a blocking window has no reset or when the
+    # refusal is not explained by a window (e.g. ordinaryUsageAllowed false).
+    selected = next((p for p in pools if p['limit_id'] == 'codex'), pools[0] if pools else None)
+    blocking = [w for w in (selected or {}).get('windows', [])
+                if w['used_percent'] is None or w['used_percent'] >= 100 - reserve]
+    retry = (max(w['resets_at'] for w in blocking)
+             if allowed is True and blocking and all(w['resets_at'] is not None for w in blocking) else None)
+    return {'knowledge': 'at_refusal', 'observed_at': time.time() if now is None else now,
+            'ordinary_usage_allowed': allowed if isinstance(allowed, bool) else None,
+            'pools': pools, 'retry_not_before': retry}
+
+
 def durable(thread):
     path = thread.get('path')
     return bool(not thread.get('ephemeral') and isinstance(path, str) and Path(path).is_file())
@@ -144,7 +180,9 @@ def review(program, values, project_root, question, paths=None, timeout=None, th
         account = client.call('account/read', {'refreshToken': False}).get('account') or {}
         if account.get('type') != 'chatgpt':
             raise Unavailable('blocked_auth', 'ChatGPT subscription sign-in required; no API fallback.')
-        if not quota_allowed(client.call('account/rateLimits/read')):
+        limits = client.call('account/rateLimits/read')
+        if not quota_allowed(limits):
+            result['quota_at_refusal'] = quota_at_refusal(limits)
             raise Unavailable('quota_blocked', 'Quota unavailable, unknown, or within the 5% reserve.')
         if model:
             models = client.call('model/list', {}).get('data') or []

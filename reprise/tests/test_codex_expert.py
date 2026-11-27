@@ -120,6 +120,38 @@ class ExpertTests(unittest.TestCase):
             Fake.used = used
             self.assertEqual(self.run_review()['status'], 'quota_blocked')
             self.assertNotIn('thread/start', [m for m,p in Fake.last.calls])
+    def test_quota_refusal_carries_known_windows(self):
+        # #20 : la connaissance au moment du refus voyage avec quota_blocked.
+        Fake.used = 97
+        result = self.run_review()
+        self.assertEqual(result['status'], 'quota_blocked')
+        known = result['quota_at_refusal']
+        self.assertEqual(known['knowledge'], 'at_refusal')
+        self.assertEqual(known['pools'][0]['windows'][0]['used_percent'], 97)
+        self.assertIsNone(known['retry_not_before'])  # fenêtre bloquante sans resetsAt
+        self.assertEqual([m for m, p in Fake.last.calls].count('account/rateLimits/read'), 1)
+        Fake.used = 30
+        self.assertNotIn('quota_at_refusal', self.run_review())
+
+    def test_retry_not_before_is_last_reset_of_blocking_windows(self):
+        limits = {'ordinaryUsageAllowed': True, 'accountId': 'secret',
+                  'rateLimitsByLimitId': {
+                      'codex': {'primary': {'usedPercent': 99, 'resetsAt': 5000, 'windowDurationMins': 300},
+                                'secondary': {'usedPercent': 96, 'resetsAt': 9000, 'windowDurationMins': 10080}},
+                      'other': {'primary': {'usedPercent': 100, 'resetsAt': 99999}}}}
+        known = expert.quota_at_refusal(limits, now=1000)
+        self.assertEqual(known['retry_not_before'], 9000)
+        self.assertEqual(known['observed_at'], 1000)
+        self.assertNotIn('secret', str(known))
+        limits['rateLimitsByLimitId']['codex']['secondary']['usedPercent'] = 40
+        self.assertEqual(expert.quota_at_refusal(limits)['retry_not_before'], 5000)
+        limits['ordinaryUsageAllowed'] = False
+        self.assertIsNone(expert.quota_at_refusal(limits)['retry_not_before'])
+        for bad in (None, [], {'rateLimits': 'x'}, {'rateLimitsByLimitId': {'codex': {'primary': {'usedPercent': float('nan'), 'resetsAt': True}}}}):
+            known = expert.quota_at_refusal(bad)
+            self.assertIsNone(known['retry_not_before'])
+        self.assertEqual(known['pools'][0]['windows'][0], {'name': 'primary', 'used_percent': None, 'resets_at': None, 'duration_minutes': None})
+
     def test_api_account_never_used(self):
         Fake.auth = 'apiKey'
         self.assertEqual(self.run_review()['status'], 'blocked_auth')
