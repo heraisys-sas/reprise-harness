@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # metaai_ui_dispatch.py — dispatcher UI du pont Meta AI (invocation rapide)
 #
-# Après dispatch_task (inbox/<id>.json écrit sur le volume WebDAV), ce module
-# pilote la copie patchée « ReMetaAI » par sa socket de contrôle
+# Après dispatch_task (inbox/<id>.json écrit dans le dossier partagé du pont),
+# ce module pilote la copie patchée « ReMetaAI » par sa socket de contrôle
 # (~/.reprise/metaai-reprise-trigger.sock, cf. metaai_reprise.m) :
 #   insert(prompt) puis send() — zéro Accessibilité, zéro CDP.
 #
 # Idempotence : chaque inbox injectée est marquée par un fichier
-# .ui-state/<id> sous la racine WebDAV (hors inbox — Meta AI ne voit que
+# .ui-state/<id> sous la racine du pont (hors inbox — Meta AI ne voit que
 # inbox/outbox) ; un redémarrage de metaaid ne ré-injecte pas.
 #
 # Lanceur : ensure_app() ping la socket et lance la copie si muette
@@ -21,7 +21,8 @@ import time
 from pathlib import Path
 
 PROMPT_TEMPLATE = (
-    "Traite la tâche du fichier inbox/{task_id}.json du dossier partagé : lis-le, "
+    "Traite la tâche du fichier inbox/{task_id}.json du dossier partagé : lis-le "
+    "(les consignes complètes d'échange sont dans le champ `consignes` du JSON), "
     "calcule la réponse à la question posée, puis écris un fichier outbox/{task_id}.txt "
     "dans le dossier partagé, contenant exactement trois lignes clé/valeur (pas de JSON) : "
     "task_id: {task_id} — reponse: <ta réponse> — confiance: <0 à 1>."
@@ -110,9 +111,9 @@ def ensure_app(socket_path: Path, app_binary: Path, wait_s: float = 15.0) -> boo
     return False
 
 
-def dispatch_pending(dav_root: Path, socket_path: Path, template=None) -> int:
+def dispatch_pending(bridge_root: Path, socket_path: Path, template=None) -> int:
     """Injecte toutes les inbox non marquées ; pose le marker .ui-state/<id>."""
-    root = Path(dav_root)
+    root = Path(bridge_root)
     inbox = root / "inbox"
     state = root / ".ui-state"
     if not inbox.is_dir():

@@ -14,7 +14,7 @@
 # handle_result sont les points de branchement get_task / submit_result du
 # TaskStore SQLite de Reprise.
 #
-# Usage : python3 metaai_bridge_watch.py [--root ~/MetaAI-bridge-test/webdav] [--once]
+# Usage : python3 metaai_bridge_watch.py [--root ~/Library/Application\ Support/Reprise/metaaid-bridge] [--once]
 
 import json, re, shutil, sys, time
 from datetime import datetime
@@ -37,7 +37,10 @@ def set_taskstore(path):
     else:
         _TASKSTORE = None
 
-ROOT = Path.home() / "MetaAI-bridge-test" / "webdav"
+# Défaut produit : dossier pont standard (partage direct, plus de serveur WebDAV
+# depuis le 24/11 — issue #277) ; l'ancien chemin ~/MetaAI-bridge-test/webdav est
+# archivé. Le daemon metaaid passe toujours --root explicite depuis sa config.
+ROOT = Path.home() / "Library" / "Application Support" / "Reprise" / "metaaid-bridge"
 POLL_S = 2.0
 
 def log(msg: str) -> None:
@@ -81,7 +84,7 @@ def handle_result(result: dict, raw: str, path: Path) -> None:
     return True
 
 def is_meta_file(p: Path) -> bool:
-    """Ignore les fichiers AppleDouble et temporaires de webdavfs/macOS."""
+    """Ignore les fichiers AppleDouble et temporaires de macOS (héritage webdavfs)."""
     n = p.name
     return not (n.startswith("._") or n.startswith(".DS_Store") or n.startswith("~"))
 
@@ -151,7 +154,7 @@ def watch_loop(root: Path, poll_s: float = POLL_S, once: bool = False, taskstore
 
 def main() -> None:
     args = sys.argv[1:]
-    root = Path.home() / "MetaAI-bridge-test" / "webdav"
+    root = Path.home() / "Library" / "Application Support" / "Reprise" / "metaaid-bridge"
     if "--root" in args:
         root = Path(args[args.index("--root") + 1]).expanduser()
     watch_loop(root, POLL_S, "--once" in args)

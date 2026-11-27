@@ -111,6 +111,46 @@ class AdmissionBeforeDispatchTests(Cycle):
         self.assertTrue(result['admission_only'])
         self.assertIsNone(result['response'])
 
+    def test_receipt_carries_versioned_requester_circuit(self):
+        # Issue #277 : le reçu embarque le mode d'emploi du circuit demandeur —
+        # les harnesses prennent des initiatives malheureuses (reçu lu comme
+        # une réponse, re-dispatch de la même clé).
+        observed = {}
+        store = self.store
+
+        class Client:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def call(self, method, params=None):
+                if method == 'quick_entry/submit':
+                    observed['params'] = params
+                    return {'status': 'finished', 'submission_id': 'sub-circuit'}
+                return {}
+
+            def send(self, message):
+                pass
+
+            def close(self):
+                pass
+
+        with patch('claude_desktop_rpc.Client', Client):
+            result = self.review(request_key='cycle-circuit', tasks=store, max_wait=0)
+        self.assertTrue(result['admission_only'])
+        circuit = result['circuit']
+        self.assertIn('version 1', circuit)
+        self.assertIn('ADMISSION', circuit)
+        self.assertIn('wait_result', circuit)
+        self.assertIn('review_started', circuit)
+        self.assertIn('wait_seconds', circuit)
+        self.assertNotIn('timeout_s', circuit)
+        self.assertIn('dispatch_ok=false', circuit)
+        # Cohérence avec la metaai : les deux circuits interdisent le
+        # re-dispatch de la même clé.
+        import metaai_taskstore
+        self.assertIn('nouvelle clé', circuit)
+        self.assertIn('nouvelle clé', metaai_taskstore.CIRCUIT_DEMANDEUR)
+
     def test_prompt_carries_request_key_and_mcp_instruction_without_the_answer(self):
         captured = {}
 

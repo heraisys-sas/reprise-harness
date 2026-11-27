@@ -1452,10 +1452,10 @@ class Bridge:
                  'kinds': list(MODES), 'levels': ['standard', 'deep'],
                  'writes': workspace_writes('metaai'),
                  'task_return_supported': self.metaai_tasks is not None,
-                 'dispatch': 'enqueue + dispatch_write_inbox (pont WebDAV, inbox JSON, outbox clé/valeur)',
+                 'dispatch': 'enqueue + dispatch_write_inbox (pont fichiers, inbox JSON, outbox clé/valeur)',
                  'return_channel': 'TaskStore Meta AI partagé ; answered via record_result du watcher metaaid',
                  'availability': 'unverified',
-                 'context': 'Tâche asynchrone par pont WebDAV ; pas de session suiveuse (reprise_followup refusé). Réponse finale lue via reprise_wait_result.'}],
+                 'context': 'Tâche asynchrone par pont fichiers (dossier partagé, plus de WebDAV depuis le 24/11 — issue #277) ; pas de session suiveuse (reprise_followup refusé). Réponse finale lue via reprise_wait_result.'}],
                 'automatic_fallback': False}
         if name == 'reprise_experts_list':
             if args:
@@ -1540,7 +1540,7 @@ class Bridge:
             if not isinstance(ident, str) or not self._chatgpt_thread_owned(ident):
                 raise ThreadNotOwned('chatgpt', ident)
         if name == 'reprise_followup' and backend == 'metaai':
-            raise ValueError('Pas de session metaai suiveuse (#258 lot 2) ; le pont TaskStore WebDAV couvre les tâches, pas une session de délégation expert.')
+            raise ValueError('Pas de session metaai suiveuse (#258 lot 2) ; le pont TaskStore fichiers couvre les tâches, pas une session de délégation expert.')
         if name == 'reprise_followup' and backend == 'claude-code':
             if not isinstance(ident, str):
                 raise ValueError('Owned Claude session required')
@@ -1729,9 +1729,14 @@ class Bridge:
             routing_events.finalize(self.db, event_id, str(result.get('status') or 'unknown'))
             return result | {'backend': backend, 'automatic_fallback': False}
         if backend == 'metaai':
-            # #258 lot 3 : admission asynchrone — enqueue + matérialisation
-            # inbox (contrat pont WebDAV), réponse consommée par le watcher
-            # metaaid puis lue via reprise_wait_result. Pas de repli.
+            # #258 lot 3 + #277 : admission asynchrone — enqueue + matérialisation
+            # inbox (pont fichiers : dossier partagé, plus de serveur WebDAV depuis
+            # le 24/11), réponse consommée par le watcher metaaid puis lue via
+            # reprise_wait_result. Pas de repli. L'injection du prompt
+            # d'instruction dans la session ReMetaAI reste la responsabilité du
+            # pont metaaid (dispatcher UI + markers .ui-state idempotents) : il
+            # est aussi le seul consommateur de l'outbox, donc le détenteur du
+            # roundtrip complet — décision opérateur du 27/11.
             payload = {'question': question, 'kind': args.get('kind', 'expertise'),
                        'level': args.get('level', 'standard'),
                        'request_key': self.requests.active_key}
@@ -1749,7 +1754,8 @@ class Bridge:
             inbox_file = self.metaai_tasks.dispatch_write_inbox(task, self.metaai_inbox)
             result = {'status': 'finished', 'response': None, 'task_id': task_id,
                       'task_type': 'expert_delegate', 'inbox_file': inbox_file,
-                      'dispatch': 'webdav_inbox',
+                      'dispatch': 'files_inbox',
+                      'circuit': metaai_taskstore.CIRCUIT_DEMANDEUR,
                       'wait': 'reprise_wait_result jusqu a answered/failed (watcher metaaid)'}
             routing_events.finalize(self.db, event_id, 'dispatched')
             return result | {'backend': backend, 'automatic_fallback': False}

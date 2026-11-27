@@ -89,7 +89,10 @@ class MetaaiBridgeTests(RequestCalls, unittest.TestCase):
         self.assertEqual(result['status'], 'finished')
         self.assertIsNone(result['response'])
         self.assertTrue(result['admission_only'])
-        self.assertEqual(result['dispatch'], 'webdav_inbox')
+        self.assertEqual(result['dispatch'], 'files_inbox')
+        # #277 : le reçu embarque le circuit demandeur (mode d'emploi du wait).
+        self.assertIn('wait_result', result['circuit'])
+        self.assertIn('ADMISSION', result['circuit'])
         row = self.bridge.metaai_tasks.get(result['task_id'])
         self.assertIsNotNone(row)
         self.assertEqual(row['status'], 'dispatched')
@@ -220,7 +223,7 @@ class MetaaiBridgeTests(RequestCalls, unittest.TestCase):
         result = self.call('reprise_delegate', {'question': 'Revue du lot A', 'kind': 'review',
                                                 'backend': 'metaai'})
         self.assertEqual(result['status'], 'finished')
-        self.assertEqual(result['dispatch'], 'webdav_inbox')
+        self.assertEqual(result['dispatch'], 'files_inbox')
         inbox_file = Path(result['inbox_file'])
         self.assertTrue(inbox_file.is_file())
         materialized = json.loads(inbox_file.read_text())
