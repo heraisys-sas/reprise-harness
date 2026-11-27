@@ -17,7 +17,7 @@ conflit, la règle la plus stricte gagne.
 | `tools/` | Outils d'usage local (`eval/`, `probes/`, `examples/`) | code de l'application |
 | `harness/` | Profil Harness (`profile/`) et skills portables (`skills/`) | secrets |
 | `archive/` | Code retraité mais réutilisable | documents de session, reçus |
-| racine | six fichiers : README, MAINTENANCE, AGENTS, ROADMAP, CHANGELOG, USAGE | tout le reste |
+| racine | sept fichiers : README, MAINTENANCE, AGENTS, CLAUDE (import d'AGENTS), ROADMAP, CHANGELOG, USAGE ; `.ignore` et `.claude/settings.json` (exclusions de lecture des agents, #272) | tout le reste |
 
 ## Placement d'un nouveau fichier
 

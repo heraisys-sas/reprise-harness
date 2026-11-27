@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./**/pnpm-lock.yaml)",
+      "Read(./**/*.tar.gz)",
+      "Read(./routing/embeddings/benchmark-*.json)",
+      "Read(./routing/embeddings/comparison-*.json)",
+      "Read(./routing/embeddings/evaluation*.json)",
+      "Read(./routing/embeddings/latency-*.json)"
+    ]
+  }
+}
