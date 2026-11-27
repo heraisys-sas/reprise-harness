@@ -324,9 +324,8 @@ def plan(source, destination, home, state, components=('app',), profiles=(), act
                 if not old or old.get('status') != 'installed':
                     raise ValueError('Seules les intégrations Harness déjà gérées sont mises à jour.')
                 nested['harness'].append(harness.plan(helpers, dsh, profile, old['project'],
-                    delegate='reprise_delegate' in old.get('tools', []), agent_role=old.get('agent_role', 'standard'),
+                    agent_role=old.get('agent_role', 'standard'),
                     output_resume=old.get('output_resume', False), output_resume_project=old.get('output_resume_project'),
-                    codex_workspace_write=old.get('codex_workspace_write', False),
                     asi1_effort=old.get('asi1_effort', False)))
         if 'claude' in selected:
             old = claude.metadata(claude.paths(home)[2])

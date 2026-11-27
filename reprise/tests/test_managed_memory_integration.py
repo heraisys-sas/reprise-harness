@@ -308,8 +308,7 @@ class ManagedMemoryTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.dsh_plan(memory_access='read', memory_project_id=self.project_id)
 
     def test_cli_plan_preserves_existing_dsh_permissions_and_exposes_memory(self):
-        dsh.apply(self.root, self.dsh_plan(delegate=True, output_resume=True, agent_role='coordinator',
-                                        codex_workspace_write=True))
+        dsh.apply(self.root, self.dsh_plan(output_resume=True, agent_role='coordinator'))
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             code = dsh.main(self.root, ['harness-integration-plan', '--home', str(self.dsh_home), '--profile', 'desktop',
@@ -317,9 +316,8 @@ class ManagedMemoryTests(unittest.TestCase):
                 '--memory-project-id', self.project_id])
         self.assertEqual(code, 0)
         plan = json.loads(output.getvalue())['plan']
-        self.assertTrue(plan['delegate']); self.assertTrue(plan['output_resume'])
-        # Workspace-write is a strict opt-in and is revoked when omitted from a new plan.
-        self.assertFalse(plan.get('codex_workspace_write', False)); self.assertEqual(plan['agent_role'], 'coordinator')
+        self.assertTrue(plan['output_resume'])
+        self.assertNotIn('codex_workspace_write', plan); self.assertEqual(plan['agent_role'], 'coordinator')
         self.assertEqual(plan['memory']['access'], 'read')
         dsh.apply(self.root, plan)
         self.assertEqual(dsh.inspect(self.dsh_home, 'desktop')['memory']['access'], 'read')
@@ -332,7 +330,7 @@ class ManagedMemoryTests(unittest.TestCase):
 
     def test_cli_never_moves_implicit_permissions_to_another_project_and_can_revoke(self):
         self.dsh_config.write_text(harness_fixtures.HarnessIntegrationTests.asi1_profile(None))
-        dsh.apply(self.root, self.dsh_plan(delegate=True, codex_workspace_write=True,
+        dsh.apply(self.root, self.dsh_plan(
             output_resume=True, asi1_effort=True, bash_sandbox_disabled=True, agent_role='coordinator'))
         before = self.dsh_config.read_bytes()
         output = io.StringIO()
@@ -350,12 +348,10 @@ class ManagedMemoryTests(unittest.TestCase):
             with contextlib.redirect_stdout(output):
                 code = dsh.main(self.root, ['harness-integration-plan', '--home', str(self.dsh_home),
                     '--profile', 'desktop', '--project', str(project), '--action', 'install',
-                    '--no-delegate', '--no-codex-workspace-write', '--no-output-resume',
+                    '--no-output-resume',
                     '--no-asi1-effort', '--enable-bash-sandbox', '--agent-role', 'standard'])
             self.assertEqual(code, 0)
             plan = json.loads(output.getvalue())['plan']
-            self.assertFalse(plan['delegate'])
-            self.assertFalse(plan.get('codex_workspace_write', False))
             self.assertFalse(plan.get('output_resume', False))
             self.assertFalse(plan.get('asi1_effort', False))
             self.assertFalse(plan.get('bash_sandbox_disabled', False))
