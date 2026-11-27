@@ -6,22 +6,44 @@ on:
   pull_request:
     paths: ['reprise/**', '.github/workflows/reprise.yml']
   workflow_dispatch:
+  schedule:
+    # Suite macOS complète chaque nuit sur la branche par défaut (#286).
+    - cron: '17 2 * * *'
 permissions:
   contents: read
 concurrency:
   group: reprise-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  linux-tests:
+    # #286 : suite complète sous Linux à chaque push ; les tests propres à macOS
+    # sont sautés et doivent tous appartenir à la sélection --macos-only.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Git identity for repository fixtures
+        run: |
+          git config --global user.name 'Reprise CI'
+          git config --global user.email 'ci@reprise.invalid'
+      - name: Full suite, macOS-only skips guarded
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 reprise/ci_test.py --guard-skips
   tests:
-    # dev is already checked on push; avoid a duplicate macOS job for dev -> main.
-    if: github.event_name != 'pull_request' || github.head_ref != 'dev'
+    # #286 : macOS seulement sur push de dev (sélection propre à macOS), sur PR vers
+    # main, en planifié et à la demande (suite complète en 4 shards).
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
+      (github.event_name == 'pull_request' && github.base_ref == 'main') ||
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-26
     timeout-minutes: 20
     strategy:
       fail-fast: false
       max-parallel: 4
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: ${{ fromJSON(github.event_name == 'push' && '["macos"]' || '[0, 1, 2, 3]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Confirm native build prerequisites
@@ -53,10 +75,17 @@ jobs:
         env:
           REPRISE_TEST_RUNTIME_ARCHIVE: ${{ runner.temp }}/reprise-runtime.tar.gz
           PYTHONDONTWRITEBYTECODE: '1'
-        run: python3 reprise/ci_test.py --shard-index ${{ matrix.shard }} --shard-count 4
+        run: |
+          if [ '${{ matrix.shard }}' = macos ]; then
+            python3 reprise/ci_test.py --macos-only
+          else
+            python3 reprise/ci_test.py --shard-index ${{ matrix.shard }} --shard-count 4
+          fi
   test-build:
-    # dev is already checked on push; avoid a duplicate macOS job for dev -> main.
-    if: github.event_name != 'pull_request' || github.head_ref != 'dev'
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
+      (github.event_name == 'pull_request' && github.base_ref == 'main') ||
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: tests
     runs-on: macos-26
     timeout-minutes: 20

@@ -19,4 +19,14 @@ La commande de build affiche le chemin exact `reprise/builds/EMPREINTE/Reprise.a
 
 Seule l’archive officielle Python est mise en cache avec une clé liée au verrou ; son SHA est revérifié même après cache. Suite unittest via `ci_test.py` sur HOME jetable : chaque shard utilise désormais l’interpréteur CPython réellement extrait de l’archive épinglée, et non le `python3` fourni par l’image runner. `REPRISE_TEST_RUNTIME_ARCHIVE` explicite est obligatoire et vérifié (SHA-256) en CI ; une archive absente ou invalide provoque un échec, sans repli silencieux. Le cache d’extraction local est protégé par verrou et un marqueur d’empreinte. Le workflow conserve le test d’archive opt-in, la compilation sans `--open`, le contrat natif et le smoke CLI relogé. Pas de test GUI, de génération Foundation Models, de connexion compte ou d’inférence payante.
 
+Répartition Linux / macOS (#286) :
+
+| Job | Déclencheur | Commande |
+|---|---|---|
+| `linux-tests` (`ubuntu-24.04`, Python du runner) | chaque push et PR | `ci_test.py --guard-skips` : suite complète ; échoue si un test sauté sort de la sélection macOS |
+| `tests` macOS, sélection | push sur `dev` | `ci_test.py --macos-only` : modules contenant un saut conditionnel (`skipIf`/`skipUnless`/`skipTest`/`support_portability`), puis `test-build` |
+| `tests` macOS, 4 shards | PR vers `main`, nuit (`schedule`), `workflow_dispatch` | `ci_test.py --shard-index i --shard-count 4`, puis `test-build` |
+
+Un test propre à macOS se déclare par un saut conditionnel par capacité (`reprise/tests/support_portability.py`) ; un saut levé depuis un module qui n'en contient pas fait échouer le job Linux. La suite macOS complète reste le filet contre les écarts Linux/macOS (interpréteur épinglé, `/private/tmp`, APFS, `AF_UNIX`). Les branches autres que `dev` n'ont que le job Linux par push ; lancer `workflow_dispatch` pour une vérification macOS complète.
+
 Le job livre un ZIP du bundle exact et son SHA256, nommés par commit, rétention sept jours. Ce sont des artefacts de validation non notarialisés ; aucun auto-déploiement, publication GitHub Release ou installation sur la machine réelle. La signature stable, notarisation, compte macOS vierge et validations UI/quotas/reprise métier restent distincts. Les exécutions hébergées consomment les minutes Actions selon le forfait du dépôt.

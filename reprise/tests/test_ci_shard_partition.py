@@ -86,3 +86,43 @@ class ShardPartitionTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MacosSelectionTests(unittest.TestCase):
+    """#286 : le job Linux saute ce que le job macOS par push rejoue."""
+
+    def write(self, root, name, text):
+        (root / name).write_text(text)
+
+    def test_selection_covers_capability_and_darwin_skips(self):
+        selected = ci_test.macos_modules()
+        self.assertIn('test_siri_inbox_store', selected)  # support_portability
+        self.assertIn('test_apple_pilot_ui', selected)    # saut Darwin
+        self.assertNotIn('test_quota_knowledge', selected)  # aucun saut conditionnel
+        self.assertLess(len(selected), len(ci_test.discover_module_weights()))
+
+    def test_guard_refuses_skip_outside_selection(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(sys, 'path', [directory, *sys.path]):
+            root = Path(directory)
+            self.write(root, 'helper_skip.py', 'import unittest\ndef skip():\n    raise unittest.SkipTest("hidden")\n')
+            self.write(root, 'test_hidden_skip.py', 'import unittest, helper_skip\n'
+                       'class T(unittest.TestCase):\n    def test_x(self):\n        helper_skip.skip()\n')
+            with open(os.devnull, 'w') as sink, patch('sys.stdout', sink), patch('sys.stderr', sink):
+                self.assertEqual(ci_test.run_guarded(root, stream=sink), 1)
+
+    def test_guard_accepts_declared_skip_including_setupclass(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(sys, 'path', [directory, *sys.path]):
+            root = Path(directory)
+            self.write(root, 'test_declared_skip.py', 'import unittest\n'
+                       'class T(unittest.TestCase):\n    @classmethod\n    def setUpClass(cls):\n'
+                       '        raise unittest.SkipTest("macOS")\n    def test_x(self):\n        pass\n')
+            with open(os.devnull, 'w') as sink, patch('sys.stdout', sink), patch('sys.stderr', sink):
+                self.assertEqual(ci_test.run_guarded(root, stream=sink), 0)
+
+    def test_skipped_subtest_is_attributed_to_its_module(self):
+        class Case(unittest.TestCase):
+            def test_x(self):
+                pass
+        case = Case('test_x')
+        subtest = unittest.case._SubTest(case, 'message', {'compressed': True})
+        self.assertEqual(ci_test.skipped_module(subtest), __name__)
