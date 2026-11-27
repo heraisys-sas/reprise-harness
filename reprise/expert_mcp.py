@@ -1584,8 +1584,14 @@ class Bridge:
                 policy['execution_deadline'] > policy.get('wait_timeout', 30) or
                 policy.get('inactivity', float('inf')) < policy['execution_deadline']):
             raise ValueError('Execution deadline must fit inside the connected wait and inactivity windows')
-        if policy and backend not in ('codex', 'claude-desktop'):
+        # #277 : wait_seconds est envoyé par défaut par les clients MCP (attente
+        # connectée) ; l'admission metaai/chatgpt est asynchrone, il est ignoré.
+        # Les autres budgets (execution_seconds, inactivity_seconds,
+        # stop_on_deadline) restent refusés hors codex/claude-desktop.
+        if policy and backend not in ('codex', 'claude-desktop', 'metaai', 'chatgpt'):
             raise ValueError('Wait and execution budgets apply to the Codex backend only')
+        if backend in ('metaai', 'chatgpt') and policy.keys() - {'wait_timeout'}:
+            raise ValueError('Only wait_seconds applies to the %s backend' % backend)
         if backend == 'claude-desktop' and policy.keys() - {'wait_timeout', 'stop_on_deadline'}:
             raise ValueError('Only wait_seconds applies to the claude-desktop backend')
         # Portes manifeste déterministes (#258 lot 2, lot 3) : évaluées une
