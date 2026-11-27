@@ -248,8 +248,17 @@ class Store:
         if key is None:
             if args.get('acknowledge'):
                 raise ValueError('Acknowledgement requires a request_key')
-            rows = self.db.execute('SELECT request_key,state,parent,acknowledged FROM delegation_requests WHERE scope=? ORDER BY rowid DESC LIMIT 100', (self.scope,)).fetchall()
-            return {'status': 'finished', 'requests': [dict(zip(('request_key', 'state', 'parent_request_key', 'acknowledged'), row)) for row in rows], 'limit': 100}
+            # Issue #22 : thread_id (tour natif, sinon résultat persisté) et
+            # backend permettent de choisir la session à poursuivre via
+            # reprise_followup sans lire expert_threads.
+            rows = self.db.execute('''SELECT r.request_key,r.state,r.parent,r.acknowledged,
+                    COALESCE(t.thread_id, json_extract(r.result,'$.thread_id')),
+                    json_extract(r.result,'$.backend')
+                FROM delegation_requests r LEFT JOIN delegation_turns t
+                  ON t.scope=r.scope AND t.request_key=r.request_key
+                WHERE r.scope=? ORDER BY r.rowid DESC LIMIT 100''', (self.scope,)).fetchall()
+            return {'status': 'finished', 'requests': [dict(zip(('request_key', 'state', 'parent_request_key', 'acknowledged',
+                                                                 'thread_id', 'backend'), row)) for row in rows], 'limit': 100}
         validate_key(key)
         if args.get('acknowledge'):
             # Mutating a receipt is an explicit write, not a read-only lookup.
