@@ -2060,8 +2060,13 @@ def main():
     parser.add_argument('--desktop-socket', help='Explicit absolute Quick Entry socket path; disabled by default')
     parser.add_argument('--chatgpt-state', '--chatgpt-socket', dest='chatgpt_state',
                         help='ChatGPT state directory, ledger and TaskStore (not a network socket)')
-    parser.add_argument('--chatgpt-dispatch', action='store_true',
-                        help='Operator grant: admitted ChatGPT tasks are pushed to the CDP holder (profil dédié) for capture')
+    # Issue #282 (décision opérateur du 27/11) : le dispatch holder est actif
+    # par défaut ; --chatgpt-dispatch reste accepté pour les configurations
+    # existantes, --no-chatgpt-dispatch est la seule désactivation.
+    parser.add_argument('--chatgpt-dispatch', dest='chatgpt_dispatch', action='store_true', default=True,
+                        help='Compatibility no-op: admitted ChatGPT tasks are pushed to the CDP holder (profil dédié) by default')
+    parser.add_argument('--no-chatgpt-dispatch', dest='chatgpt_dispatch', action='store_false',
+                        help='Admission only: never push admitted ChatGPT tasks to the holder')
     parser.add_argument('--metaai-config',
                         help='JSON de connexion Meta AI (taskstore, bridge_root ; repli legacy dav_root) ; défaut : connexion Reprise standard si présente')
     parser.add_argument('--ironclaw-config', help='JSON 0600: {host,port,user,key} du point d’acceptation IronClaw')
