@@ -982,7 +982,7 @@ struct Dashboard: View {
                verification["status"] as? String == "verified",
                verification["update_required"] as? Bool == true {
                 SettingsBanner(ok: false, title: "Mise à jour des connecteurs nécessaire",
-                               detail: "Le pont Harness manque d'outils de délégation ou sa release est périmée. Ouvrez Intégrations, préparez un plan --delegate, puis rechargez Harness.")
+                               detail: "Le pont Harness manque d'outils de délégation ou sa release est périmée. Ouvrez Intégrations, préparez un nouveau plan d’installation, puis rechargez Harness.")
                 Button("Relancer la vérification") { app.verifyEverything() }
             }
             Picker("Service", selection: Binding(get: { app.connectionTab }, set: { app.connectionTab = $0 })) {

@@ -7,11 +7,10 @@ from expert_mcp import Bridge
 
 class LocalBridge:
     """Instantiate separately in each owning worker or status-reader thread."""
-    def __init__(self, project_root, state, *, socket=None, codex_workspace_write=False):
+    def __init__(self, project_root, state, *, socket=None):
         self.owner = threading.get_ident()
         self.root = Path(project_root).resolve(strict=True)
         self.bridge = Bridge(self.root, {'socket': socket} if socket else {}, state,
-            codex_workspace_write=codex_workspace_write,
             desktop_state=state,
             allowed_tools=['reprise_backends', 'reprise_requests', 'reprise_delegate'])
 

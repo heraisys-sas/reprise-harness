@@ -378,7 +378,7 @@ class ObserverTests(unittest.TestCase):
         self.assertFalse(data['registration']['attested'])
         self.assertEqual(len(self.status()['sessions']), 2)
         self.assertEqual(tasks.db.execute('SELECT count(*) FROM desktop_tasks').fetchone()[0], 0)
-        self.assertNotIn('await_task', {t['name'] for t in facade.dispatch({'method':'tools/list'})['tools']})
+        self.assertIn('await_task', {t['name'] for t in facade.dispatch({'method':'tools/list'})['tools']})  # #252
 
     def test_registration_is_idempotent_and_remove_preserves_tasks(self):
         first = self.store.sessions()[0]

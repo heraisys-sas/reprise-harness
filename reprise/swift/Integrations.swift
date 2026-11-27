@@ -319,14 +319,7 @@ extension App {
         guard stateReady, !setupBusy else { return }
         guard !claudeIntegrationProject.isEmpty else { return }
         var args = ["claude-integration-plan", "--project", claudeIntegrationProject, "--action", action]
-        if action == "install" {
-            if claudeReplaceProbe { args.append("--replace-probe") }
-            switch claudeAwaitChoice {
-            case "enable": args.append("--enable-await")
-            case "disable": args.append("--disable-await")
-            default: break
-            }
-        }
+        if action == "install", claudeReplaceProbe { args.append("--replace-probe") }
         setupCommand(args) { result in
             self.claudeIntegrationResult = result
             self.claudeIntegrationPlan = result["plan"] as? [String: Any]
@@ -340,12 +333,10 @@ extension App {
             var displayedResult = result
             displayedResult["action"] = plan["action"]
             displayedResult["project"] = plan["project"]
-            displayedResult["enable_await"] = plan["enable_await"]
             self.claudeIntegrationResult = displayedResult
             self.claudeIntegrationAcknowledged = false
             if result["status"] as? String == "completed" {
                 self.claudeIntegrationPlan = nil
-                self.claudeAwaitChoice = "preserve"
                 if plan["action"] as? String == "remove" {
                     self.invalidateClaudeInbox()
                     self.claudeInboxStatus = "Connecteur retiré ; les tâches du registre ne sont plus accessibles depuis Reprise."
@@ -551,7 +542,6 @@ extension App {
     // The generation also rejects selection A -> B -> A while a command is running.
     var harnessPlanContext: [String] {
         [selectedProjectID, integrationHome, integrationProfile, integrationProject,
-         integrationDelegate ? "1" : "0", integrationCodexWorkspaceWrite ? "1" : "0",
          integrationOutputResume ? "1" : "0", integrationOutputResumeProject,
          integrationAsi1Effort ? "1" : "0", integrationAgentRole]
     }
@@ -566,12 +556,10 @@ extension App {
             && profile == integrationProfile
     }
     func harnessPlanMatchesOptions(_ plan: [String: Any]) -> Bool {
-        guard let action = plan["action"] as? String, ["install", "remove"].contains(action),
-              plan["delegate"] as? Bool == integrationDelegate else { return false }
+        guard let action = plan["action"] as? String, ["install", "remove"].contains(action) else { return false }
         let resume = plan["output_resume"] as? Bool == true
         let resumeProject = integrationOutputResumeProject.isEmpty ? integrationProject : integrationOutputResumeProject
-        return (plan["codex_workspace_write"] as? Bool == true) == (integrationDelegate && integrationCodexWorkspaceWrite)
-            && (plan["agent_role"] as? String ?? "standard") == integrationAgentRole
+        return (plan["agent_role"] as? String ?? "standard") == integrationAgentRole
             && resume == integrationOutputResume
             && (!resume || URL(fileURLWithPath: plan["output_resume_project"] as? String ?? "").resolvingSymlinksInPath().standardizedFileURL.path
                 == URL(fileURLWithPath: resumeProject).resolvingSymlinksInPath().standardizedFileURL.path)
@@ -627,12 +615,9 @@ extension App {
                 if let project = result["output_resume_project"] as? String { self.integrationOutputResumeProject = project }
                 if let enabled = result["output_resume"] as? Bool { self.integrationOutputResume = enabled }
                 self.integrationAsi1Effort = result["asi1_effort"] as? Bool ?? false
-                if let enabled = result["delegate"] as? Bool { self.integrationDelegate = enabled }
-                self.integrationCodexWorkspaceWrite = false
                 if let role = result["agent_role"] as? String { self.integrationAgentRole = role }
                 if self.integrationProject.isEmpty, let project = result["project"] as? String { self.integrationProject = project }
             }
-            self.integrationCodexWorkspaceWriteInstalled = result["codex_workspace_write"] as? Bool ?? false
             self.integrationResult = result
             self.integrationMessage = result["message"] as? String ?? "Inspection non confirmée."
             if let pending {
@@ -654,8 +639,6 @@ extension App {
         invalidateIntegrationPlan()
         let generation = integrationPlanGeneration, selection = harnessPlanContext
         var args = ["harness-integration-plan", "--home", integrationHome, "--profile", integrationProfile, "--project", integrationProject, "--action", action]
-        if integrationDelegate { args.append("--delegate") }
-        if integrationDelegate && integrationCodexWorkspaceWrite { args.append("--codex-workspace-write") }
         if integrationOutputResume {
             args.append("--output-resume")
             if !integrationOutputResumeProject.isEmpty { args += ["--output-resume-project", integrationOutputResumeProject] }
@@ -692,9 +675,6 @@ extension App {
                   selection == self.harnessPlanContext else { return }
             self.integrationResult = result
             self.integrationVerification = nil
-            if result["status"] as? String == "completed" {
-                self.integrationCodexWorkspaceWriteInstalled = plan["codex_workspace_write"] as? Bool == true
-            }
             if let pending = result["pending_plan"] as? [String: Any],
                self.harnessPlanMatchesDestination(pending) {
                 self.integrationPlan = pending
@@ -1026,12 +1006,11 @@ struct Integrations: View {
                     detail: "L’inspection n’écrit rien et ne lance aucune inférence. Elle relève les profils présents, les outils déjà exposés et le dernier plan éventuellement en attente.")
             }
             SettingsCard(title: "Délégation vers un expert externe",
-                         status: app.integrationDelegate ? "Outils d’action exposés" : "Observation seule",
+                         status: "Outils d’action exposés",
                          ok: true) {
-                Toggle("Exposer les outils de délégation (reprise_delegate, reprise_followup, reprise_reconcile)", isOn: $app.integrationDelegate)
                 SettingsHint(
-                    text: "Sans cette option, le profil n’expose que la lecture ; avec, trois outils d’action s’ajoutent au même bloc géré.",
-                    detail: "Concrètement : cette carte pilote le bloc de configuration géré que Reprise écrit dans le profil Harness choisi ; en ligne de commande, cela correspond à l’option --delegate de l’installation du profil. Sans l’option, ce bloc ne permet que d’observer (reprise_backends, reprise_requests, reprise_quotas, approval_list, wait_result) : rien ne peut être exécuté. Avec l’option, trois outils s’ajoutent : reprise_delegate (confier une expertise, une revue ou un lot borné à un moteur local, Codex par défaut, Claude Code s’il est configuré), reprise_followup (poursuivre la session ouverte par une délégation) et reprise_reconcile (rattacher une demande à son tour natif et récupérer un résultat tardif). L’installation copie aussi la documentation de délégation dans la compétence reprise-delegation de votre dossier Harness. Après application, rechargez le profil dans Harness pour que les outils soient visibles.")
+                    text: "Le profil expose l’observation et les trois outils d’action dans le même bloc géré.",
+                    detail: "Concrètement : cette carte décrit le bloc de configuration géré que Reprise écrit dans le profil Harness choisi. Il expose l’observation (reprise_backends, reprise_requests, reprise_quotas, approval_list, wait_result) et trois outils d’action : reprise_delegate (confier une expertise, une revue ou un lot borné à un moteur local, Codex par défaut, Claude Code s’il est configuré), reprise_followup (poursuivre la session ouverte par une délégation) et reprise_reconcile (rattacher une demande à son tour natif et récupérer un résultat tardif). L’installation copie aussi la documentation de délégation dans la compétence reprise-delegation de votre dossier Harness. Après application, rechargez le profil dans Harness pour que les outils soient visibles.")
                 if let verification = app.integrationVerification,
                    verification["status"] as? String == "verified" {
                     let capability = (verification["bridge_capabilities"] as? [String: Any])?["delegation"] as? [String: Any] ?? [:]
@@ -1046,15 +1025,11 @@ struct Integrations: View {
                         detailLabel: "Contrôle de délégation")
                 }
                 SettingsHint(
-                    text: "Par défaut, le profil n’expose que l’observation et les reçus ; la délégation expose des outils qui peuvent consommer du quota.",
-                    detail: "Autoriser l’exposition n’exécute aucune inférence : c’est le client qui décide d’appeler. Configurer un outil ne vaut pas autorisation de l’utiliser.")
-                Toggle("Autoriser l’écriture dans le projet sélectionné (mode implémentation Codex)", isOn: $app.integrationCodexWorkspaceWrite)
-                    .disabled(!app.integrationDelegate)
+                    text: "Les outils de délégation peuvent consommer du quota ; l’exposition n’exécute aucune inférence.",
+                    detail: "C’est le client qui décide d’appeler. Configurer un outil ne vaut pas autorisation de l’utiliser.")
                 SettingsHint(
-                    text: app.integrationCodexWorkspaceWriteInstalled
-                        ? "Actuellement autorisée ; sans opt-in dans ce plan, elle sera révoquée."
-                        : "Actuellement désactivée ; l’écriture exige un opt-in dans ce plan.",
-                    detail: "L’outil reprise_delegate reste en lecture seule sur votre projet tant que ce choix n’est pas fait. Avec cette option, il peut modifier et vérifier des fichiers dans le projet affiché. Les approbations natives restent requises ; cette option n’autorise pas implicitement un push, une fusion ou un déploiement.")
+                    text: "Le mode implémentation Codex peut écrire dans le projet sélectionné ; le mode expertise reste en lecture seule.",
+                    detail: "En implémentation, reprise_delegate peut modifier et vérifier des fichiers dans le projet affiché, réseau coupé. Les approbations natives restent requises ; rien n’autorise implicitement un push, une fusion ou un déploiement.")
                 Toggle("Reprendre après une limite de tokens de sortie", isOn: $app.integrationOutputResume)
                 if app.integrationOutputResume {
                     TextField("Projet de reprise (vide : projet du connecteur)", text: $app.integrationOutputResumeProject)
@@ -1180,28 +1155,12 @@ struct Integrations: View {
                     detail: "Un seul connecteur suffit : il reçoit les tâches, rend les résultats et demande une expertise aux autres harness configurés. L’exécution Python est incluse ; aucun Python système n’est requis. Dans Claude, autorisez les outils du connecteur reprise-harness. Reprise ne peut pas accorder ces autorisations à votre place et n’arrête pas Claude : la nouvelle configuration y est chargée après un rechargement. Une vérification de version ne prouve pas le chargement dans Claude ; le déclenchement Quick Apply reste une capacité distincte.",
                     detailLabel: "Autorisations et limites")
                 Toggle("Remplacer le connecteur Reprise déjà reconnu (sauvegardé)", isOn: $app.claudeReplaceProbe)
-                if app.claudeIntegrationPlan?["action"] as? String != "remove" {
-                    Picker("Outil d’attente await_task", selection: $app.claudeAwaitChoice) {
-                        Text("Conserver le réglage actuel").tag("preserve")
-                        Text("Activer").tag("enable")
-                        Text("Désactiver").tag("disable")
-                    }
-                    SettingsHint(
-                        text: "Le choix s’applique à l’installation ou à la mise à jour du connecteur.",
-                        detail: "Conserver préserve le réglage géré actuel ; pour une nouvelle installation, await_task reste désactivé. Cette option ne change pas get_task, submit_result ni get_result.",
-                        detailLabel: "Réglage await_task")
-                } else {
-                    SettingsHint(text: "Le retrait du connecteur n’utilise pas le réglage await_task.")
-                }
+                SettingsHint(text: "Le connecteur expose toujours await_task et claim_next, en plus de get_task, submit_result et get_result.")
                 if let plan = app.claudeIntegrationPlan {
                     SettingsHint(text: "Un plan est prêt ; il attend votre accord.",
                                  detail: planDetail(plan), detailLabel: "Plan exact du connecteur")
-                    if plan["action"] as? String == "install" {
-                        let awaitLabel = plan["enable_await"] as? Bool == true ? "activé" : "désactivé"
-                        let preview = "Aperçu : await_task est " + awaitLabel + " dans cette configuration."
-                        Text(preview).font(.caption)
-                    } else {
-                        Text("Aperçu : l’entrée gérée sera retirée ; le réglage await_task ne s’applique pas.").font(.caption)
+                    if plan["action"] as? String == "remove" {
+                        Text("Aperçu : l’entrée gérée sera retirée.").font(.caption)
                     }
                     Toggle("J’ai vérifié le projet et les changements du connecteur", isOn: $app.claudeIntegrationAcknowledged)
                     Button("Appliquer le plan") { app.applyClaudeIntegration() }.disabled(!app.claudeIntegrationAcknowledged)
@@ -1209,30 +1168,29 @@ struct Integrations: View {
                 if app.claudeIntegrationResult["status"] as? String == "completed" {
                     let changed = app.claudeIntegrationResult["changed"] as? Bool == true
                     let action = app.claudeIntegrationResult["action"] as? String ?? "install"
-                    let enabled = app.claudeIntegrationResult["enable_await"] as? Bool == true
                     if action == "remove" {
                         SettingsHint(text: changed ? "Connecteur retiré de la configuration locale." : "Le connecteur était déjà retiré.",
-                                     detail: "Le réglage await_task n’a pas été utilisé. Chargement par Claude Desktop : non observé.",
+                                     detail: "Chargement par Claude Desktop : non observé.",
                                      detailLabel: "Dernier résultat")
                     } else {
-                        SettingsHint(text: changed ? "Configuration locale écrite ; await_task est " + (enabled ? "activé." : "désactivé.")
-                                                   : "Configuration locale déjà conforme ; aucune écriture. await_task est " + (enabled ? "activé." : "désactivé."),
+                        SettingsHint(text: changed ? "Configuration locale écrite."
+                                                   : "Configuration locale déjà conforme ; aucune écriture.",
                                      detail: "Ce résultat concerne le dernier plan appliqué. Chargement par Claude Desktop : non observé ; recharger Claude et vérifier l’outil dans le client.",
                                      detailLabel: "Dernier résultat")
                     }
                 } else if app.claudeIntegrationResult["status"] as? String == "verified" {
-                    let exposed = app.claudeIntegrationResult["await_tool_exposed"] as? Bool == true
-                    SettingsHint(text: "Vérification locale : await_task " + (exposed ? "exposé" : "désactivé") + " dans la release testée.",
+                    SettingsHint(text: "Vérification locale : outils du connecteur complets dans la release testée.",
                                  detail: "La release a répondu à initialize/tools/list sans inférence. Chargement par Claude Desktop : non observé ; recharger Claude et vérifier l’outil dans le client.",
                                  detailLabel: "Dernière vérification")
                 } else if app.claudeIntegrationResult["status"] as? String == "inspected" {
                     if app.claudeIntegrationResult["managed"] as? Bool == true {
-                        let enabled = app.claudeIntegrationResult["enable_await"] as? Bool == true
-                        SettingsHint(text: "Réglage géré actuel : await_task " + (enabled ? "activé." : "désactivé."),
+                        let retired = app.claudeIntegrationResult["retired_options"] as? [String] ?? []
+                        SettingsHint(text: retired.isEmpty ? "Connecteur géré à jour."
+                                                           : "Connecteur installé avant la mise à jour : préparez un nouveau plan pour retirer " + retired.joined(separator: ", ") + ".",
                                      detail: "Inspection de la configuration locale ; chargement par Claude Desktop non observé.",
                                      detailLabel: "Dernière inspection")
                     } else {
-                        SettingsHint(text: "Aucun connecteur géré actif ; une nouvelle installation reste désactivée si vous choisissez Conserver.",
+                        SettingsHint(text: "Aucun connecteur géré actif.",
                                      detailLabel: "Dernière inspection")
                     }
                 }
@@ -1392,8 +1350,6 @@ struct Integrations: View {
         .onChange(of: app.integrationOutputResumeProject) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationOutputResume) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.integrationAgentRole) { _, _ in app.invalidateIntegrationPlan() }
-        .onChange(of: app.integrationCodexWorkspaceWrite) { _, _ in app.invalidateIntegrationPlan() }
-        .onChange(of: app.integrationDelegate) { _, _ in app.invalidateIntegrationPlan() }
         .onChange(of: app.selectedProjectID) { _, projectID in app.selectProject(projectID) }
         .onChange(of: app.integrationProject) { _, _ in
             app.invalidateClaudeIntegrationPlan()
@@ -1403,7 +1359,6 @@ struct Integrations: View {
             app.invalidateClaudeIntegrationPlan()
             app.invalidateClaudeInbox()
         }
-        .onChange(of: app.claudeAwaitChoice) { _, _ in app.invalidateClaudeIntegrationPlan() }
         .onChange(of: app.claudeReplaceProbe) { _, _ in app.invalidateClaudeIntegrationPlan() }
     }
 }

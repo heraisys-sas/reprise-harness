@@ -94,7 +94,7 @@ Sans scope ID, le mode projet historique reste inchangé. Avec un scope ID, le
 processus MCP est lié au démarrage à un scope v2 préexistant. La sélection absente préserve le choix installé ;
 pour une installation ancienne, elle reste `off`. La mémoire utilise une seconde
 entrée `mcpServers.reprise-memory`, sans changer les outils ni les droits du
-connecteur `reprise-harness`, ni sa sélection `enable_await`. Les entrées tierces
+connecteur `reprise-harness`. Les entrées tierces
 sont conservées ; une entrée `reprise-memory` non gérée ou personnalisée est
 refusée plutôt qu’adoptée ou écrasée.
 

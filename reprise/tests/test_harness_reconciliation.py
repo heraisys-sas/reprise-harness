@@ -19,12 +19,13 @@ class HarnessReconciliationTests(unittest.TestCase):
     def divergent(self, crlf=False):
         obsolete = self.base / 'obsolete-resume'
         obsolete.mkdir()
-        self.install(delegate=True, output_resume=True, output_resume_project=obsolete)
+        self.install(output_resume=True, output_resume_project=obsolete)
         text = self.config.read_bytes().decode()
         span = integration._reconcile_span(text)
         entries = integration.block_entries(span.group())
         entries[0]['config']['command'] = '/synthetic/broken-concatenated-release/runtime/bin/python3'
         entries[0]['config']['args'][3] = '/synthetic/old-release/helpers/expert_mcp.py'
+        # Bloc antérieur à #252 : l'interrupteur retiré est supprimé à l'adoption.
         entries[0]['config']['args'].append('--codex-workspace-write')
         self.prefix = '# SYNTHETIC PRIVATE SETTING — not a repository default\r\n- insert: [{"id":"unrelated"}]\r\n'
         self.suffix = '\r\n# SYNTHETIC trailing settings\r\n- insert: [{"id":"tail"}]\r\n'
@@ -39,11 +40,11 @@ class HarnessReconciliationTests(unittest.TestCase):
         if accepted is None:
             accepted = integration.digest(integration._reconcile_span(self.config.read_bytes().decode()).group().encode())
         return integration.reconcile_plan(self.root, self.home, 'desktop', self.project,
-                                           self.project, True, accepted)
+                                           self.project, accepted)
 
     def divergent_without_resume(self):
         # Live repair shape: manifest without continuation, block with stale release paths.
-        self.install(delegate=True, codex_workspace_write=True)
+        self.install()
         text = self.config.read_bytes().decode()
         span = integration._reconcile_span(text)
         entries = integration.block_entries(span.group())
@@ -59,7 +60,7 @@ class HarnessReconciliationTests(unittest.TestCase):
         accepted = self.divergent(crlf=True)
         before = integration.tree_files(self.folder)
         with self.assertRaises(ValueError):
-            integration.plan(self.root, self.home, 'desktop', self.project, delegate=True)
+            integration.plan(self.root, self.home, 'desktop', self.project)
         proposed = self.reconcile(accepted)
         self.assertEqual(integration.tree_files(self.folder), before)
         self.assertNotIn('SYNTHETIC PRIVATE SETTING', json.dumps(proposed))
@@ -70,13 +71,13 @@ class HarnessReconciliationTests(unittest.TestCase):
         text = self.config.read_bytes().decode()
         self.assertTrue(text.startswith(self.prefix)); self.assertTrue(text.endswith(self.suffix))
         manifest = json.loads((self.managed / 'managed.json').read_bytes())
-        self.assertTrue(manifest['codex_workspace_write'])
+        self.assertNotIn('codex_workspace_write', manifest)
         self.assertEqual(manifest['output_resume_project'], str(self.project))
         self.assertEqual(manifest['project'], str(self.project))
         entries = integration.block_entries(integration._reconcile_span(text).group())
         self.assertTrue(Path(entries[0]['config']['command']).is_file())
         self.assertEqual(entries[2]['config']['projectRoot'], str(self.project))
-        self.assertIn('--codex-workspace-write', entries[0]['config']['args'])
+        self.assertNotIn('--codex-workspace-write', entries[0]['config']['args'])
         self.assertEqual(integration.tree_files(self.managed / 'backups'), backups)
         self.assertEqual((self.managed / 'operation.json').read_bytes(), old_journal)
         journal = (self.managed / 'reconciliation.json').read_text()
@@ -87,9 +88,9 @@ class HarnessReconciliationTests(unittest.TestCase):
         snapshot = integration.tree_files(self.folder)
         self.assertFalse(self.apply_plan(proposed)['changed'])
         self.assertEqual(integration.tree_files(self.folder), snapshot)
-        # The ordinary route now recognizes ownership, with the write choice still explicit.
-        integration.plan(self.root, self.home, 'desktop', self.project, delegate=True,
-                         output_resume=True, output_resume_project=self.project, codex_workspace_write=True)
+        # The ordinary route now recognizes ownership.
+        integration.plan(self.root, self.home, 'desktop', self.project,
+                         output_resume=True, output_resume_project=self.project)
 
     def test_adoption_without_resume_keeps_manifest_continuation_absent(self):
         accepted = self.divergent_without_resume()
@@ -107,10 +108,9 @@ class HarnessReconciliationTests(unittest.TestCase):
         entries = integration.block_entries(integration._reconcile_span(text).group())
         self.assertNotIn('reprise-output-resume', [entry['id'] for entry in entries])
         self.assertTrue(Path(entries[0]['config']['command']).is_file())
-        self.assertIn('--codex-workspace-write', entries[0]['config']['args'])
+        self.assertNotIn('--codex-workspace-write', entries[0]['config']['args'])
         # The ordinary route now recognizes ownership even without continuation options.
-        ordinary = integration.plan(self.root, self.home, 'desktop', self.project,
-                                    delegate=True, codex_workspace_write=True)
+        ordinary = integration.plan(self.root, self.home, 'desktop', self.project)
         self.assertNotIn(str(self.config), [change['path'] for change in ordinary['changes']])
 
     def test_resume_entry_in_block_without_manifest_continuation_is_refused(self):
@@ -130,14 +130,14 @@ class HarnessReconciliationTests(unittest.TestCase):
 
     def test_choices_and_accepted_block_are_required(self):
         accepted = self.divergent()
-        for write, sha in ((None, accepted), (True, '0'*64)):
-            with self.subTest(write=write):
+        for sha in (None, '0'*64, 'not-a-digest'):
+            with self.subTest(sha=sha):
                 before = integration.tree_files(self.folder)
                 with self.assertRaises(ValueError):
-                    integration.reconcile_plan(self.root, self.home, 'desktop', self.project, self.project, write, sha)
+                    integration.reconcile_plan(self.root, self.home, 'desktop', self.project, self.project, sha)
                 self.assertEqual(integration.tree_files(self.folder), before)
         with self.assertRaises((ValueError, OSError)):
-            integration.reconcile_plan(self.root, self.home, 'desktop', self.project, self.base/'missing', True, accepted)
+            integration.reconcile_plan(self.root, self.home, 'desktop', self.project, self.base/'missing', accepted)
 
     def test_unknown_semantic_change_is_never_adopted(self):
         self.divergent()
@@ -178,7 +178,7 @@ class HarnessReconciliationTests(unittest.TestCase):
         self.assertEqual(integration.inspect(self.home, 'desktop')['pending_plan'], proposed)
         with self.assertRaises(ValueError): self.reconcile()
         with self.assertRaises(ValueError): integration.plan(self.root, self.home, 'desktop', self.project)
-        changed = dict(proposed, codex_workspace_write=False)
+        changed = dict(proposed, output_resume_project=str(self.base))
         changed['fingerprint'] = integration.digest(integration.encoded({k:v for k,v in changed.items() if k!='fingerprint'}).encode())
         with self.assertRaisesRegex(ValueError, 'Autre'): self.apply_plan(changed)
         published_config = self.config.read_bytes()
@@ -301,7 +301,7 @@ class HarnessReconciliationTests(unittest.TestCase):
         self.assertEqual(integration.tree_files(self.folder), before)
 
     def test_folded_block_is_regenerated_canonical_single_line(self):
-        self.install(delegate=True, output_resume=True, output_resume_project=self.project)
+        self.install(output_resume=True, output_resume_project=self.project)
         text = self.config.read_bytes().decode()
         span = integration._reconcile_span(text)
         entries = integration.block_entries(span.group())
@@ -317,13 +317,11 @@ class HarnessReconciliationTests(unittest.TestCase):
         self.assertEqual(len(lines), 3)
         self.assertTrue(lines[1].startswith('- insert: '))
         self.assertNotIn('\\', lines[1])
-        rewritten = integration.block_entries(published)
-        rewritten[0]['config']['args'].remove('--codex-workspace-write')
-        self.assertEqual(rewritten, entries)
+        self.assertEqual(integration.block_entries(published), entries)
         manifest = json.loads((self.managed / 'managed.json').read_bytes())
         self.assertEqual(manifest['block_sha256'], integration.digest(published.encode()))
 
-    def test_cli_requires_explicit_write_and_produces_only_a_plan(self):
+    def test_cli_produces_only_a_plan_without_write_option(self):
         import contextlib
         import io
         accepted = self.divergent()
@@ -332,13 +330,13 @@ class HarnessReconciliationTests(unittest.TestCase):
                 '--accept-block-sha256', accepted]
         before = integration.tree_files(self.folder)
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            integration.main(self.root, args)
+            integration.main(self.root, args + ['--codex-workspace-write'])
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            code = integration.main(self.root, args + ['--codex-workspace-write'])
+            code = integration.main(self.root, args)
         self.assertEqual(code, 0)
         plan = json.loads(output.getvalue())['plan']
-        self.assertTrue(plan['codex_workspace_write'])
+        self.assertNotIn('codex_workspace_write', plan)
         self.assertEqual(plan['output_resume_project'], str(self.project))
         self.assertEqual(integration.tree_files(self.folder), before)
 

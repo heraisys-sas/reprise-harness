@@ -34,14 +34,6 @@ from datetime import datetime, timezone
 from engines import Unavailable, executable, options
 
 
-WORKSPACE_WRITE_ENABLE = ('harness_integration harness-integration-plan --action install --delegate '
-                          '--codex-workspace-write, puis harness-integration-apply et redémarrage du pont')
-
-
-class WorkspaceWriteNotAuthorized(ValueError):
-    """Implementation refused: the operator never granted project workspace writes (issue #104)."""
-
-
 class RequestNotFound(ValueError):
     """An exact request_key does not exist in this bridge scope."""
 
@@ -85,14 +77,6 @@ def error_payload(exc):
                 'data': {'kind': 'thread_not_owned', 'backend': exc.backend, 'thread_id': exc.thread_id,
                          'resume_with': 'parent_request_key',
                          'alternative': 'open a new session with reprise_delegate', 'error': detail}}
-    if isinstance(exc, WorkspaceWriteNotAuthorized):
-        # Operator configuration, not a secret: say exactly why and how to fix it instead of the generic refusal.
-        return {'code': code,
-                'message': ('Implementation mode refused: project workspace writes are not authorized '
-                            '(workspace_write_authorized=false). Use mode \'expertise\' for a read-only '
-                            'patch, or ask the operator to enable --codex-workspace-write. No automatic retry.'),
-                'data': {'kind': 'workspace_write_not_authorized', 'reason': 'workspace_write_authorized_false',
-                         'error': detail, 'enable_with': WORKSPACE_WRITE_ENABLE}}
     if isinstance(exc, Unavailable):
         # Backend/engine down is an availability failure, not a caller mistake.
         kind, code = 'unavailable', -32000
@@ -516,9 +500,7 @@ def load_fallback_flag(path=None):
 
 
 class Bridge:
-    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, codex_workspace_write=False, chatgpt_socket=None, chatgpt_dispatch=False, metaai_values=None, automatic_fallback_enabled=None):
-        if type(codex_workspace_write) is not bool:
-            raise ValueError('Explicit workspace-write grant required')
+    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, chatgpt_socket=None, chatgpt_dispatch=False, metaai_values=None, automatic_fallback_enabled=None):
         if automatic_fallback_enabled is not None and type(automatic_fallback_enabled) is not bool:
             raise ValueError('Explicit automatic-fallback grant required')
         if type(chatgpt_dispatch) is not bool:
@@ -527,7 +509,6 @@ class Bridge:
             raise ValueError('Absolute ChatGPT state directory required')
         self.chatgpt_socket = chatgpt_socket
         self.chatgpt_dispatch = chatgpt_dispatch
-        self.codex_workspace_write = codex_workspace_write
         known_tools = {item['name'] for item in TOOLS}
         if allowed_tools is not None and (not allowed_tools or set(allowed_tools) - known_tools):
             raise ValueError('Unknown or empty tool selection')
@@ -907,8 +888,6 @@ class Bridge:
                 raise ValueError('Backend chatgpt refused in v1: consultative expertise/review only, no implementation mode.')
             if name not in ('reprise_delegate', 'reprise_followup') or args.get('backend', 'codex') != 'codex':
                 raise ValueError('Implementation requires generic Codex delegation tools')
-            if not self.codex_workspace_write:
-                raise WorkspaceWriteNotAuthorized('Project workspace writes not authorized by the integration')
         return mode
 
     def _acquire_slot(self, name, args):
@@ -1398,12 +1377,11 @@ class Bridge:
                  'models_source': catalog['source'],
                  'models_updated_at': catalog['updated_at'],
                  'billing': 'ChatGPT quota',
-                 'modes': ['expertise'] + (['implementation'] if self.codex_workspace_write else []),
-                 'workspace_write_authorized': self.codex_workspace_write,
-                 'implementation_scope': str(self.root) if self.codex_workspace_write else None,
-                 **({} if self.codex_workspace_write else {
-                     'implementation_unavailable_reason': 'workspace_write_not_authorized',
-                     'enable_with': WORKSPACE_WRITE_ENABLE}),
+                 # #252 : écriture du projet permise par défaut (réseau coupé,
+                 # approbations natives conservées) ; expertise reste en lecture seule.
+                 'modes': ['expertise', 'implementation'],
+                 'workspace_write_authorized': True,
+                 'implementation_scope': str(self.root),
                  'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': workspace_writes('codex')}
             if catalog['error']:
                 codex_entry['models_error'] = catalog['error']
@@ -2056,16 +2034,11 @@ def main():
     parser.add_argument('--daily-limit', type=int, default=8, help='Deprecated compatibility option; ignored for all backends')
     parser.add_argument('--claude-program', help='Explicit absolute Claude CLI path; disabled by default')
     parser.add_argument('--claude-included-quota-confirmed', action='store_true', help='Operator confirms paid usage credits disabled; CLI cannot verify this')
-    parser.add_argument('--codex-workspace-write', action='store_true', help='Operator grant: implementation may write this project; native approvals remain required')
     parser.add_argument('--desktop-socket', help='Explicit absolute Quick Entry socket path; disabled by default')
     parser.add_argument('--chatgpt-state', '--chatgpt-socket', dest='chatgpt_state',
                         help='ChatGPT state directory, ledger and TaskStore (not a network socket)')
-    # Issue #282 (décision opérateur du 27/11) : le dispatch holder est actif
-    # par défaut ; --chatgpt-dispatch reste accepté pour les configurations
-    # existantes, --no-chatgpt-dispatch est la seule désactivation.
-    parser.add_argument('--chatgpt-dispatch', dest='chatgpt_dispatch', action='store_true', default=True,
-                        help='Compatibility no-op: admitted ChatGPT tasks are pushed to the CDP holder (profil dédié) by default')
-    parser.add_argument('--no-chatgpt-dispatch', dest='chatgpt_dispatch', action='store_false',
+    # #282 : dispatch holder actif par défaut ; --no-chatgpt-dispatch est la seule bascule.
+    parser.add_argument('--no-chatgpt-dispatch', dest='chatgpt_dispatch', action='store_false', default=True,
                         help='Admission only: never push admitted ChatGPT tasks to the holder')
     parser.add_argument('--metaai-config',
                         help='JSON de connexion Meta AI (taskstore, bridge_root ; repli legacy dav_root) ; défaut : connexion Reprise standard si présente')
@@ -2103,7 +2076,7 @@ def main():
     bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.state or str(state_directory(Path(__file__).parent)), args.daily_limit,
                     claude_program=args.claude_program, claude_subscription_only=args.claude_included_quota_confirmed,
                     desktop_socket=args.desktop_socket, allowed_tools=args.tools.split(',') if args.tools is not None else None,
-                    ironclaw_values=ironclaw_values, codex_workspace_write=args.codex_workspace_write,
+                    ironclaw_values=ironclaw_values,
                     chatgpt_socket=chatgpt_state,
                     chatgpt_dispatch=args.chatgpt_dispatch, metaai_values=metaai_values)
     def terminate(signum, frame):

@@ -124,20 +124,13 @@ Validation: protocol discovery with the actual bundled DSH MCP client succeeded 
 
 Le [contrat multi-harness](../../contracts/HARNESS-SUPERVISION-ARCHITECTURE.md) prévoit un même point d’entrée logique pour demander une expertise, recevoir une tâche et rendre/récupérer un résultat. Codex conserve ses transports natifs et garanties existantes ; le regroupement MCP reste à implémenter. Priorité fonctionnelle immédiate : permettre à un harness demandeur d’obtenir une réponse Claude Desktop, y compris compte gratuit.
 
-## Mode `implementation` : autorisation d'écriture du projet (#104)
+## Mode `implementation` : écriture du projet permise par défaut (#104, #252)
 
-`reprise_delegate`/`reprise_followup` avec `mode: "implementation"` ne sont acceptés que si l'opérateur a accordé les écritures du workspace projet **à l'installation de l'intégration**. Sans cette autorisation, `reprise_backends` rapporte pour `codex` : `workspace_write_authorized: false`, `writes: false`, `modes: ["expertise"]`, ainsi que `implementation_unavailable_reason: "workspace_write_not_authorized"` et `enable_with` (la marche à suivre).
+Depuis #252 (décision opérateur du 27/11/2026), `reprise_delegate`/`reprise_followup` acceptent toujours `mode: "implementation"` pour Codex. `reprise_backends` rapporte pour `codex` : `modes: ["expertise", "implementation"]`, `workspace_write_authorized: true` et `implementation_scope` = le `project_root` du pont.
 
-Le refus a lieu **avant toute admission** (aucune ligne `delegation_requests`, aucun tour Codex) et renvoie une erreur explicite, `data.kind: "workspace_write_not_authorized"`, au lieu du refus générique « Request refused or unavailable » (les autres refus restent génériques, cf. #53). Contournement sans autorisation : `mode: "expertise"` renvoie un patch en lecture seule que le coordinateur applique lui-même.
+Garde-fous conservés : sandbox native `workspaceWrite` limitée au projet, réseau coupé, approbations natives Codex requises (`awaiting_human` ; voir #284 pour leur centralisation). `mode: "expertise"` reste en lecture seule. Le mode est attaché au thread et hérité par `reprise_followup` ; une revue ne devient pas une session inscriptible en cours de route.
 
-Activation (l'autorisation est une décision de l'opérateur, jamais déduite d'une demande) :
-
-```
-harness_integration harness-integration-plan --home … --profile … --project /absolute/project --action install --delegate --codex-workspace-write
-harness_integration harness-integration-apply
-```
-
-`--codex-workspace-write` exige `--delegate`. Le périmètre inscriptible est `implementation_scope` = le `project_root` du pont ; les approbations natives Codex restent requises. L'autorisation est lue au démarrage du pont : **redémarrer le pont** après `harness-integration-apply`, puis vérifier `reprise_backends` (`workspace_write_authorized: true`, `implementation_scope` renseigné).
+Il n'existe plus de grant `--codex-workspace-write` ni d'option `--delegate` : un pont installé avant #252 est réécrit par le prochain `harness-integration-plan`/`apply`, puis doit être redémarré.
 
 ## Manifeste experts déclaratif (#258 lot 2, #259)
 
@@ -297,8 +290,8 @@ aller-retour consultatif se ferme sur le receipt holder seul.
 ### Issue #226 — Chaînon admission → dispatch holder (actif par défaut depuis #282)
 
 Décision opérateur du 27/11/2026 (#282) : le dispatch holder est actif par
-défaut sur `expert_mcp.py` et `claude_mcp.py` ; `--chatgpt-dispatch` reste
-accepté sans effet et `--no-chatgpt-dispatch` est la seule désactivation.
+défaut sur `expert_mcp.py` et `claude_mcp.py` ; `--no-chatgpt-dispatch` est la
+seule désactivation (l'ancien `--chatgpt-dispatch` est retiré par #252).
 Le holder est démarré à la demande par `chatgpt_desktop_pipe.send` et reste
 vivant ensuite. Le pont enchaîne après
 chaque admission fraîche ou rejouée : `chatgpt_quick.dispatch_to_holder`
@@ -328,7 +321,7 @@ upstream sont documentés dans le [runbook APP-CLONES](../runbooks/APP-CLONES.md
 le branchement comme composant natif `managed_update` suit avec la release.
 
 **Déploiement** : reconstruire la release depuis `dev`, prévisualiser/appliquer
-à nouveau les connecteurs gérés (DeepSeek avec `--delegate`, Claude, ChatGPT),
+à nouveau les connecteurs gérés (DeepSeek, Claude, ChatGPT),
 puis recharger les clients. Lire `reprise_backends` depuis chacun et tenter
 une délégation `backend: chatgpt` avec un `request_key` nouveau. Exiger une
 preuve distincte d'arrivée Desktop et de capture de réponse (receipt holder,

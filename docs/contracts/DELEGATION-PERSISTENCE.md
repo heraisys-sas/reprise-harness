@@ -175,9 +175,9 @@ La réservation d'une livraison dispatch QTi et la réservation du socket sont i
 - La livraison MCP ne transporte que `delivery`, `attempt_id` et `claim_key`.
 - Les anciens writers doivent être arrêtés ou mis à niveau avant la migration : ils ne respectent pas cette table.
 
-## File d'attente opt-in par projet (`claim_next`)
+## File d'attente par projet (`claim_next`)
 
-Décision d'opérateur par intégration (`--enable-queue` : l'outil est masqué et refusé par défaut, sur le modèle de `--enable-await`) : le connecteur expose `claim_next(claim_key)` — la plus ancienne tâche **fraîche** du scope (jamais réclamée, jamais tentée, sans réponse), dans l'ordre du registre d'insertion. L'autorisation = l'armement explicite d'une conversation par l'opérateur ; le `claim_key` est généré et persisté par la session exécutrice.
+Toujours exposée depuis #252 (décision opérateur du 27/11/2026 ; plus d'option `--enable-queue` ni `--enable-await`) : le connecteur expose `claim_next(claim_key)` — la plus ancienne tâche **fraîche** du scope (jamais réclamée, jamais tentée, sans réponse), dans l'ordre du registre d'insertion. L'autorisation = l'armement explicite d'une conversation par l'opérateur ; le `claim_key` est généré et persisté par la session exécutrice.
 
 Gardes : un seul claim **actif par `claim_key`**, jamais de redelivery d'un envoi incertain — les livraisons incertaines sont **ignorées** par la file et restent à réconcilier par l'opérateur ; scoping par `--project-root` ; file vide = état explicite. La réservation et la sélection sont atomiques dans la même transaction `BEGIN IMMEDIATE`. Si le `claim_key` possède déjà une tâche non soumise, `claim_next` retourne `state="busy"`, sa clé et son `attempt_id` sans `prompt` ; aucun nouveau travail n'est livré. Une soumission validée libère la réservation du `claim_key`. Répéter `claim_next` avec une clé active n'est jamais une autorisation de réexécuter la tentative précédente.
 

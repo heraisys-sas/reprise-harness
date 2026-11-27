@@ -258,7 +258,7 @@ class DesktopWaitTests(unittest.TestCase):
     def test_await_task_delivery_then_wait_result_response(self):
         self.store.admit('k', 'one prompt')
         results, threads, _ = self.start_waits()
-        facade = ClaudeMCP(self.store, Mock(), enable_await=True)
+        facade = ClaudeMCP(self.store, Mock())
         delivered = decode(facade.await_task(self.store,
             {'request_key': 'k', 'claim_key': 'owner', 'wait_seconds': 1}))
         self.assertTrue(delivered['task'])

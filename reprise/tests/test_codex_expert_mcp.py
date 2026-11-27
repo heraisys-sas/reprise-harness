@@ -59,45 +59,23 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.bridge.program = 'codex'
         self.seed_catalog()
         self.addCleanup(self.bridge.close)
-    def test_implementation_requires_installed_grant_before_admission(self):
-        with patch('expert_mcp.review') as review:
-            with self.assertRaises(ValueError):
-                self.call('reprise_delegate', {'question':'Implement', 'kind':'batch', 'mode':'implementation'})
-            review.assert_not_called()
-        self.assertEqual(self.bridge.db.execute('SELECT COUNT(*) FROM delegation_requests').fetchone()[0], 0)
-        # #258 lot 3 : `writes` devient déclaratif (capacité du backend),
-        # le grant CLI reste mesuré par workspace_write_authorized et gate le mode.
-        codex = self.call('reprise_backends', {})['backends'][0]
-        self.assertTrue(codex['writes'])
-        self.assertFalse(codex['workspace_write_authorized'])
-
-    def test_ungranted_implementation_refusal_is_explicit_issue_104(self):
-        with patch('expert_mcp.review') as review:
-            with self.assertRaises(ValueError) as caught:
-                self.call('reprise_delegate', {'question':'Implement', 'kind':'batch', 'mode':'implementation'})
-            review.assert_not_called()
-        payload = error_payload(caught.exception)
-        self.assertIn('workspace_write_authorized=false', payload['message'])
-        self.assertIn("mode 'expertise'", payload['message'])
-        self.assertEqual(payload['data']['kind'], 'workspace_write_not_authorized')
-        self.assertIn('--codex-workspace-write', payload['data']['enable_with'])
-        # Les autres refus gardent le message générique uniforme.
-        self.assertEqual(error_payload(ValueError('x'))['message'], 'Request refused or unavailable; no automatic retry.')
-
-    def test_backends_reports_how_to_enable_writes_and_reflects_grant_issue_104(self):
-        codex = self.call('reprise_backends', {})['backends'][0]
-        self.assertFalse(codex['workspace_write_authorized'])
-        self.assertEqual(codex['implementation_unavailable_reason'], 'workspace_write_not_authorized')
-        self.assertIn('--codex-workspace-write', codex['enable_with'])
-        self.bridge.codex_workspace_write = True
+    def test_backends_reports_project_writes_enabled_by_default_issue_252(self):
         codex = self.call('reprise_backends', {})['backends'][0]
         self.assertTrue(codex['workspace_write_authorized'])
-        self.assertIn('implementation', codex['modes'])
+        self.assertEqual(codex['modes'], ['expertise', 'implementation'])
+        # L'écriture par défaut ne s'étend pas à l'expertise : sans mode ou en
+        # mode expertise, le tour Codex reste en lecture seule.
+        output = {'status': 'finished', 'resumable': True, 'thread_id': ID, 'response': 'Avis'}
+        for extra in ({}, {'mode': 'expertise'}):
+            with patch('expert_mcp.review', return_value=output.copy()) as review:
+                self.call('reprise_delegate', {'question': 'Review', 'kind': 'review', **extra})
+                self.assertFalse(review.call_args.kwargs.get('implementation', False))  # défaut read-only de codex_expert.review
+        self.assertEqual(codex['implementation_scope'], str(Path(self.temp.name).resolve()))
+        self.assertTrue(codex['writes'])
         self.assertNotIn('implementation_unavailable_reason', codex)
         self.assertNotIn('enable_with', codex)
 
     def test_new_implementation_invalid_input_is_rejected_before_admission(self):
-        self.bridge.codex_workspace_write = True
         with patch('expert_mcp.review') as review:
             with self.assertRaises(ValueError):
                 self.call('reprise_delegate', {'question':'Implement','kind':'batch','mode':'implementation','paths':['missing.py']})
@@ -105,12 +83,11 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.assertEqual(self.bridge.db.execute('SELECT COUNT(*) FROM delegation_requests').fetchone()[0], 0)
 
     def test_implementation_followup_inherits_mode_after_restart_and_alias_cannot_promote(self):
-        self.bridge.codex_workspace_write = True
         output = {'status':'finished', 'resumable':True, 'thread_id':ID, 'response':'Implemented'}
         with patch('expert_mcp.review', return_value=output.copy()) as review:
             self.call('reprise_delegate', {'question':'Implement', 'kind':'batch', 'mode':'implementation'})
             self.assertTrue(review.call_args.kwargs['implementation'])
-        restarted = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', codex_workspace_write=True)
+        restarted = Bridge(self.temp.name, {}, Path(self.temp.name)/'state')
         self.addCleanup(restarted.close)
         restarted.program = 'codex'
         self.seed_catalog(restarted)
@@ -119,19 +96,14 @@ class BridgeTests(RequestCalls, unittest.TestCase):
             self.assertTrue(review.call_args.kwargs['implementation'])
             with self.assertRaises(ValueError):
                 restarted.call('codex_followup', {'request_key':'legacy-alias', 'thread_id':ID, 'question':'Continue'})
-        restarted.codex_workspace_write = False
-        with self.assertRaises(ValueError):
-            restarted.call('reprise_followup', {'request_key':'revoked', 'thread_id':ID, 'backend':'codex', 'question':'Continue'})
 
     def test_legacy_review_cannot_be_promoted_by_prompt_or_mode(self):
-        self.bridge.codex_workspace_write = True
         with patch('expert_mcp.review', return_value={'status':'finished','resumable':True,'thread_id':ID,'response':'Review'}):
             self.call('codex_review', {'question':'Review'})
         with self.assertRaises(ValueError):
             self.call('reprise_followup', {'thread_id':ID,'backend':'codex','question':'Implement','mode':'implementation'})
 
     def test_expected_implementation_edit_is_not_an_input_integrity_failure(self):
-        self.bridge.codex_workspace_write = True
         target = Path(self.temp.name) / 'source.py'
         target.write_text('before')
         def implementation(*args, **kwargs):

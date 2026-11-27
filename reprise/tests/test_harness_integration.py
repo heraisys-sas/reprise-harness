@@ -61,12 +61,12 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.project = self.base / 'project'
         self.project.mkdir()
 
-    def plan(self, action='install', delegate=False):
-        return integration.plan(self.root, self.home, 'desktop', self.project, action, delegate)
+    def plan(self, action='install'):
+        return integration.plan(self.root, self.home, 'desktop', self.project, action)
 
     def test_new_delegate_plan_propagates_chatgpt_state_without_claiming_transport(self):
         files, _, manifest = integration.desired(
-            self.root, self.home, 'desktop', self.project, 'install', delegate=True)
+            self.root, self.home, 'desktop', self.project, 'install')
         self.assertEqual(manifest['chatgpt_state'],
                          str(integration.state_location(self.root, 'chatgpt-state').absolute()))
         self.assertIn('--chatgpt-state', files[self.config])
@@ -367,7 +367,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertFalse(release.exists())
 
     def test_coherent_yaml_change_after_validation_cannot_publish_old_identity(self):
-        proposed = self.plan('install', True)
+        proposed = self.plan('install')
         release = Path(proposed['release'])
         stage_release = integration.stage_release
         def mutate_before_stage(helpers, runtime, target):
@@ -434,28 +434,53 @@ class HarnessIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'YAML'):
             integration.bundle_info(self.root)
 
-    def install(self, delegate=False, **options):
-        proposed = integration.plan(self.root, self.home, 'desktop', self.project, 'install', delegate, **options)
+    def install(self, **options):
+        proposed = integration.plan(self.root, self.home, 'desktop', self.project, 'install', **options)
         integration.apply(self.root, proposed)
         return proposed
 
     def snapshot(self, root=None):
         return integration.tree_files(root or self.base)
 
-    def test_workspace_write_grant_is_explicit_persisted_and_reversible(self):
-        with self.assertRaises(ValueError):
+    def test_delegation_and_workspace_write_are_always_on_issue_252(self):
+        proposed = self.plan()
+        self.assertNotIn('delegate', proposed)
+        self.assertNotIn('codex_workspace_write', proposed)
+        integration.apply(self.root, proposed)
+        text = self.config.read_text()
+        for switch in integration.RETIRED_SWITCHES:
+            self.assertNotIn(switch, text)
+        self.assertIn('reprise_delegate', text)
+        manifest = json.loads((self.managed / 'managed.json').read_text())
+        self.assertLessEqual(set(integration.DELEGATE), set(manifest['tools']))
+        self.assertFalse(set(integration.RETIRED_MANIFEST_KEYS) & set(manifest))
+        with self.assertRaises(TypeError):
+            integration.plan(self.root, self.home, 'desktop', self.project, delegate=True)
+        with self.assertRaises(TypeError):
             integration.plan(self.root, self.home, 'desktop', self.project, codex_workspace_write=True)
-        granted = integration.plan(self.root, self.home, 'desktop', self.project,
-                                   delegate=True, codex_workspace_write=True)
-        self.assertTrue(granted['codex_workspace_write'])
-        integration.apply(self.root, granted)
-        self.assertIn('--codex-workspace-write', self.config.read_text())
-        self.assertTrue(integration.inspect(self.home, 'desktop')['codex_workspace_write'])
-        self.assertFalse(integration.plan(self.root, self.home, 'desktop', self.project,
-                                        delegate=True, codex_workspace_write=True)['changes'])
-        integration.apply(self.root, self.plan(delegate=True))
-        self.assertNotIn('--codex-workspace-write', self.config.read_text())
-        self.assertFalse(integration.inspect(self.home, 'desktop')['codex_workspace_write'])
+
+    def test_installation_before_252_is_rewritten_without_retired_options(self):
+        self.install()
+        manifest_path = self.managed / 'managed.json'
+        text = self.config.read_text()
+        old_block = text.replace('"--state"', '"--chatgpt-dispatch", "--state"').replace(
+            '"--tools", "', '"--codex-workspace-write", "--tools", "', 1)
+        self.assertNotEqual(old_block, text)
+        self.config.write_text(old_block)
+        manifest = json.loads(manifest_path.read_text())
+        _, block = integration.split_block(old_block)
+        manifest.update(codex_workspace_write=True, chatgpt_dispatch=True,
+                        block_sha256=integration.digest(block.encode()))
+        manifest_path.write_text(json.dumps(manifest))
+        self.assertEqual(integration.inspect(self.home, 'desktop')['retired_options'],
+                         ['chatgpt_dispatch', 'codex_workspace_write'])
+        proposed = self.plan()
+        self.assertTrue(proposed['changes'])
+        integration.apply(self.root, proposed)
+        for switch in integration.RETIRED_SWITCHES:
+            self.assertNotIn(switch, self.config.read_text())
+        self.assertFalse(set(integration.RETIRED_MANIFEST_KEYS) & set(json.loads(manifest_path.read_text())))
+        self.assertEqual(integration.inspect(self.home, 'desktop')['retired_options'], [])
 
     def test_deprecated_bare_names_are_routed_with_warning(self):
         # Issue #160 : les anciens noms nus restent acceptés (avertissement stderr, comportement identique).
@@ -469,21 +494,13 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertIn('#160', result.stderr)
         self.assertIn('harness-integration-inspect', result.stderr)
 
-    def test_cli_reinstallation_without_workspace_write_flag_revokes_grant(self):
-        self.install(delegate=True, codex_workspace_write=True)
-        output = io.StringIO()
-        with redirect_stdout(output):
-            status = integration.main(self.root, [
-                'harness-integration-plan', '--home', str(self.home), '--profile', 'desktop',
-                '--project', str(self.project), '--action', 'install', '--delegate'])
-        self.assertEqual(status, 0, output.getvalue())
-        result = json.loads(output.getvalue())
-        proposed = result['plan']
-        self.assertFalse(proposed.get('codex_workspace_write', False))
-        self.assertIn('--codex-workspace-write', self.config.read_text())
-        integration.apply(self.root, proposed)
-        self.assertNotIn('--codex-workspace-write', self.config.read_text())
-        self.assertFalse(integration.inspect(self.home, 'desktop')['codex_workspace_write'])
+    def test_cli_has_no_delegate_or_workspace_write_options(self):
+        for option in ('--delegate', '--no-delegate', '--codex-workspace-write', '--no-codex-workspace-write'):
+            with self.subTest(option=option), redirect_stdout(io.StringIO()), patch('sys.stderr', io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    integration.main(self.root, [
+                        'harness-integration-plan', '--home', str(self.home), '--profile', 'desktop',
+                        '--project', str(self.project), '--action', 'install', option])
 
     def test_public_plan_does_not_expose_personal_configuration(self):
         self.config.write_text('- insert: [{"id":"personal","config":{"token":"fixture-secret"}}]\n')
@@ -611,16 +628,13 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertTrue(self.config.read_text().startswith('# personal settings\n'))
         self.assertNotIn('- insert:\n', self.config.read_text())
 
-    def test_reformatted_managed_block_allows_explicit_workspace_write_update(self):
-        self.install(delegate=True)
+    def test_reformatted_managed_block_allows_update(self):
+        self.install(output_resume=True, output_resume_project=str(self.project))
         self.config.write_text(self.reformatted_config())
-        proposed = integration.plan(self.root, self.home, 'desktop', self.project,
-                                   delegate=True, codex_workspace_write=True)
-        self.assertTrue(proposed['codex_workspace_write'])
+        proposed = integration.plan(self.root, self.home, 'desktop', self.project)
         self.assertTrue(proposed['block_reconciled'])
         integration.apply(self.root, proposed)
-        self.assertIn('--codex-workspace-write', self.config.read_text())
-        self.assertTrue(integration.inspect(self.home, 'desktop')['codex_workspace_write'])
+        self.assertNotIn('reprise-output-resume', self.config.read_text())
 
     def legacy_block(self, transform=lambda entries: entries):
         text = self.config.read_text()
@@ -781,7 +795,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         integration.apply(self.root, proposed)
         saved = json.loads((self.managed / 'managed.json').read_text())
         self.assertEqual(saved['agent_role'], 'coordinator')
-        self.assertEqual(saved['tools'], list(integration.OBSERVE))
+        self.assertEqual(saved['tools'], list(integration.OBSERVE + integration.DELEGATE))
         skill = (self.managed / 'skills/reprise-delegation/SKILL.md').read_text()
         self.assertIn('Active operator-selected role: coordinator', skill)
         self.assertEqual(integration.plan(self.root, self.home, 'desktop', self.project,
@@ -838,7 +852,7 @@ class HarnessIntegrationTests(unittest.TestCase):
 
     def test_delegation_explicitly_selected_without_model_call(self):
         with patch.object(integration.subprocess, 'run', side_effect=AssertionError('no inference')):
-            self.install(delegate=True)
+            self.install()
         manifest = json.loads((self.managed / 'managed.json').read_text())
         self.assertEqual(manifest['tools'], list(integration.OBSERVE + integration.DELEGATE))
         self.assertNotIn('approval_respond', manifest['tools'])  # #117 T2a : exposition automatique retirée
@@ -903,10 +917,10 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)['profiles'], ['desktop', 'other'])
         self.assertFalse(absent.exists())
 
-    def bridge_probe(self, delegate=False, legacy=False):
-        self.install(delegate=delegate)
+    def bridge_probe(self, legacy=False):
+        self.install()
         tools = []
-        for name in sorted(integration.OBSERVE + (integration.DELEGATE if delegate else ())):
+        for name in sorted(integration.OBSERVE + integration.DELEGATE):
             properties = {}
             if not legacy:
                 if name == 'reprise_requests':
@@ -930,7 +944,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         })
 
     def test_verify_reports_probed_capabilities_and_current_selected_bundle(self):
-        probe = self.bridge_probe(delegate=True)
+        probe = self.bridge_probe()
         before = self.snapshot(self.state)
         with patch.object(integration.subprocess, 'run', return_value=probe) as run:
             result = integration.verify(self.home, 'desktop', self.root)
@@ -949,21 +963,8 @@ class HarnessIntegrationTests(unittest.TestCase):
                          ['initialize', 'notifications/initialized', 'tools/list'])
         self.assertEqual(self.snapshot(self.state), before)
 
-    def test_verify_flags_observe_only_bridge_even_with_current_release(self):
-        probe = self.bridge_probe(delegate=False)
-        with patch.object(integration.subprocess, 'run', return_value=probe):
-            result = integration.verify(self.home, 'desktop', self.root)
-        self.assertEqual(result['status'], 'verified')
-        self.assertEqual(result['selected_release']['status'], 'current')
-        self.assertTrue(result['update_required'])
-        self.assertEqual(result['bridge_capabilities']['delegation']['mode'], 'observe_only')
-        self.assertFalse(result['bridge_capabilities']['delegation']['configured'])
-        self.assertFalse(result['bridge_capabilities']['delegation']['advertised'])
-        self.assertEqual(set(result['missing_delegation_tools']), set(integration.DELEGATE))
-        self.assertEqual(result['levels']['client_tools_discovered'], 'unknown')
-
     def test_verify_detects_legacy_tools_even_with_matching_release_identity(self):
-        probe = self.bridge_probe(delegate=True, legacy=True)
+        probe = self.bridge_probe(legacy=True)
         with patch.object(integration.subprocess, 'run', return_value=probe):
             result = integration.verify(self.home, 'desktop', self.root)
         self.assertTrue(result['update_required'])
@@ -980,7 +981,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertTrue(result['update_required'])
         self.assertEqual(result['selected_release']['status'], 'outdated')
         self.assertEqual(result['levels']['client_tools_discovered'], 'unknown')
-        self.assertIsNone(result['bridge_capabilities']['result_transport']['followup_receipt'])
+        self.assertTrue(result['bridge_capabilities']['result_transport']['followup_receipt'])
 
     def test_verify_without_selected_bundle_preserves_unknown_comparison(self):
         probe = self.bridge_probe()
@@ -988,8 +989,7 @@ class HarnessIntegrationTests(unittest.TestCase):
                 patch.object(integration, 'bundle_info', side_effect=FileNotFoundError('fixture')):
             result = integration.verify(self.home, 'desktop', self.root)
         self.assertEqual(result['selected_release']['status'], 'unknown')
-        self.assertTrue(result['update_required'])
-        self.assertEqual(set(result['missing_delegation_tools']), set(integration.DELEGATE))
+        self.assertEqual(result['missing_delegation_tools'], [])
         self.assertEqual(result['levels']['integration_loaded'], 'unknown')
 
     @unittest.skipUnless(os.environ.get('REPRISE_TEST_RUNTIME_ARCHIVE'), 'Pinned local runtime archive required')
@@ -1022,7 +1022,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertNotIn(str(self.app), config)
         shutil.rmtree(moved)
         result = integration.verify(self.home, 'desktop')
-        self.assertEqual(result['bridge_tools'], sorted(integration.OBSERVE))
+        self.assertEqual(result['bridge_tools'], sorted(integration.OBSERVE + integration.DELEGATE))
         self.assertIs(result['levels']['configuration_written'], True)
         for level in ('integration_loaded', 'client_tools_discovered', 'exchange_confirmed'):
             self.assertEqual(result['levels'][level], 'unknown')
@@ -1201,7 +1201,7 @@ class HarnessIntegrationTests(unittest.TestCase):
     def test_bridge_entries_non_regression_with_new_options(self):
         entries = integration._bridge_entries(
             Path('/release'), '/state', ('reprise_backends', 'reprise_delegate'), '/project', 'desktop',
-            self.managed, output_resume=True, output_resume_project='/resume', codex_workspace_write=True,
+            self.managed, output_resume=True, output_resume_project='/resume',
             desktop_socket='/tmp/quick.sock', bash_sandbox_disabled=True)
         self.assertEqual([entry['id'] for entry in entries],
                          ['reprise-codex-expert', 'reprise-skill-filesystem', 'reprise-output-resume', 'bash-sandbox'])
@@ -1209,7 +1209,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         self.assertEqual(args[args.index('--desktop-socket') + 1], '/tmp/quick.sock')
         self.assertEqual(args[args.index('--project-root') + 1], '/project')
         self.assertEqual(args[args.index('--state') + 1], '/state')
-        self.assertIn('--codex-workspace-write', args)
+        self.assertFalse(set(integration.RETIRED_SWITCHES) & set(args))
         disabled = entries[-1]
         self.assertTrue(disabled['disabled'])
         self.assertEqual(disabled['config'], {'timeoutMs': 90000, 'maxOutputBytes': 32000})
@@ -1327,8 +1327,8 @@ class HarnessIntegrationTests(unittest.TestCase):
                 integration.block_entries(integration.START + '\n' + body + integration.END + '\n')
 
     def test_verify_accepts_harness_reformatted_block_without_rewrite(self):
-        probe = self.bridge_probe(delegate=True)
-        self.install(delegate=True, bash_sandbox_disabled=True)
+        probe = self.bridge_probe()
+        self.install(bash_sandbox_disabled=True)
         _, original_block = integration.split_block(self.config.read_text())
         entries = integration.block_entries(original_block)
         bridge = json.dumps([entry for entry in entries if entry['id'] != 'bash-sandbox'], indent=2)

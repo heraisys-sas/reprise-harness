@@ -105,7 +105,6 @@ class DurableTests(unittest.TestCase):
 
     def test_crash_after_native_attach_keeps_mode_route_and_blocks_followup(self):
         bridge = self.bridge()
-        bridge.codex_workspace_write = True
         def crash(*args, **kwargs):
             kwargs['on_turn']({'phase': 'active', 'thread_id': ID, 'turn_id': 'turn-1'})
             raise OSError('MCP client disconnected')
@@ -221,7 +220,7 @@ class DurableTests(unittest.TestCase):
                 file_evidence(link, [bad])
 
     def test_oversized_implementation_result_is_bounded_like_any_full_result(self):
-        bridge = Bridge(self.root, {}, self.state, daily_limit=0, codex_workspace_write=True)
+        bridge = Bridge(self.root, {}, self.state, daily_limit=0)
         bridge.program = 'codex'
         seed_catalog(bridge)
         self.addCleanup(bridge.close)
