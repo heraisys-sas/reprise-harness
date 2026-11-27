@@ -20,6 +20,7 @@ Trois écrans commutables en tête de page, données fictives uniquement :
 - Mode avancé par carte (`Avancé ▸`), mémorisé par écran ; rien de supprimé, tout est replié.
 - Preuves en badges avec détail au clic ; un verdict FM est une hypothèse, jamais une conclusion.
 - Les choix automatiques sont des décisions : listés dans la ligne « réglages appliqués ».
+- Onglet « Connexions » : onglet unique, Picker interne codex-desktop / claude-desktop (nomenclature, déplacée d'AGENTS.md par #272).
 
 ## Itération
 
