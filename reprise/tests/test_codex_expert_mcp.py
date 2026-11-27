@@ -55,7 +55,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         catalog_patcher = patch('expert_mcp.CATALOG_PATH', self.catalog_path)
         catalog_patcher.start()
         self.addCleanup(catalog_patcher.stop)
-        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state')
         self.bridge.program = 'codex'
         self.seed_catalog()
         self.addCleanup(self.bridge.close)
@@ -159,7 +159,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
     def test_codex_has_no_local_cap_even_after_restart_and_old_counter(self):
         with patch('expert_mcp.review', return_value={'status': 'quota_blocked'}) as review:
             for _ in range(2): self.call('codex_review', {'question': 'review'})
-            other = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
+            other = Bridge(self.temp.name, {}, Path(self.temp.name)/'state')
             other.program = 'codex'
             self.seed_catalog(other)
             try:
@@ -680,7 +680,7 @@ class ClaudeDesktopBridgeTests(RequestCalls, unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=8,
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state',
                              desktop_socket='/private/tmp/quick.sock')
         self.addCleanup(self.bridge.close)
 
@@ -715,7 +715,7 @@ class ClaudeDesktopBridgeTests(RequestCalls, unittest.TestCase):
             self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise', 'backend': 'nope'})
 
     def test_delegate_refuses_claude_desktop_without_desktop_socket(self):
-        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state-nosock', daily_limit=8)
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state-nosock')
         self.addCleanup(self.bridge.close)
         with patch('claude_desktop.review') as review:
             result = self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise', 'backend': 'claude-desktop'})
@@ -811,7 +811,7 @@ class IronclawBridgeTests(RequestCalls, unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state')
         self.bridge.program = 'codex'
         self.addCleanup(self.bridge.close)
 
@@ -1038,7 +1038,7 @@ class ChatGptStateTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state')
         self.bridge.program = 'codex'
         self.bridge._codex_catalog_cache = simulated_codex_catalog(CODEX_TEST_MODELS)
         self.bridge._codex_catalog_time = time.monotonic()
@@ -1074,7 +1074,7 @@ class BridgeFinalizerTests(unittest.TestCase):
         import weakref as weakref_module
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        bridge = Bridge(temp.name, {}, Path(temp.name)/'state', daily_limit=2)
+        bridge = Bridge(temp.name, {}, Path(temp.name)/'state')
         # pre-close sentinel: rexec works now, must fail after collection
         bridge.db.execute('SELECT 1')
         bridge_ref = weakref_module.ref(bridge)
@@ -1108,7 +1108,7 @@ class ChatGptFollowupTests(RequestCalls, unittest.TestCase):
         # partagent le même fichier chatgpt.sqlite.
         self.chatgpt_state = Path(self.temp.name)/'chatgpt-state'
         self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state',
-                             daily_limit=2, chatgpt_state=str(self.chatgpt_state))
+                             chatgpt_state=str(self.chatgpt_state))
         self.bridge.program = 'codex'
         self.addCleanup(self.bridge.close)
 

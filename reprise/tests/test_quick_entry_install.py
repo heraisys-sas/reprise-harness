@@ -1,4 +1,5 @@
 import plistlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -56,10 +57,18 @@ class InstallTests(unittest.TestCase):
 
     def test_force_replaces_existing_plist(self):
         self.install()
-        self.install(force=True, daily_limit=3)
+        self.install(force=True)
         settings = self.read_plist()
         self.assertNotIn('--daily-limit', settings['ProgramArguments'])
-        self.assertNotIn('3', settings['ProgramArguments'])
+
+    def test_daily_limit_option_removed_issue_276(self):
+        for script, required in (('install-quick-entry.py', []), ('claude_desktop_quick.py', []),
+                                 ('expert_mcp.py', ['--project-root', str(self.home)])):
+            with self.subTest(script=script):
+                run = subprocess.run([sys.executable, str(installer.SOURCE / script), *required, '--daily-limit', '3'],
+                                     capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+                self.assertEqual(run.returncode, 2)
+                self.assertIn('unrecognized arguments: --daily-limit', run.stderr)
 
     def test_paths_outside_home_refused(self):
         with self.assertRaises(ValueError):
@@ -68,7 +77,7 @@ class InstallTests(unittest.TestCase):
     def test_server_outside_repo_refused(self):
         with self.assertRaises(ValueError):
             installer.plist_settings(server=Path('/tmp/other.py'), socket_path=self.socket,
-                                     state=self.state, daily_limit=8, home=self.home)
+                                     state=self.state, home=self.home)
 
     def test_launchctl_never_executed(self):
         with patch.object(installer, 'plist_settings', wraps=installer.plist_settings) as wrapped:

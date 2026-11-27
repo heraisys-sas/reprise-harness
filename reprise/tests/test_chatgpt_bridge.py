@@ -20,7 +20,7 @@ class ChatgptBridgeTests(RequestCalls, unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state')
         self.bridge.program = 'codex'
         self.addCleanup(self.bridge.close)
 
@@ -61,7 +61,7 @@ class ChatgptProjectionTests(unittest.TestCase):
         self.addCleanup(self.store.close)
 
     def test_chatgpt_dispatch_flag_drives_holder_capture(self):
-        bridge = Bridge(self.root, {}, self.root / 'expert', daily_limit=2,
+        bridge = Bridge(self.root, {}, self.root / 'expert',
                         desktop_state=self.root / 'desktop', chatgpt_state=str(self.state),
                         chatgpt_dispatch=True)
         self.addCleanup(bridge.close)
@@ -78,7 +78,7 @@ class ChatgptProjectionTests(unittest.TestCase):
         self.assertEqual(result['delivery'], 'captured')
 
     def test_chatgpt_dispatch_refusal_stays_admission_only(self):
-        bridge = Bridge(self.root, {}, self.root / 'expert', daily_limit=2,
+        bridge = Bridge(self.root, {}, self.root / 'expert',
                         desktop_state=self.root / 'desktop', chatgpt_state=str(self.state),
                         chatgpt_dispatch=True)
         self.addCleanup(bridge.close)
@@ -91,12 +91,12 @@ class ChatgptProjectionTests(unittest.TestCase):
 
     def test_chatgpt_dispatch_requires_explicit_grant(self):
         with self.assertRaises(ValueError):
-            Bridge(self.root, {}, self.root / 'expert', daily_limit=2,
+            Bridge(self.root, {}, self.root / 'expert',
                    desktop_state=self.root / 'desktop', chatgpt_state=str(self.state),
                    chatgpt_dispatch='yes')
 
     def test_chatgpt_projection_routes_requests_and_wait_to_chatgpt_state(self):
-        bridge = Bridge(self.root, {}, self.root / 'expert', daily_limit=2,
+        bridge = Bridge(self.root, {}, self.root / 'expert',
                         desktop_state=self.root / 'desktop', chatgpt_state=str(self.state))
         self.addCleanup(bridge.db.close)
         bridge.requests.begin('k', {'backend': 'chatgpt'})
@@ -118,7 +118,7 @@ class ChatgptProjectionTests(unittest.TestCase):
     def test_request_key_preserved_in_routing_journal(self):
         # Local ChatGPT admission has no inference or remote service dependency.
         # An unconfigured Codex executable can refuse before routing is logged.
-        bridge = Bridge(self.root, {}, self.root / 'expert', daily_limit=2,
+        bridge = Bridge(self.root, {}, self.root / 'expert',
                         desktop_state=self.root / 'desktop', chatgpt_state=str(self.state))
         self.addCleanup(bridge.close)
         result = bridge.call('reprise_delegate', {'question': 'Revue', 'kind': 'expertise',
@@ -132,7 +132,7 @@ class ChatgptProjectionTests(unittest.TestCase):
         self.assertEqual(row[0], 'jk')
 
     def test_pre_admission_refusal_does_not_invent_routing_event(self):
-        bridge = Bridge(self.root, {}, self.root / 'expert', daily_limit=2,
+        bridge = Bridge(self.root, {}, self.root / 'expert',
                         desktop_state=self.root / 'desktop')
         self.addCleanup(bridge.close)
         result = bridge.call('reprise_delegate', {'question': 'Revue', 'kind': 'expertise',

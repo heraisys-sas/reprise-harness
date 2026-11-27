@@ -186,7 +186,7 @@ class BridgeNotificationTests(unittest.TestCase):
         self.root.mkdir()
         (self.root/'rollout.jsonl').touch()
         self.state = Path(self.temp.name)/'state'
-        self.bridge = Bridge(self.root, {}, self.state, daily_limit=0)
+        self.bridge = Bridge(self.root, {}, self.state)
         self.addCleanup(self.bridge.close)
         self.bridge.requests.begin('key', {'question': 'A'})
         self.bridge.requests.finish('key', {'status': 'finished', 'phase': 'finished'})

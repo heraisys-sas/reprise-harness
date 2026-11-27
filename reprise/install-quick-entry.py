@@ -22,7 +22,7 @@ DEFAULT_SOCKET = Path.home() / '.claude-desktop' / 'quick-entry.sock'
 DEFAULT_STATE = SOURCE / 'quick-state'
 
 
-def plist_settings(*, server, socket_path, state, daily_limit, home):
+def plist_settings(*, server, socket_path, state, home):
     """Build the launchd settings for the Quick Entry server, fully explicit."""
     home = Path(home)
     if Path(server).resolve() != SERVER.resolve():
@@ -42,7 +42,7 @@ def plist_settings(*, server, socket_path, state, daily_limit, home):
     }
 
 
-def install(*, home=None, socket_path=None, state=None, daily_limit=8, force=False):
+def install(*, home=None, socket_path=None, state=None, force=False):
     """Write the plist; refuse to overwrite an existing one without force."""
     home = Path.home() if home is None else Path(home)
     socket_path = DEFAULT_SOCKET if socket_path is None else Path(socket_path)
@@ -51,7 +51,7 @@ def install(*, home=None, socket_path=None, state=None, daily_limit=8, force=Fal
     if target.exists() and not force:
         raise FileExistsError(f'{target} existe déjà ; utiliser --force pour le remplacer')
     settings = plist_settings(server=SERVER, socket_path=socket_path, state=state,
-                              daily_limit=daily_limit, home=home)
+                              home=home)
     payload = plistlib.dumps(settings, sort_keys=False)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(target.name + '.reprise-tmp')
@@ -67,7 +67,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--socket', default=str(DEFAULT_SOCKET))
     parser.add_argument('--state', default=str(DEFAULT_STATE))
-    parser.add_argument('--daily-limit', type=int, default=8, help='Deprecated compatibility option; ignored')
     parser.add_argument('--force', action='store_true',
                         help='remplacer un plist existant')
     parser.add_argument('--home', default=str(Path.home()),
@@ -75,7 +74,7 @@ def main():
     args = parser.parse_args()
     try:
         result = install(home=args.home, socket_path=args.socket, state=args.state,
-                         daily_limit=args.daily_limit, force=args.force)
+                         force=args.force)
     except (ValueError, FileExistsError) as error:
         parser.error(str(error))
     print(json.dumps(result, ensure_ascii=False))

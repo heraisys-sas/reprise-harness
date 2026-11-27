@@ -49,16 +49,18 @@ class ThreadNotOwned(ValueError):
             'emitted, or open a new session with reprise_delegate.')
 
 
+METAAI_RETIRED_KEYS = ('dav_root',)
+
+
+def metaai_retired_keys(values):
+    """Clés de connexion Meta AI de l'ère WebDAV, refusées depuis #276."""
+    return [key for key in METAAI_RETIRED_KEYS if key in values]
+
+
 def metaai_bridge_root(values):
-    """Répertoire pont du canal metaai : clé bridge_root (format actuel, écrit
-    par l'app depuis le pont fichiers du 24/11), repli dav_root (legacy,
-    lecteurs restés sur l'ancien nom — issue #267). None si aucune des deux
-    clés n'est une chaîne non vide."""
-    for key in ('bridge_root', 'dav_root'):
-        value = values.get(key)
-        if isinstance(value, str) and value.strip():
-            return value
-    return None
+    """Répertoire pont du canal metaai (clé bridge_root) ; None si absent ou vide."""
+    value = values.get('bridge_root')
+    return value if isinstance(value, str) and value.strip() else None
 
 
 def error_payload(exc):
@@ -149,10 +151,6 @@ CODEX_EFFORT_PREFERENCES = {'deep': 'high', 'batch': 'medium', 'default': 'mediu
 # juge sur cet ordre, pas sur l'ordre lexicographique ('high' < 'medium' en ASCII).
 CODEX_EFFORT_ORDER = {'minimal': 0, 'low': 1, 'medium': 2, 'high': 3, 'xhigh': 4}
 INFERENCE_TOOLS = ('reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup')
-# Lot C (#238) : capacité du slot Codex ; les singletons physiques restent mono-slot.
-# #258 lot 2 : valeur de repli legacy — la source de vérité est experts-manifest.json.
-CODEX_PARALLEL_SLOTS = 2
-
 # Manifeste expert déclaratif (#258 lot 2) : le manifeste décrit les backends
 # (capacité, resumable, sémantique de session) ; la disponibilité, elle, se
 # mesure (programmes, sockets, TaskStores). Erreur de schéma/type = échec de
@@ -165,17 +163,20 @@ EXPERTS_HANDLED_BACKENDS = ('codex', 'ironclaw', 'claude-code', 'claude-desktop'
                             'foundation-models', 'chatgpt', 'metaai')
 
 
-def load_experts_manifest(path=None):
-    """Charge experts-manifest.json avec validation stricte.
-
-    Fichier absent : {} (repli legacy documenté — CODEX_PARALLEL_SLOTS pour
-    codex, 1 sinon). Fichier présent mais invalide : ValueError, le bridge
-    refuse de démarrer (fail-fast sur schéma/types uniquement)."""
+def _read_manifest(path=None):
+    """experts-manifest.json est livré dans le bundle : son absence est une installation incomplète."""
     manifest_path = Path(path) if path is not None else EXPERTS_MANIFEST_PATH
-    if not manifest_path.exists():
-        return {}
-    with open(manifest_path, encoding='utf-8') as handle:
-        document = json.load(handle)
+    try:
+        with open(manifest_path, encoding='utf-8') as handle:
+            return json.load(handle)
+    except FileNotFoundError:
+        raise ValueError(f'experts-manifest.json absent ({manifest_path}) : bundle incomplet, reconstruire Reprise.') from None
+
+
+def load_experts_manifest(path=None):
+    """Charge experts-manifest.json avec validation stricte ; absent ou invalide :
+    ValueError, le bridge refuse de démarrer."""
+    document = _read_manifest(path)
     if not isinstance(document, dict) or document.get('schema_version') != EXPERTS_MANIFEST_VERSION:
         raise ValueError(f'experts manifest requires schema_version {EXPERTS_MANIFEST_VERSION}')
     backends = document.get('backends')
@@ -461,13 +462,9 @@ def wait_content(result, ident):
 
 def load_default_chain(path=None):
     """Charge le champ optionnel `default_chain` (liste ordonnée d'ids de
-    backends) du manifeste. Fichier/champ absent → [] (repli legacy) ; ids
-    invalides, non uniques ou inconnus des backends déclarés → ValueError."""
-    manifest_path = Path(path) if path is not None else EXPERTS_MANIFEST_PATH
-    if not manifest_path.exists():
-        return []
-    with open(manifest_path, encoding='utf-8') as handle:
-        document = json.load(handle)
+    backends) du manifeste. Champ absent → [] ; ids invalides, non uniques ou
+    inconnus des backends déclarés → ValueError."""
+    document = _read_manifest(path)
     chain = document.get('default_chain')
     if chain is None:
         return []
@@ -484,13 +481,9 @@ def load_default_chain(path=None):
 
 def load_fallback_flag(path=None):
     """Charge le champ optionnel `automatic_fallback` (bool) du manifeste.
-    Fichier/champ absent → False (défaut code inchangé) ; type non-bool →
-    ValueError (fail-fast, même contrat que le manifeste)."""
-    manifest_path = Path(path) if path is not None else EXPERTS_MANIFEST_PATH
-    if not manifest_path.exists():
-        return False
-    with open(manifest_path, encoding='utf-8') as handle:
-        document = json.load(handle)
+    Champ absent → False ; type non-bool → ValueError (fail-fast, même contrat
+    que le manifeste)."""
+    document = _read_manifest(path)
     flag = document.get('automatic_fallback')
     if flag is None:
         return False
@@ -500,7 +493,7 @@ def load_fallback_flag(path=None):
 
 
 class Bridge:
-    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, chatgpt_state=None, chatgpt_dispatch=False, metaai_values=None, automatic_fallback_enabled=None):
+    def __init__(self, root, values, state, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, chatgpt_state=None, chatgpt_dispatch=False, metaai_values=None, automatic_fallback_enabled=None):
         if automatic_fallback_enabled is not None and type(automatic_fallback_enabled) is not bool:
             raise ValueError('Explicit automatic-fallback grant required')
         if type(chatgpt_dispatch) is not bool:
@@ -539,8 +532,8 @@ class Bridge:
         self.db.execute('CREATE TABLE IF NOT EXISTS expert_routes(scope TEXT,id TEXT,model TEXT,effort TEXT,PRIMARY KEY(scope,id))')
         self.db.execute('CREATE TABLE IF NOT EXISTS claude_expert_routes(scope TEXT,id TEXT,program TEXT,model TEXT,effort TEXT,PRIMARY KEY(scope,id))')
         self.db.execute('CREATE TABLE IF NOT EXISTS expert_thread_modes(scope TEXT,id TEXT,mode TEXT NOT NULL,PRIMARY KEY(scope,id))')
-        # Lot C / issue #238 : une ligne par tour d'inférence actif. Codex accepte
-        # CODEX_PARALLEL_SLOTS tours parallèles ; les singletons physiques un seul.
+        # Lot C / issue #238 : une ligne par tour d'inférence actif, autant de slots
+        # que la capacité déclarée par experts-manifest.json.
         # Une ligne ne meurt que par observation d'un reçu terminal, jamais par âge.
         self.db.execute('''CREATE TABLE IF NOT EXISTS expert_active_turns(
             backend TEXT, slot TEXT, thread_id TEXT, request_key TEXT,
@@ -557,7 +550,7 @@ class Bridge:
         self._codex_catalog_time = None
         self._release_terminal_slots()
         # Manifeste expert déclaratif (#258 lot 2) : échec de schéma = bridge
-        # refusé au démarrage ; fichier absent = repli legacy ({}).
+        # ou fichier absent = bridge refusé au démarrage.
         self.experts = load_experts_manifest()
         self.default_chain = load_default_chain()
         # Flag automatic_fallback : kwarg explicite (True/False) gagne ; None
@@ -589,12 +582,14 @@ class Bridge:
                 self.chatgpt_tasks = None
         # Pont Meta AI (#258 lot 3) : TaskStore partagé avec le service metaaid
         # + répertoire inbox du pont fichiers, lus depuis la connexion Reprise
-        # (connections/metaai.json, clé bridge_root, repli legacy dav_root —
+        # (connections/metaai.json, clé bridge_root —
         # issue #267). Sans valeurs ou avec enabled:false → backend non
         # configuré, déclaré honnête, jamais routé ailleurs ; une connexion
         # incomplète est ignorée ici (le CLI affiche l'avertissement, pas de
         # repli silencieux de routage).
         self.metaai_values = metaai_values if isinstance(metaai_values, dict) else {}
+        if metaai_retired_keys(self.metaai_values):
+            raise ValueError('Connexion Meta AI : clé dav_root supprimée (#276) ; la renommer bridge_root.')
         self.metaai_tasks = None
         self.metaai_inbox = None
         if self.metaai_values and self.metaai_values.get('enabled', True) is not False:
@@ -908,11 +903,9 @@ class Bridge:
                 self.db.commit()
                 key = args.get('request_key')
                 return (backend, row[0], key if row[1] == key else None)
-        # #258 lot 2 : la capacité vient du manifeste ; repli legacy documenté
-        # (CODEX_PARALLEL_SLOTS pour codex, 1 sinon) quand le manifeste est absent
-        # ou ne déclare pas ce backend.
+        # La capacité vient du manifeste ; un backend non déclaré a un seul slot.
         entry = self.experts.get(backend)
-        capacity = entry['capacity'] if entry else (CODEX_PARALLEL_SLOTS if backend == 'codex' else 1)
+        capacity = entry['capacity'] if entry else 1
         for index in range(capacity):
             slot = str(index)
             try:
@@ -1634,7 +1627,7 @@ class Bridge:
             # peut pas être matérialisée, refus AVANT enqueue (issue #267) pour
             # ne plus laisser de tâches bloquées en dispatched sans réponse.
             return {'status': 'return_channel_unavailable', 'backend': backend,
-                    'reason': "Connexion Meta AI sans répertoire pont (clé bridge_root, repli legacy dav_root) ; l'inbox ne peut pas être écrite. Corrigez connections/metaai.json ou relancez metaai-install.py.",
+                    'reason': "Connexion Meta AI sans répertoire pont (clé bridge_root) ; l'inbox ne peut pas être écrite. Corrigez connections/metaai.json ou relancez metaai-install.py.",
                     'automatic_fallback': False}
         if backend == 'metaai' and self.metaai_tasks is None and not self._retry_task_store('metaai'):
             return {'status': 'return_channel_unavailable', 'backend': backend,
@@ -1733,7 +1726,7 @@ class Bridge:
                 # avec une inbox non résolue (Path(None) levait un TypeError
                 # générique, issue #267).
                 routing_events.finalize(self.db, event_id, 'dispatch_refused')
-                raise ValueError("Répertoire inbox Meta AI non résolu (bridge_root/dav_root) ; corrigez la connexion Reprise metaai.json avant de redéléguer.")
+                raise ValueError("Répertoire inbox Meta AI non résolu (bridge_root) ; corrigez la connexion Reprise metaai.json avant de redéléguer.")
             inbox_file = self.metaai_tasks.dispatch_write_inbox(task, self.metaai_inbox)
             result = {'status': 'finished', 'response': None, 'task_id': task_id,
                       'task_type': 'expert_delegate', 'inbox_file': inbox_file,
@@ -2030,7 +2023,6 @@ def main():
     parser.add_argument('--socket')
     parser.add_argument('--state')
     parser.add_argument('--tools', help='Explicit comma-separated exposed tool allowlist; legacy default exposes all')
-    parser.add_argument('--daily-limit', type=int, default=8, help='Deprecated compatibility option; ignored for all backends')
     parser.add_argument('--claude-program', help='Explicit absolute Claude CLI path; disabled by default')
     parser.add_argument('--claude-included-quota-confirmed', action='store_true', help='Operator confirms paid usage credits disabled; CLI cannot verify this')
     parser.add_argument('--desktop-socket', help='Explicit absolute Quick Entry socket path; disabled by default')
@@ -2040,7 +2032,7 @@ def main():
     parser.add_argument('--no-chatgpt-dispatch', dest='chatgpt_dispatch', action='store_false', default=True,
                         help='Admission only: never push admitted ChatGPT tasks to the holder')
     parser.add_argument('--metaai-config',
-                        help='JSON de connexion Meta AI (taskstore, bridge_root ; repli legacy dav_root) ; défaut : connexion Reprise standard si présente')
+                        help='JSON de connexion Meta AI (taskstore, bridge_root) ; défaut : connexion Reprise standard si présente')
     parser.add_argument('--ironclaw-config', help='JSON 0600: {host,port,user,key} du point d’acceptation IronClaw')
     args = parser.parse_args()
     ironclaw_values = {}
@@ -2060,17 +2052,19 @@ def main():
             metaai_values = json.loads(Path(metaai_source).read_text())
             if not isinstance(metaai_values, dict):
                 raise ValueError('objet JSON attendu')
+            if metaai_retired_keys(metaai_values):
+                raise ValueError('clé dav_root supprimée (#276) ; la renommer bridge_root')
             if metaai_values and not (isinstance(metaai_values.get('taskstore'), str)
                                       and metaai_values.get('taskstore', '').strip()
                                       and metaai_bridge_root(metaai_values)):
-                print('Warning: connexion Meta AI sans taskstore ou répertoire pont (bridge_root, repli dav_root) valides, backend metaai non configuré', file=sys.stderr)
+                print('Warning: connexion Meta AI sans taskstore ou bridge_root valides, backend metaai non configuré', file=sys.stderr)
         except (OSError, ValueError) as detail:
             if args.metaai_config is not None:
                 raise SystemExit('--metaai-config doit être un JSON lisible : ' + str(detail))
             print('Warning: connexion Meta AI illisible, backend metaai non configuré : ' + str(detail), file=sys.stderr)
             metaai_values = {}
     chatgpt_state = args.chatgpt_state or str(state_location(Path(__file__).parent, 'chatgpt-state').absolute())
-    bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.state or str(state_directory(Path(__file__).parent)), args.daily_limit,
+    bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.state or str(state_directory(Path(__file__).parent)),
                     claude_program=args.claude_program, claude_subscription_only=args.claude_included_quota_confirmed,
                     desktop_socket=args.desktop_socket, allowed_tools=args.tools.split(',') if args.tools is not None else None,
                     ironclaw_values=ironclaw_values,

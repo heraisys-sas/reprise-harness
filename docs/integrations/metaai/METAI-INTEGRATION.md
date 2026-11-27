@@ -4,7 +4,7 @@ Validée live le **23 novembre 2026** (`tache-20261123-124609-84bf` : 17 × 23 =
 
 > **Bascule du 24/11/2026 — transport direct par dossier.** Meta AI partage désormais le dossier du pont **directement** (TCC connecteur fichiers) : le serveur WebDAV embarqué (wsgidav/cheroot, port 9770) et le mount webdavfs ont été **retirés** de metaaid — le seul client réel du serveur était le volume monté, et le partage direct du dossier rend les deux inutiles (plus de webdavfs : zombies de mount, creds d'URL, AppleDouble). Le watcher scrute le dossier en poll local, latence inchangée. L'historique WebDAV est conservé ci-dessous (leçons § webdavfs) pour référence.
 
-> **Arbitrage #277 (27/11/2026) — WebDAV vs fichiers JSON :** le transport fichiers est retenu (décision opérateur du 24/11 ci-dessus, validée en réel par le roundtrip du 26/11 `tache-20261126-avise7-202712`) ; aucune justification de conservation WebDAV n'existe — les mentions résiduelles « pont WebDAV » dans le code et le registre `reprise_backends` ont été nettoyées (`dispatch: files_inbox`, repli legacy `dav_root` conservé en lecture).
+> **Arbitrage #277 (27/11/2026) — WebDAV vs fichiers JSON :** le transport fichiers est retenu (décision opérateur du 24/11 ci-dessus, validée en réel par le roundtrip du 26/11 `tache-20261126-avise7-202712`) ; aucune justification de conservation WebDAV n'existe — les mentions résiduelles « pont WebDAV » dans le code et le registre `reprise_backends` ont été nettoyées (`dispatch: files_inbox`, la clé `dav_root` est refusée depuis #276 : la renommer `bridge_root`).
 
 ## Circuit du harness demandeur (#277)
 
@@ -15,7 +15,7 @@ La délégation metaai est **asynchrone** : le reçu de `reprise_delegate` est u
 3. le demandeur appelle **`wait_result`** avec la même `request_key` jusqu'à `status=finished` (attente réentrante, un timeout se reprend, jamais re-dispatché) ;
 4. réponse finale = `result.reponse` + `result.confiance` (0–1) ; watcher metaaid a fait `record_result`.
 
-Tests de régression : `reprise/tests/test_metaai_consignes.py` (présence + format consignes, cohérence prompt/consignes, `CIRCUIT_DEMANDEUR` sur le reçu, config `bridge_root`/`dav_root`).
+Tests de régression : `reprise/tests/test_metaai_consignes.py` (présence + format consignes, cohérence prompt/consignes, `CIRCUIT_DEMANDEUR` sur le reçu, config `bridge_root`, refus de `dav_root`).
 
 ## Ce qu'est Meta AI Desktop
 

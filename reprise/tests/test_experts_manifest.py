@@ -1,8 +1,7 @@
 """Lot 2 (#258) : manifeste expert déclaratif experts-manifest.json.
 
-Contrat validé : « le manifeste décrit, la disponibilité se mesure ». Fichier
-absent = repli legacy ({} ; CODEX_PARALLEL_SLOTS pour codex, 1 sinon).
-Manifeste invalide = ValueError au démarrage du bridge (fail-fast).
+Contrat validé : « le manifeste décrit, la disponibilité se mesure ». Manifeste
+absent (#276) ou invalide = ValueError au démarrage du bridge (fail-fast).
 Capacité par backend (#259), porte manifeste au preflight (backend désactivé,
 déclaré sans handler ou inconnu du manifeste → engine_unavailable, jamais de
 fallthrough vers codex), reprise_experts_list = déclaration + disponibilité
@@ -78,21 +77,14 @@ class ExpertsManifestTests(unittest.TestCase):
                           (backend, slot, None, key, now, now))
         bridge.db.commit()
 
-    # — Repli legacy : fichier absent —
+    # — Fichier absent : bundle incomplet (#276, suppression nette du repli {}) —
 
-    def test_missing_manifest_falls_back_to_legacy(self):
-        self.assertEqual(load_experts_manifest(self.manifest), {})
-        bridge = self.bridge()
-        self.assertEqual(bridge.experts, {})
-        # Capacité legacy documentée : codex = CODEX_PARALLEL_SLOTS (2).
-        acquired = bridge._acquire_slot('reprise_delegate', {'backend': 'codex'})
-        self.assertEqual(acquired[1], '0')
-        self.occupy(bridge, 'codex', '1')
-        self.assertIsNone(bridge._acquire_slot('reprise_delegate', {'backend': 'codex'}))
-
-    def test_missing_manifest_codex_delegate_still_preflights_clean(self):
-        bridge = self.bridge()
-        self.assertIsNone(bridge._call('reprise_delegate', {'backend': 'codex', 'question': 'Q', 'kind': 'expertise'}, preflight=True))
+    def test_missing_manifest_refuses_bridge(self):
+        for loader in (load_experts_manifest, load_fallback_flag, expert_mcp.load_default_chain):
+            with self.subTest(loader=loader.__name__), self.assertRaisesRegex(ValueError, 'bundle incomplet'):
+                loader(self.manifest)
+        with self.assertRaisesRegex(ValueError, 'bundle incomplet'):
+            self.bridge()
 
     # — Validation stricte : manifeste invalide = bridge refusé —
 
@@ -128,11 +120,9 @@ class ExpertsManifestTests(unittest.TestCase):
         self.assertIs(off.automatic_fallback_enabled, False)
 
     def test_flag_absent_defaults_false(self):
-        # Champ absent du manifeste, ou fichier manifeste absent : False.
+        # Champ absent du manifeste : False.
         bridge = self.bridge({'schema_version': 1, 'backends': {'codex': CODEX}})
         self.assertIs(bridge.automatic_fallback_enabled, False)
-        self.assertIs(load_fallback_flag(self.manifest), False)
-        self.manifest.unlink()
         self.assertIs(load_fallback_flag(self.manifest), False)
 
     def test_load_fallback_flag_rejects_non_bool(self):

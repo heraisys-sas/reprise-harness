@@ -66,24 +66,13 @@ CONNECTOR_NAME = 'reprise-harness'
 AUTHORIZATION_NOTICE = 'Dans Claude, autorisez les outils du connecteur reprise-harness pour recevoir les tâches, rendre les résultats et déléguer. Reprise ne peut pas accorder ces autorisations à votre place.'
 
 
-def managed_name(servers, old):
-    if old and old.get('connector_name') in servers:
-        return old['connector_name']
-    if old and 'reprise' in servers and old.get('entry_sha256') == entry_hash(servers['reprise']):
-        return 'reprise'
-    return (old or {}).get('connector_name') or CONNECTOR_NAME
-
-
 def inspect(root, home=None):
     home, config, managed = paths(home or Path.home())
     value, old = read_config(config), metadata(managed)
     servers = value.get('mcpServers', {})
-    name = managed_name(servers, old)
-    entry = servers.get(name)
+    entry = servers.get(CONNECTOR_NAME)
     return {'status': 'inspected', 'home': str(home), 'config_exists': config.exists(),
-            'connector_name': name if entry is not None else None,
-            'manifest_connector_name': old.get('connector_name') if old else None,
-            'connector_name_matches': bool(old and entry is not None and old.get('connector_name') == name),
+            'connector_name': CONNECTOR_NAME if entry is not None else None,
             'configuration_written': entry is not None,
             'managed': bool(old and entry is not None and old.get('entry_sha256') == entry_hash(entry)),
             'project': old.get('project') if old else None,
@@ -119,11 +108,8 @@ def desired(root, home, project, replace_probe, action='install', memory_access=
     memory_existing = servers.get(memory_integration.CONNECTOR)
     if memory_integration.CONNECTOR in servers and (not old or not old.get('memory_entry_sha256') or entry_hash(memory_existing) != old['memory_entry_sha256']):
         raise ValueError('Entrée reprise-memory personnalisée ou non gérée ; aucun écrasement.')
-    name = managed_name(servers, old)
-    existing = servers.get(name)
-    if old and old.get('status') == 'installed' and name not in servers and 'reprise' in servers:
-        raise ValueError('Entrée historique reprise différente du manifeste ; réconciliation explicite requise.')
-    if name in servers and (not old or old.get('entry_sha256') != entry_hash(existing)):
+    existing = servers.get(CONNECTOR_NAME)
+    if existing is not None and (not old or old.get('entry_sha256') != entry_hash(existing)):
         raise ValueError('Entrée reprise-harness personnalisée ou non gérée ; aucun écrasement.')
     if action not in ('install', 'remove'):
         raise ValueError('Action invalide.')
@@ -132,7 +118,7 @@ def desired(root, home, project, replace_probe, action='install', memory_access=
             raise ValueError('Aucune intégration Claude gérée à retirer.')
         if old.get('project') != str(project):
             raise ValueError('Projet sélectionné différent du connecteur géré.')
-        servers.pop(name, None)
+        servers.pop(CONNECTOR_NAME, None)
         servers.pop(memory_integration.CONNECTOR, None)
         manifest = dict(old, status='removed', entry_sha256=None)
         if memory_managed:
@@ -168,10 +154,6 @@ def desired(root, home, project, replace_probe, action='install', memory_access=
             '--socket', str(home / '.codex/app-server-control/app-server-control.sock'),
             '--chatgpt-state', str(chatgpt_state)]
     entry = {'command': str(program), 'args': args}
-    if name != CONNECTOR_NAME:
-        if CONNECTOR_NAME in servers:
-            raise ValueError('Entrée reprise-harness déjà présente ; migration refusée.')
-        servers.pop(name, None)
     servers[CONNECTOR_NAME] = entry
     memory_entry = memory_integration.entry(release, main_state, memory, 'claude-desktop')
     if memory_entry is None:
@@ -286,14 +268,13 @@ def verify(root, home=None, project=None):
     home, config, managed = paths(home or Path.home())
     old = metadata(managed)
     servers = read_config(config).get('mcpServers', {})
-    name = managed_name(servers, old)
-    entry = servers.get(name)
+    entry = servers.get(CONNECTOR_NAME)
     if not old or old.get('status') != 'installed' or entry is None:
         raise ValueError('Connecteur géré absent ou modifié.')
     if project is not None and str(Path(project).expanduser().resolve(strict=True)) != old.get('project'):
         raise ValueError('Le workspace sélectionné ne correspond pas au projet du connecteur installé.')
-    if name != CONNECTOR_NAME or old.get('connector_name') != name:
-        raise ValueError('Nom du connecteur incohérent ; migration gérée requise avant vérification.')
+    if old.get('connector_name') != CONNECTOR_NAME:
+        raise ValueError('Manifeste sans le nom de connecteur reprise-harness ; refaire claude-integration-plan puis apply.')
     args = entry.get('args') if isinstance(entry, dict) else None
     if not isinstance(args, list) or retired_options(entry):
         raise ValueError('Connecteur installé avant #252 ; refaire claude-integration-plan puis apply.')

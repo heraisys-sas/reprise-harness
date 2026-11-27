@@ -54,7 +54,7 @@ Dans `ux_review_probe.py`, démarrer avec `--request-key` persistée avant le d�
 
 ## Plafonds et limites conservées
 
-Les plafonds quotidiens Claude Code, Claude Desktop et Quick Apply sont supprimés. `expert_calls` et `quick_calls` hérités restent inertes ; ils ne sont ni lus pour l’admission ni incrémentés. `daily_limit` et `--daily-limit` sont uniquement acceptés comme compatibilité obsolète, sans validation de plage ni effet. Les nouveaux launchers et plists ne les émettent plus.
+Les plafonds quotidiens Claude Code, Claude Desktop et Quick Apply sont supprimés. `expert_calls` et `quick_calls` hérités restent inertes ; ils ne sont ni lus pour l’admission ni incrémentés. `daily_limit` et `--daily-limit` sont supprimés (#276) : l'option est refusée comme argument inconnu.
 
 La garde fournisseur Codex, dont la réserve **5 %** et le refus de quota inconnu, reste inchangée. Aucun budget utilisateur explicite n’est retiré. La connaissance fraîche des quotas par compte/profil/pool et la politique de reprise associée constituent le prochain lot.
 

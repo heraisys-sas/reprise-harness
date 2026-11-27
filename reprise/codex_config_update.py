@@ -188,7 +188,7 @@ def _rewrite(entry, script, release_base, target):
     # The helper flags and their values, including scopes, remain byte-for-byte
     # equal as JSON values. Reject a second script/executable or malformed flags.
     options = {
-        'expert_mcp.py': ({'--project-root', '--socket', '--state', '--tools', '--daily-limit',
+        'expert_mcp.py': ({'--project-root', '--socket', '--state', '--tools',
                                   '--claude-program', '--desktop-socket', '--ironclaw-config'},
                                  {'--claude-included-quota-confirmed', '--no-chatgpt-dispatch'},
                                  {'--project-root', '--state'}),

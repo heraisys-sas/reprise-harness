@@ -21,7 +21,7 @@ class TestMetaaiMcpServer(unittest.TestCase):
         (dav / 'outbox').mkdir(parents=True)
         self.config = self.root / 'metaai.json'
         self.config.write_text(json.dumps({
-            'dav_root': str(dav),
+            'bridge_root': str(dav),
             'taskstore': str(self.root / 'tasks.sqlite'),
         }), encoding='utf-8')
         self.proc = subprocess.Popen(

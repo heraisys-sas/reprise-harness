@@ -115,7 +115,7 @@ The last command is an **historical manual** MCP STDIO entrypoint, not an intera
 
 Calls return the bounded response, Codex thread/turn IDs, event types and explicit errors. `codex_followup` accepts only review threads recorded by this bridge for its fixed project and endpoint, and reuses their Codex history. No full DSH conversation is copied. Approvals or user questions stop the tool and are reported to DSH; the bridge does not grant them, impersonate a user reply or claim an unfinished review succeeded.
 
-The bridge retains its existing five-percent provider quota reserve and one active expertise request. No backend has a local daily call cap; legacy --daily-limit and stored expert_calls counts are inert. All inference tools require caller-persisted request_key; recovery and lineage are described in [DELEGATION-PERSISTENCE.md](../../contracts/DELEGATION-PERSISTENCE.md). This is an admission policy, not a maximum token guarantee: one accepted agent turn can contain many model/tool steps. Read-only sandbox and no command network access are requested on every turn. Inherited MCP servers, apps, plugins, hooks, browser/computer tools and subagents are disabled for these expertise threads through thread-specific overrides; the rest of Codex is unchanged. The fixed cwd and path validation constrain requests, not a hard OS confidentiality boundary for all local reads.
+The bridge retains its existing five-percent provider quota reserve and one active expertise request. No backend has a local daily call cap; --daily-limit was removed (#276) and is refused; stored expert_calls counts are inert. All inference tools require caller-persisted request_key; recovery and lineage are described in [DELEGATION-PERSISTENCE.md](../../contracts/DELEGATION-PERSISTENCE.md). This is an admission policy, not a maximum token guarantee: one accepted agent turn can contain many model/tool steps. Read-only sandbox and no command network access are requested on every turn. Inherited MCP servers, apps, plugins, hooks, browser/computer tools and subagents are disabled for these expertise threads through thread-specific overrides; the rest of Codex is unchanged. The fixed cwd and path validation constrain requests, not a hard OS confidentiality boundary for all local reads.
 
 Validation: protocol discovery with the actual bundled DSH MCP client succeeded (`codex_review`, `codex_followup`); fake-server contract tests cover responses, quota reserve, API-account refusal, tool policy, follow-up ownership, scope escape, approvals and persistent call limits. The real Codex socket initialization succeeded without model inference. A live review remains unverified; no paid request or subscription quota was spent on testing.
 
@@ -153,9 +153,9 @@ Champs par backend (`reprise.expert_mcp`) :
 - `resumable` — booléen, défaut `false`.
 
 Clés inconnues, types invalides ou `session` absente : `ValueError` à la
-construction du pont (échec rapide). Fichier absent : repli legacy `{}` —
-capacité codex = `CODEX_PARALLEL_SLOTS` (2, valeur historique documentée),
-1 pour les autres ; aucune erreur. `reload_experts_manifest()` relit le
+construction du pont (échec rapide). Fichier absent : même refus (#276), le
+manifeste fait partie du bundle ; un backend non déclaré a un seul slot.
+`reload_experts_manifest()` relit le
 fichier à chaud ; un manifeste invalide au rechargement lève `ValueError`
 sans écraser l'état courant.
 
