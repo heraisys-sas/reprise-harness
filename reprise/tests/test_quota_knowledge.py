@@ -150,6 +150,18 @@ class KnowledgeTests(unittest.TestCase):
         self.assertIsNone(result['account_key'])
         self.assertEqual(result['knowledge'], 'unknown')
 
+    def test_engine_without_reader_is_not_exposed_and_never_recorded(self):
+        # #54 : harness-cli n'a aucun lecteur natif ; refresh ne lit ni n'enregistre rien.
+        with patch('quota_knowledge.collect') as collect:
+            for refresh in (False, True):
+                result = q.status(self.db, 'harness-cli', {'profile': 'fixture'}, refresh=refresh, now=1000)
+                self.assertEqual(result['knowledge'], 'not_exposed')
+                self.assertIsNone(result['quota_source'])
+                self.assertEqual(result['pools'], [])
+            collect.assert_not_called()
+        self.assertEqual(self.db.execute('SELECT count(*) FROM quota_observations').fetchone()[0], 0)
+        self.assertEqual(q.status(self.db, 'codex-server')['knowledge'], 'unknown')
+
     def test_shared_probe_only_reads_quota_metadata(self):
         calls = []
         class Client:
