@@ -39,7 +39,7 @@ CIRCUIT_DESKTOP = (
     "la réponse peut quand même arriver via submit_result ; seuls les états "
     "quota/billing/manifeste sont des refus définitifs.\n"
     "3. Appeler l'outil wait_result avec request_key=<celui de ce reçu> et "
-    "timeout_s (<= 600) jusqu'à status=finished ; sur timeout, rappeler "
+    "wait_seconds (1 à 600) jusqu'à status=finished ; sur timeout, rappeler "
     "wait_result avec la MÊME clé (attente réentrante, pas un re-dispatch).\n"
     "4. La réponse finale vit dans response, son empreinte dans result_sha256 "
     "(admission_only repassé à false).\n"

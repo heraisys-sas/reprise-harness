@@ -65,13 +65,15 @@ CIRCUIT_DEMANDEUR = (
     "1. Ce reçu est une ADMISSION, pas une réponse : response=null et "
     "admission_only=true sont normaux — ne pas les traiter comme un résultat.\n"
     "2. Appeler l'outil wait_result avec request_key=<le request_key de ce reçu> "
-    "et timeout_s (<= 600) jusqu'à status=finished ; sur timeout, rappeler "
+    "et wait_seconds (1 à 600) jusqu'à status=finished ; sur timeout, rappeler "
     "wait_result avec la MÊME clé (l'attente est réentrant, pas un re-dispatch).\n"
     "3. La réponse finale vit dans result.reponse ; sa fiabilité annoncée est "
     "result.confiance (0 à 1) — une confiance basse = à re-vérifier.\n"
-    "4. Ne JAMAIS re-dispatcher le même request_key : une relance = nouvelle clé "
-    "avec retry_of (sinon garde review_started).\n"
-    "5. task_id identifie la tâche dans le pont (get_status) ; ne pas le modifier."
+    "4. Ne jamais re-soumettre le même request_key comme nouvelle tâche : une "
+    "relance = nouvelle clé avec retry_of ; rappeler reprise_delegate avec la "
+    "même clé ne fait que rejouer le reçu enregistré (rien n'est re-dispatché).\n"
+    "5. Le task_id du reçu identifie la tâche dans le pont (l'outil get_status "
+    "du pont Meta AI la retrouve) ; ne pas le modifier."
 )
 
 

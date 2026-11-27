@@ -142,6 +142,8 @@ class AdmissionBeforeDispatchTests(Cycle):
         self.assertIn('ADMISSION', circuit)
         self.assertIn('wait_result', circuit)
         self.assertIn('review_started', circuit)
+        self.assertIn('wait_seconds', circuit)
+        self.assertNotIn('timeout_s', circuit)
         self.assertIn('dispatch_ok=false', circuit)
         # Cohérence avec la metaai : les deux circuits interdisent le
         # re-dispatch de la même clé.

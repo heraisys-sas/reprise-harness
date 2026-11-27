@@ -47,11 +47,13 @@ class ConsignesInboxTests(unittest.TestCase):
             self.assertIn(token, consignes["texte"])
 
     def test_consignes_autoportantes_sans_contexte_externe(self):
-        # Le texte doit suffire seul : chemins exacts, format de sortie, task_id.
+        # Le texte doit suffire seul : chemins exacts, format de sortie, task_id,
+        # pièces bornées (exigées par le commentaire #277).
         texte = mts.CONSIGNES_ECHANGE
         self.assertIn("inbox/<task_id>.json", texte)
         self.assertIn("outbox/<task_id>.txt", texte)
         self.assertIn("confiance", texte)
+        self.assertIn("pieces", texte)
         self.assertIn("task_id SANS le modifier", texte)
 
     def test_consignes_ne_sont_pas_ecrasees_par_l_appelant(self):
@@ -112,8 +114,15 @@ class CircuitDemandeurTests(unittest.TestCase):
         self.assertIn("version 1", mts.CIRCUIT_DEMANDEUR)
         self.assertIn("ADMISSION", mts.CIRCUIT_DEMANDEUR)
         self.assertIn("wait_result", mts.CIRCUIT_DEMANDEUR)
+        self.assertIn("wait_seconds", mts.CIRCUIT_DEMANDEUR)
         self.assertIn("result.confiance", mts.CIRCUIT_DEMANDEUR)
         self.assertIn("nouvelle clé", mts.CIRCUIT_DEMANDEUR)
+        # Sémantiques exactes : le paramètre réel est wait_seconds (jamais
+        # timeout_s) et la garde review_started appartient au pont Desktop,
+        # pas au pont Meta AI (même clé = reçu rejoué, rien de re-dispatché).
+        self.assertNotIn("timeout_s", mts.CIRCUIT_DEMANDEUR)
+        self.assertNotIn("review_started", mts.CIRCUIT_DEMANDEUR)
+        self.assertIn("rejouer le reçu", mts.CIRCUIT_DEMANDEUR)
 
     def test_consignes_et_circuit_sont_distingues(self):
         # Consignes = pour la session Meta AI ; circuit = pour le harness
