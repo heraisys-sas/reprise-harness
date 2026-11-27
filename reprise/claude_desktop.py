@@ -30,7 +30,7 @@ DEFAULT_SOCKET = Path.home() / '.claude-desktop/quick-entry.sock'
 # harnesses prennent des initiatives malheureuses : ils traitent le reçu comme
 # un résultat final ou re-dispatchent la même clé (garde review_started). Le
 # texte versionné ci-dessous est attaché à CHAQUE reçu (champ `circuit`).
-CIRCUIT_DESKTOP_VERSION = "1"
+CIRCUIT_DESKTOP_VERSION = "2"
 CIRCUIT_DESKTOP = (
     "Circuit demandeur Claude Desktop (version " + CIRCUIT_DESKTOP_VERSION + ") :\n"
     "1. Ce reçu est une ADMISSION, pas une réponse : response=null, "
@@ -44,8 +44,36 @@ CIRCUIT_DESKTOP = (
     "4. La réponse finale vit dans response, son empreinte dans result_sha256 "
     "(admission_only repassé à false).\n"
     "5. Ne JAMAIS re-soumettre le même request_key : une relance = nouvelle clé "
-    "avec retry_of (sinon garde review_started)."
+    "avec retry_of (sinon garde review_started).\n"
+    "6. delivery (en tête du reçu) est la preuve de livraison : delivered "
+    "(clic observé), not_delivered + delivery_reason (échec certain avant clic, "
+    "une relivraison bornée déjà tentée par Reprise), uncertain (clic possible, "
+    "ne rien renvoyer), not_attempted, answered (submit_result validé)."
 )
+
+# Issue #278 : stages d'échec CERTAIN avant tout clic (le pointeur n'a pas
+# atteint Claude Desktop). Seul « composeur » ouvre une relivraison bornée,
+# gardée côté daemon par desktop_task_store (MAX_COMPOSER_REDELIVERIES).
+_REDELIVERABLE_STAGES = ('composeur',)
+
+
+def _delivery(receipt):
+    """(delivery, reason) from one dispatch receipt (issue #278)."""
+    if receipt.get('dispatch_ok') is True:
+        return 'delivered', None
+    if not receipt.get('dispatch_attempted'):
+        return 'not_attempted', receipt.get('dispatch_error')
+    if receipt.get('stage') in (None, 'incertain') or receipt.get('click_observed') is True:
+        return 'uncertain', receipt.get('dispatch_error')
+    return 'not_delivered', receipt.get('dispatch_error') or receipt.get('stage')
+
+
+def _with_delivery(receipt, delivery, reason=None):
+    """Put the delivery proof at the head of the receipt (issue #278)."""
+    head = {'delivery': delivery}
+    if reason:
+        head['delivery_reason'] = reason
+    return head | {k: v for k, v in receipt.items() if k not in ('delivery', 'delivery_reason')}
 
 
 class Unavailable(engines.Unavailable):
@@ -281,7 +309,11 @@ def _orchestrated_receipt(tasks, request_key, max_wait, clock=None):
         if answer is not None:
             result.update({'status': 'finished', 'response': answer,
                            'result_sha256': _fingerprint(answer), 'admission_only': False})
-    return result
+            return _with_delivery(result, 'answered')
+    stored = tasks.dispatch_receipt(request_key)
+    if stored is None:
+        return _with_delivery(result, 'uncertain', 'Aucun reçu de dispatch enregistré')
+    return _with_delivery(result, *_delivery(stored))
 
 
 def review(root, question, *, kind='expertise', level='standard', paths=None,
@@ -374,6 +406,14 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
                 finished['dispatch_attempted'] = True
                 try:
                     dispatched = client.call('quick_entry/dispatch', {'request_key': request_key})
+                    if (dispatched.get('dispatch_ok') is not True
+                            and dispatched.get('stage') in _REDELIVERABLE_STAGES
+                            and dispatched.get('click_observed') is not True):
+                        # Issue #278 : échec certain avant clic — une seule
+                        # relivraison, que le daemon n'accepte qu'une fois
+                        # (sinon il rejoue le reçu enregistré, sans envoi).
+                        finished['redelivery_attempted'] = True
+                        dispatched = client.call('quick_entry/dispatch', {'request_key': request_key})
                     finished['dispatch_ok'] = dispatched.get('dispatch_ok') is True
                     for field in ('stage', 'click_observed', 'dispatch_socket'):
                         if field in dispatched:
@@ -387,14 +427,15 @@ def review(root, question, *, kind='expertise', level='standard', paths=None,
             return finished
         answer = _collect(tasks, request_key, max_wait, clock)
         if answer is None:
-            return finished
+            return _with_delivery(finished, *_delivery(finished))
         # Issue #269 : une réponse validée par submit_result EST la preuve de
         # dispatch de bout en bout ; l'observation composeur reste un
         # diagnostic secondaire et ne doit plus contredire le résultat.
         finished['dispatch_ok'] = True
         finished.pop('dispatch_error', None)
         finished['admission_only'] = False
-        return finished | {'response': answer, 'result_sha256': _fingerprint(answer)}
+        return _with_delivery(finished | {'response': answer, 'result_sha256': _fingerprint(answer)},
+                              'answered')
     except engines.Unavailable as error:
         return result | {'status': error.state, 'reason': error.reason}
     except (OSError, ValueError, TimeoutError):

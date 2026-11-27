@@ -138,7 +138,7 @@ class AdmissionBeforeDispatchTests(Cycle):
             result = self.review(request_key='cycle-circuit', tasks=store, max_wait=0)
         self.assertTrue(result['admission_only'])
         circuit = result['circuit']
-        self.assertIn('version 1', circuit)
+        self.assertIn('version 2', circuit)
         self.assertIn('ADMISSION', circuit)
         self.assertIn('wait_result', circuit)
         self.assertIn('review_started', circuit)
