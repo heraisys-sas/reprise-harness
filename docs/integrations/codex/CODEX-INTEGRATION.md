@@ -257,15 +257,15 @@ même périmètre projet que le pont ChatGPT (TaskStore `chatgpt-state`). L'anci
 est disponible. `availability: unverified` et `transport_verified: false`
 sont maintenus jusqu'à un véritable aller-retour Mac, jamais déduits de
 `tools/list`. Le champ `dispatch` passe à `holder_capture_sync` quand le
-pont tourne avec le grant opérateur `--chatgpt-dispatch`, sinon
-`admission_only` reste le comportement par défaut.
+pont pousse vers le holder, ce qui est le défaut depuis #282 (27/11/2026) ;
+`admission_only` n'est plus obtenu que par `--no-chatgpt-dispatch`.
 
 L'utilisateur a explicitement autorisé les essais de la route non vérifiée.
 Les façades ChatGPT et Claude autorisent désormais l'auto-délégation pour une
 **nouvelle demande** avec clé unique ; elles ne réenvoient pas automatiquement
 une demande existante ni une tentative incertaine. Le pont `chatgpt_quick.review`
-**admet** la tâche dans le registre ; le push holder n'a lieu que si le grant
-`--chatgpt-dispatch` est posé (voir #226 ci-dessous). Aucun message Desktop,
+**admet** la tâche dans le registre puis la pousse au holder, sauf si le pont
+est lancé avec `--no-chatgpt-dispatch` (voir #226 et #282 ci-dessous). Aucun message Desktop,
 modèle exécuté ou `submit_result` accepté ne peut donc être déduit du seul
 reçu d'admission.
 
@@ -294,9 +294,13 @@ client. ChatGPT n'a AUCUN outil MCP Reprise ; le TaskStore
 `request_key`), jamais un canal de retour ni un « complément de preuve » : un
 aller-retour consultatif se ferme sur le receipt holder seul.
 
-### Issue #226 — Chaînon admission → dispatch holder (opt-in `--chatgpt-dispatch`)
+### Issue #226 — Chaînon admission → dispatch holder (actif par défaut depuis #282)
 
-Avec le grant opérateur `--chatgpt-dispatch`, le pont enchaîne après
+Décision opérateur du 27/11/2026 (#282) : le dispatch holder est actif par
+défaut sur `expert_mcp.py` et `claude_mcp.py` ; `--chatgpt-dispatch` reste
+accepté sans effet et `--no-chatgpt-dispatch` est la seule désactivation.
+Le holder est démarré à la demande par `chatgpt_desktop_pipe.send` et reste
+vivant ensuite. Le pont enchaîne après
 chaque admission fraîche ou rejouée : `chatgpt_quick.dispatch_to_holder`
 lit le prompt admis (jamais dupliqué), pousse via le client holder
 (`chatgpt_desktop_pipe.send`, at-most-once par receipts durables), puis

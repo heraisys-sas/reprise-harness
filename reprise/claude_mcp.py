@@ -328,6 +328,11 @@ def main():
     parser.add_argument('--expert-state', required=True)
     parser.add_argument('--socket')
     parser.add_argument('--chatgpt-state', '--chatgpt-socket', dest='chatgpt_state')
+    # Issue #282 : même défaut que expert_mcp.py — dispatch holder actif.
+    parser.add_argument('--chatgpt-dispatch', dest='chatgpt_dispatch', action='store_true', default=True,
+                        help='Compatibility no-op: admitted ChatGPT tasks are pushed to the CDP holder by default')
+    parser.add_argument('--no-chatgpt-dispatch', dest='chatgpt_dispatch', action='store_false',
+                        help='Admission only: never push admitted ChatGPT tasks to the holder')
     parser.add_argument('--max-wait', type=int, default=DEFAULT_MAX_WAIT,
                         help='longest await_task wait in seconds; raise only after proving the client tolerates it')
     parser.add_argument('--enable-await', action='store_true',
@@ -342,7 +347,7 @@ def main():
     chatgpt_state = args.chatgpt_state or str(state_location(Path(__file__).parent, 'chatgpt-state').absolute())
     bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.expert_state,
                     desktop_state=args.state, allowed_tools=OUTBOUND,
-                    chatgpt_socket=chatgpt_state)
+                    chatgpt_socket=chatgpt_state, chatgpt_dispatch=args.chatgpt_dispatch)
     facade = ClaudeMCP(tasks, bridge, max_wait=args.max_wait, progress_interval=args.progress_interval, enable_await=args.enable_await, enable_queue=args.enable_queue)
     await_requests = AwaitRequests()
     connection = mcp_transport.Connection(lambda text: print(text, end='', flush=True))
