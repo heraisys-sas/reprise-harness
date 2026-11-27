@@ -10,7 +10,13 @@ NODE = shutil.which('node') or '/Applications/DeepSeek Harness.app/Contents/Reso
 PLUGIN = Path(__file__).resolve().parents[1] / 'harness-output-resume.cjs'
 
 
-@unittest.skipUnless(Path(NODE).is_file(), 'Node runtime unavailable')
+def node_has_sqlite():
+    """node:sqlite (DatabaseSync) n'existe qu'à partir de Node 22.5."""
+    return Path(NODE).is_file() and subprocess.run(
+        [NODE, '-e', "require('node:sqlite')"], capture_output=True).returncode == 0
+
+
+@unittest.skipUnless(node_has_sqlite(), 'Node runtime with node:sqlite unavailable')
 class HarnessOutputResumeTests(unittest.TestCase):
     def test_native_lifecycle_and_durable_claims(self):
         script = r'''

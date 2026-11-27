@@ -9,12 +9,12 @@ from project_registry import ProjectRegistry
 import orchestrator_memory
 import test_orchestrator_memory as mf
 from coordinator_local import SUPERVISION_CONTRACT
-from support_portability import requires_tools
+from support_portability import requires_apple_sdk
 
 ROOT=Path(__file__).parents[1]
 
 class RecallUITests(unittest.TestCase):
-    @requires_tools('swiftc')
+    @requires_apple_sdk
     def test_search_preview_approval_lost_reply_recovery_and_consent_without_model(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);state=root/'state';state.mkdir(mode=0o700);repo=root/'project';repo.mkdir()

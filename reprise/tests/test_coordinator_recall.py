@@ -12,7 +12,7 @@ import orchestrator_memory
 from delegation_store import digest
 import test_coordinator_local as fixtures
 import test_orchestrator_memory as memory_fixtures
-from support_portability import requires_tools
+from support_portability import requires_apple_sdk
 
 
 class RecallTests(unittest.TestCase):
@@ -192,7 +192,7 @@ class RecallTests(unittest.TestCase):
         with patch('coordinator_recall.read_scoped_snapshot', side_effect=AssertionError('no reread')):
             self.assertEqual(self.local._parts(row)[3]['input']['selected_memory'], snapshot)
 
-    @requires_tools('swiftc')
+    @requires_apple_sdk
     def test_scoped_native_helper_formatter_without_inference(self):
         snapshot = self.scoped_selection()
         # Compile only pure formatting functions, never the model entry point.
