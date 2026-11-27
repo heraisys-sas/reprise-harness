@@ -143,16 +143,15 @@ class CodexConfigUpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'étranger'):
             update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
 
-    def test_legacy_helper_name_is_rewritten(self):
-        # Installation d'avant renommage #258 : l'entrée pointe vers le shim
-        # codex_expert_mcp.py et doit être réécrite vers expert_mcp.py.
+    def test_removed_shim_helper_name_is_refused_issue_250(self):
+        # Le shim codex_expert_mcp.py (#258) n'est plus embarqué : une entrée
+        # qui le vise est étrangère, jamais réécrite silencieusement.
         legacy = str(self.old / 'Contents/Resources/helpers/codex_expert_mcp.py')
         text = self.config.read_text().replace(
             str(self.old / 'Contents/Resources/helpers/expert_mcp.py'), legacy)
         self.config.write_text(text)
-        value = update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
-        expected = str(self.target / 'Contents/Resources/helpers/expert_mcp.py')
-        self.assertEqual(value['after']['reprise-harness']['args'][3], expected)
+        with self.assertRaisesRegex(ValueError, 'étranger'):
+            update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
 
     def test_retired_switches_are_dropped_on_rewrite_issue_252(self):
         # Entrée déployée avant #252 : les drapeaux retirés disparaissent de la

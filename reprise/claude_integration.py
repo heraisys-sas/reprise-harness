@@ -319,10 +319,8 @@ def verify(root, home=None, project=None):
                 {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list', 'params': {}}]
     with tempfile.TemporaryDirectory(prefix='reprise-claude-check-') as temporary:
         command += ['--state', str(Path(temporary) / 'quick'), '--expert-state', str(Path(temporary) / 'expert'),
-                    '--socket', str(home / '.codex/app-server-control/app-server-control.sock')]
-        # The old installed Claude connector has no --chatgpt-state option.
-        if '--chatgpt-state' in args:
-            command += ['--chatgpt-state', str(Path(temporary) / 'chatgpt-state')]
+                    '--socket', str(home / '.codex/app-server-control/app-server-control.sock'),
+                    '--chatgpt-state', str(Path(temporary) / 'chatgpt-state')]
         env = {k: v for k, v in os.environ.items() if not k.startswith(('PYTHON', 'DYLD_')) and k != 'AGENT_RESUME_STATE'}
         response = subprocess.run(command, input='\n'.join(json.dumps(r) for r in requests) + '\n',
                                   capture_output=True, text=True, timeout=20, env=env, check=True)

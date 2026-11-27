@@ -1032,9 +1032,8 @@ class CompactReceiptTests(unittest.TestCase):
             self.dispatch('reprise_requests', {
                 'request_key': 'key', 'view': 'page', 'acknowledge': True})
 
-class ChatGptStateRenameTests(unittest.TestCase):
-    """Issue #217 : le chemin ChatGPT est nommé --chatgpt-state (répertoire
-    d'état, ledger et TaskStore), --chatgpt-socket n'est qu'un alias déprécié."""
+class ChatGptStateTests(unittest.TestCase):
+    """Issue #250 : seul --chatgpt-state nomme le répertoire d'état ChatGPT."""
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -1046,29 +1045,24 @@ class ChatGptStateRenameTests(unittest.TestCase):
         self.addCleanup(self.bridge.close)
 
     def test_refusal_names_chatgpt_state(self):
-        # Le Bridge est construit sans chatgpt_socket : le refus backend chatgpt
-        # (Bridge.call reprise_delegate, ligne du refus 'non configuré') doit
-        # nommer la nouvelle option, jamais l'alias déprécié.
-        self.assertIsNone(self.bridge.chatgpt_socket)
+        self.assertFalse(self.bridge.chatgpt_configured)
         payload = self.bridge.call('reprise_delegate', {
             'request_key': str(uuid.uuid4()), 'backend': 'chatgpt',
             'kind': 'review', 'question': 'Revue'})
         self.assertEqual(payload['status'], 'engine_unavailable')
         self.assertIn('--chatgpt-state', payload['reason'])
-        self.assertNotIn('--chatgpt-socket', payload['reason'])
 
-    def test_parser_accepts_legacy_alias(self):
-        # L'alias déprécié reste accepté par le parser : --help rend 0 et
-        # documente la nouvelle option (parse_args sort avant de servir).
+    def test_parser_rejects_removed_alias(self):
         # Chemin absolu : les shards CI (#257) lancent les tests avec
         # cwd = reprise/tests/, où le chemin relatif reprise/... est inexistant.
+        # argparse refuse l'option inconnue avant toute ouverture d'état.
         script = str(Path(__file__).parents[1] / 'expert_mcp.py')
         completed = subprocess.run(
             [sys.executable, script, '--project-root', self.temp.name,
-             '--chatgpt-socket', self.temp.name, '--help'],
+             '--chatgpt-socket', self.temp.name],
             capture_output=True, text=True, timeout=30)
-        self.assertEqual(completed.returncode, 0)
-        self.assertIn('--chatgpt-state', completed.stdout + completed.stderr)
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn('--chatgpt-socket', completed.stderr)
 
 
 class BridgeFinalizerTests(unittest.TestCase):
@@ -1114,7 +1108,7 @@ class ChatGptFollowupTests(RequestCalls, unittest.TestCase):
         # partagent le même fichier chatgpt.sqlite.
         self.chatgpt_state = Path(self.temp.name)/'chatgpt-state'
         self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state',
-                             daily_limit=2, chatgpt_socket=str(self.chatgpt_state))
+                             daily_limit=2, chatgpt_state=str(self.chatgpt_state))
         self.bridge.program = 'codex'
         self.addCleanup(self.bridge.close)
 

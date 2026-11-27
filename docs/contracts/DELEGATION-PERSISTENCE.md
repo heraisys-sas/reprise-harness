@@ -269,7 +269,7 @@ empreinte SHA-256 sont vérifiées, la projection vers `acknowledged` est
 permise directement depuis `admitted` ou `attempted`. Un résultat absent ou
 une tentative différente ne sont pas réparés automatiquement.
 
-Le chemin `chatgpt_socket` utilisé par le pont est, dans ce contrat,
+Le chemin `--chatgpt-state` (`Bridge(chatgpt_state=…)`) utilisé par le pont est, dans ce contrat,
 un **répertoire d'état local**, non un socket réseau. Il est aussi la source
 du `TaskStore` ChatGPT du pont et de l'`Endpoint` de réadmission,
 notamment lors de l'inspection d'une installation isolée. Aucune bascule

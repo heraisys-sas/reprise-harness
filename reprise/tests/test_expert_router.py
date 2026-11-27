@@ -576,7 +576,7 @@ class ExpertRouterTests(unittest.TestCase):
 
     # — Refus d'origine inchangé (byte-identique) quand aucun candidat —
 
-    def test_chatgpt_socket_gate_payload_unchanged_without_candidate(self):
+    def test_chatgpt_state_gate_payload_unchanged_without_candidate(self):
         bridge = self.bridge(FULL_MANIFEST)
         # La gate socket (expert_mcp 1559-1561) se déclenche sur le socket par
         # défaut (falsy) — chatgpt_quick n'est jamais touché, et cette gate ne

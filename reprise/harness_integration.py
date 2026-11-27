@@ -271,11 +271,6 @@ def _bridge_entries(release, state, tools, project, profile, managed, output_res
     return entries
 
 
-# Résidu legacy (#156 → #161) : l'ancienne génération écrivait --chatgpt-socket
-# (pont ChatGPT remplacé par la config MCP ~/.codex/config.toml) dans les args de
-# reprise-codex-expert. La migration autorisée est un retrait pur : le drapeau et
-# sa valeur éventuelle, aucune autre divergence.
-_LEGACY_FLAGS = ('--chatgpt-socket',)
 # #252 : écriture projet et dispatch ChatGPT actifs par défaut, délégation
 # toujours exposée. Ces interrupteurs et clés de manifeste sont retirés des
 # installations existantes au prochain plan.
@@ -292,22 +287,8 @@ def _strip_legacy_args(entries):
         args = (entry.get('config') or {}).get('args')
         if not isinstance(args, list):
             continue
-        kept, skip = [], False
-        for arg in args:
-            if skip:
-                skip = False
-                if isinstance(arg, str) and not arg.startswith('-'):
-                    removed.append(arg)
-                    continue
-            if arg in _LEGACY_FLAGS:
-                removed.append(arg)
-                skip = True
-                continue
-            if arg in RETIRED_SWITCHES:
-                removed.append(arg)
-                continue
-            kept.append(arg)
-        entry['config']['args'] = kept
+        removed += [arg for arg in args if arg in RETIRED_SWITCHES]
+        entry['config']['args'] = [arg for arg in args if arg not in RETIRED_SWITCHES]
     return cleaned, removed
 
 
@@ -1645,11 +1626,9 @@ def verify(home, profile, root=None, project=None):
     with tempfile.TemporaryDirectory(prefix='reprise-bridge-check-') as temporary:
         program = release / 'Contents/Resources/runtime/bin/python3'
         command = [str(program), '-E', '-s', '-B', str(release / 'Contents/Resources/helpers/expert_mcp.py'),
-                   '--project-root', old['project'], '--state', temporary, '--tools', ','.join(old['tools'])]
-        # Legacy releases do not recognize the new flag. Verification never
-        # writes ChatGPT state in the user's active profile.
-        if old.get('chatgpt_state'):
-            command += ['--chatgpt-state', str(Path(temporary) / 'chatgpt-state')]
+                   '--project-root', old['project'], '--state', temporary, '--tools', ','.join(old['tools']),
+                   # Verification never writes ChatGPT state in the user's active profile.
+                   '--chatgpt-state', str(Path(temporary) / 'chatgpt-state')]
         env = {k: v for k, v in os.environ.items() if not k.startswith(('PYTHON', 'DYLD_')) and k != 'AGENT_RESUME_STATE'}
         env['PYTHONDONTWRITEBYTECODE'] = '1'
         response = subprocess.run(command, input='\n'.join(json.dumps(r) for r in requests) + '\n',

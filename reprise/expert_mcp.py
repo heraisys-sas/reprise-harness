@@ -500,14 +500,14 @@ def load_fallback_flag(path=None):
 
 
 class Bridge:
-    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, chatgpt_socket=None, chatgpt_dispatch=False, metaai_values=None, automatic_fallback_enabled=None):
+    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, chatgpt_state=None, chatgpt_dispatch=False, metaai_values=None, automatic_fallback_enabled=None):
         if automatic_fallback_enabled is not None and type(automatic_fallback_enabled) is not bool:
             raise ValueError('Explicit automatic-fallback grant required')
         if type(chatgpt_dispatch) is not bool:
             raise ValueError('Explicit ChatGPT dispatch grant required')
-        if chatgpt_socket is not None and (not isinstance(chatgpt_socket, str) or not Path(chatgpt_socket).is_absolute()):
+        if chatgpt_state is not None and (not isinstance(chatgpt_state, str) or not Path(chatgpt_state).is_absolute()):
             raise ValueError('Absolute ChatGPT state directory required')
-        self.chatgpt_socket = chatgpt_socket
+        self.chatgpt_configured = chatgpt_state is not None
         self.chatgpt_dispatch = chatgpt_dispatch
         known_tools = {item['name'] for item in TOOLS}
         if allowed_tools is not None and (not allowed_tools or set(allowed_tools) - known_tools):
@@ -577,13 +577,12 @@ class Bridge:
             self.desktop_tasks = None
         # ChatGPT roundtrip: same TaskStore contract over a dedicated state directory
         # (channel independence), opened only when the local channel is configured.
-        # The ChatGPT MCP "socket" parameter is a local *state directory*.
         # Admission and the return-channel TaskStore must use that exact path,
         # including isolated integration-verification and nondefault installs.
-        self.chatgpt_state = (Path(self.chatgpt_socket).resolve() if self.chatgpt_socket
+        self.chatgpt_state = (Path(chatgpt_state).resolve() if chatgpt_state
                               else state_location(self.root, 'chatgpt-state'))
         self.chatgpt_tasks = None
-        if self.chatgpt_socket:
+        if self.chatgpt_configured:
             try:
                 self.chatgpt_tasks = TaskStore(self.chatgpt_state, self.root)
             except (OSError, sqlite3.Error, ValueError):
@@ -818,7 +817,7 @@ class Bridge:
                 return False
         if self.chatgpt_tasks is not None:
             return True
-        if not self.chatgpt_socket:
+        if not self.chatgpt_configured:
             return False
         try:
             self.chatgpt_tasks = TaskStore(self.chatgpt_state, self.root)
@@ -1615,7 +1614,7 @@ class Bridge:
         if backend == 'foundation-models' and not apple_expert.configured():
             return {'status': 'engine_unavailable', 'backend': backend,
                     'reason': 'Apple fm executable unavailable.', 'automatic_fallback': False}
-        if backend == 'chatgpt' and not self.chatgpt_socket:
+        if backend == 'chatgpt' and not self.chatgpt_configured:
             return {'status': 'engine_unavailable',
                     'reason': '--chatgpt-state non configuré'}
         if backend == 'chatgpt' and self.chatgpt_tasks is None and not self._retry_task_store('chatgpt'):
@@ -1707,7 +1706,7 @@ class Bridge:
         if backend == 'chatgpt':
             result = chatgpt_quick.review(self.root, question, kind=args.get('kind', 'expertise'),
                                           level=args.get('level', 'standard'), paths=args.get('paths'),
-                                          socket=self.chatgpt_socket, request_key=self.requests.active_key)
+                                          state=self.chatgpt_state, request_key=self.requests.active_key)
             if self.chatgpt_dispatch:
                 result = chatgpt_quick.finish_with_holder_dispatch(self.root, self.chatgpt_state, result)
             routing_events.finalize(self.db, event_id, str(result.get('status') or 'unknown'))
@@ -2035,7 +2034,7 @@ def main():
     parser.add_argument('--claude-program', help='Explicit absolute Claude CLI path; disabled by default')
     parser.add_argument('--claude-included-quota-confirmed', action='store_true', help='Operator confirms paid usage credits disabled; CLI cannot verify this')
     parser.add_argument('--desktop-socket', help='Explicit absolute Quick Entry socket path; disabled by default')
-    parser.add_argument('--chatgpt-state', '--chatgpt-socket', dest='chatgpt_state',
+    parser.add_argument('--chatgpt-state',
                         help='ChatGPT state directory, ledger and TaskStore (not a network socket)')
     # #282 : dispatch holder actif par défaut ; --no-chatgpt-dispatch est la seule bascule.
     parser.add_argument('--no-chatgpt-dispatch', dest='chatgpt_dispatch', action='store_false', default=True,
@@ -2050,8 +2049,6 @@ def main():
             ironclaw_values = json.loads(Path(args.ironclaw_config).read_text())
         except (OSError, ValueError):
             raise SystemExit('--ironclaw-config doit être un JSON 0600 lisible')
-    if '--chatgpt-socket' in sys.argv:
-        print('Warning: --chatgpt-socket is deprecated; use --chatgpt-state', file=sys.stderr)
     metaai_values = {}
     metaai_source = args.metaai_config
     if metaai_source is None:
@@ -2077,7 +2074,7 @@ def main():
                     claude_program=args.claude_program, claude_subscription_only=args.claude_included_quota_confirmed,
                     desktop_socket=args.desktop_socket, allowed_tools=args.tools.split(',') if args.tools is not None else None,
                     ironclaw_values=ironclaw_values,
-                    chatgpt_socket=chatgpt_state,
+                    chatgpt_state=chatgpt_state,
                     chatgpt_dispatch=args.chatgpt_dispatch, metaai_values=metaai_values)
     def terminate(signum, frame):
         # Unwind active CLI cleanup before closing the DB and releasing the lock.

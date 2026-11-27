@@ -321,11 +321,10 @@ def finish_with_holder_dispatch(root, state, admission):
 
 
 def review(root, question, *, kind='expertise', level='standard', paths=None,
-           socket=None, request_key=None, before_evidence=None):
+           state=None, request_key=None, before_evidence=None):
     """Admit one consultative ChatGPT delegation; returns the durable admission receipt."""
-    # In this integration "socket" is an explicitly configured state directory,
-    # not a network transport. Bridge and Endpoint must share its TaskStore.
-    state = Path(socket).resolve() if socket is not None else _state_location(root)
+    # Bridge and Endpoint must share the TaskStore of this state directory.
+    state = Path(state).resolve() if state is not None else _state_location(root)
     endpoint = Endpoint(state, root)
     try:
         return endpoint.submit({'question': question, 'kind': kind, 'level': level,
