@@ -12,6 +12,9 @@ from datetime import datetime, timezone
 import engines
 
 DEFAULT_MAX_AGE = 300
+# Engines for which Reprise has a native quota reader (#54). Elsewhere the
+# answer is 'not_exposed', never 'unknown' that invites useless re-reads.
+QUOTA_SOURCES = {'codex-cli', 'codex-server', 'codex-parent', 'claude-desktop'}
 
 
 def number(value, minimum=0, maximum=float('inf')):
@@ -279,6 +282,12 @@ def status(db, engine='codex-server', settings=None, *, refresh=False, now=None,
         raise ValueError('Boolean refresh required')
     settings = engines.options(engine, settings or {})
     registry = Registry(db)
+    if engine not in QUOTA_SOURCES:
+        # Nothing to read: no observation is recorded, refresh included.
+        return dict(registry.latest(engine, settings, now=now, max_age=max_age),
+                    knowledge='not_exposed', quota_source=None,
+                    note='Reprise has no native quota reader for this engine; knowledge comes '
+                         'only from refusals observed in use. Re-reading will not change this.')
     if refresh:
         source = None
         raw, failure = None, None
