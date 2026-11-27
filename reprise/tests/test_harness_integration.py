@@ -643,22 +643,22 @@ class HarnessIntegrationTests(unittest.TestCase):
         base = text[:text.index(integration.START)]
         return base + integration.START + '\n- insert: ' + json.dumps(entries, ensure_ascii=False) + '\n' + integration.END + '\n'
 
-    def with_legacy_args(self, entries, extra=('--chatgpt-socket', 'chatgpt.sock')):
+    def with_legacy_args(self, entries, extra=('--codex-workspace-write', '--chatgpt-dispatch')):
         return [{**entry, 'config': {**entry['config'],
                  'args': entry['config']['args'] + list(extra)}}
                 if entry.get('id') == 'reprise-codex-expert' else entry for entry in entries]
 
-    def test_legacy_chatgpt_socket_args_are_migrated_explicitly(self):
+    def test_retired_switches_are_migrated_explicitly(self):
         self.install()
         self.config.write_text(self.legacy_block(lambda entries: self.with_legacy_args(entries)))
         proposed = self.plan()
         self.assertTrue(proposed['legacy_migration'])
-        self.assertEqual(proposed['removed_legacy_params'], ['--chatgpt-socket', 'chatgpt.sock'])
+        self.assertEqual(proposed['removed_legacy_params'], ['--codex-workspace-write', '--chatgpt-dispatch'])
         self.assertTrue(proposed['block_reconciled'])
         integration.apply(self.root, proposed)
         text = self.config.read_text()
-        self.assertNotIn('--chatgpt-socket', text)
-        self.assertNotIn('chatgpt.sock', text)
+        self.assertNotIn('--codex-workspace-write', text)
+        self.assertNotIn('--chatgpt-dispatch', text)
         self.assertNotIn('- insert:\n', text)
         manifest = json.loads((self.managed / 'managed.json').read_text())
         self.assertEqual(manifest['legacy_removed_params'], proposed['removed_legacy_params'])
@@ -688,7 +688,7 @@ class HarnessIntegrationTests(unittest.TestCase):
         backup = Path(result['backup']) / 'cordis.patch.yml'
         self.assertTrue(backup.is_file())
         self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
-        self.assertIn('--chatgpt-socket', backup.read_text())
+        self.assertIn('--chatgpt-dispatch', backup.read_text())
 
     def test_real_block_change_is_refused_not_reconciled(self):
         self.install()

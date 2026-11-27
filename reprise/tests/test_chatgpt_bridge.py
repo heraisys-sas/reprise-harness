@@ -43,7 +43,7 @@ class ChatgptBridgeTests(RequestCalls, unittest.TestCase):
         self.assertIn('consultative expertise/review only', str(caught.exception))
 
     def test_chatgpt_model_slot_is_empty_and_rejected(self):
-        self.bridge.chatgpt_socket = '/tmp/chatgpt.sock'
+        self.bridge.chatgpt_configured = True
         entry = [b for b in self.call('reprise_backends', {})['backends'] if b['id'] == 'chatgpt'][0]
         self.assertEqual(entry['models'], [])
         with self.assertRaises(ValueError) as caught:
@@ -62,7 +62,7 @@ class ChatgptProjectionTests(unittest.TestCase):
 
     def test_chatgpt_dispatch_flag_drives_holder_capture(self):
         bridge = Bridge(self.root, {}, self.root / 'expert', daily_limit=2,
-                        desktop_state=self.root / 'desktop', chatgpt_socket=str(self.state),
+                        desktop_state=self.root / 'desktop', chatgpt_state=str(self.state),
                         chatgpt_dispatch=True)
         self.addCleanup(bridge.close)
         captured = {'status': 'confirmed', 'attempted': True, 'click_observed': True,
@@ -79,7 +79,7 @@ class ChatgptProjectionTests(unittest.TestCase):
 
     def test_chatgpt_dispatch_refusal_stays_admission_only(self):
         bridge = Bridge(self.root, {}, self.root / 'expert', daily_limit=2,
-                        desktop_state=self.root / 'desktop', chatgpt_socket=str(self.state),
+                        desktop_state=self.root / 'desktop', chatgpt_state=str(self.state),
                         chatgpt_dispatch=True)
         self.addCleanup(bridge.close)
         refused = {'status': 'refused', 'attempted': False, 'reason': 'holder_unavailable'}
@@ -92,12 +92,12 @@ class ChatgptProjectionTests(unittest.TestCase):
     def test_chatgpt_dispatch_requires_explicit_grant(self):
         with self.assertRaises(ValueError):
             Bridge(self.root, {}, self.root / 'expert', daily_limit=2,
-                   desktop_state=self.root / 'desktop', chatgpt_socket=str(self.state),
+                   desktop_state=self.root / 'desktop', chatgpt_state=str(self.state),
                    chatgpt_dispatch='yes')
 
     def test_chatgpt_projection_routes_requests_and_wait_to_chatgpt_state(self):
         bridge = Bridge(self.root, {}, self.root / 'expert', daily_limit=2,
-                        desktop_state=self.root / 'desktop', chatgpt_socket=str(self.state))
+                        desktop_state=self.root / 'desktop', chatgpt_state=str(self.state))
         self.addCleanup(bridge.db.close)
         bridge.requests.begin('k', {'backend': 'chatgpt'})
         bridge.requests.finish('k', {'status': 'finished', 'backend': 'chatgpt',
@@ -119,7 +119,7 @@ class ChatgptProjectionTests(unittest.TestCase):
         # Local ChatGPT admission has no inference or remote service dependency.
         # An unconfigured Codex executable can refuse before routing is logged.
         bridge = Bridge(self.root, {}, self.root / 'expert', daily_limit=2,
-                        desktop_state=self.root / 'desktop', chatgpt_socket=str(self.state))
+                        desktop_state=self.root / 'desktop', chatgpt_state=str(self.state))
         self.addCleanup(bridge.close)
         result = bridge.call('reprise_delegate', {'question': 'Revue', 'kind': 'expertise',
                                                   'backend': 'chatgpt', 'request_key': 'jk'})

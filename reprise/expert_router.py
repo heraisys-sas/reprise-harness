@@ -59,7 +59,7 @@ def _configured_backends(bridge):
             configured.append(backend)
         elif backend == 'claude-desktop' and bridge.desktop_tasks is not None:
             configured.append(backend)
-        elif backend == 'chatgpt' and bridge.chatgpt_socket and bridge.chatgpt_tasks is not None:
+        elif backend == 'chatgpt' and bridge.chatgpt_configured and bridge.chatgpt_tasks is not None:
             configured.append(backend)
         elif backend == 'foundation-models' and foundation_models_ready():
             configured.append(backend)

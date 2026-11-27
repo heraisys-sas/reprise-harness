@@ -1,6 +1,6 @@
 # De DeepSeek Harness à Codex par Reprise — route opérateur
 
-> **Référence humaine pour les futures demandes d'évolution.** Cette page décrit la route **DSH → Reprise → Codex** telle qu'implémentée dans `dev@a55d593b357b0d0a40ec3539acc17c049feb31a7` (17 novembre 2026). Elle explique le fonctionnement du code, **sans prétendre que la release et le profil actuellement chargés sur le Mac sont identiques**. Après une mise à jour, confirmer les capacités réelles avec `reprise_backends` et les reçus de bout en bout.
+> **Référence humaine pour les futures demandes d'évolution.** Cette page décrit la route **DSH → Reprise → Codex** telle qu'implémentée dans `dev@a55d593b357b0d0a40ec3539acc17c049feb31a7` (17 novembre 2026), avec les options révisées par #252 et #250 (27 novembre 2026 : écriture projet et délégation actives par défaut, anciens interrupteurs et alias supprimés). Elle explique le fonctionnement du code, **sans prétendre que la release et le profil actuellement chargés sur le Mac sont identiques**. Après une mise à jour, confirmer les capacités réelles avec `reprise_backends` et les reçus de bout en bout.
 
 ## Définir précisément « déléguer à Codex »
 

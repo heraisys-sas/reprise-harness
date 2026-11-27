@@ -369,7 +369,7 @@ class SyntheseV3Tests(DatabaseTestCase):
         seed_channel(db, 'codex', 'gpt-6', 'price_per_mtok', 2.0)
         bridge = types.SimpleNamespace(
             db=db, program='codex', claude_program=None, desktop_tasks=None,
-            chatgpt_socket=None, chatgpt_tasks=None, metaai_values=None,
+            chatgpt_configured=False, chatgpt_tasks=None, metaai_values=None,
             metaai_tasks=None, experts={})
         # Sans classe : codex élu (moins cher). Classe exigeante : qualité
         # 40 < 70 → None (le pass-through est effectif).

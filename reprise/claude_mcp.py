@@ -38,49 +38,11 @@ INBOX_TOOLS = [
     {'name': 'get_result', 'description': 'Retrieve a durable result. Acknowledge explicitly only after safely retaining it.', 'inputSchema': schema({'request_key': TEXT, 'acknowledge': {'type': 'boolean', 'default': False}, 'view': {'type': 'string', 'enum': ['receipt','page','full'], 'default': 'receipt'}, **PAGE_PROPERTIES}, ['request_key'])},
 ]
 OUTBOUND = {'reprise_backends', 'reprise_requests', 'reprise_quotas', 'reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup'}
-# Backends removed from every façade schema enum, plus their known aliases.
-CLAUDE_REMOVED_BACKENDS = ('claude-desktop',)
-CHATGPT_REMOVED_BACKENDS = ('chatgpt',)
-BACKEND_ALIASES = {
-    'claude-desktop': ('claude_desktop', 'reprise-claude-desktop'),
-    'chatgpt': ('chat_gpt', 'gpt', 'reprise-chatgpt'),
-}
 
 
-def outbound_tools(removed=()):
-    """Façade tool schemas: drop backends not reachable from this connector.
-
-    List AND dict enum forms are filtered; aliases of a removed backend are
-    removed too, so a loopback cannot re-enter under another spelling.
-    """
-    blocked = set(removed)
-    for name in removed:
-        blocked.update(BACKEND_ALIASES.get(name, ()))
-    tools = copy.deepcopy([item for item in TOOLS if item['name'] in OUTBOUND])
-    for item in tools:
-        backend = item['inputSchema'].get('properties', {}).get('backend')
-        if not backend:
-            continue
-        if 'enum' in backend:
-            backend['enum'] = [value for value in backend['enum'] if value not in blocked]
-        if 'oneOf' in backend:
-            variants = []
-            for variant in backend['oneOf']:
-                if 'enum' in variant:
-                    filtered = [value for value in variant['enum'] if value not in blocked]
-                    if filtered:
-                        variant = dict(variant, enum=filtered)
-                        variants.append(variant)
-                elif 'const' in variant:
-                    if variant['const'] not in blocked:
-                        variants.append(variant)
-                else:
-                    variants.append(variant)
-            if variants:
-                backend['oneOf'] = variants
-            else:
-                del backend['oneOf']
-    return tools
+def outbound_tools():
+    """Façade tool schemas of the outbound delegation tools."""
+    return copy.deepcopy([item for item in TOOLS if item['name'] in OUTBOUND])
 
 
 class ClaudeMCP:
@@ -322,7 +284,7 @@ def main():
     parser.add_argument('--state', required=True)
     parser.add_argument('--expert-state', required=True)
     parser.add_argument('--socket')
-    parser.add_argument('--chatgpt-state', '--chatgpt-socket', dest='chatgpt_state')
+    parser.add_argument('--chatgpt-state')
     # #282 : même défaut que expert_mcp.py — dispatch holder actif.
     parser.add_argument('--no-chatgpt-dispatch', dest='chatgpt_dispatch', action='store_false', default=True,
                         help='Admission only: never push admitted ChatGPT tasks to the holder')
@@ -336,7 +298,7 @@ def main():
     chatgpt_state = args.chatgpt_state or str(state_location(Path(__file__).parent, 'chatgpt-state').absolute())
     bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.expert_state,
                     desktop_state=args.state, allowed_tools=OUTBOUND,
-                    chatgpt_socket=chatgpt_state, chatgpt_dispatch=args.chatgpt_dispatch)
+                    chatgpt_state=chatgpt_state, chatgpt_dispatch=args.chatgpt_dispatch)
     facade = ClaudeMCP(tasks, bridge, max_wait=args.max_wait, progress_interval=args.progress_interval)
     await_requests = AwaitRequests()
     connection = mcp_transport.Connection(lambda text: print(text, end='', flush=True))
