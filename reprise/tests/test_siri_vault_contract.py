@@ -8,6 +8,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import vault
+from support_portability import requires_tools
 
 
 class SiriVaultContract(unittest.TestCase):
@@ -29,6 +30,7 @@ class SiriVaultContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'key_missing'):
             vault.crypt(b'private request', 'siri-inbox-v1', 'seal')
 
+@requires_tools('swiftc')
 class SiriVaultSwiftFixture(unittest.TestCase):
     """Exercise the production protocol and crypto with a synthetic key provider."""
 

@@ -8,6 +8,7 @@ from unittest.mock import patch
 import uuid
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import siri_inbox_cli as cli
+from support_portability import requires_acl
 
 class FakeInbox:
     calls = []
@@ -44,6 +45,7 @@ class InboxCliTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertNotIn('private', repr(result))
 
+    @requires_acl
     def test_explicit_store_round_trip_without_starting_services(self):
         import os
         import tempfile

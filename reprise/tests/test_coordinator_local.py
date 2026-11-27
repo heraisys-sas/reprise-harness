@@ -18,6 +18,7 @@ from coordinator_jobs import Jobs
 from coordinator_local import LocalExecution, Control, SUPERVISION_CONTRACT
 from project_registry import ProjectRegistry
 from apple_pilot_service import Service
+from support_portability import requires_tools
 
 
 def uid(): return str(uuid.uuid4())
@@ -216,6 +217,7 @@ class LocalExecutionTests(unittest.TestCase):
             payload = self.local._parts(row)[3]
             self.assertEqual(digest({'payload':payload,'parent':None}), identity)
 
+    @requires_tools('swift')
     def test_native_prompt_formatter_without_model(self):
         swift = Path(__file__).parents[1]/'swift/FoundationExplain.swift'
         source = swift.read_text()

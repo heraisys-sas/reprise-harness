@@ -15,6 +15,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import apple_pilot
 import apple_pilot_transport as transport
+from support_portability import requires_directory
 
 FAKE_SERVER = r'''
 import json, os, socket, sys, time
@@ -45,6 +46,7 @@ time.sleep(1)
 '''
 
 
+@requires_directory('/private/tmp')
 class TransportTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

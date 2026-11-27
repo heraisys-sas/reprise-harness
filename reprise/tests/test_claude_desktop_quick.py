@@ -178,8 +178,12 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(row[0], 1)
 
     def test_cdp_resume_supported_in_capabilities(self):
-        caps = self.endpoint.call('quick_entry/capabilities', {})
-        self.assertTrue(caps['cdp_resume_supported'])
+        # La capacité suit la présence du binaire Chrome, simulée ici dans les deux sens.
+        import claude_cdp_pipe
+        with mock.patch.object(claude_cdp_pipe, '_chrome_bin', return_value=sys.executable):
+            self.assertTrue(self.endpoint.call('quick_entry/capabilities', {})['cdp_resume_supported'])
+        with mock.patch.object(claude_cdp_pipe, '_chrome_bin', return_value='/nonexistent/chrome'):
+            self.assertFalse(self.endpoint.call('quick_entry/capabilities', {})['cdp_resume_supported'])
 
     def test_capabilities_expose_only_enabled_targets(self):
         """capabilities liste uniquement les cibles activées (aucune par défaut)."""

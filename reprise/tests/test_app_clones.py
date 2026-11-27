@@ -9,6 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import app_clones
+from support_portability import requires_tools
 
 
 def make_fake_app(root, name='FakeSource', bundle_id='com.fake.source', version='1.0'):
@@ -64,11 +65,13 @@ class AppClonesTests(unittest.TestCase):
                                  manifest_path=self.manifest_path,
                                  defaults_state=self.reader)
 
+    @requires_tools('codesign')
     def test_plan_missing_clone_lists_full_pipeline(self):
         planned = self.invoke('plan')
         self.assertEqual(planned['testclone'],
                          ['clone', 'identity', 'sign', 'update-off', 'freeze-record'])
 
+    @requires_tools('codesign')
     def test_apply_creates_frozen_reidentified_clone_and_source_stays_pristine(self):
         receipt = self.invoke('apply')
         self.assertEqual(receipt['testclone']['status'], 'applied')
@@ -87,6 +90,7 @@ class AppClonesTests(unittest.TestCase):
             ('com.reprise.testclone', 'SUEnableAutomaticChecks', False),
             ('com.reprise.testclone', 'SUAutomaticallyUpdate', False)])
 
+    @requires_tools('codesign')
     def test_inventory_and_verify_green_after_apply(self):
         self.invoke('apply')
         state = self.invoke('inventory')['testclone']
@@ -98,6 +102,7 @@ class AppClonesTests(unittest.TestCase):
         verdict = self.invoke('verify')
         self.assertTrue(verdict['ok'], verdict)
 
+    @requires_tools('codesign')
     def test_patched_clone_preserves_electron_helper_bundle_name(self):
         self.specs['testclone']['kind'] = 'patched'
 
@@ -108,6 +113,7 @@ class AppClonesTests(unittest.TestCase):
         self.assertEqual(plist['CFBundleDisplayName'], 'FakeClone')
         self.assertTrue(self.invoke('verify')['ok'])
 
+    @requires_tools('codesign')
     def test_existing_patched_clone_repairs_internal_name_and_resigns_in_place(self):
         self.invoke('apply')
         self.specs['testclone']['kind'] = 'patched'
@@ -127,6 +133,7 @@ class AppClonesTests(unittest.TestCase):
         self.assertEqual(asar.read_bytes(), b'already patched')
         self.assertTrue(self.invoke('verify')['ok'])
 
+    @requires_tools('codesign')
     def test_upstream_bump_plans_refresh_and_apply_replaces_clone(self):
         self.invoke('apply')
         with open(self.source / 'Contents/Info.plist', 'rb') as handle:
@@ -145,6 +152,7 @@ class AppClonesTests(unittest.TestCase):
         manifest = json.loads(self.manifest_path.read_text())
         self.assertEqual(manifest['clones']['testclone']['version'], '2.0')
 
+    @requires_tools('codesign')
     def test_apply_refuses_when_target_is_running_on_refresh(self):
         self.invoke('apply')
         with open(self.source / 'Contents/Info.plist', 'rb') as handle:
