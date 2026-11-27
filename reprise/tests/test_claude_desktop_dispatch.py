@@ -448,6 +448,31 @@ class ReviewDispatchTests(unittest.TestCase):
             return claude_desktop.review(self.directory.name, 'Question orchestrée', kind='expertise',
                                          level='standard', request_key='rk-1', tasks=tasks)
 
+    def test_delivery_proof_heads_the_receipt(self):
+        # Issue #278 : la preuve de livraison est le PREMIER champ du reçu.
+        result = self.review()
+        self.assertEqual(next(iter(result)), 'delivery')
+        self.assertEqual(result['delivery'], 'delivered')
+        self.assertNotIn('redelivery_attempted', result)
+
+    def test_composer_failure_is_redelivered_once_then_not_delivered(self):
+        _FakeRpcClient.dispatch = {'dispatch_ok': False, 'dispatch_attempted': True,
+                                   'stage': 'composeur', 'dispatch_error': 'Composeur indisponible'}
+        result = self.review()
+        self.assertEqual(_FakeRpcClient.last.calls.count('quick_entry/dispatch'), 2)
+        self.assertTrue(result['redelivery_attempted'])
+        self.assertEqual(next(iter(result)), 'delivery')
+        self.assertEqual(result['delivery'], 'not_delivered')
+        self.assertEqual(result['delivery_reason'], 'Composeur indisponible')
+        self.assertFalse(result['dispatch_ok'])
+
+    def test_uncertain_click_is_never_redelivered(self):
+        _FakeRpcClient.dispatch = {'dispatch_ok': False, 'dispatch_attempted': True,
+                                   'stage': 'incertain', 'dispatch_error': 'Réponse CDP perdue au clic'}
+        result = self.review()
+        self.assertEqual(_FakeRpcClient.last.calls.count('quick_entry/dispatch'), 1)
+        self.assertEqual(result['delivery'], 'uncertain')
+
     def test_receipt_reflects_dispatch_attempted(self):
         result = self.review()
         self.assertEqual(result['status'], 'finished')
@@ -610,6 +635,28 @@ class ReviewDispatchTests(unittest.TestCase):
             self.assertEqual(store.reserve_socket_dispatch(key)['state'], replay)
         store.record_socket_dispatch('busy-key', {'stage': 'envoyé', 'clicked': True})
         self.assertEqual(store.reserve_socket_dispatch('busy-key')['state'], 'recorded')
+
+    def test_certain_composer_failure_allows_one_bounded_redelivery(self):
+        # Issue #278 : un échec composeur certain (aucun clic) n'a rien livré ;
+        # la garde se rouvre une seule fois, puis le reçu enregistré est rejoué.
+        from desktop_task_store import TaskStore, MAX_COMPOSER_REDELIVERIES
+        store = TaskStore(self.directory.name, self.directory.name)
+        self.addCleanup(store.close)
+        failed = {'dispatch_ok': False, 'stage': 'composeur', 'dispatch_error': 'Composeur indisponible'}
+        store.admit('composer-key', 'Question test', CHAT_ID)
+        store.reserve_socket_dispatch('composer-key')
+        store.record_socket_dispatch('composer-key', failed)
+        for _ in range(MAX_COMPOSER_REDELIVERIES):
+            self.assertEqual(store.reserve_socket_dispatch('composer-key')['state'], 'reserved')
+            store.record_socket_dispatch('composer-key', failed)
+        replay = store.reserve_socket_dispatch('composer-key')
+        self.assertEqual(replay['state'], 'recorded')
+        self.assertEqual(store.dispatch_receipt('composer-key'), failed)
+        # A possible click never reopens the guard, whatever the stage.
+        store.admit('clicked-key', 'Question test', CHAT_ID)
+        store.reserve_socket_dispatch('clicked-key')
+        store.record_socket_dispatch('clicked-key', failed | {'click_observed': True})
+        self.assertEqual(store.reserve_socket_dispatch('clicked-key')['state'], 'recorded')
 
     def test_uncertain_pipe_result_is_recorded_and_never_retried(self):
         endpoint = Endpoint(self.directory.name, project_root=self.directory.name)
