@@ -154,7 +154,7 @@ class ManagedMemoryTests(unittest.TestCase):
 
     def install_both(self, access_a='write', access_b='read'):
         a = self.dsh_plan(memory_access=access_a, memory_project_id=self.project_id)
-        b = self.claude_plan(memory_access=access_b, memory_project_id=self.project_id, enable_await=True)
+        b = self.claude_plan(memory_access=access_b, memory_project_id=self.project_id)
         before = self.dsh_config.read_bytes(), self.claude_config.read_bytes()
         # Plan/registry validation must not touch either target config.
         self.assertEqual((self.dsh_config.read_bytes(), self.claude_config.read_bytes()), before)
@@ -268,7 +268,6 @@ class ManagedMemoryTests(unittest.TestCase):
         self.assertNotEqual(commands[1]['command'], old_commands[1]['command'])
         self.assertIn('--allow-write', commands[0]['args'])
         self.assertNotIn('--allow-write', commands[1]['args'])
-        self.assertTrue(json.loads((self.claude_managed / 'managed.json').read_text())['enable_await'])
         dsh.apply(self.root, self.dsh_plan(memory_access='read'))
         self.assertNotIn('--allow-write', self.commands()[0]['args'])
         dsh.apply(self.root, self.dsh_plan(memory_access='off'))

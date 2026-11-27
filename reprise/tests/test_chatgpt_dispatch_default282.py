@@ -32,7 +32,6 @@ class TestChatGptDispatchDefault282(unittest.TestCase):
     def test_expert_mcp_dispatch_default_on_and_opt_out(self):
         base = ['--project-root', '/tmp', '--state', '/tmp/state', '--chatgpt-state', '/tmp/cg']
         self.assertIs(self.bridge_kwargs(expert_mcp, base)['chatgpt_dispatch'], True)
-        self.assertIs(self.bridge_kwargs(expert_mcp, base + ['--chatgpt-dispatch'])['chatgpt_dispatch'], True)
         self.assertIs(self.bridge_kwargs(expert_mcp, base + ['--no-chatgpt-dispatch'])['chatgpt_dispatch'], False)
 
     def test_claude_mcp_dispatch_default_on_and_opt_out(self):

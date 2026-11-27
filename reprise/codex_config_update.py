@@ -168,6 +168,9 @@ def _runtime_executable(command, runtime):
     raise ValueError('Chaîne de liens du runtime trop longue.')
 
 
+RETIRED_SWITCHES = frozenset(('--codex-workspace-write', '--chatgpt-dispatch'))
+
+
 def _rewrite(entry, script, release_base, target):
     if not isinstance(entry, dict) or not isinstance(entry.get('command'), str) or not isinstance(entry.get('args'), list):
         raise ValueError('Entrée MCP non reconnue.')
@@ -194,13 +197,15 @@ def _rewrite(entry, script, release_base, target):
     options = {
         'expert_mcp.py': ({'--project-root', '--socket', '--state', '--tools', '--daily-limit',
                                   '--claude-program', '--desktop-socket', '--ironclaw-config'},
-                                 {'--claude-included-quota-confirmed', '--codex-workspace-write',
-                                  '--chatgpt-dispatch', '--no-chatgpt-dispatch'},
+                                 {'--claude-included-quota-confirmed', '--no-chatgpt-dispatch'},
                                  {'--project-root', '--state'}),
     }
     valued, switches, required = options[script]
+    # #252 : drapeaux retirés (écriture et dispatch actifs par défaut) ; la mise
+    # à jour les supprime au lieu de produire une commande que le pont refuserait.
+    kept = [arg for arg in args[4:] if arg not in RETIRED_SWITCHES]
     seen = set()
-    remainder = iter(args[4:])
+    remainder = iter(kept)
     for option in remainder:
         if option in seen or option not in valued | switches:
             raise ValueError('Options MCP ambiguës ou non reconnues.')
@@ -213,7 +218,7 @@ def _rewrite(entry, script, release_base, target):
         raise ValueError('Périmètre MCP insuffisamment explicite.')
     updated = dict(entry)
     updated['command'] = str(target / 'Contents/Resources/runtime/bin/python3')
-    updated['args'] = args[:3] + [str(target / suffix)] + args[4:]
+    updated['args'] = args[:3] + [str(target / suffix)] + kept
     return updated
 
 

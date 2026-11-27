@@ -557,7 +557,7 @@ class ExpertRouterTests(unittest.TestCase):
         self.assertNotIn('ironclaw', candidates)
 
     def test_implementation_mode_never_substituted(self):
-        bridge = self.bridge(FULL_MANIFEST, codex_workspace_write=True)
+        bridge = self.bridge(FULL_MANIFEST)
         self.codex_admissible(bridge)
         bridge.claude_program = 'claude'
         seed_ranking(bridge.db, 'claude-code', 'claude-opus-5', 1.0)

@@ -185,7 +185,7 @@ class PackageHelpersTests(unittest.TestCase):
             ]
             launched = subprocess.run([sys.executable, str(root / 'claude_mcp.py'),
                                         '--project-root', str(project), '--state', str(quick_state),
-                                        '--expert-state', str(expert_state), '--enable-await'],
+                                        '--expert-state', str(expert_state)],
                                        cwd=folder, env=environment,
                                        input='\n'.join(json.dumps(message) for message in requests) + '\n',
                                        capture_output=True, text=True, timeout=20)

@@ -154,6 +154,17 @@ class CodexConfigUpdateTests(unittest.TestCase):
         expected = str(self.target / 'Contents/Resources/helpers/expert_mcp.py')
         self.assertEqual(value['after']['reprise-harness']['args'][3], expected)
 
+    def test_retired_switches_are_dropped_on_rewrite_issue_252(self):
+        # Entrée déployée avant #252 : les drapeaux retirés disparaissent de la
+        # commande mise à jour, le reste est conservé dans l'ordre.
+        text = self.config.read_text().replace(
+            '"--socket", "/tmp/socket"]', '"--socket", "/tmp/socket", "--codex-workspace-write", "--chatgpt-dispatch", "--no-chatgpt-dispatch"]')
+        self.config.write_text(text)
+        value = update.plan(self.client, self.config, self.base, self.target, ['reprise-harness'])
+        self.assertEqual(value['after']['reprise-harness']['args'][4:],
+                         ['--project-root', '/tmp/project', '--state', '/tmp/state', '--socket', '/tmp/socket',
+                          '--no-chatgpt-dispatch'])
+
     def test_unknown_helper_name_refused(self):
         text = self.config.read_text().replace(
             str(self.old / 'Contents/Resources/helpers/expert_mcp.py'),
