@@ -82,34 +82,30 @@ def probe_codexd():
     return {"pids": out.split()}
 
 
-def probe_metaai(home, support, config_path, taskstore_path, port):
+def probe_metaai(home, support, config_path, taskstore_path):
+    # Pont fichiers depuis le 24/11 (#277) : ni port WebDAV ni montage (#294).
     import json
     import os
     import pathlib
-    import socket as sockmod
     section = {}
     rc, out, err = run(["/bin/launchctl", "print", "gui/%s/app.reprise.metaaid" % os.getuid()])
     section["daemon_charge"] = rc == 0
-    try:
-        s = sockmod.create_connection(("127.0.0.1", port), timeout=3)
-        s.close()
-        section["port_%d" % port] = True
-    except Exception as error:
-        section["port_%d" % port] = False
-        section["port_erreur"] = str(error)
+    bridge_root = "~/Library/Application Support/Reprise/metaaid-bridge"
     config = support / config_path
     if config.is_file():
         try:
             data = json.loads(config.read_text())
-            for key in ("enabled", "ui_bridge", "poll_s", "mount_point", "dav_root"):
+            for key in ("enabled", "ui_bridge", "poll_s", "bridge_root"):
                 section["config_" + key] = data.get(key)
+            retirees = [key for key in ("dav_host", "dav_port", "dav_root", "mount_point", "dav_user", "dav_password")
+                        if key in data]
+            if retirees:
+                section["config_erreur"] = "clés WebDAV supprimées (#276), metaaid refuse de démarrer : " + ", ".join(retirees)
+            bridge_root = data.get("bridge_root") or bridge_root
         except Exception as error:
             section["config_erreur"] = str(error)
     else:
         section["config"] = "absente : " + str(config)
-    rc, out, _ = run(["/sbin/mount"])
-    mount_point = os.path.expanduser(section.get("config_mount_point") or "")
-    section["monte"] = bool(mount_point) and mount_point in out
     store = pathlib.Path(taskstore_path)
     if not store.is_absolute():
         store = support / taskstore_path
@@ -124,18 +120,15 @@ def probe_metaai(home, support, config_path, taskstore_path, port):
             section["taskstore_erreur"] = str(error)
     else:
         section["taskstore"] = "absent : " + str(store)
-    dav_root = section.get("config_dav_root")
-    if dav_root:
-        try:
-            dav = pathlib.Path(str(dav_root)).expanduser()
-        except Exception:
-            dav = None
-        if dav and dav.is_dir():
-            for name in ("inbox", "outbox", "processed"):
-                d = dav / name
-                if d.is_dir():
-                    section["dav_" + name] = len([p for p in d.iterdir()
-                                                  if not p.name.startswith("._")])
+    root = pathlib.Path(str(bridge_root)).expanduser()
+    section["bridge_root"] = str(root)
+    if root.is_dir():
+        for name in ("inbox", "outbox", "processed"):
+            d = root / name
+            if d.is_dir():
+                section["pont_" + name] = len([p for p in d.iterdir() if not p.name.startswith("._")])
+    else:
+        section["bridge_root_absent"] = True
     return section
 
 
@@ -223,7 +216,6 @@ def main():
             "scheduler_label": {"type": "str", "default": "local.agent-resume"},
             "metaai_config": {"type": "str", "default": "connections/metaai.json"},
             "metaai_taskstore": {"type": "str", "default": "metaai-tasks.sqlite"},
-            "metaai_port": {"type": "int", "default": 9770},
             "project": {"type": "str", "required": True},
             "harness_project": {"type": "str", "default": ""},
             "harness_profile": {"type": "str", "default": "desktop"},
@@ -255,7 +247,7 @@ def main():
     sections["Quick Apply (claude-desktopd)"] = probe_quick_daemon()
     sections["codexd"] = probe_codexd()
     sections["Meta AI (metaaid)"] = probe_metaai(home, support, params["metaai_config"],
-                                                 params["metaai_taskstore"], params["metaai_port"])
+                                                 params["metaai_taskstore"])
     sections["Integrations"] = probe_integrations(runtime_python, helpers, params["project"],
                                                   params["harness_project"], params["harness_profile"])
     sections["Journaux"] = probe_logs(home)

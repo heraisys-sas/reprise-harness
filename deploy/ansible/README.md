@@ -14,7 +14,7 @@ ansible-playbook deploy.yml --tags diag
 
 Lecture seule. Sonde : bundle, planificateur (`scheduler-service-inspect` inclus),
 daemon Quick Apply `claude-desktopd` (socket + lsof), codexd (présence), pont Meta AI
-(metaaid launchd, port WebDAV, montage, TaskStore, inbox/outbox), intégrations
+(metaaid launchd, connexion, TaskStore, inbox/outbox du `bridge_root`), intégrations
 (`verify` claude/harness), journaux. Rapport markdown écrit sous
 `~/Library/Application Support/Reprise/diag/diag-<horodatage>.md` — rien d'autre.
 
@@ -62,8 +62,9 @@ ansible-playbook deploy.yml                             # tout (build + update i
 
 - Aucun fichier managé édité à la main : intégrations via API module, plist via PlistBuddy,
   planificateur par ses opérations gérées, pont Meta AI par `metaai-install.py` et ses CLI.
-- Jamais de stat d'un mount webdavfs zombie : le montage est du ressort de `metaaid`
-  (`ensure_mount`) ; le rôle ne fait que constater et avertir.
+- Pont Meta AI par fichiers (#277) : ni port ni montage ; le rôle recycle `metaaid` et vérifie
+  qu'il tourne. Une clé WebDAV résiduelle dans `connections/metaai.json` est signalée par le
+  diagnostic (metaaid refuse de démarrer avec, #276).
 - Socket orphelin retiré seulement après `connect()` refusé (cas #105).
 - Vérification par connexion/lsof, jamais par existence de fichier.
 - `chatgpt` retiré des intégrations managées : route fermée (#226),
