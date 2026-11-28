@@ -108,10 +108,13 @@ class GhMcpTest(unittest.TestCase):
     def test_aucun_schema_ne_porte_actor_et_argument_actor_refuse(self):
         server = self.server(allow_write=True)
         names, tools = self.tool_names(server)
-        self.assertEqual(names, ['reprise_gh_read', 'reprise_gh_comment', 'reprise_gh_create_issue'])
+        self.assertEqual(names, ['reprise_gh_read', 'reprise_gh_comment', 'reprise_gh_create_issue',
+                                 'reprise_gh_create_pull', 'reprise_gh_review', 'reprise_gh_merge'])
         for tool in tools:
             self.assertFalse(tool['inputSchema']['additionalProperties'])
-            self.assertNotIn('actor', tool['inputSchema']['properties'])
+            # Lot 3 : ni acteur, ni auteur, ni harness, ni sha, ni contournement declarables.
+            for key in ('actor', 'author', 'harness', 'sha', 'head_sha', 'override_review', 'reason'):
+                self.assertNotIn(key, tool['inputSchema']['properties'])
         with mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake:
             _, replies = self.run_frames(
                 server,

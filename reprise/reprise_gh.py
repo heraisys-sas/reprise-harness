@@ -104,26 +104,33 @@ def _run_credential_fill(host):
 
 
 OPERATOR = reprise_gh_actors.OPERATOR
-OPERATIONS = ('read', 'issue.comment', 'issue.create', 'pull.review', 'pull.merge', 'api.raw')
+OPERATIONS = ('read', 'issue.comment', 'issue.create', 'pull.create', 'pull.review', 'pull.merge',
+              'ci.sweep', 'api.raw')
 DECISIONS = ('allow', 'review_required', 'deny')
-_OP_PATTERNS = set(OPERATIONS) | {'issue.*', 'pull.*', 'api.*', '*'}
-_RULE_KEYS = {'id', 'op', 'decision', 'actors'}
+_OP_PATTERNS = set(OPERATIONS) | {'issue.*', 'pull.*', 'ci.*', 'api.*', '*'}
+_RULE_KEYS = {'id', 'op', 'decision', 'actors', 'review'}
+# Regle de fusion (#270 lot 3) : revues croisees par harness distincts.
+DEFAULT_REVIEW = {'min_reviewers': 1, 'min_reviewers_unknown_author': 2, 'distinct_from_author': True}
 _POLICY_KEYS = {'version', 'enabled', 'default', 'deny_actors', 'rules'}
 DEFAULT_RULES = (
     {'id': 'default-read', 'op': 'read', 'decision': 'allow'},
     {'id': 'default-issue', 'op': 'issue.*', 'decision': 'allow'},
     {'id': 'default-pull-review', 'op': 'pull.review', 'decision': 'allow'},
-    {'id': 'default-pull-merge', 'op': 'pull.merge', 'decision': 'review_required'},
+    {'id': 'default-pull-create', 'op': 'pull.create', 'decision': 'allow'},
+    {'id': 'default-pull-merge', 'op': 'pull.merge', 'decision': 'review_required',
+     'review': dict(DEFAULT_REVIEW)},
+    {'id': 'default-ci-sweep', 'op': 'ci.sweep', 'decision': 'allow'},
     {'id': 'default-api-raw', 'op': 'api.raw', 'decision': 'allow', 'actors': [OPERATOR]},
 )
 _V1_WARNED = []
+REVIEW_GRANTS = ('review_satisfied', 'operator_override')
 
 
 def default_policy():
     """Politique v2 par defaut (fichier absent) : lecture pour tous, issue.* et
     pull.review allow, pull.merge review_required, api.raw pour operator seul."""
     return {'version': 2, 'enabled': True, 'default': 'deny', 'deny_actors': [],
-            'rules': [dict(rule) for rule in DEFAULT_RULES]}
+            'rules': [json.loads(json.dumps(rule)) for rule in DEFAULT_RULES]}
 
 
 def _from_v1(policy):
@@ -141,6 +148,27 @@ def _names(value, label):
     if not isinstance(value, list) or not all(isinstance(x, str) and x for x in value):
         raise GhError('Politique invalide : %s doit etre une liste de noms' % label)
     return list(value)
+
+
+def _review(value, index):
+    if not isinstance(value, dict) or set(value) - set(DEFAULT_REVIEW):
+        raise GhError('Politique invalide : regle %d, review %s attendu' % (index, sorted(DEFAULT_REVIEW)))
+    review = dict(DEFAULT_REVIEW)
+    for key, item in value.items():
+        valid = (isinstance(item, bool) if key == 'distinct_from_author'
+                 else type(item) is int and 1 <= item <= 10)
+        if not valid:
+            raise GhError('Politique invalide : regle %d, review.%s' % (index, key))
+        review[key] = item
+    return review
+
+
+def review_params(policy, rule_id):
+    """Parametres de revue de la regle pull.merge retenue (defauts sinon)."""
+    for rule in policy.get('rules', []):
+        if rule_id is not None and rule.get('id') == rule_id and 'review' in rule:
+            return dict(rule['review'])
+    return dict(DEFAULT_REVIEW)
 
 
 def validate_policy(policy):
@@ -169,6 +197,8 @@ def validate_policy(policy):
                  'decision': rule['decision']}
         if 'actors' in rule:
             entry['actors'] = _names(rule['actors'], 'actors')
+        if 'review' in rule:
+            entry['review'] = _review(rule['review'], index)
         normalized.append(entry)
     return {'version': 2, 'enabled': policy.get('enabled', True),
             'default': policy.get('default'),
@@ -296,12 +326,16 @@ def request(
     auth=None,
     token_id=None,
     repo=None,
+    review_grant=None,
 ):
     """Appel REST GitHub audite. body = objet JSON ou None. Retour = (statut, donnees).
 
     op : operation de politique (defaut : `read` pour GET/HEAD, sinon `api.raw`).
     auth/token_id : etat du jeton d'acteur (voir decide) ; token_id seul est audite.
     audit_extra : champs ajoutes a chaque ligne d'audit (ex. {'channel': 'mcp'}).
+    review_grant : `review_satisfied` ou `operator_override`, pose par
+    reprise_gh_pulls apres evaluation de la regle de fusion ; leve seulement une
+    decision review_required (jamais un deny).
     """
     method = method.upper()
     op = op or ('read' if method in READ_METHODS else 'api.raw')
@@ -314,8 +348,11 @@ def request(
             raise GhError('Operation read : GET ou HEAD uniquement')
         decision, reason, rule = decide(load_policy(policy_path), actor, op, repo, auth)
         extra.update({'decision': decision, 'reason': reason, 'rule': rule})
+        if decision == 'review_required' and review_grant in REVIEW_GRANTS:
+            decision, reason = 'allow', review_grant
+            extra.update({'decision': decision, 'reason': reason})
         if decision == 'review_required':
-            raise GhError("Operation %s : revue requise (non disponible dans ce lot)" % op)
+            raise GhError("Operation %s : revue requise (reprise_gh_merge evalue la regle)" % op)
         if decision != 'allow':
             raise GhError("Operation %s refusee pour l'acteur « %s » (%s)" % (op, actor, reason))
         try:
@@ -394,7 +431,7 @@ def _isatty():
 
 
 def cli_identity(actor, token_file=None, registry_path=None):
-    """(acteur, auth, token_id) de la CLI.
+    """(acteur, auth, token_id, harness) de la CLI.
 
     Sans --token-file : `operator` (ou l'acteur explicite, alors sans jeton :
     lecture seule) ; auth tty|no_tty pour operator. Avec --token-file : acteur du
@@ -404,18 +441,18 @@ def cli_identity(actor, token_file=None, registry_path=None):
     if token_file is None:
         actor = actor or OPERATOR
         if actor == OPERATOR:
-            return actor, ('tty' if _isatty() else 'no_tty'), None
-        return actor, 'missing', None
+            return actor, ('tty' if _isatty() else 'no_tty'), None, OPERATOR
+        return actor, 'missing', None, None
     try:
         token = reprise_gh_actors.read_token_file(token_file)
     except reprise_gh_actors.ActorError as exc:
         raise GhError(str(exc)) from None
-    auth, owner, token_id, _harness = reprise_gh_actors.verify(token, registry_path)
+    auth, owner, token_id, harness = reprise_gh_actors.verify(token, registry_path)
     if auth != 'ok':
         raise GhError("Jeton d'acteur refuse (auth : %s)" % auth)
     if actor and actor != owner:
         raise GhError("--actor « %s » contredit l'acteur du jeton" % actor)
-    return owner, auth, token_id
+    return owner, auth, token_id, harness
 
 
 def _identity_kwargs(args):
@@ -452,6 +489,44 @@ def _cmd_create_issue(args):
     status, payload = create_issue(args.actor, args.repo, args.title, text, labels,
                                    **_identity_kwargs(args))
     print('HTTP %s #%s %s' % (status, payload.get('number'), payload.get('html_url')))
+    return 0
+
+
+def _pulls_call(args, action):
+    """Appel de reprise_gh_pulls (import differe : pas de cycle) ; identite issue du jeton."""
+    import reprise_gh_pulls
+    who = reprise_gh_pulls.identity(args.actor, args.harness_id, args.auth, args.token_id)
+    store = reprise_gh_pulls.ReviewStore(reprise_gh_pulls.DEFAULT_REVIEWS_PATH)
+    try:
+        return action(reprise_gh_pulls, who, store)
+    except reprise_gh_pulls.reprise_gh.GhError as exc:
+        # Meme classe sauf si ce module tourne en __main__ : message conserve.
+        raise GhError(str(exc)) from None
+    finally:
+        store.close()
+
+
+def _cmd_merge(args):
+    if args.override_review and args.reason is None:
+        raise GhError('--override-review exige --reason "<motif>"')
+    if args.reason is not None and not args.override_review:
+        raise GhError('--reason ne vaut que avec --override-review')
+    override = args.reason if args.override_review else None
+    result = _pulls_call(args, lambda pulls, who, store: pulls.merge(
+        who, store, args.repo, args.number, args.method, override_reason=override,
+        audit_extra=CLI_AUDIT))
+    print('Fusion #%d : %s (head %s)%s ; CI : %s%s' % (
+        args.number, result['merge_sha'], result['head_sha'][:12],
+        ' [contournement]' if result['override'] else '', result['ci_state'],
+        ' (issue #%s)' % result['ci_issue_number'] if result.get('ci_issue_number') else ''))
+    return 0
+
+
+def _cmd_ci_sweep(args):
+    results = _pulls_call(args, lambda pulls, who, store: pulls.ci_sweep(
+        who, store, args.repo, audit_extra=CLI_AUDIT))
+    json.dump(results, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write('\n')
     return 0
 
 
@@ -539,6 +614,17 @@ def build_parser():
     p_new.add_argument('--body-file', required=True)
     p_new.add_argument('--labels', default='')
     p_new.set_defaults(func=_cmd_create_issue)
+    p_merge = sub.add_parser('merge', help='fusionner une PR (regle de revue croisee)')
+    p_merge.add_argument('--repo', required=True)
+    p_merge.add_argument('--number', type=int, required=True)
+    p_merge.add_argument('--method', choices=('merge', 'squash', 'rebase'), default='merge')
+    p_merge.add_argument('--override-review', action='store_true',
+                         help='contournement operateur (terminal, --reason, trace et commente)')
+    p_merge.add_argument('--reason', help='motif du contournement (10 caracteres au moins)')
+    p_merge.set_defaults(func=_cmd_merge)
+    p_sweep = sub.add_parser('ci-sweep', help='relire la CI des fusions pending (issue si rouge)')
+    p_sweep.add_argument('--repo')
+    p_sweep.set_defaults(func=_cmd_ci_sweep)
     p_init = sub.add_parser('init', help='retire : ecrire gh-policy.json v2 directement')
     p_init.add_argument('--write-actors', default='')
     p_init.set_defaults(func=_cmd_init)
@@ -565,7 +651,7 @@ def main(argv=None):
     try:
         if args.cmd == 'init':
             return args.func(args)
-        args.actor, args.auth, args.token_id = cli_identity(args.actor, args.token_file)
+        args.actor, args.auth, args.token_id, args.harness_id = cli_identity(args.actor, args.token_file)
         return args.func(args)
     except (GhError, reprise_gh_actors.ActorError) as exc:
         print('Erreur : %s' % exc, file=sys.stderr)

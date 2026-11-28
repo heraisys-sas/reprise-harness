@@ -241,20 +241,63 @@ Politique v2 (`gh-policy.json`, écrite directement par l'opérateur) :
  "rules": [{"id": "default-read", "op": "read", "decision": "allow"},
            {"id": "default-issue", "op": "issue.*", "decision": "allow"},
            {"id": "default-pull-review", "op": "pull.review", "decision": "allow"},
-           {"id": "default-pull-merge", "op": "pull.merge", "decision": "review_required"},
+           {"id": "default-pull-create", "op": "pull.create", "decision": "allow"},
+           {"id": "default-pull-merge", "op": "pull.merge", "decision": "review_required",
+            "review": {"min_reviewers": 1, "min_reviewers_unknown_author": 2,
+                       "distinct_from_author": true}},
+           {"id": "default-ci-sweep", "op": "ci.sweep", "decision": "allow"},
            {"id": "default-api-raw", "op": "api.raw", "decision": "allow", "actors": ["operator"]}]}
 ```
 
 C'est aussi la politique appliquée en l'absence de fichier. Les opérations forment
-une liste fermée : `read`, `issue.comment`, `issue.create`, `pull.review`,
-`pull.merge`, `api.raw` (motifs `issue.*`, `pull.*`, `api.*`, `*`). Le filtre
+une liste fermée : `read`, `issue.comment`, `issue.create`, `pull.create`,
+`pull.review`, `pull.merge`, `ci.sweep`, `api.raw` (motifs `issue.*`, `pull.*`, `ci.*`,
+`api.*`, `*`). Le filtre
 `actors` est facultatif ; `deny_actors` pose un veto nominatif. La priorité est
 deny > review_required > allow ; une opération inconnue ou un `default` absent
 donne `deny`. Une politique invalide ou illisible refuse tout appel. Toute écriture
-d'un acteur autre qu'`operator` exige un jeton valide. `review_required` est un
-refus tant que la revue n'existe pas (lot 3). Une politique v1 (`write_actors`) est
+d'un acteur autre qu'`operator` exige un jeton valide. `review_required` renvoie
+à la règle de fusion ci-dessous. Une politique v1 (`write_actors`) est
 traduite en mémoire vers la v2 par défaut, sans réécriture du fichier ;
 `write_actors` est ignoré, avec un avertissement unique.
+
+PR, revue croisée et fusion (lot 3). Ces écritures n'existent que sur un pont
+authentifié avec `--allow-write` et passent par la politique v2 :
+- `reprise_gh_create_pull` {repo, head, base, title, body} enregistre l'auteur et
+  son harness ;
+- `reprise_gh_review` {repo, number, verdict, body} lit le head courant, poste un
+  commentaire balisé `<!-- reprise-review: … -->` et enregistre la revue ;
+- `reprise_gh_merge` {repo, number, method}.
+
+Le harness vient toujours du registre des jetons. Aucun outil n'accepte d'acteur,
+d'auteur, de harness ni de sha. Les registres `gh_pulls`, `gh_reviews` et
+`gh_merges` vivent dans `gh-reviews.sqlite` (0600, dossier 0700), à côté de
+`gh-actors.sqlite` (option `--reviews` du pont).
+
+Règle de fusion :
+- seules comptent les revues `approve` sur le head exact ;
+- le harness de l'auteur est exclu, sauf avec `distinct_from_author: false` ;
+- les approbations d'un même harness ne comptent qu'une fois ;
+- tout `request_changes` sur ce head bloque ;
+- minimum : `min_reviewers` si l'auteur est connu, `min_reviewers_unknown_author`
+  (2) sinon ;
+- la fusion envoie `sha=<head revu>` à GitHub, qui refuse si le head a bougé ;
+- le refus indique les revues manquantes, les harness exclus et la marche à suivre
+  (`reprise_gh_review` depuis une autre route, ou `reprise_delegate` en revue).
+
+Contournement, CLI seulement :
+`reprise gh merge --repo R --number N [--method M] --override-review --reason "…"`.
+Il est réservé à `operator`, exige un terminal et un motif de 10 caractères au
+moins. Un commentaire `<!-- reprise-override: … -->` est posté avant la fusion ;
+l'audit porte `reason: operator_override` et `override_reason`, et `gh_merges` le
+motif. Sans `--override-review`, l'opérateur suit la même règle.
+
+CI après fusion, non bloquante. Reprise lit les statuts et les check-runs du commit
+de fusion. Un statut ou un check-run `failure`, `error`, `cancelled` ou `timed_out`
+ouvre une issue « CI rouge après fusion de #N (sha) », avec le label `ci:red`
+seulement s'il existe. Il n'y a qu'une issue par SHA. Une CI `pending` ou
+illisible (lecture tracée `ci_read_failed`, fusion acquise) est reprise par
+`reprise gh ci-sweep [--repo R]` (op `ci.sweep`).
 
 Chaque ligne d'audit porte l'acteur, `channel` (`mcp` ou `cli`), `op`, `decision`,
 `reason`, `rule`, `auth` et `token_id`, jamais le secret, le jeton GitHub ni le

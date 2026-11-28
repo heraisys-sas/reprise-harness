@@ -6,8 +6,9 @@ L'integration harness lance ce processus avec `--actor <harness>` et
 n'accepte d'argument `actor` (cle inconnue = refus). `--actor` est un controle de
 coherence avec l'acteur du registre ; `operator` est refuse. Lecture :
 `reprise_gh_read` (GET/HEAD). Ecriture (`reprise_gh_comment`,
-`reprise_gh_create_issue`) exposee seulement avec `--allow-write` ET un jeton
-valide ; a chaque ecriture, le jeton est reverifie (revocation sans redemarrage)
+`reprise_gh_create_issue`, et depuis le lot 3 `reprise_gh_create_pull`,
+`reprise_gh_review`, `reprise_gh_merge` sans contournement) exposee seulement
+avec `--allow-write` ET un jeton valide ; a chaque ecriture, le jeton est reverifie (revocation sans redemarrage)
 et la politique v2 relue. Jeton absent, invalide, revoque ou d'un autre acteur :
 lecture seule, cause (`auth`) dans initialize.instructions et dans l'audit — les
 configs DSH ne font pas echouer un demarrage (failOnStartupError: False). Un
@@ -29,6 +30,7 @@ import sys
 
 import reprise_gh
 import reprise_gh_actors
+import reprise_gh_pulls
 from mcp_transport import PROTOCOL_VERSION
 
 # Une trame porte au plus un corps de 60 000 caracteres echappe en JSON
@@ -59,8 +61,8 @@ _READ_TOOL = {
 }
 _COMMENT_TOOL = {
     'name': 'reprise_gh_comment',
-    'description': ("Poster un commentaire d'issue (ecriture tracee ; exige un acteur "
-                    "liste en ecriture dans gh-policy.json)."),
+    'description': ("Poster un commentaire d'issue (op issue.comment ; ecriture tracee, "
+                    "jeton d'acteur valide et politique v2)."),
     'inputSchema': {
         'type': 'object',
         'properties': {
@@ -74,8 +76,8 @@ _COMMENT_TOOL = {
 }
 _CREATE_ISSUE_TOOL = {
     'name': 'reprise_gh_create_issue',
-    'description': ("Ouvrir une issue (ecriture tracee ; exige un acteur liste en "
-                    "ecriture dans gh-policy.json)."),
+    'description': ("Ouvrir une issue (op issue.create ; ecriture tracee, jeton d'acteur "
+                    "valide et politique v2)."),
     'inputSchema': {
         'type': 'object',
         'properties': {
@@ -89,6 +91,59 @@ _CREATE_ISSUE_TOOL = {
         'additionalProperties': False,
     },
 }
+
+
+_BRANCH = {'type': 'string', 'minLength': 1, 'maxLength': 255}
+_CREATE_PULL_TOOL = {
+    'name': 'reprise_gh_create_pull',
+    'description': ("Ouvrir une PR (op pull.create) ; Reprise enregistre l'auteur et son "
+                    "harness (lus dans le registre des jetons) pour la regle de revue croisee."),
+    'inputSchema': {
+        'type': 'object',
+        'properties': {
+            'repo': {'type': 'string', 'description': 'OWNER/REPO'},
+            'head': dict(_BRANCH, description='branche source (ou OWNER:branche)'),
+            'base': dict(_BRANCH, description='branche cible, ex. dev'),
+            'title': {'type': 'string', 'minLength': 1, 'maxLength': MAX_TITLE_CHARS},
+            'body': {'type': 'string', 'maxLength': MAX_BODY_CHARS},
+        },
+        'required': ['repo', 'head', 'base', 'title', 'body'],
+        'additionalProperties': False,
+    },
+}
+_REVIEW_TOOL = {
+    'name': 'reprise_gh_review',
+    'description': ("Revue Reprise d'une PR (op pull.review) : Reprise lit le head actuel, poste "
+                    "un commentaire balise et enregistre la revue pour ce head exact."),
+    'inputSchema': {
+        'type': 'object',
+        'properties': {
+            'repo': {'type': 'string', 'description': 'OWNER/REPO'},
+            'number': {'type': 'integer', 'minimum': 1},
+            'verdict': {'type': 'string', 'enum': list(reprise_gh_pulls.VERDICTS)},
+            'body': {'type': 'string', 'minLength': 1, 'maxLength': MAX_BODY_CHARS},
+        },
+        'required': ['repo', 'number', 'verdict', 'body'],
+        'additionalProperties': False,
+    },
+}
+_MERGE_TOOL = {
+    'name': 'reprise_gh_merge',
+    'description': ("Fusionner une PR (op pull.merge) si la regle de revue croisee est satisfaite "
+                    "sur le head actuel ; CI lue apres fusion (issue si rouge). Aucun contournement "
+                    "par ce canal."),
+    'inputSchema': {
+        'type': 'object',
+        'properties': {
+            'repo': {'type': 'string', 'description': 'OWNER/REPO'},
+            'number': {'type': 'integer', 'minimum': 1},
+            'method': {'type': 'string', 'enum': list(reprise_gh_pulls.MERGE_METHODS), 'default': 'merge'},
+        },
+        'required': ['repo', 'number'],
+        'additionalProperties': False,
+    },
+}
+_BRANCH_RE = re.compile(r'^[A-Za-z0-9._/:-]{1,255}$')
 
 
 class ToolRefused(Exception):
@@ -135,7 +190,7 @@ class GhServer(object):
     """Outils MCP du service gh pour un acteur fixe."""
 
     def __init__(self, actor, allow_write=False, policy_path=None, audit_path=None,
-                 token_provider=None, token=None, registry_path=None):
+                 token_provider=None, token=None, registry_path=None, reviews_path=None):
         if not isinstance(actor, str) or not ACTOR_RE.match(actor):
             raise ValueError('Acteur invalide')
         if actor == reprise_gh.OPERATOR:
@@ -143,9 +198,10 @@ class GhServer(object):
         self.actor = actor
         self._token = token
         self._registry_path = registry_path
+        self._reviews_path = reviews_path or reprise_gh_pulls.default_reviews_path(registry_path)
         self._kwargs = {'policy_path': policy_path, 'audit_path': audit_path,
                         'token_provider': token_provider, 'audit_extra': dict(AUDIT_EXTRA)}
-        self.auth, self.token_id = self._verify()
+        self.auth, self.token_id, self.harness = self._verify()
         self.allow_write = bool(allow_write) and self.auth == 'ok'
         extra = dict(AUDIT_EXTRA, auth=self.auth, token_id=self.token_id,
                      writes=self.allow_write, allow_write_flag=bool(allow_write))
@@ -153,11 +209,11 @@ class GhServer(object):
                          'started', extra=extra)
 
     def _verify(self):
-        """(auth, token_id) relus dans le registre ; un jeton d'un autre acteur = invalid."""
-        auth, owner, token_id, _harness = reprise_gh_actors.verify(self._token, self._registry_path)
+        """(auth, token_id, harness) relus dans le registre ; jeton d'un autre acteur = invalid."""
+        auth, owner, token_id, harness = reprise_gh_actors.verify(self._token, self._registry_path)
         if auth in ('ok', 'revoked') and owner != self.actor:
-            return 'invalid', None
-        return auth, token_id
+            return 'invalid', None, None
+        return auth, token_id, harness
 
     def instructions(self):
         mode = ('ecriture typee accordee' if self.allow_write
@@ -168,13 +224,60 @@ class GhServer(object):
     def tools(self):
         tools = [_READ_TOOL]
         if self.allow_write:
-            tools += [_COMMENT_TOOL, _CREATE_ISSUE_TOOL]
+            tools += [_COMMENT_TOOL, _CREATE_ISSUE_TOOL, _CREATE_PULL_TOOL, _REVIEW_TOOL, _MERGE_TOOL]
         return json.loads(json.dumps(tools))
 
     def _write_kwargs(self):
         # Revocation sans redemarrage : le registre est relu a chaque ecriture.
-        auth, token_id = self._verify()
+        auth, token_id, _harness = self._verify()
         return dict(self._kwargs, auth=auth, token_id=token_id or self.token_id)
+
+    def _who(self):
+        """Identite fraiche : auth relue, harness du registre (jamais d'un argument)."""
+        auth, token_id, harness = self._verify()
+        return reprise_gh_pulls.identity(self.actor, harness or self.harness, auth,
+                                         token_id or self.token_id)
+
+    def _with_store(self, action):
+        store = reprise_gh_pulls.ReviewStore(self._reviews_path)
+        try:
+            return action(store)
+        finally:
+            store.close()
+
+    def _create_pull(self, arguments):
+        args = _arguments(arguments, ('repo', 'head', 'base', 'title', 'body'))
+        for key in ('head', 'base'):
+            if not isinstance(args[key], str) or not _BRANCH_RE.match(args[key]):
+                raise ToolRefused('%s : nom de branche invalide' % key)
+        title = _text(args['title'], 'title', MAX_TITLE_CHARS)
+        body = _text(args['body'], 'body', MAX_BODY_CHARS, allow_empty=True)
+        who = self._who()
+        return self._with_store(lambda store: reprise_gh_pulls.create_pull(
+            who, store, args['repo'], args['head'], args['base'], title, body, **self._kwargs))
+
+    def _review(self, arguments):
+        args = _arguments(arguments, ('repo', 'number', 'verdict', 'body'))
+        if type(args['number']) is not int or args['number'] < 1:
+            raise ToolRefused('number : entier positif attendu')
+        if args['verdict'] not in reprise_gh_pulls.VERDICTS:
+            raise ToolRefused('verdict : approve ou request_changes')
+        body = _text(args['body'], 'body', MAX_BODY_CHARS)
+        who = self._who()
+        return self._with_store(lambda store: reprise_gh_pulls.review(
+            who, store, args['repo'], args['number'], args['verdict'], body, **self._kwargs))
+
+    def _merge(self, arguments):
+        args = _arguments(arguments, ('repo', 'number'), ('method',))
+        if type(args['number']) is not int or args['number'] < 1:
+            raise ToolRefused('number : entier positif attendu')
+        method = args.get('method', 'merge')
+        if method not in reprise_gh_pulls.MERGE_METHODS:
+            raise ToolRefused('method : merge, squash ou rebase')
+        who = self._who()
+        # Aucun contournement par MCP : override_reason n'est jamais transmis.
+        return self._with_store(lambda store: reprise_gh_pulls.merge(
+            who, store, args['repo'], args['number'], method, **self._kwargs))
 
     def _read(self, arguments):
         args = _arguments(arguments, ('path',), ('method',))
@@ -211,7 +314,10 @@ class GhServer(object):
         handlers = {'reprise_gh_read': self._read}
         if self.allow_write:
             handlers.update({'reprise_gh_comment': self._comment,
-                             'reprise_gh_create_issue': self._create_issue})
+                             'reprise_gh_create_issue': self._create_issue,
+                             'reprise_gh_create_pull': self._create_pull,
+                             'reprise_gh_review': self._review,
+                             'reprise_gh_merge': self._merge})
         try:
             if name not in handlers:
                 raise ToolRefused('Outil inconnu ou non accordé : %s' % str(name)[:64])
@@ -301,6 +407,7 @@ def build_parser():
                         help="acteur fixe par l'integration (audit + politique ; non authentifie)")
     parser.add_argument('--token-file', help="fichier de jeton d'acteur (absolu, 0600, proprietaire)")
     parser.add_argument('--registry', help='registre gh-actors.sqlite (defaut : reprise_gh_actors)')
+    parser.add_argument('--reviews', help='registre gh-reviews.sqlite (defaut : a cote du registre)')
     parser.add_argument('--allow-write', action='store_true',
                         help="expose les outils d'ecriture si le jeton est valide")
     parser.add_argument('--policy', help='chemin de gh-policy.json (defaut : reprise_gh)')
@@ -323,7 +430,8 @@ def main(argv=None):
             sys.stderr.write('reprise_gh_mcp : demarrage refuse : %s\n' % exc)
             return 2
     server = GhServer(args.actor, allow_write=args.allow_write, policy_path=args.policy,
-                      audit_path=args.audit, token=token, registry_path=args.registry)
+                      audit_path=args.audit, token=token, registry_path=args.registry,
+                      reviews_path=args.reviews)
     serve(server, sys.stdin.buffer, sys.stdout.buffer)
     return 0
 
