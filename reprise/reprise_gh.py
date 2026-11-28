@@ -317,6 +317,8 @@ def audit(audit_path, actor, method, path, status, error=None, extra=None):
 
 # Fusion par l'API brute : refusee, la regle de revue passe par `reprise gh merge` (revue #270).
 _MERGE_PATH_RE = re.compile(r'^/repos/[^/]+/[^/]+/pulls/\d+/merge/?(\?.*)?$', re.IGNORECASE)
+# Autres voies d'integration de code (contre-revue #270) : refusees en ecriture api.raw.
+_MERGE_LIKE_RE = re.compile(r'^/(graphql|repos/[^/]+/[^/]+/(merges|git/refs))(/|\?|$)', re.IGNORECASE)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -372,7 +374,9 @@ def request(
         if op == 'read' and method not in READ_METHODS:
             extra.update({'decision': 'deny', 'reason': 'read_requires_get', 'rule': None})
             raise GhError('Operation read : GET ou HEAD uniquement')
-        if op == 'api.raw' and isinstance(path, str) and _MERGE_PATH_RE.match(path):
+        if op == 'api.raw' and isinstance(path, str) and (
+                _MERGE_PATH_RE.match(path)
+                or method not in READ_METHODS and ('%' in path or _MERGE_LIKE_RE.match(path))):
             extra.update({'decision': 'deny', 'reason': 'merge_via_api_raw', 'rule': None})
             raise GhError('Fusion par api.raw refusee : utiliser `reprise gh merge` (regle de revue)')
         decision, reason, rule = decide(load_policy(policy_path), actor, op, repo, auth)
@@ -420,8 +424,9 @@ def request(
     except urllib.error.HTTPError as exc:
         if 300 <= exc.code < 400:
             audit(audit_path, actor, method, path, exc.code, error='redirect_refused', extra=extra)
-            raise GhError('Redirection HTTP %s refusee sur %s %s : le jeton ne quitte jamais %s'
-                          % (exc.code, method, path, host))
+            hint = ' (depot renomme ? utiliser son nouveau nom)' if exc.code == 301 else ''
+            raise GhError('Redirection HTTP %s refusee sur %s %s : le jeton ne suit aucune redirection%s'
+                          % (exc.code, method, path, hint))
         detail = (exc.read() or b'').decode('utf-8', 'replace')[:200] if exc.fp else ''
         audit(audit_path, actor, method, path, exc.code, error=detail, extra=extra)
         raise GhError('HTTP %s sur %s %s : %s' % (exc.code, method, path, detail))

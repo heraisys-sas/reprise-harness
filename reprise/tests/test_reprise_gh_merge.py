@@ -404,6 +404,38 @@ class ReviewFindingsTest(MergeTestBase):
         self.addCleanup(store.close)
         return store
 
+    def test_contre_revue_reservation_interrompue_liberee_si_ci_verte(self):
+        store = self.store()
+        store.record_merge('o/r', 5, 'm' * 40, 'h' * 40, 'codex', 'codex', None)
+        self.assertTrue(store.reserve_report('o/r', 'm' * 40))
+        store.set_ci('o/r', 'm' * 40, 'failure')
+        self.assertEqual(store.merge_row('o/r', 'm' * 40)['ci_state'], 'failure_reporting')
+        store.set_ci('o/r', 'm' * 40, 'success')
+        self.assertEqual(store.merge_row('o/r', 'm' * 40)['ci_state'], 'success')
+        self.assertEqual(store.ci_candidates(), [])
+
+    def test_contre_revue_migration_concurrente_tolere_colonne_existante(self):
+        self.store()
+        real = reprise_gh_pulls.sqlite3.connect
+
+        def racing(*args, **kwargs):
+            # Un autre processus a deja migre, mais table_info est lue avant son ALTER.
+            db = real(*args, **kwargs)
+            original = db.execute
+
+            class Proxy(object):
+                def __getattr__(self, name):
+                    return getattr(db, name)
+
+                def execute(self, sql, *rest):
+                    if sql.startswith('PRAGMA table_info'):
+                        return iter([])
+                    return original(sql, *rest)
+            return Proxy()
+
+        with mock.patch.object(reprise_gh_pulls.sqlite3, 'connect', racing):
+            reprise_gh_pulls.ReviewStore(self.reviews).close()
+
     def test_constat1_casse_du_repo_ne_contourne_pas_la_revue(self):
         self.github.case_insensitive = True
         self.create_pull('autoclaw')

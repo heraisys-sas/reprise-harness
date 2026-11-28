@@ -367,6 +367,18 @@ class ReviewFindingsTest(unittest.TestCase):
         line = json.loads(_lines(self.audit)[-1])
         self.assertEqual((line['op'], line['reason']), ('api.raw', 'merge_via_api_raw'))
 
+    def test_contre_revue_autres_voies_de_fusion_refusees(self):
+        provider = mock.Mock(return_value='SECRET')
+        for method, path in (('POST', '/repos/o/r/merges'), ('POST', '/graphql'),
+                             ('PATCH', '/repos/o/r/git/refs/heads/dev'), ('PUT', '/repos/o/r/pulls/5/%6Derge')):
+            with self.subTest(path=path), \
+                    mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake:
+                with self.assertRaisesRegex(reprise_gh.GhError, 'reprise gh merge'):
+                    reprise_gh.request('operator', method, path, {}, auth='tty', token_provider=provider,
+                                       policy_path=self.policy, audit_path=self.audit)
+                fake.assert_not_called()
+        provider.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

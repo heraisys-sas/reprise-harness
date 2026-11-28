@@ -99,7 +99,12 @@ class ReviewStore(object):
         present = {row[1] for row in self.db.execute('PRAGMA table_info(gh_merges)')}
         for name, kind in _EXTRA_MERGE_COLUMNS:
             if name not in present:
-                self.db.execute('ALTER TABLE gh_merges ADD COLUMN %s %s' % (name, kind))
+                try:
+                    self.db.execute('ALTER TABLE gh_merges ADD COLUMN %s %s' % (name, kind))
+                except sqlite3.OperationalError as exc:
+                    # Migration concurrente : un autre processus a deja ajoute la colonne.
+                    if 'duplicate column' not in str(exc):
+                        raise
 
     def close(self):
         self.db.close()
@@ -136,12 +141,13 @@ class ReviewStore(object):
         return {'number': row[0], 'ci_state': row[1], 'ci_issue_number': row[2]} if row else None
 
     def set_ci(self, repo, merge_sha, state, issue_number=None, now=None):
-        """Etat CI ; ne libere jamais une reservation failure_reporting sans issue."""
+        """Etat CI ; une reservation failure_reporting sans issue n'est liberee que par une CI
+        verte (relance apres une interruption) ; pending la conserve (reponse perdue)."""
         self.db.execute("UPDATE gh_merges SET ci_state=?, ci_checked_at=?, "
                         "ci_issue_number=COALESCE(ci_issue_number, ?) WHERE repo=? AND merge_sha=? "
-                        "AND (COALESCE(ci_state, '') != 'failure_reporting' OR ? IS NOT NULL)",
+                        "AND (COALESCE(ci_state, '') != 'failure_reporting' OR ? IS NOT NULL OR ? = 'success')",
                         (state, time.time() if now is None else now, issue_number, repo, merge_sha,
-                         issue_number))
+                         issue_number, state))
 
     def reserve_report(self, repo, merge_sha, now=None):
         """Reservation atomique avant le POST de l'issue CI rouge ; False si deja prise."""
