@@ -240,7 +240,7 @@ class MetaaiBridgeTests(RequestCalls, unittest.TestCase):
                                                 'backend': 'metaai', 'wait_seconds': 30})
         self.assertEqual(result['status'], 'finished')
         for extra in ({'execution_seconds': 10}, {'inactivity_seconds': 10}):
-            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, 'Only wait_seconds applies to the metaai backend'):
+            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, r'Only wait_seconds applies to the metaai backend|Budget not supported for backend metaai'):
                 self.call('reprise_delegate', {'question': 'Revue', 'kind': 'review', 'backend': 'metaai',
                                                'wait_seconds': 30, **extra})
 

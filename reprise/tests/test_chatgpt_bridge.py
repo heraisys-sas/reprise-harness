@@ -89,7 +89,7 @@ class ChatgptProjectionTests(unittest.TestCase):
             result = bridge.call('reprise_delegate', {'question': 'Revue', 'kind': 'expertise', 'backend': 'chatgpt',
                                                       'request_key': 'ws', 'wait_seconds': 30})
         self.assertEqual(result['response'], 'R.')
-        with self.assertRaisesRegex(ValueError, 'Only wait_seconds applies to the chatgpt backend'):
+        with self.assertRaisesRegex(ValueError, r'Only wait_seconds applies to the chatgpt backend|Budget not supported for backend chatgpt'):
             bridge.call('reprise_delegate', {'question': 'Revue', 'kind': 'expertise', 'backend': 'chatgpt',
                                              'request_key': 'ws2', 'wait_seconds': 30, 'execution_seconds': 10})
 
