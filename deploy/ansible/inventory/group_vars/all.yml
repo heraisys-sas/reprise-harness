@@ -22,8 +22,6 @@ reprise_restart_quick_daemon: true
 # Pont Meta AI (rôle reprise_metaai ; runbook docs/integrations/metaai/METAI-INTEGRATION.md).
 reprise_metaai_config_path: connections/metaai.json
 reprise_metaai_taskstore_path: metaai-tasks.sqlite
-reprise_metaai_port: 9770
-reprise_metaai_mount_point: "{{ ansible_env.HOME }}/MetaAI-bridge-test/mnt"
 reprise_metaai_manage: true
 reprise_metaai_force: false
 reprise_metaai_restart: true

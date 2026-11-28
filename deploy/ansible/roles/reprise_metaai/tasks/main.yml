@@ -1,7 +1,7 @@
 ---
 # Récupération humaine du pont Meta AI (runbook docs/integrations/metaai/METAI-INTEGRATION.md).
-# Sécurité : ne jamais stat-er un mount webdavfs zombie ; le montage est géré par le
-# daemon metaaid lui-même (ensure_mount), le rôle ne fait qu'assurer le cycle launchd.
+# Pont fichiers depuis le 24/11 (#277) : ni serveur WebDAV ni montage ; le rôle
+# assure le cycle launchd et vérifie que metaaid tourne (#294).
 # Le redéploiement de la copie patchée (tag metaai-copy) exige la variable
 # reprise_metaai_redeploy=true ET une confirmation à la volée — il refuse si
 # Meta AI (originale) tourne, et il n'est jamais automatique.
@@ -39,34 +39,22 @@
   changed_when: metaaid_bootstrap.rc == 0
   tags: [metaai]
 
-- name: Recycler metaaid (recharge connexion et démon WebDAV)
+- name: Recycler metaaid (recharge la connexion)
   ansible.builtin.command:
     cmd: /bin/launchctl kickstart -k gui/{{ ansible_user_uid }}/app.reprise.metaaid
   when: reprise_metaai_restart
   changed_when: true
   tags: [metaai]
 
-- name: Attendre le port WebDAV local de metaaid
-  ansible.builtin.wait_for:
-    host: 127.0.0.1
-    port: "{{ reprise_metaai_port }}"
-    timeout: "{{ reprise_metaai_wait_s }}"
-  tags: [metaai]
-
-- name: Vérifier la présence du montage webdavfs (informationnel)  # noqa: command-instead-of-module
+- name: Vérifier que metaaid tourne après recyclage
   ansible.builtin.command:
-    cmd: /sbin/mount
-  register: metaai_mount
+    cmd: /bin/launchctl print gui/{{ ansible_user_uid }}/app.reprise.metaaid
+  register: metaaid_running
   changed_when: false
-  tags: [metaai]
-
-- name: Signaler l'absence du montage (webdavfs retente seul — ne pas monter à la main)
-  ansible.builtin.debug:
-    msg: >-
-      ATTENTION : {{ reprise_metaai_mount_point }} absent de la table de montage.
-      metaaid (ensure_mount) retente seul ; si le partage Meta AI a été révoqué
-      (logout), refaire le partage du volume dans l'app (Paramètres → Applications).
-  when: reprise_metaai_mount_point not in metaai_mount.stdout
+  failed_when: metaaid_running.rc != 0 or 'state = running' not in metaaid_running.stdout
+  retries: 5
+  delay: 3
+  until: metaaid_running.rc == 0 and 'state = running' in metaaid_running.stdout
   tags: [metaai]
 
 - name: État de la copie patchée Meta AI Reprise (lecture seule)

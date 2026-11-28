@@ -15,7 +15,6 @@
     scheduler_label: "{{ reprise_scheduler_label }}"
     metaai_config: "{{ reprise_metaai_config_path }}"
     metaai_taskstore: "{{ reprise_metaai_taskstore_path }}"
-    metaai_port: "{{ reprise_metaai_port }}"
     project: "{{ reprise_project_root }}"
     harness_project: "{{ reprise_harness_project }}"
     harness_profile: "{{ reprise_harness_profile }}"
