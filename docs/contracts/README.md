@@ -8,6 +8,7 @@ réelles ou simulées avec preuve), **partiel** (une partie livrée, le reste tr
 
 | Contrat | Rôle | Statut |
 | --- | --- | --- |
+| [ARCHITECTURE](ARCHITECTURE.md) | Architecture livrée : composants, chemin d'une délégation, état durable, frontières, écarts connus | Référence courante (brouillon #289) |
 | [HARNESS-SUPERVISION-ARCHITECTURE](HARNESS-SUPERVISION-ARCHITECTURE.md) | Architecture cible multi-harness : matrice, chaîne de reprise, registre, livraison progressive | Révisé (audit #119) — matrice à tenir à jour |
 | [DELEGATION-PERSISTENCE](DELEGATION-PERSISTENCE.md) | Reçus durables, barrières de dispatch, résultats et incertitude | Référence courante |
 | [HARNESS-ROLES-CONTRACT](HARNESS-ROLES-CONTRACT.md) | Rôles, reprise après quota, archivage, routage | Contrat courant ; implémentations partielles |
