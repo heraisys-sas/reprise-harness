@@ -534,10 +534,17 @@ class Bridge:
             raise ValueError('Project directory required')
         self.values = options('codex-server', values)
         self.program = executable('codex-cli')
-        if claude_program and (not Path(claude_program).is_absolute() or not Path(claude_program).is_file()
-                               or not os.access(claude_program, os.X_OK)):
-            raise ValueError('Absolute executable Claude CLI path required')
-        self.claude_program = str(Path(claude_program).resolve()) if claude_program else None
+        # #266 : un chemin Claude invalide désactive seulement claude-code (raison
+        # exposée par reprise_backends) ; le reste du pont démarre normalement.
+        self.claude_program = None
+        self.claude_program_error = None
+        if claude_program:
+            if (not Path(claude_program).is_absolute() or not Path(claude_program).is_file()
+                    or not os.access(claude_program, os.X_OK)):
+                self.claude_program_error = 'Chemin Claude CLI absolu et exécutable requis : ' + str(claude_program)
+                print('Warning: ' + self.claude_program_error + ' ; backend claude-code non configuré', file=sys.stderr)
+            else:
+                self.claude_program = str(Path(claude_program).resolve())
         self.claude_subscription_only = claude_subscription_only
         self.desktop_values = {'socket': desktop_socket} if desktop_socket else {}
         self.desktop_program = executable('claude-desktop')
@@ -1418,7 +1425,8 @@ class Bridge:
                  'executable_configured': bool(self.claude_program), 'auth_verified': False,
                  'billing': 'Claude subscription; paid credits must be disabled by operator',
                  'quota_remaining': None, 'kinds': list(MODES), 'levels': ['standard', 'deep'],
-                 'writes': workspace_writes('claude-code'), 'context': 'Explicit question and file snapshots only; no tools'},
+                 'writes': workspace_writes('claude-code'), 'context': 'Explicit question and file snapshots only; no tools'}
+                | ({'reason': self.claude_program_error} if self.claude_program_error else {}),
                 {'id': 'claude-desktop', 'configured': bool(self.desktop_values), 'models': [],
                  'billing': 'Claude Desktop session; quota not reported',
                  'kinds': list(MODES), 'levels': ['standard', 'deep'],

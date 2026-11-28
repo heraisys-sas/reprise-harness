@@ -1347,5 +1347,218 @@ class HarnessIntegrationTests(unittest.TestCase):
                          integration.START + '\n' + body + integration.END + '\n')
 
 
+    # #266 : backend claude-code opt-in (chemin + confirmation de quota déclarative).
+    def fake_claude(self, folder='tools'):
+        directory = self.base / folder
+        directory.mkdir(exist_ok=True)
+        directory.chmod(0o755)
+        program = directory / 'claude'
+        program.write_text('#!/bin/sh\nexit 0\n')
+        program.chmod(0o755)
+        return program
+
+    def claude_args(self):
+        _, block = integration.split_block(self.config.read_text())
+        return integration.block_entries(block)[0]['config']['args']
+
+    def run_main(self, *extra, project=None):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = integration.main(self.root, [
+                'harness-integration-plan', '--home', str(self.home), '--profile', 'desktop',
+                '--project', str(project or self.project), '--action', 'install', *extra])
+        return code, json.loads(output.getvalue())
+
+    def test_claude_code_is_absent_by_default(self):
+        proposed = self.install()
+        self.assertNotIn('claude_code', proposed)
+        self.assertNotIn('--claude-program', self.config.read_text())
+        self.assertNotIn('--claude-included-quota-confirmed', self.config.read_text())
+        self.assertNotIn('claude_program', json.loads((self.managed / 'managed.json').read_text()))
+        self.assertIsNone(integration.inspect(self.home, 'desktop')['claude_program'])
+
+    def test_claude_code_opt_in_persisted_verified_idempotent_and_revocable(self):
+        program = self.fake_claude()
+        proposed = self.install(claude_program=str(program), claude_included_quota_confirmed=True)
+        self.assertEqual(proposed['claude_code'], {
+            'program': str(program), 'resolved': str(program.resolve()),
+            'included_quota_confirmed': True, 'message': integration.CLAUDE_QUOTA_MESSAGE})
+        args = self.claude_args()
+        self.assertTrue(args[3].endswith('Contents/Resources/helpers/expert_mcp.py'))
+        position = args.index('--claude-program')
+        self.assertEqual(args[position + 1:position + 3], [str(program), '--claude-included-quota-confirmed'])
+        self.assertLess(args.index('--chatgpt-state'), position)
+        self.assertLess(position, args.index('--state'))
+        manifest = json.loads((self.managed / 'managed.json').read_text())
+        self.assertEqual(manifest['claude_program'], str(program))
+        self.assertEqual(integration.inspect(self.home, 'desktop')['claude_program'], str(program))
+        # bridge_probe() réinstallerait sans claude : sonde construite à part.
+        with patch.object(integration.subprocess, 'run', return_value=self._claude_probe()):
+            self.assertEqual(integration.verify(self.home, 'desktop', root=self.root, project=self.project)['status'], 'verified')
+        # Re-plan sans option : état du manifeste conservé.
+        self.assertEqual(integration.plan(self.root, self.home, 'desktop', self.project)['changes'], [])
+        # Révocation explicite, rejouée par apply depuis le plan public.
+        revoked = integration.plan(self.root, self.home, 'desktop', self.project, claude_program=False)
+        self.assertNotIn('claude_code', revoked)
+        self.assertTrue(revoked['changes'])
+        integration.apply(self.root, revoked)
+        self.assertNotIn('--claude-program', self.config.read_text())
+        self.assertNotIn('claude_program', json.loads((self.managed / 'managed.json').read_text()))
+        self.assertEqual(integration.plan(self.root, self.home, 'desktop', self.project)['changes'], [])
+
+    def _claude_probe(self):
+        tools = [{'name': name, 'inputSchema': {'properties': (
+            {'view': {'enum': ['receipt', 'page']}} if name == 'reprise_requests' else
+            {'return_mode': {'enum': ['full', 'receipt']}} if name in integration.DELEGATE else {})}}
+            for name in sorted(integration.OBSERVE + integration.DELEGATE)]
+        stdout = '\n'.join(json.dumps(message) for message in [
+            {'id': 1, 'result': {'serverInfo': {'version': 'fixture-version'}}},
+            {'id': 2, 'result': {'tools': tools}}])
+        return subprocess.CompletedProcess([], 0, stdout=stdout, stderr='')
+
+    def test_claude_code_survives_equivalent_reformatted_block(self):
+        # Sites de reconstruction depuis le manifeste : desired (bloc divergent) et verify.
+        program = self.fake_claude()
+        self.install(claude_program=str(program), claude_included_quota_confirmed=True)
+        self.config.write_text(self.reformatted_config())
+        with patch.object(integration.subprocess, 'run', return_value=self._claude_probe()):
+            result = integration.verify(self.home, 'desktop', root=self.root, project=self.project)
+        self.assertEqual(result['status'], 'verified')
+        self.assertIn('block_reconciled', result)
+        proposed = integration.plan(self.root, self.home, 'desktop', self.project)
+        self.assertTrue(proposed['block_reconciled'])
+        self.assertEqual(proposed['claude_code']['program'], str(program))
+        integration.apply(self.root, proposed)
+        self.assertIn('--claude-included-quota-confirmed', self.claude_args())
+
+    def test_claude_code_symlink_is_kept_as_given(self):
+        program = self.fake_claude()
+        links = self.base / 'links'
+        links.mkdir(mode=0o755)
+        links.chmod(0o755)
+        (links / 'claude').symlink_to(program)
+        proposed = self.install(claude_program=str(links / 'claude'), claude_included_quota_confirmed=True)
+        self.assertEqual(proposed['claude_code']['program'], str(links / 'claude'))
+        self.assertEqual(proposed['claude_code']['resolved'], str(program.resolve()))
+        args = self.claude_args()
+        self.assertEqual(args[args.index('--claude-program') + 1], str(links / 'claude'))
+        self.assertEqual(json.loads((self.managed / 'managed.json').read_text())['claude_program'], str(links / 'claude'))
+
+    def test_claude_code_invalid_choices_are_refused_without_write(self):
+        program = self.fake_claude()
+        plain = self.fake_claude('plain')
+        plain.chmod(0o644)
+        open_file = self.fake_claude('open-file')
+        open_file.chmod(0o757)
+        open_dir = self.fake_claude('open-dir')
+        open_dir.parent.chmod(0o777)
+        self.addCleanup(open_dir.parent.chmod, 0o755)
+        released = self.state.parent / 'integration-releases' / 'claude'
+        released.parent.mkdir(exist_ok=True)
+        shutil.copy(program, released)
+        released.chmod(0o755)
+        in_profile = self.folder / 'claude'
+        shutil.copy(program, in_profile)
+        in_profile.chmod(0o755)
+        before = self.snapshot(self.folder)
+        cases = {'relatif': ('claude', True), 'tilde': ('~/claude', True),
+                 'dossier': (str(program.parent), True), 'non exécutable': (str(plain), True),
+                 'cible world-writable': (str(open_file), True), 'parent world-writable': (str(open_dir), True),
+                 'saut de ligne': (str(program) + '\n--evil', True),
+                 'non canonique': (str(program.parent / '..' / 'tools' / 'claude'), True),
+                 'option': ('--claude', True), 'release': (str(released), True), 'profil': (str(in_profile), True),
+                 'absent': (str(self.base / 'missing' / 'claude'), True),
+                 'quota manquant': (str(program), False), 'quota seul': (None, True),
+                 'révocation et quota': (False, True)}
+        for label, (value, confirmed) in cases.items():
+            with self.subTest(label), self.assertRaises(ValueError):
+                integration.plan(self.root, self.home, 'desktop', self.project,
+                                 claude_program=value, claude_included_quota_confirmed=confirmed)
+        self.assertEqual(self.snapshot(self.folder), before)
+        for extra in (['--claude-program', str(program)], ['--claude-included-quota-confirmed'],
+                      ['--claude-program', str(program), '--claude-included-quota-confirmed', '--no-claude-code'],
+                      ['--no-claude-code', '--claude-included-quota-confirmed']):
+            with self.subTest(extra=extra):
+                code, result = self.run_main(*extra)
+                self.assertEqual(code, 1)
+                self.assertEqual(result['status'], 'refused')
+                self.assertIn('Claude Code', result['message'])
+        code, result = self.run_main('--claude-program', str(program), '--claude-included-quota-confirmed')
+        self.assertEqual(code, 0)
+        self.assertEqual(result['plan']['claude_code']['program'], str(program))
+        self.assertIn('déclarative', result['message'])
+        self.assertEqual(self.snapshot(self.folder), before)
+
+    def test_claude_code_project_change_requires_explicit_choice(self):
+        program = self.fake_claude()
+        self.install(claude_program=str(program), claude_included_quota_confirmed=True)
+        other = self.base / 'other-project'
+        other.mkdir()
+        with self.assertRaisesRegex(ValueError, 'claude-code'):
+            integration.plan(self.root, self.home, 'desktop', other)
+        code, result = self.run_main(project=other)
+        self.assertEqual(code, 1)
+        self.assertIn('claude_program', result['message'])
+        self.assertNotIn('claude_code', integration.plan(self.root, self.home, 'desktop', other, claude_program=False))
+        kept = integration.plan(self.root, self.home, 'desktop', other, claude_program=str(program),
+                                claude_included_quota_confirmed=True)
+        self.assertEqual(kept['claude_code']['program'], str(program))
+        code, _ = self.run_main('--no-claude-code', project=other)
+        self.assertEqual(code, 0)
+
+    def test_claude_code_flags_added_by_hand_are_not_adopted(self):
+        program = self.fake_claude()
+        self.install()
+        text = self.config.read_text()
+        edited = text.replace('"--state"', json.dumps('--claude-program') + ', ' + json.dumps(str(program))
+                              + ', "--claude-included-quota-confirmed", "--state"', 1)
+        self.assertNotEqual(edited, text)
+        self.config.write_text(edited)
+        for options in ({}, {'claude_program': str(program), 'claude_included_quota_confirmed': True}):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, 'personnalisé'):
+                integration.plan(self.root, self.home, 'desktop', self.project, **options)
+        with patch.object(integration.subprocess, 'run', return_value=self._claude_probe()), \
+                self.assertRaisesRegex(ValueError, 'modifiée'):
+            integration.verify(self.home, 'desktop', root=self.root, project=self.project)
+        self.assertEqual(self.config.read_text(), edited)
+
+    def test_claude_code_bridge_args_order_non_regression(self):
+        without = integration._bridge_entries(Path('/release'), '/state', ('reprise_backends',), '/project',
+                                              'desktop', self.managed, chatgpt_state='/chatgpt')[0]['config']['args']
+        entries = integration._bridge_entries(Path('/release'), '/state', ('reprise_backends',), '/project',
+                                              'desktop', self.managed, chatgpt_state='/chatgpt',
+                                              claude_program='/opt/claude/bin/claude')
+        args = entries[0]['config']['args']
+        self.assertEqual(args[3], '/release/Contents/Resources/helpers/expert_mcp.py')
+        self.assertEqual(args, without[:without.index('--state')]
+                         + ['--claude-program', '/opt/claude/bin/claude', '--claude-included-quota-confirmed']
+                         + without[without.index('--state'):])
+        self.assertEqual([entry['id'] for entry in entries], ['reprise-codex-expert', 'reprise-skill-filesystem'])
+
+    def test_claude_code_flags_are_preserved_by_codex_config_update(self):
+        # Seuls les drapeaux générés par #266 sont passés : --chatgpt-state n'est pas
+        # dans la liste blanche de codex_config_update (écart préexistant, hors lot).
+        import codex_config_update as update
+        base = self.base / 'codex-releases'
+        old, target = base / ('a' * 64), base / ('b' * 64)
+        for path in (old, target):
+            (path / 'Contents/Resources/helpers').mkdir(parents=True)
+            (path / 'Contents/Resources/runtime/bin').mkdir(parents=True)
+            binary = path / 'Contents/Resources/runtime/bin/python3'
+            binary.write_text('#!/bin/sh\nexit 0\n')
+            binary.chmod(0o700)
+        generated = integration._bridge_entries(Path('/release'), '/state', ('reprise_backends',), '/project',
+                                                'desktop', self.managed, claude_program='/opt/claude/bin/claude')
+        args = generated[0]['config']['args']
+        claude = args[args.index('--claude-program'):args.index('--state')]
+        self.assertEqual(claude, ['--claude-program', '/opt/claude/bin/claude', '--claude-included-quota-confirmed'])
+        entry = {'command': str(old / 'Contents/Resources/runtime/bin/python3'),
+                 'args': ['-E', '-s', '-B', str(old / 'Contents/Resources/helpers/expert_mcp.py'),
+                          '--project-root', '/project', *claude, '--state', '/state']}
+        with patch.object(update, '_release', side_effect=lambda path, release_base: Path(path)):
+            updated = update._rewrite(entry, 'expert_mcp.py', base, target)
+        self.assertEqual(updated['args'][4:], entry['args'][4:])
+
+
 if __name__ == '__main__':
     unittest.main()

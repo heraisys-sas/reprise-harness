@@ -198,6 +198,41 @@ un changement de `--project` avec continuation, rôle coordinator ou bash-sandbo
 désactivé exige des choix explicites pour le nouveau périmètre. Les inverses CLI,
 mutuellement exclusifs avec leurs positifs, permettent la révocation sans retrait
 complet : `--no-output-resume`, `--no-asi1-effort` et `--enable-bash-sandbox`.
+
+### Backend claude-code (#266)
+
+Le backend `claude-code` reste absent par défaut. `harness-integration-plan`
+l’active avec `--claude-program PATH --claude-included-quota-confirmed` : les deux
+options sont requises ensemble. Le plan les reporte dans l’entrée du pont, après
+`--chatgpt-state` : le chemin tel que donné (un lien symbolique est conservé), puis
+la confirmation. Le manifeste enregistre `claude_program` et
+`harness-integration-inspect` l’expose. Le plan expose `claude_code` (`program`,
+`resolved`, `included_quota_confirmed`) dans son empreinte. Sans option, un nouveau
+plan conserve l’état du manifeste. `--no-claude-code` révoque le backend ; il est
+exclusif des deux options positives. Comme pour bash-sandbox, un changement de
+`--project` alors que claude-code est actif exige un choix explicite. Des drapeaux
+claude ajoutés à la main dans le bloc, sans entrée de manifeste, ne sont pas adoptés :
+le plan refuse le bloc comme personnalisé.
+
+La confirmation de quota est **déclarative**. Le CLI Claude ne permet pas de vérifier
+que les crédits payants sont désactivés ; l’opérateur en reste responsable. Le
+chemin est validé à chaque plan, y compris quand il vient du manifeste. Il doit être
+absolu et canonique (sans `~`, `..`, `//`, saut de ligne ni préfixe `--`). La cible
+résolue doit être un fichier exécutable. Elle doit appartenir à l’utilisateur courant
+ou à root. Ni la cible, ni son dossier, ni le dossier du chemin donné ne doivent être
+modifiables par tous. Enfin, la cible doit se trouver hors de `integration-releases`
+et hors du dossier du profil. Une mise à jour de Claude qui change la cible d’un lien
+modifie `resolved` : un plan préparé avant la mise à jour est alors refusé par
+`apply`. L’idempotence se juge sur `changes == []`, pas sur un `resolved` identique.
+Côté pont, un chemin devenu invalide ne bloque plus le démarrage. `reprise_backends`
+affiche `claude-code` avec `configured: false` et la raison, et toute délégation
+`claude-code` est refusée explicitement.
+
+Ce qui reste à l’opérateur, hors sandbox : lancer le plan puis l’apply réels sur son
+profil, ensuite `harness-integration-verify`. Il doit aussi relancer le client DSH,
+seul moyen de recharger le pont MCP, puis vérifier dans `reprise_backends` que
+`claude-code` apparaît `configured: true`. Aucune authentification ni inférence
+Claude n’est vérifiée par l’intégration.
 Délégation et écriture dans le projet ne sont plus des choix (#252) : toujours
 actives, elles suivent le projet du pont. Une modification de configuration ne révoque pas les processus
 MCP déjà chargés ; leur rechargement reste une opération distincte.

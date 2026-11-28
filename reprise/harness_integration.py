@@ -240,7 +240,7 @@ def block_entries(block_text):
     return entries
 
 
-def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, desktop_socket=None, bash_sandbox_disabled=False, memory=None, chatgpt_state=None):
+def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, desktop_socket=None, bash_sandbox_disabled=False, memory=None, chatgpt_state=None, claude_program=None):
     program = release / 'Contents/Resources/runtime/bin/python3'
     args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/expert_mcp.py'),
             '--project-root', project]
@@ -248,6 +248,10 @@ def _bridge_entries(release, state, tools, project, profile, managed, output_res
         args.extend(['--desktop-socket', str(desktop_socket)])
     if chatgpt_state:
         args.extend(['--chatgpt-state', str(chatgpt_state)])
+    if claude_program:
+        # #266 : chemin tel que choisi par l'opérateur (pas sa résolution) ; la
+        # confirmation de quota est indissociable du chemin.
+        args.extend(['--claude-program', claude_program, '--claude-included-quota-confirmed'])
     args.extend(['--state', state, '--tools', ','.join(tools)])
     entries = [
         {'id': 'reprise-codex-expert', 'name': '@deepseek-ai/dsh-mcp-client', 'config': {
@@ -276,6 +280,57 @@ def _bridge_entries(release, state, tools, project, profile, managed, output_res
 # installations existantes au prochain plan.
 RETIRED_SWITCHES = ('--codex-workspace-write', '--chatgpt-dispatch')
 RETIRED_MANIFEST_KEYS = ('codex_workspace_write', 'chatgpt_dispatch')
+CLAUDE_QUOTA_MESSAGE = ('Confirmation de quota inclus déclarative : le CLI Claude ne permet pas de vérifier '
+                        'que les crédits payants sont désactivés ; elle reste sous la responsabilité de l’opérateur.')
+
+
+def _claude_selection(old, project, claude_program, confirmed):
+    # #266 : tri-état comme bash-sandbox — None conserve le manifeste, False
+    # révoque, un chemin active (avec la confirmation de quota, jamais seul).
+    if type(confirmed) is not bool:
+        raise ValueError('Action ou capacité invalide.')
+    if claude_program is None:
+        if confirmed:
+            raise ValueError('Claude Code : --claude-included-quota-confirmed exige --claude-program.')
+        previous = old if old and old.get('status') == 'installed' else {}
+        if previous.get('claude_program') and str(Path(project).expanduser().resolve(strict=True)) != previous.get('project'):
+            raise ValueError('Projet différent : sélectionner explicitement le droit claude-code.')
+        return previous.get('claude_program')
+    if claude_program is False:
+        if confirmed:
+            raise ValueError('Claude Code : --no-claude-code est exclusif de la confirmation de quota.')
+        return None
+    if not isinstance(claude_program, str) or not claude_program:
+        raise ValueError('Action ou capacité invalide.')
+    if not confirmed:
+        raise ValueError('Claude Code : --claude-program et --claude-included-quota-confirmed sont requis ensemble.')
+    return claude_program
+
+
+def _validate_claude_program(path, forbidden):
+    # Le pont exécutera ce programme avec les droits de l'opérateur : refuser tout
+    # chemin ambigu ou remplaçable par un tiers. Lien symbolique accepté, le
+    # chemin donné est conservé tel quel ; la cible est contrôlée.
+    if (not isinstance(path, str) or '\n' in path or '\r' in path or '\0' in path or '~' in path
+            or path.startswith('--') or not os.path.isabs(path) or os.path.normpath(path) != path):
+        raise ValueError('Claude Code : chemin absolu canonique requis (sans ~, .., // ni saut de ligne).')
+    try:
+        target = Path(path).resolve(strict=True)
+    except OSError:
+        raise ValueError('Claude Code : programme introuvable : ' + path)
+    if not target.is_file() or not os.access(target, os.X_OK):
+        raise ValueError('Claude Code : fichier exécutable requis : ' + path)
+    if target.stat().st_uid not in (os.getuid(), 0):
+        raise ValueError('Claude Code : programme appartenant à un autre utilisateur refusé.')
+    for item in {target, target.parent, Path(path).parent}:
+        if item.stat().st_mode & 0o002:
+            raise ValueError('Claude Code : programme ou dossier modifiable par tous refusé : ' + str(item))
+    for root in forbidden:
+        root = Path(root)
+        if any(candidate.is_relative_to(base) for candidate in (Path(path), target)
+               for base in {root, root.resolve()}):
+            raise ValueError('Claude Code : programme hors de la release d’intégration et du profil requis.')
+    return str(target)
 
 
 def _strip_legacy_args(entries):
@@ -715,6 +770,7 @@ def inspect(home, profile=None):
             result['agent_role'] = old.get('agent_role', 'standard')
         result['bash_sandbox_disabled'] = (old or {}).get('bash_sandbox_disabled', False)
         result['desktop_socket'] = (old or {}).get('desktop_socket')
+        result['claude_program'] = (old or {}).get('claude_program')
         result['retired_options'] = sorted(set(RETIRED_MANIFEST_KEYS) & set(old or {}))
         reconciliation = managed / 'reconciliation.json'
         if reconciliation.exists() or reconciliation.is_symlink():
@@ -983,7 +1039,7 @@ def apply_asi1_preset(text, old, enable, plugin_path):
     return ''.join(lines), [digest(''.join(block).encode())], False
 
 
-def desired(root, home, profile, project, action, agent_role='standard', output_resume=False, output_resume_project=None, asi1_effort=False, bash_sandbox_disabled=None, memory_access=None, memory_project_id=None, memory_scope_id=None):
+def desired(root, home, profile, project, action, agent_role='standard', output_resume=False, output_resume_project=None, asi1_effort=False, bash_sandbox_disabled=None, memory_access=None, memory_project_id=None, memory_scope_id=None, claude_program=None, claude_included_quota_confirmed=False):
     home, folder, managed = context(home, profile)
     old = manifest(managed)
     if old:
@@ -995,6 +1051,7 @@ def desired(root, home, profile, project, action, agent_role='standard', output_
         if previous.get('bash_sandbox_disabled') and str(Path(project).resolve(strict=True)) != previous.get('project'):
             raise ValueError('Projet différent : sélectionner explicitement le droit bash-sandbox.')
         bash_sandbox_disabled = previous.get('bash_sandbox_disabled', False)
+    claude_program = _claude_selection(old, project, claude_program, claude_included_quota_confirmed) if action == 'install' else None
     project = str(Path(project).expanduser().resolve(strict=True))
     if not Path(project).is_dir():
         raise ValueError('Projet autorisé : dossier existant requis.')
@@ -1054,10 +1111,13 @@ def desired(root, home, profile, project, action, agent_role='standard', output_
         desktop_socket = None
         if DESKTOP_SOCKET.exists():
             desktop_socket = str(DESKTOP_SOCKET)
+        claude_resolved = None
+        if claude_program:
+            claude_resolved = _validate_claude_program(claude_program, (Path(state).parent / 'integration-releases', folder))
         entries = _bridge_entries(release, state, tools, project, profile, managed,
                                   output_resume, resume_project,
                                   desktop_socket, bash_sandbox_disabled, memory,
-                                  chatgpt_state=chatgpt_state)
+                                  chatgpt_state=chatgpt_state, claude_program=claude_program)
         if mismatched_block:
             try:
                 parsed = block_entries(block)
@@ -1074,7 +1134,7 @@ def desired(root, home, profile, project, action, agent_role='standard', output_
                     profile, managed, old.get('output_resume', False),
                     old.get('output_resume_project'),
                     old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), previous_memory,
-                    old.get('chatgpt_state'))
+                    old.get('chatgpt_state'), old.get('claude_program'))
             else:
                 expected = entries
             if parsed != expected:
@@ -1128,6 +1188,8 @@ def desired(root, home, profile, project, action, agent_role='standard', output_
         next_manifest['chatgpt_state'] = chatgpt_state
         if bash_sandbox_disabled:
             next_manifest['bash_sandbox_disabled'] = True
+        if claude_program:
+            next_manifest['claude_program'] = claude_program
         if reconciled_from:
             next_manifest['reconciled_from_sha256'] = reconciled_from
         elif old and 'reconciled_from_sha256' in old:
@@ -1166,10 +1228,14 @@ def desired(root, home, profile, project, action, agent_role='standard', output_
     if legacy_removed:
         extra['legacy_migration'] = True
         extra['removed_legacy_params'] = legacy_removed
+    if action == 'install' and claude_program:
+        # Couvert par l'empreinte du plan : `resolved` suit la cible actuelle du lien.
+        extra['claude_code'] = {'program': claude_program, 'resolved': claude_resolved,
+                                'included_quota_confirmed': True, 'message': CLAUDE_QUOTA_MESSAGE}
     return files, extra, next_manifest
 
 
-def plan(root, home, profile, project, action='install', agent_role='standard', output_resume=False, output_resume_project=None, asi1_effort=False, bash_sandbox_disabled=None, memory_access=None, memory_project_id=None, memory_scope_id=None):
+def plan(root, home, profile, project, action='install', agent_role='standard', output_resume=False, output_resume_project=None, asi1_effort=False, bash_sandbox_disabled=None, memory_access=None, memory_project_id=None, memory_scope_id=None, claude_program=None, claude_included_quota_confirmed=False):
     if bash_sandbox_disabled is None:
         old = manifest(context(home, profile)[2])
         previous = old if old and old.get('status') == 'installed' else {}
@@ -1180,7 +1246,7 @@ def plan(root, home, profile, project, action='install', agent_role='standard', 
         raise ValueError('Action ou capacité invalide.')
     if inspect(home, profile).get('pending_plan'):
         raise ValueError('Reprendre l’opération partielle conservée avant de créer un autre plan.')
-    files, extra, _ = desired(root, home, profile, project, action, agent_role, output_resume, output_resume_project, asi1_effort, bash_sandbox_disabled, memory_access, memory_project_id, memory_scope_id)
+    files, extra, _ = desired(root, home, profile, project, action, agent_role, output_resume, output_resume_project, asi1_effort, bash_sandbox_disabled, memory_access, memory_project_id, memory_scope_id, claude_program, claude_included_quota_confirmed)
     changes = []
     for path, text in files.items():
         before, after = file_hash(path), digest(text.encode()) if text is not None else None
@@ -1218,6 +1284,12 @@ def locked(managed):
         yield
 
 
+def _claude_replay(public):
+    # Rejeu explicite : un plan sans claude_code révoque (False), jamais « conserver ».
+    selected = public.get('claude_code') or {}
+    return (selected.get('program') or False, bool(selected.get('program')))
+
+
 def apply(root, public):
     if isinstance(public, dict) and public.get('format') == 2 and public.get('action') == 'reconcile':
         return reconcile_apply(root, public)
@@ -1237,12 +1309,12 @@ def apply(root, public):
             if journal['plan'] != public:
                 raise ValueError('Un autre plan est en attente ; reprendre ce plan sans écrasement.')
         else:
-            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False), public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id'))
+            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False), public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id'), *_claude_replay(public))
             if current != public:
                 raise ValueError('Entrées modifiées depuis la prévisualisation. Refaire le plan.')
             if not public['changes']:
                 return {'status': 'completed', 'changed': False, 'message': 'Configuration identique ; aucune écriture.'}
-            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False), public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id'))
+            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False), public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id'), *_claude_replay(public))
             if public['action'] == 'install':
                 helpers, runtime, identity = bundle_info(root)
                 if identity != Path(public['release']).name:
@@ -1352,7 +1424,7 @@ def _reconcile_inputs(root, home, profile, project, resume_project, accepted_blo
     expected = _bridge_entries(Path(old['release']), old['state'], old['tools'], project, profile, managed,
         resume, old.get('output_resume_project'),
         old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory,
-        old.get('chatgpt_state'))
+        old.get('chatgpt_state'), old.get('claude_program'))
     actual = block_entries(block.replace('\r\n', '\n'))
     # Normalize only fields explicitly replaced by this operation. All remaining
     # arguments, tools, permissions and plugin settings must match the old owner.
@@ -1393,7 +1465,7 @@ def _reconcile_inputs(root, home, profile, project, resume_project, accepted_blo
     memory_integration.validate_binding(old['state'], memory, project, 'harness')
     entries = _bridge_entries(release, old['state'], old['tools'], project, profile, managed,
         resume, resume_project, old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory,
-        old.get('chatgpt_state'))
+        old.get('chatgpt_state'), old.get('claude_program'))
     _validate_target_entries(entries)
     if not _canonical_paths(entries):
         raise ValueError('Bloc non canonique : une seule ligne entre les délimiteurs, sans continuation.')
@@ -1584,7 +1656,7 @@ def verify(home, profile, root=None, project=None):
                                    old['profile'], managed, old.get('output_resume', False),
                                    old.get('output_resume_project'),
                                    old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory_integration.selected(old),
-                                   old.get('chatgpt_state'))
+                                   old.get('chatgpt_state'), old.get('claude_program'))
         if block is None or _strip_legacy_args(block_entries(block))[0] != expected:
             raise ValueError('Configuration Reprise absente ou modifiée.')
         # Bloc reformatté équivalent : accepté sans réécriture ici.
@@ -1706,6 +1778,10 @@ def main(root, argv=None):
             toggle = command.add_mutually_exclusive_group()
             toggle.add_argument('--disable-bash-sandbox', action='store_true', default=None, help='Générer l’entrée plugin bash-sandbox désactivée (choix local persisté)')
             toggle.add_argument('--enable-bash-sandbox', dest='disable_bash_sandbox', action='store_false', default=None)
+            command.add_argument('--claude-program', help='Chemin absolu du CLI Claude pour le backend claude-code (avec --claude-included-quota-confirmed)')
+            command.add_argument('--claude-included-quota-confirmed', action='store_true', default=False,
+                                 help='Déclaration opérateur : crédits payants désactivés (non vérifiable par le CLI)')
+            command.add_argument('--no-claude-code', action='store_true', default=False, help='Révoquer le backend claude-code')
             command.add_argument('--agent-role', choices=('standard', 'coordinator'), default=None)
             command.add_argument('--memory-access', choices=('off', 'read', 'write'), default=None)
             command.add_argument('--memory-project-id')
@@ -1745,8 +1821,19 @@ def main(root, argv=None):
                     setattr(args, option, default)
             if args.output_resume and args.output_resume_project is None and not changed_project:
                 args.output_resume_project = installed.get('output_resume_project')
-            result = {'status': 'planned', 'message': 'Plan sans écriture. L’installation n’autorise ni inférence ni activation automatique.',
-                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.agent_role, args.output_resume, args.output_resume_project, args.asi1_effort, args.disable_bash_sandbox, args.memory_access, args.memory_project_id, args.memory_scope_id)}
+            # #266 : hors de la boucle ci-dessus (None y vaudrait un choix non défaut).
+            if args.no_claude_code and (args.claude_program is not None or args.claude_included_quota_confirmed):
+                raise ValueError('Claude Code : --no-claude-code est exclusif de --claude-program et de la confirmation de quota.')
+            if (args.claude_program is None) != (not args.claude_included_quota_confirmed) and not args.no_claude_code:
+                raise ValueError('Claude Code : --claude-program et --claude-included-quota-confirmed sont requis ensemble.')
+            claude_program = False if args.no_claude_code else args.claude_program
+            if changed_project and args.action == 'install' and claude_program is None and installed.get('claude_program'):
+                raise ValueError('Projet différent : choix explicite requis pour claude_program')
+            proposed = plan(root, args.home, args.profile, args.project, args.action, args.agent_role, args.output_resume, args.output_resume_project, args.asi1_effort, args.disable_bash_sandbox, args.memory_access, args.memory_project_id, args.memory_scope_id, claude_program, args.claude_included_quota_confirmed)
+            message = 'Plan sans écriture. L’installation n’autorise ni inférence ni activation automatique.'
+            if 'claude_code' in proposed:
+                message += ' ' + CLAUDE_QUOTA_MESSAGE
+            result = {'status': 'planned', 'message': message, 'plan': proposed}
         elif args.command == 'harness-integration-apply':
             public = json.loads(sys.stdin.read(1024 * 1024))['plan']
             result = apply(root, public)
