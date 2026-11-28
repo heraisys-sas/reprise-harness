@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tests du pont MCP stdio du service gh (#270) : acteur fixe, double porte, sans reseau."""
+"""Tests du pont MCP stdio du service gh (#270) : acteur fixe, jeton d'acteur, double porte, sans reseau."""
 
 import io
 import json
@@ -13,6 +13,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import reprise_gh
+import reprise_gh_actors
 import reprise_gh_mcp
 
 TOKEN = 'ghp_FAUX_JETON_270_ne_doit_jamais_sortir'
@@ -54,11 +55,22 @@ class GhMcpTest(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         self.policy = os.path.join(self.dir, 'gh-policy.json')
         self.audit = os.path.join(self.dir, 'gh-audit.jsonl')
+        self.registry = os.path.join(self.dir, 'gh-actors.sqlite')
         self.provider = mock.Mock(return_value=TOKEN)
 
-    def server(self, actor='autoclaw', allow_write=False):
+    def issue(self, actor='autoclaw', name='jeton'):
+        registry = reprise_gh_actors.ActorRegistry(self.registry, repo_root=Path(__file__).parents[2])
+        try:
+            result = registry.issue(actor, actor, os.path.join(self.dir, name))
+        finally:
+            registry.close()
+        return reprise_gh_actors.read_token_file(result['token_file']), result['token_id']
+
+    def server(self, actor='autoclaw', allow_write=False, token=True):
+        secret = self.issue(actor)[0] if token is True else token
         return reprise_gh_mcp.GhServer(actor, allow_write=allow_write, policy_path=self.policy,
-                                       audit_path=self.audit, token_provider=self.provider)
+                                       audit_path=self.audit, token_provider=self.provider,
+                                       token=secret, registry_path=self.registry)
 
     def run_frames(self, server, *frames):
         out = io.BytesIO()
@@ -66,10 +78,11 @@ class GhMcpTest(unittest.TestCase):
         raw = out.getvalue()
         return raw, [json.loads(line) for line in raw.splitlines() if line.strip()]
 
-    def audit_lines(self):
+    def audit_lines(self, start=False):
         if not os.path.exists(self.audit):
             return []
-        return [json.loads(x) for x in _read_text(self.audit).splitlines() if x.strip()]
+        lines = [json.loads(x) for x in _read_text(self.audit).splitlines() if x.strip()]
+        return [x for x in lines if start or x['method'] != 'START']
 
     def tool_names(self, server):
         _, replies = self.run_frames(server, _frame(1, 'tools/list'))
@@ -81,8 +94,7 @@ class GhMcpTest(unittest.TestCase):
         self.assertEqual(replies[1]['result'], {})
 
     def test_sans_allow_write_aucun_outil_d_ecriture(self):
-        # Acteur pourtant liste en ecriture : le drapeau seul ferme la porte.
-        reprise_gh.save_policy({'enabled': True, 'write_actors': ['autoclaw']}, self.policy)
+        # Jeton pourtant valide : le drapeau seul ferme la porte.
         server = self.server(allow_write=False)
         names, _ = self.tool_names(server)
         self.assertEqual(names, ['reprise_gh_read'])
@@ -94,7 +106,6 @@ class GhMcpTest(unittest.TestCase):
         self.provider.assert_not_called()
 
     def test_aucun_schema_ne_porte_actor_et_argument_actor_refuse(self):
-        reprise_gh.save_policy({'enabled': True, 'write_actors': ['autoclaw']}, self.policy)
         server = self.server(allow_write=True)
         names, tools = self.tool_names(server)
         self.assertEqual(names, ['reprise_gh_read', 'reprise_gh_comment', 'reprise_gh_create_issue'])
@@ -114,8 +125,10 @@ class GhMcpTest(unittest.TestCase):
         fake.assert_not_called()
         self.provider.assert_not_called()
 
-    def test_ecriture_refusee_acteur_hors_write_actors(self):
-        reprise_gh.save_policy({'enabled': True, 'write_actors': ['claude']}, self.policy)
+    def test_ecriture_refusee_par_veto_deny_actors(self):
+        reprise_gh.save_policy({'version': 2, 'default': 'deny', 'deny_actors': ['metaai'],
+                                'rules': [{'id': 'issue', 'op': 'issue.*', 'decision': 'allow'}]},
+                               self.policy)
         with mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake:
             _, replies = self.run_frames(
                 self.server(actor='metaai', allow_write=True),
@@ -123,7 +136,7 @@ class GhMcpTest(unittest.TestCase):
                 _call(2, 'reprise_gh_create_issue', {'repo': 'o/r', 'title': 't', 'body': 'b'}))
         for reply in replies:
             self.assertTrue(reply['result']['isError'])
-            self.assertIn('Ecriture refusee', reply['result']['content'][0]['text'])
+            self.assertIn('deny_actor', reply['result']['content'][0]['text'])
         fake.assert_not_called()
         self.provider.assert_not_called()
         lines = self.audit_lines()
@@ -131,7 +144,6 @@ class GhMcpTest(unittest.TestCase):
         self.assertTrue(all(x['actor'] == 'metaai' and x['channel'] == 'mcp' for x in lines))
 
     def test_ecriture_ok_double_porte_et_politique_relue(self):
-        reprise_gh.save_policy({'enabled': True, 'write_actors': ['autoclaw']}, self.policy)
         seen = []
 
         def fake_urlopen(req, timeout):
@@ -146,8 +158,10 @@ class GhMcpTest(unittest.TestCase):
                 _call(1, 'reprise_gh_create_issue', {'repo': 'o/r', 'title': 'Titre', 'body': 'Corps',
                                                      'labels': ['agent:claude']}),
                 _call(2, 'reprise_gh_comment', {'repo': 'o/r', 'number': 270, 'body': 'Bonjour'}))
-            # Politique relue a chaque appel : retrait de l'acteur = refus immediat.
-            reprise_gh.save_policy({'enabled': True, 'write_actors': []}, self.policy)
+            # Politique relue a chaque appel : un veto ajoute = refus immediat.
+            reprise_gh.save_policy({'version': 2, 'default': 'allow',
+                                    'rules': [{'id': 'gel', 'op': 'issue.comment', 'decision': 'deny'}]},
+                                   self.policy)
             _, refused = self.run_frames(
                 server, _call(3, 'reprise_gh_comment', {'repo': 'o/r', 'number': 270, 'body': 'x'}))
         self.assertFalse(replies[0]['result']['isError'])
@@ -250,7 +264,6 @@ class GhMcpTest(unittest.TestCase):
         self.provider.assert_not_called()
 
     def test_corps_trop_long_refuse(self):
-        reprise_gh.save_policy({'enabled': True, 'write_actors': ['autoclaw']}, self.policy)
         body = 'x' * (reprise_gh_mcp.MAX_BODY_CHARS + 1)
         with mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake:
             _, replies = self.run_frames(
@@ -264,7 +277,6 @@ class GhMcpTest(unittest.TestCase):
         self.provider.assert_not_called()
 
     def test_arguments_types_refuses(self):
-        reprise_gh.save_policy({'enabled': True, 'write_actors': ['autoclaw']}, self.policy)
         cases = [
             ('reprise_gh_comment', {'repo': 'o/r', 'number': True, 'body': 'x'}),
             ('reprise_gh_comment', {'repo': 'o/r', 'number': '1', 'body': 'x'}),
@@ -280,6 +292,62 @@ class GhMcpTest(unittest.TestCase):
         self.assertTrue(all(reply['result']['isError'] for reply in replies))
         fake.assert_not_called()
         self.provider.assert_not_called()
+
+    def test_lecture_seule_sans_jeton_malgre_allow_write(self):
+        cases = {'missing': None, 'invalid': 'rgh_ffffffffffffffff_' + 'x' * 43}
+        for auth, secret in cases.items():
+            with self.subTest(auth=auth):
+                server = self.server(allow_write=True, token=secret)
+                names, _ = self.tool_names(server)
+                self.assertEqual(names, ['reprise_gh_read'])
+                _, replies = self.run_frames(server, _frame(1, 'initialize', {}))
+                self.assertIn('auth : %s' % auth, replies[0]['result']['instructions'])
+                with mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake:
+                    _, replies = self.run_frames(server, _call(2, 'reprise_gh_comment',
+                                                               {'repo': 'o/r', 'number': 1, 'body': 'x'}))
+                self.assertTrue(replies[0]['result']['isError'])
+                fake.assert_not_called()
+                start = self.audit_lines(start=True)[-1]
+                self.assertEqual((start['method'], start['auth'], start['writes']), ('START', auth, False))
+        self.provider.assert_not_called()
+
+    def test_jeton_d_un_autre_acteur_vaut_invalide(self):
+        secret, _ = self.issue('claude', name='jeton-claude')
+        server = self.server(actor='autoclaw', allow_write=True, token=secret)
+        self.assertEqual((server.auth, server.allow_write), ('invalid', False))
+        with self.assertRaises(ValueError):
+            self.server(actor='operator', token=None)
+
+    def test_revocation_sans_redemarrage_et_secret_jamais_expose(self):
+        secret, token_id = self.issue()
+        server = self.server(allow_write=True, token=secret)
+        _, replies = self.run_frames(server, _frame(1, 'initialize', {}))
+        self.assertIn('ecriture typee accordee', replies[0]['result']['instructions'])
+        calls = []
+
+        def fake_urlopen(req, timeout):
+            calls.append(req.full_url)
+            return _FakeResponse({'html_url': 'https://github.com/o/r/issues/1#c'}, status=201)
+
+        comment = {'repo': 'o/r', 'number': 1, 'body': 'x'}
+        with mock.patch.object(reprise_gh.urllib.request, 'urlopen', fake_urlopen):
+            raw_ok, ok = self.run_frames(server, _call(2, 'reprise_gh_comment', comment))
+            registry = reprise_gh_actors.ActorRegistry(self.registry, repo_root=Path(__file__).parents[2])
+            registry.revoke('autoclaw')
+            registry.close()
+            raw_ko, ko = self.run_frames(server, _call(3, 'reprise_gh_comment', comment))
+            raw_read, read = self.run_frames(server, _call(4, 'reprise_gh_read', {'path': '/repos/o/r'}))
+        self.assertFalse(ok[0]['result']['isError'])
+        self.assertTrue(ko[0]['result']['isError'])
+        self.assertIn('auth_revoked', ko[0]['result']['content'][0]['text'])
+        self.assertFalse(read[0]['result']['isError'])
+        self.assertEqual(len(calls), 2)
+        writes = [x for x in self.audit_lines() if x['op'] == 'issue.comment']
+        self.assertEqual([(x['status'], x['auth'], x['token_id']) for x in writes],
+                         [(201, 'ok', token_id), ('refused', 'revoked', token_id)])
+        for blob in (raw_ok, raw_ko, raw_read, _read_text(self.audit).encode()):
+            self.assertNotIn(secret.encode(), blob)
+            self.assertNotIn(TOKEN.encode(), blob)
 
     def test_acteur_obligatoire_et_motif(self):
         parser = reprise_gh_mcp.build_parser()

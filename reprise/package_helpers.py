@@ -27,7 +27,7 @@ ASSETS += ('codex_thread_observer.py',)  # #245 : observation lecture seule des 
 ASSETS += ('metaai_reprise_build.py', 'metaai_reprise_client.py', 'metaai_ui_dispatch.py',
            'metaai_patch_dylib_path.py', 'metaai_reprise.m', 'metaai_sec_shim.m')  # Redéploiement ReMetaAI via reprise metaai-integration-* (GUI) ; sources .m requises par compile_dylibs().
 ASSETS += ('expert_router.py',)  # #271 : importé par expert_mcp après chaque délégation.
-ASSETS += ('reprise_gh.py', 'reprise_gh_mcp.py')  # #270 : service gh audité et son pont MCP stdio à acteur fixé.
+ASSETS += ('reprise_gh.py', 'reprise_gh_mcp.py', 'reprise_gh_actors.py')  # #270 : service gh audité, pont MCP stdio, registre des jetons d'acteur (lot 2).
 # Documentation durable embarquée dans le payload ; résolue depuis la racine du dépôt.
 DOCS = (
     'docs/integrations/claude/CLAUDE-DESKTOP-APPLY.md',

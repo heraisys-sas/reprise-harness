@@ -206,19 +206,65 @@ MCP déjà chargés ; leur rechargement reste une opération distincte.
 
 `reprise/reprise_gh_mcp.py` est un serveur MCP stdio (trames bornées, sans écoute
 réseau) devant le service `reprise_gh.py`. L'intégration le lance avec
-`--actor <harness>` ; `--policy` et `--audit` remplacent au besoin les chemins par
-défaut de `gh-policy.json` et `gh-audit.jsonl`. Il expose `reprise_gh_read`
-(GET/HEAD sur `api.github.com`) et, seulement avec `--allow-write`,
-`reprise_gh_comment` et `reprise_gh_create_issue`. Aucun outil ne prend d'argument
-`actor` : une clé inconnue est refusée. L'écriture exige une double porte :
-`--allow-write` au lancement et l'acteur listé dans `write_actors`, politique relue
-à chaque appel. Il n'existe ni verbe d'écriture générique, ni `init`, ni écriture de
-politique par ce canal. Chaque ligne d'audit porte l'acteur et `channel: mcp` (la
-CLI : `channel: cli`), sans jeton ni corps. Corps et titres sont bornés, la sortie
-est tronquée avec mention. Limites : l'acteur est une étiquette fixée par
-l'intégration, pas une authentification ; la lecture couvre tout ce que le jeton
-voit. Le branchement de ce serveur dans les intégrations harness gérées reste à
-venir.
+`--actor <harness> --token-file <absolu>` ; `--registry`, `--policy` et `--audit`
+remplacent au besoin les chemins par défaut (`gh-actors.sqlite`, `gh-policy.json`,
+`gh-audit.jsonl`). Il expose `reprise_gh_read` (GET/HEAD sur `api.github.com`) et,
+seulement avec `--allow-write` **et** un jeton d'acteur valide, `reprise_gh_comment`
+et `reprise_gh_create_issue`. Aucun outil ne prend d'argument `actor` : une clé
+inconnue est refusée. Il n'existe ni verbe d'écriture générique, ni `init`, ni
+écriture de politique par ce canal.
+
+Jetons d'acteur (`reprise_gh_actors.py`) : l'opérateur les émet depuis un terminal
+avec `reprise gh actors issue --actor X --harness H --out /chemin/absolu [--replace]`
+(fichier `rgh_<token_id>_<secret>` créé en 0600, dossier 0700 hors dépôt ; seule
+l'empreinte SHA-256 est enregistrée), les révoque avec
+`reprise gh actors revoke --actor X [--token-id ID]` et les liste sans secret avec
+`reprise gh actors list`. `--replace` révoque les autres jetons de l'acteur. Le pont
+exige un fichier de jeton détenu par l'utilisateur, en mode 0600 exact, sans lien
+symbolique, de 100 octets au plus ; sinon il refuse de démarrer, avec un message sans
+secret sur stderr. Si le jeton est absent, invalide, révoqué ou appartient à un autre
+acteur, le pont reste en lecture seule ; la cause (`auth`) figure dans
+`initialize.instructions` et dans la ligne d'audit `START`. Les configs DSH ayant
+`failOnStartupError: False`, un refus de démarrage passerait inaperçu, d'où ce choix.
+Le registre est relu à chaque écriture : une révocation prend effet sans redémarrage.
+`--actor operator` est refusé par le pont.
+
+CLI opérateur : `reprise gh …` agit par défaut en acteur réservé `operator` ;
+écrire en `operator` exige un terminal (stdin et stdout), sinon le refus porte le
+motif `operator_requires_tty`. Avec `--token-file`, l'acteur vient du registre et un
+`--actor` contradictoire est refusé. `init` est retiré.
+
+Politique v2 (`gh-policy.json`, écrite directement par l'opérateur) :
+
+```json
+{"version": 2, "enabled": true, "default": "deny", "deny_actors": [],
+ "rules": [{"id": "default-read", "op": "read", "decision": "allow"},
+           {"id": "default-issue", "op": "issue.*", "decision": "allow"},
+           {"id": "default-pull-review", "op": "pull.review", "decision": "allow"},
+           {"id": "default-pull-merge", "op": "pull.merge", "decision": "review_required"},
+           {"id": "default-api-raw", "op": "api.raw", "decision": "allow", "actors": ["operator"]}]}
+```
+
+C'est aussi la politique appliquée en l'absence de fichier. Les opérations forment
+une liste fermée : `read`, `issue.comment`, `issue.create`, `pull.review`,
+`pull.merge`, `api.raw` (motifs `issue.*`, `pull.*`, `api.*`, `*`). Le filtre
+`actors` est facultatif ; `deny_actors` pose un veto nominatif. La priorité est
+deny > review_required > allow ; une opération inconnue ou un `default` absent
+donne `deny`. Une politique invalide ou illisible refuse tout appel. Toute écriture
+d'un acteur autre qu'`operator` exige un jeton valide. `review_required` est un
+refus tant que la revue n'existe pas (lot 3). Une politique v1 (`write_actors`) est
+traduite en mémoire vers la v2 par défaut, sans réécriture du fichier ;
+`write_actors` est ignoré, avec un avertissement unique.
+
+Chaque ligne d'audit porte l'acteur, `channel` (`mcp` ou `cli`), `op`, `decision`,
+`reason`, `rule`, `auth` et `token_id`, jamais le secret, le jeton GitHub ni le
+corps. Corps et titres sont bornés ; la sortie est tronquée avec mention. Limites :
+le jeton d'acteur sert à l'attribution, à la révocation et à la politique par
+acteur, ce n'est pas une frontière de sécurité. Tout agent qui dispose de Bash
+tourne sous le même compte Unix et peut lire jetons, registre et politique. La
+garde par terminal est un frein contre l'usage involontaire. La lecture couvre tout
+ce que voit le jeton GitHub. Le branchement de ce serveur dans les intégrations
+harness gérées reste à venir.
 
 
 ## Réconciliation explicite d’un bloc divergent, sans sauvegarde

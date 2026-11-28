@@ -124,9 +124,11 @@ if len(sys.argv) > 1 and sys.argv[1] in ('clone-inspect', 'clone-plan', 'clone-a
 
 if len(sys.argv) > 1 and sys.argv[1] == 'gh':
     # Service gh pour l'opérateur (#270) : acteur « operator » sauf --actor explicite.
+    # Avec --token-file, l'acteur vient du registre : aucune injection (lot 2).
     import reprise_gh
     argv = sys.argv[2:]
-    if not any(arg == '--actor' or arg.startswith('--actor=') for arg in argv):
+    if not any(arg in ('--actor', '--token-file') or arg.startswith(('--actor=', '--token-file='))
+               for arg in argv):
         argv = ['--actor', 'operator', *argv]
     sys.exit(reprise_gh.main(argv))
 
