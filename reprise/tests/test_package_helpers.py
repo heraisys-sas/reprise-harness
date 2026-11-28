@@ -54,6 +54,10 @@ class PackageHelpersTests(unittest.TestCase):
         for name in ('registry_marker.py', 'registry_adopt.py'):
             self.assertIn(name, ASSETS)
 
+    def test_gh_service_and_mcp_bridge_are_packaged_issue_270(self):
+        for name in ('reprise_gh.py', 'reprise_gh_mcp.py'):
+            self.assertIn(name, ASSETS)
+
     def test_bundle_ships_every_local_import(self):
         """#255, #271 : un import local absent d'ASSETS ne casse qu'en release."""
         local = {path.stem for path in SOURCE.glob('*.py')}

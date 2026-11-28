@@ -297,5 +297,37 @@ class InitTest(unittest.TestCase):
             reprise_gh.DEFAULT_POLICY_PATH, reprise_gh.DEFAULT_AUDIT_PATH = ancien
 
 
+# #270 lot 1 : credential fill sans prompt terminal, canal d'audit de la CLI.
+class CredentialFillTest(unittest.TestCase):
+    def test_credential_fill_sans_prompt_terminal(self):
+        proc = mock.Mock(returncode=0, stdout='password=TOKEN_270\n')
+        with mock.patch.object(reprise_gh.subprocess, 'run', return_value=proc) as run:
+            out = reprise_gh._run_credential_fill('github.com')
+        self.assertIn('TOKEN_270', out)
+        env = run.call_args.kwargs['env']
+        self.assertEqual(env['GIT_TERMINAL_PROMPT'], '0')
+        self.assertEqual(env.get('PATH'), os.environ.get('PATH'))
+        self.assertEqual(run.call_args.args[0], ['git', 'credential', 'fill'])
+
+
+class CliAuditChannelTest(unittest.TestCase):
+    def test_cli_audit_porte_channel_cli(self):
+        folder = tempfile.mkdtemp()
+        policy = os.path.join(folder, 'gh-policy.json')
+        audit = os.path.join(folder, 'gh-audit.jsonl')
+        ancien = (reprise_gh.DEFAULT_POLICY_PATH, reprise_gh.DEFAULT_AUDIT_PATH)
+        reprise_gh.DEFAULT_POLICY_PATH, reprise_gh.DEFAULT_AUDIT_PATH = policy, audit
+        try:
+            with mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake, \
+                    redirect_stderr(io.StringIO()):
+                code = reprise_gh.main(['--actor', 'metaai', 'api', 'POST', '/repos/o/r/issues'])
+        finally:
+            reprise_gh.DEFAULT_POLICY_PATH, reprise_gh.DEFAULT_AUDIT_PATH = ancien
+        self.assertEqual(code, 1)
+        fake.assert_not_called()
+        with open(audit, encoding='utf-8') as handle:
+            line = json.loads(handle.readline())
+        self.assertEqual((line['status'], line['channel'], line['actor']), ('refused', 'cli', 'metaai'))
+
 if __name__ == '__main__':
     unittest.main()

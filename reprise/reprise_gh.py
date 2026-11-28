@@ -8,8 +8,11 @@ service « gh » a tous les harness dans leur workspace. Les deux se combinent :
   (lecture autorisee si le service est active ; ecriture seulement pour les
   acteurs listes), un journal d'audit JSONL commun (horodatage, acteur, methode,
   chemin, statut HTTP — sans le token ni le corps de la requete).
-- livraison par workspace : un shim `bin/reprise-gh` par harness appelle ce
-  module avec l'identite de l'acteur (`--actor autoclaw`, `--actor claude`, ...).
+- livraison aux harness : le pont MCP stdio `reprise_gh_mcp.py` lance ce module
+  avec un acteur fixe par l'integration au lancement (`--actor autoclaw`, ...) ;
+  les outils MCP n'acceptent aucun argument `actor`. L'ecriture y exige une double
+  porte : `--allow-write` au lancement ET l'acteur liste dans write_actors. Chaque
+  ligne d'audit porte le canal (`channel` : `mcp` ou `cli`).
 
 Meta AI n'est pas dans les acteurs d'ecriture : lecture seule tracee. C'est la
 reponse concrete a sa demande d'un « acces en lecture, stable » et d'un
@@ -23,8 +26,9 @@ la politique courante ; le premier amorcage est une ecriture directe de
 gh-policy.json par l'operateur (hors CLI), jamais une option de la CLI
 (revue securite harness 26/11 : voie consent supprimee).
 
-L'acteur (`--actor`) est une etiquette d'audit declaree par l'appelant : elle
-n'est pas authentifiee et n'est pas une frontiere de securite. Toute ecriture
+L'acteur (`--actor`) est une etiquette d'audit declaree par l'appelant (la CLI)
+ou fixee par l'integration (le pont MCP) : elle n'authentifie personne et n'est
+pas une frontiere de securite. Toute ecriture
 de politique est operateur-only (fichier direct) ; la frontiere reelle est le
 compte Unix + le trousseau macOS, pas la chaine --actor.
 
@@ -89,6 +93,8 @@ def _run_credential_fill(host):
             capture_output=True,
             text=True,
             timeout=30,
+            # Jamais de prompt interactif : sans identifiant enregistre, echec net.
+            env=dict(os.environ, GIT_TERMINAL_PROMPT='0'),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise GhError('git credential fill indisponible : %s' % exc)
@@ -203,7 +209,8 @@ def audit(audit_path, actor, method, path, status, error=None, extra=None):
     if error:
         entry['error'] = error[:200]
     if extra:
-        entry.update(extra)
+        # Les champs du coeur (acteur, statut...) priment sur les extras.
+        entry.update({k: v for k, v in extra.items() if k not in entry})
     os.makedirs(os.path.dirname(audit_path) or '.', exist_ok=True)
     with open(audit_path, 'a', encoding='utf-8') as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + '\n')
@@ -219,8 +226,12 @@ def request(
     policy_path=None,
     audit_path=None,
     timeout=30,
+    audit_extra=None,
 ):
-    """Appel REST GitHub audite. body = objet JSON ou None. Retour = (statut, donnees)."""
+    """Appel REST GitHub audite. body = objet JSON ou None. Retour = (statut, donnees).
+
+    audit_extra : champs ajoutes a chaque ligne d'audit (ex. {'channel': 'mcp'}).
+    """
     method = method.upper()
     policy = load_policy(policy_path)
     audit_path = audit_path or DEFAULT_AUDIT_PATH
@@ -228,7 +239,8 @@ def request(
         check_permission(policy, actor, method)
         url = api_url(host, path)
     except GhError as exc:
-        audit(audit_path, actor, method, str(path)[:200], 'refused', error=str(exc))
+        audit(audit_path, actor, method, str(path)[:200], 'refused', error=str(exc),
+              extra=audit_extra)
         raise
     provider = token_provider or resolve_token
     token = provider()
@@ -249,10 +261,10 @@ def request(
             raw = resp.read()
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode('utf-8', 'replace')[:200]
-        audit(audit_path, actor, method, path, exc.code, error=detail)
+        audit(audit_path, actor, method, path, exc.code, error=detail, extra=audit_extra)
         raise GhError('HTTP %s sur %s %s : %s' % (exc.code, method, path, detail))
     except urllib.error.URLError as exc:
-        audit(audit_path, actor, method, path, 0, error=str(exc.reason))
+        audit(audit_path, actor, method, path, 0, error=str(exc.reason), extra=audit_extra)
         raise GhError('Reseau indisponible pour %s %s : %s' % (method, path, exc.reason))
     payload = None
     if raw:
@@ -260,7 +272,7 @@ def request(
             payload = json.loads(raw.decode('utf-8'))
         except ValueError:
             payload = raw.decode('utf-8', 'replace')
-    audit(audit_path, actor, method, path, status)
+    audit(audit_path, actor, method, path, status, extra=audit_extra)
     return status, payload
 
 
@@ -280,6 +292,9 @@ def create_issue(actor, repo, title, body_text, labels=None, **kwargs):
 
 # ---------------------------------------------------------------- CLI
 
+CLI_AUDIT = {'channel': 'cli'}
+
+
 def _cmd_api(args):
     body = None
     if args.body_file:
@@ -287,7 +302,7 @@ def _cmd_api(args):
             body = json.load(handle)
     elif args.body:
         body = json.loads(args.body)
-    status, payload = request(args.actor, args.method, args.path, body)
+    status, payload = request(args.actor, args.method, args.path, body, audit_extra=CLI_AUDIT)
     if payload is not None:
         json.dump(payload, sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write('\n')
@@ -297,7 +312,7 @@ def _cmd_api(args):
 def _cmd_comment(args):
     with open(args.body_file, 'r', encoding='utf-8') as handle:
         text = handle.read()
-    status, payload = comment(args.actor, args.number, args.repo, text)
+    status, payload = comment(args.actor, args.number, args.repo, text, audit_extra=CLI_AUDIT)
     url = payload.get('html_url') if isinstance(payload, dict) else None
     print('HTTP %s %s' % (status, url or ''))
     return 0
@@ -307,7 +322,8 @@ def _cmd_create_issue(args):
     with open(args.body_file, 'r', encoding='utf-8') as handle:
         text = handle.read()
     labels = [x for x in (args.labels or '').split(',') if x]
-    status, payload = create_issue(args.actor, args.repo, args.title, text, labels)
+    status, payload = create_issue(args.actor, args.repo, args.title, text, labels,
+                                   audit_extra=CLI_AUDIT)
     print('HTTP %s #%s %s' % (status, payload.get('number'), payload.get('html_url')))
     return 0
 

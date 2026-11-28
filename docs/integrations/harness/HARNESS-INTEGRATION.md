@@ -202,6 +202,24 @@ Délégation et écriture dans le projet ne sont plus des choix (#252) : toujour
 actives, elles suivent le projet du pont. Une modification de configuration ne révoque pas les processus
 MCP déjà chargés ; leur rechargement reste une opération distincte.
 
+## Service gh, pont MCP à acteur fixé (#270)
+
+`reprise/reprise_gh_mcp.py` est un serveur MCP stdio (trames bornées, sans écoute
+réseau) devant le service `reprise_gh.py`. L'intégration le lance avec
+`--actor <harness>` ; `--policy` et `--audit` remplacent au besoin les chemins par
+défaut de `gh-policy.json` et `gh-audit.jsonl`. Il expose `reprise_gh_read`
+(GET/HEAD sur `api.github.com`) et, seulement avec `--allow-write`,
+`reprise_gh_comment` et `reprise_gh_create_issue`. Aucun outil ne prend d'argument
+`actor` : une clé inconnue est refusée. L'écriture exige une double porte :
+`--allow-write` au lancement et l'acteur listé dans `write_actors`, politique relue
+à chaque appel. Il n'existe ni verbe d'écriture générique, ni `init`, ni écriture de
+politique par ce canal. Chaque ligne d'audit porte l'acteur et `channel: mcp` (la
+CLI : `channel: cli`), sans jeton ni corps. Corps et titres sont bornés, la sortie
+est tronquée avec mention. Limites : l'acteur est une étiquette fixée par
+l'intégration, pas une authentification ; la lecture couvre tout ce que le jeton
+voit. Le branchement de ce serveur dans les intégrations harness gérées reste à
+venir.
+
 
 ## Réconciliation explicite d’un bloc divergent, sans sauvegarde
 
