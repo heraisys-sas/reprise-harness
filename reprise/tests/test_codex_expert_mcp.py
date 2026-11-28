@@ -733,6 +733,31 @@ class ClaudeDesktopBridgeTests(RequestCalls, unittest.TestCase):
                              desktop_socket='/private/tmp/quick.sock')
         self.addCleanup(self.bridge.close)
 
+    def test_file_paths_are_project_files_only_issue_297(self):
+        root = Path(self.temp.name).resolve()
+        (root / 'docs').mkdir()
+        (root / 'docs' / 'note.md').write_text('note')
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        secret = Path(outside.name) / 'id_ed25519'
+        secret.write_text('SECRET')
+        (root / 'lien').symlink_to(secret)
+        args = {'question': 'Lis la note', 'kind': 'expertise', 'backend': 'claude-desktop'}
+        reply = {'status': 'finished', 'resumable': False, 'thread_id': ID}
+        for given in (['docs/note.md'], [str(root / 'docs' / 'note.md')]):
+            with self.subTest(given=given), patch('claude_desktop.review', return_value=reply) as review:
+                self.call('reprise_delegate', dict(args, filePaths=given))
+                self.assertEqual(review.call_args.kwargs['file_paths'], [str(root / 'docs' / 'note.md')])
+        messages = set()
+        for given in ([str(secret)], [str(Path(outside.name) / 'absent')], ['../x'], ['lien'], ['docs/../../x']):
+            with self.subTest(given=given), patch('claude_desktop.review') as review:
+                with self.assertRaises(ValueError) as refused:
+                    self.call('reprise_delegate', dict(args, filePaths=given))
+                review.assert_not_called()
+                self.assertNotIn(outside.name, str(refused.exception))
+                messages.add(str(refused.exception))
+        self.assertEqual(len(messages), 1)  # existant ou non : même refus, pas d'oracle
+
     def test_backends_include_claude_desktop(self):
         ids = {b['id'] for b in self.call('reprise_backends', {})['backends']}
         self.assertIn('claude-desktop', ids)

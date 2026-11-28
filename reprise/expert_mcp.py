@@ -273,7 +273,8 @@ TOOLS = [
          'backend': {'type': 'string', 'enum': ['codex', 'ironclaw', 'claude-code', 'claude-desktop', 'foundation-models', 'chatgpt', 'metaai']},
          'paths': {'type': 'array', 'maxItems': 30, 'items': {'type': 'string'}},
          'chatId': {'type': 'string'},
-         'filePaths': {'type': 'array', 'maxItems': 10, 'items': {'type': 'string'}}},
+         'filePaths': {'type': 'array', 'maxItems': 10, 'items': {'type': 'string'},
+                       'description': 'claude-desktop attachments: project files only (relative to the project root, or absolute under it).'}},
          'required': ['question', 'kind', 'request_key']}},
     {'name': 'reprise_backends', 'description': 'List configured delegation capabilities without inference. Availability is not a price or quota guarantee.',
      'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False}},
@@ -513,6 +514,34 @@ def load_fallback_flag(path=None):
     if type(flag) is not bool:
         raise ValueError('automatic_fallback must be a boolean')
     return flag
+
+
+def project_file_paths(root, names):
+    """Pièces jointes Claude Desktop (#297) : fichiers du projet seulement.
+
+    Relatif à la racine (comme `paths`) ou absolu sous elle ; rendus absolus et résolus.
+    La forme est vérifiée avant toute résolution : un chemin hors projet est refusé
+    sans révéler s'il existe.
+    """
+    if not isinstance(names, list) or len(names) > 10:
+        raise ValueError('filePaths : liste de 10 chemins au plus requise')
+    root = Path(root).resolve(strict=True)
+    refusal = 'filePaths : fichier du projet requis (chemin relatif à la racine, ou absolu sous elle) ; copiez le fichier dans le projet.'
+    resolved = []
+    for name in names:
+        if not isinstance(name, str) or not name or '\0' in name:
+            raise ValueError(refusal)
+        candidate = Path(os.path.normpath(name if os.path.isabs(name) else os.path.join(root, name)))
+        if not candidate.is_relative_to(root):
+            raise ValueError(refusal)
+        try:
+            target = candidate.resolve(strict=True)
+        except OSError:
+            raise ValueError('filePaths : fichier introuvable dans le projet')
+        if not target.is_relative_to(root):
+            raise ValueError(refusal)
+        resolved.append(str(target))
+    return resolved
 
 
 class Bridge:
@@ -1076,6 +1105,8 @@ class Bridge:
             return self._approval_respond(args)
         if not isinstance(args, dict):
             raise ValueError('Object arguments required')
+        if name == 'reprise_delegate' and 'filePaths' in args:
+            args = dict(args, filePaths=project_file_paths(self.root, args['filePaths']))
         return_mode = args.get('return_mode', 'full')
         if name in INFERENCE_TOOLS:
             if return_mode not in ('full', 'receipt'):
