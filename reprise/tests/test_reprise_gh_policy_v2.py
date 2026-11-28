@@ -101,6 +101,12 @@ class MigrationV1Test(unittest.TestCase):
         # write_actors ignore : metaai sans jeton reste en lecture seule.
         self.assertEqual(reprise_gh.decide(first, 'metaai', 'issue.comment', None, 'missing')[0], 'deny')
 
+    def test_constat6_v1_enabled_booleen_exige(self):
+        # Revue de abe49b1 : "false" (chaine) valait vrai.
+        for value in ('false', 0, None, 'true'):
+            with self.subTest(value=value), self.assertRaises(reprise_gh.GhError):
+                reprise_gh.validate_policy({'enabled': value, 'write_actors': []})
+
     def test_v1_desactivee_reste_desactivee(self):
         reprise_gh.save_policy({'enabled': False}, self.path)
         policy = reprise_gh.load_policy(self.path)

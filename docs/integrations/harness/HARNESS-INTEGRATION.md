@@ -272,7 +272,11 @@ authentifié avec `--allow-write` et passent par la politique v2 :
 Le harness vient toujours du registre des jetons. Aucun outil n'accepte d'acteur,
 d'auteur, de harness ni de sha. Les registres `gh_pulls`, `gh_reviews` et
 `gh_merges` vivent dans `gh-reviews.sqlite` (0600, dossier 0700), à côté de
-`gh-actors.sqlite` (option `--reviews` du pont).
+`gh-actors.sqlite`. Le pont et la CLI appliquent la même règle de chemin :
+`--reviews`, sinon le fichier voisin de `--registry`, sinon le chemin par défaut.
+La clé de dépôt est le `full_name` renvoyé par GitHub (`base.repo`), en minuscules,
+avec repli sur le dépôt saisi en minuscules : GitHub ignore la casse, et `O/r` ne
+contourne donc plus les revues enregistrées sous `o/r`.
 
 Règle de fusion :
 - seules comptent les revues `approve` sur le head exact ;
@@ -288,16 +292,30 @@ Règle de fusion :
 Contournement, CLI seulement :
 `reprise gh merge --repo R --number N [--method M] --override-review --reason "…"`.
 Il est réservé à `operator`, exige un terminal et un motif de 10 caractères au
-moins. Un commentaire `<!-- reprise-override: … -->` est posté avant la fusion ;
-l'audit porte `reason: operator_override` et `override_reason`, et `gh_merges` le
-motif. Sans `--override-review`, l'opérateur suit la même règle.
+moins. Le commentaire `<!-- reprise-override: … -->` est posté après la fusion
+réussie. S'il échoue, la fusion reste acquise ; l'échec est tracé dans l'audit
+(`override_comment_failed`) et dans `gh_merges.override_note`. L'audit porte
+`reason: operator_override` et `override_reason`, et `gh_merges` le motif. Sans
+`--override-review`, l'opérateur suit la même règle. `reprise gh api PUT …/pulls/N/merge`
+(api.raw) est refusé (`merge_via_api_raw`) et renvoie vers `reprise gh merge`.
 
 CI après fusion, non bloquante. Reprise lit les statuts et les check-runs du commit
 de fusion. Un statut ou un check-run `failure`, `error`, `cancelled` ou `timed_out`
 ouvre une issue « CI rouge après fusion de #N (sha) », avec le label `ci:red`
-seulement s'il existe. Il n'y a qu'une issue par SHA. Une CI `pending` ou
-illisible (lecture tracée `ci_read_failed`, fusion acquise) est reprise par
-`reprise gh ci-sweep [--repo R]` (op `ci.sweep`).
+seulement s'il existe. Il n'y a qu'une issue par SHA :
+- une réservation atomique `failure_reporting` précède le POST ;
+- avant toute création, Reprise cherche le marqueur `reprise-ci-red` du sha dans
+  les issues ouvertes ;
+- une réservation de plus de 10 minutes est reprise par le sweep.
+
+`reprise gh ci-sweep [--repo R]` (op `ci.sweep`) reprend les CI `pending`, les CI
+illisibles (lecture tracée `ci_read_failed`, fusion acquise) et les CI `none`
+pendant les 7 jours qui suivent la fusion.
+
+Redirections : le client refuse toute redirection HTTP, quel que soit l'hôte. Une
+30x devient une erreur auditée (`redirect_refused`). L'en-tête `Authorization` est
+de plus non redirigeable : le jeton ne quitte jamais `api.github.com` (logs
+d'actions, tarballs, assets).
 
 Chaque ligne d'audit porte l'acteur, `channel` (`mcp` ou `cli`), `op`, `decision`,
 `reason`, `rule`, `auth` et `token_id`, jamais le secret, le jeton GitHub ni le

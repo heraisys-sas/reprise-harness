@@ -89,7 +89,7 @@ class RequestTest(unittest.TestCase):
 
         def fake_urlopen(req, timeout):
             seen['url'] = req.full_url
-            seen['auth'] = req.headers.get('Authorization')
+            seen['auth'] = req.get_header('Authorization')
             return _FakeResponse({'ok': True})
 
         with mock.patch.object(reprise_gh.urllib.request, 'urlopen', fake_urlopen):
@@ -308,6 +308,65 @@ class CliAuditChannelTest(unittest.TestCase):
         with open(audit, encoding='utf-8') as handle:
             line = json.loads(handle.readline())
         self.assertEqual((line['status'], line['channel'], line['actor']), ('refused', 'cli', 'metaai'))
+
+class ReviewFindingsTest(unittest.TestCase):
+    """Non-regression de la revue de abe49b1 : constats 2 (redirections) et 7 (fusion api.raw)."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.policy = os.path.join(self.dir, 'gh-policy.json')
+        self.audit = os.path.join(self.dir, 'gh-audit.jsonl')
+
+    def test_constat2_redirection_refusee_et_jeton_jamais_recopie(self):
+        import email.message
+        import urllib.response
+        seen = []
+
+        class FakeHttps(urllib.request.HTTPSHandler):
+            def https_open(self, req):
+                seen.append((req.full_url, req.get_header('Authorization')))
+                headers = email.message.Message()
+                headers['Location'] = 'https://pipelines.example.net/logs.zip'
+                response = urllib.response.addinfourl(io.BytesIO(b''), headers, req.full_url, 302)
+                response.msg = 'Found'
+                return response
+
+        opener = urllib.request.build_opener(reprise_gh._NoRedirect, FakeHttps)
+        with mock.patch.object(reprise_gh, '_OPENER', opener), \
+                mock.patch.object(reprise_gh, '_run_credential_fill', lambda host: 'password=SECRET'):
+            with self.assertRaisesRegex(reprise_gh.GhError, 'Redirection HTTP 302 refusee'):
+                reprise_gh.request('metaai', 'GET', '/repos/o/r/actions/runs/1/logs',
+                                   policy_path=self.policy, audit_path=self.audit)
+        self.assertEqual(seen, [('https://api.github.com/repos/o/r/actions/runs/1/logs', 'Bearer SECRET')])
+        line = json.loads(_lines(self.audit)[-1])
+        self.assertEqual((line['status'], line['error']), (302, 'redirect_refused'))
+        self.assertNotIn('SECRET', ''.join(_lines(self.audit)))
+        # Meme avec le gestionnaire standard, Authorization (non redirige) n'est pas recopie.
+        captured = {}
+
+        def fake_urlopen(req, timeout):
+            captured['req'] = req
+            return _FakeResponse({})
+
+        with mock.patch.object(reprise_gh.urllib.request, 'urlopen', fake_urlopen):
+            reprise_gh.request('metaai', 'GET', '/repos/o/r', token_provider=lambda: 'SECRET',
+                               policy_path=self.policy, audit_path=self.audit)
+        follow = urllib.request.HTTPRedirectHandler().redirect_request(
+            captured['req'], None, 302, 'Found', {}, 'https://pipelines.example.net/x')
+        self.assertIsNone(follow.get_header('Authorization'))
+
+    def test_constat7_fusion_par_api_raw_refusee(self):
+        for path in ('/repos/o/r/pulls/5/merge', '/REPOS/O/R/PULLS/5/MERGE', '/repos/o/r/pulls/5/merge/'):
+            with self.subTest(path=path), \
+                    mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake:
+                with self.assertRaisesRegex(reprise_gh.GhError, 'reprise gh merge'):
+                    reprise_gh.request('operator', 'PUT', path, {'sha': 'a' * 40}, auth='tty',
+                                       token_provider=lambda: 'SECRET', policy_path=self.policy,
+                                       audit_path=self.audit)
+                fake.assert_not_called()
+        line = json.loads(_lines(self.audit)[-1])
+        self.assertEqual((line['op'], line['reason']), ('api.raw', 'merge_via_api_raw'))
+
 
 if __name__ == '__main__':
     unittest.main()

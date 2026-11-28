@@ -32,6 +32,9 @@ MERGE_METHODS = ('merge', 'squash', 'rebase')
 MIN_OVERRIDE_REASON = 10
 CI_LABEL = 'ci:red'
 _SHA_RE = re.compile(r'^[0-9a-f]{40,64}$')
+NONE_SWEEP_SECONDS = 7 * 24 * 3600   # CI `none` rebalayee 7 jours apres la fusion
+REPORT_STALE_SECONDS = 10 * 60      # reservation failure_reporting reprise apres 10 min
+_EXTRA_MERGE_COLUMNS = (('merged_at', 'REAL'), ('ci_reserved_at', 'REAL'), ('override_note', 'TEXT'))
 _FAILED = ('failure', 'error', 'cancelled', 'timed_out')
 
 SCHEMA = (
@@ -47,12 +50,30 @@ SCHEMA = (
         repo TEXT NOT NULL, number INTEGER NOT NULL, merge_sha TEXT NOT NULL,
         head_sha TEXT NOT NULL, actor TEXT NOT NULL, harness TEXT NOT NULL,
         override_reason TEXT, ci_state TEXT, ci_checked_at REAL, ci_issue_number INTEGER,
-        merged_at REAL NOT NULL, PRIMARY KEY (repo, merge_sha))""",
+        merged_at REAL, ci_reserved_at REAL, override_note TEXT, PRIMARY KEY (repo, merge_sha))""",
 )
 
 
-def default_reviews_path(registry_path=None):
-    """Fichier frere du registre des acteurs quand celui-ci est explicite."""
+def canonical_repo(repo, pull=None):
+    """Cle de registre : full_name GitHub (base.repo, sinon racine) en minuscules, sinon repo.lower().
+
+    GitHub ignore la casse d'OWNER/REPO : sans cette cle, `O/r` contournait les
+    revues et l'auteur enregistres sous `o/r` (revue #270).
+    """
+    full_name = None
+    if isinstance(pull, dict):
+        base_repo = (pull.get('base') or {}).get('repo') if isinstance(pull.get('base'), dict) else None
+        full_name = (base_repo or {}).get('full_name') if isinstance(base_repo, dict) else None
+        full_name = full_name or pull.get('full_name')
+    if isinstance(full_name, str) and reprise_gh._REPO_RE.match(full_name):
+        return full_name.lower()
+    return repo.lower()
+
+
+def default_reviews_path(registry_path=None, reviews_path=None):
+    """Regle unique, pont et CLI : --reviews, sinon frere de --registry, sinon defaut."""
+    if reviews_path:
+        return os.path.abspath(reviews_path)
     if registry_path:
         return os.path.join(os.path.dirname(os.path.abspath(registry_path)), 'gh-reviews.sqlite')
     return DEFAULT_REVIEWS_PATH
@@ -74,6 +95,11 @@ class ReviewStore(object):
         self.db = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         for statement in SCHEMA:
             self.db.execute(statement)
+        # Retrocompatible : registres crees avant ces colonnes.
+        present = {row[1] for row in self.db.execute('PRAGMA table_info(gh_merges)')}
+        for name, kind in _EXTRA_MERGE_COLUMNS:
+            if name not in present:
+                self.db.execute('ALTER TABLE gh_merges ADD COLUMN %s %s' % (name, kind))
 
     def close(self):
         self.db.close()
@@ -110,18 +136,40 @@ class ReviewStore(object):
         return {'number': row[0], 'ci_state': row[1], 'ci_issue_number': row[2]} if row else None
 
     def set_ci(self, repo, merge_sha, state, issue_number=None, now=None):
-        self.db.execute('UPDATE gh_merges SET ci_state=?, ci_checked_at=?, '
-                        'ci_issue_number=COALESCE(ci_issue_number, ?) WHERE repo=? AND merge_sha=?',
-                        (state, time.time() if now is None else now, issue_number, repo, merge_sha))
+        """Etat CI ; ne libere jamais une reservation failure_reporting sans issue."""
+        self.db.execute("UPDATE gh_merges SET ci_state=?, ci_checked_at=?, "
+                        "ci_issue_number=COALESCE(ci_issue_number, ?) WHERE repo=? AND merge_sha=? "
+                        "AND (COALESCE(ci_state, '') != 'failure_reporting' OR ? IS NOT NULL)",
+                        (state, time.time() if now is None else now, issue_number, repo, merge_sha,
+                         issue_number))
 
-    def ci_candidates(self, repo=None):
-        """Fusions a reprendre : CI pending, ou rouge sans issue encore ouverte."""
+    def reserve_report(self, repo, merge_sha, now=None):
+        """Reservation atomique avant le POST de l'issue CI rouge ; False si deja prise."""
+        now = time.time() if now is None else now
+        cursor = self.db.execute(
+            "UPDATE gh_merges SET ci_state='failure_reporting', ci_reserved_at=? "
+            "WHERE repo=? AND merge_sha=? AND ci_issue_number IS NULL "
+            "AND (COALESCE(ci_state, '') != 'failure_reporting' OR ci_reserved_at IS NULL "
+            "OR ci_reserved_at < ?)", (now, repo, merge_sha, now - REPORT_STALE_SECONDS))
+        return cursor.rowcount == 1
+
+    def set_override_note(self, repo, merge_sha, note):
+        self.db.execute('UPDATE gh_merges SET override_note=? WHERE repo=? AND merge_sha=?',
+                        (note, repo, merge_sha))
+
+    def ci_candidates(self, repo=None, now=None):
+        """Fusions a reprendre : pending ; failure sans issue ; none de moins de 7 jours ;
+        reservation failure_reporting perimee (plus de 10 minutes)."""
+        now = time.time() if now is None else now
         query = ("SELECT repo, number, merge_sha FROM gh_merges WHERE (ci_state='pending' "
-                 "OR (ci_state='failure' AND ci_issue_number IS NULL))")
-        params = []
+                 "OR (ci_state='failure' AND ci_issue_number IS NULL) "
+                 "OR (ci_state='none' AND merged_at >= ?) "
+                 "OR (ci_state='failure_reporting' AND ci_issue_number IS NULL "
+                 "AND (ci_reserved_at IS NULL OR ci_reserved_at < ?)))")
+        params = [now - NONE_SWEEP_SECONDS, now - REPORT_STALE_SECONDS]
         if repo is not None:
             query += ' AND repo=?'
-            params.append(repo)
+            params.append(repo.lower())
         rows = self.db.execute(query + ' ORDER BY merged_at', params).fetchall()
         return [{'repo': r[0], 'number': r[1], 'merge_sha': r[2]} for r in rows]
 
@@ -172,7 +220,7 @@ def create_pull(who, store, repo, head, base, title, body, **kwargs):
                             repo=repo, **kwargs)
     number = pull.get('number') if isinstance(pull, dict) else None
     if type(number) is int:
-        store.record_pull(repo, number, who['actor'], who['harness'], who['token_id'])
+        store.record_pull(canonical_repo(repo, pull), number, who['actor'], who['harness'], who['token_id'])
     return {'status': status, 'number': number,
             'html_url': pull.get('html_url') if isinstance(pull, dict) else None}
 
@@ -183,13 +231,14 @@ def review(who, store, repo, number, verdict, body, **kwargs):
     number = _number(number)
     if verdict not in VERDICTS:
         raise reprise_gh.GhError('verdict : approve ou request_changes')
-    head_sha, _pull = _open_pull(who, repo, number, **kwargs)
+    head_sha, pull = _open_pull(who, repo, number, **kwargs)
+    key = canonical_repo(repo, pull)
     marker = '<!-- reprise-review: %s %s %s %s -->' % (who['actor'], who['harness'], verdict, head_sha)
     text = '%s\n\n**Revue Reprise** (%s, harness %s) : `%s` sur `%s`.\n\n%s' % (
         marker, who['actor'], who['harness'], verdict, head_sha[:12], body)
     status, payload = _request(who, 'POST', '/repos/%s/issues/%d/comments' % (repo, number),
                                {'body': text}, op='pull.review', repo=repo, **kwargs)
-    store.record_review(repo, number, head_sha, who['actor'], who['harness'], who['token_id'], verdict)
+    store.record_review(key, number, head_sha, who['actor'], who['harness'], who['token_id'], verdict)
     return {'status': status, 'head_sha': head_sha, 'verdict': verdict,
             'html_url': payload.get('html_url') if isinstance(payload, dict) else None}
 
@@ -254,11 +303,12 @@ def merge(who, store, repo, number, method='merge', override_reason=None, **kwar
         if len(reason_text) < MIN_OVERRIDE_REASON:
             raise reprise_gh.GhError('Contournement : --reason de %d caracteres au moins' % MIN_OVERRIDE_REASON)
         override_reason = reason_text
-    head_sha, _pull = _open_pull(who, repo, number, **kwargs)
+    head_sha, pull = _open_pull(who, repo, number, **kwargs)
+    key = canonical_repo(repo, pull)
     grant, verdict = None, None
     if decision == 'review_required' and override_reason is None:
-        verdict = evaluate(reprise_gh.review_params(policy, rule), store.pull_author(repo, number),
-                           store.reviews(repo, number, head_sha))
+        verdict = evaluate(reprise_gh.review_params(policy, rule), store.pull_author(key, number),
+                           store.reviews(key, number, head_sha))
         if not verdict['satisfied']:
             _audit(who, 'PUT', path, 'refused', kwargs=kwargs, op='pull.merge', decision=decision,
                    reason='reviews_missing', rule=rule, head_sha=head_sha, missing=verdict['missing'],
@@ -270,21 +320,30 @@ def merge(who, store, repo, number, method='merge', override_reason=None, **kwar
     merge_kwargs = dict(kwargs)
     if override_reason is not None:
         merge_kwargs['audit_extra'] = dict(kwargs.get('audit_extra') or {}, override_reason=override_reason[:500])
-        note = ('<!-- reprise-override: %s %s %s -->\n\n**Fusion sans revue requise** par l\'operateur '
-                '(contournement trace par Reprise) sur `%s`.\n\nMotif : %s'
-                % (who['actor'], head_sha, method, head_sha[:12], override_reason))
-        _request(who, 'POST', '/repos/%s/issues/%d/comments' % (repo, number), {'body': note},
-                 op='pull.merge', repo=repo, review_grant=grant, **merge_kwargs)
     status, payload = _request(who, 'PUT', path, {'sha': head_sha, 'merge_method': method},
                                op='pull.merge', repo=repo, review_grant=grant, **merge_kwargs)
     merge_sha = payload.get('sha') if isinstance(payload, dict) else None
     if not (isinstance(payload, dict) and payload.get('merged') and isinstance(merge_sha, str)
             and _SHA_RE.match(merge_sha)):
         raise reprise_gh.GhError('Fusion de #%d : reponse GitHub sans sha de fusion' % number)
-    store.record_merge(repo, number, merge_sha, head_sha, who['actor'], who['harness'], override_reason)
+    store.record_merge(key, number, merge_sha, head_sha, who['actor'], who['harness'], override_reason)
+    if override_reason is not None:
+        # Commentaire poste apres la fusion reussie : jamais de faux contournement si le PUT echoue.
+        note = ('<!-- reprise-override: %s %s %s -->\n\n**Fusion sans revue requise** par l\'operateur '
+                '(contournement trace par Reprise) sur `%s`.\n\nMotif : %s'
+                % (who['actor'], head_sha, method, head_sha[:12], override_reason))
+        try:
+            _request(who, 'POST', '/repos/%s/issues/%d/comments' % (repo, number), {'body': note},
+                     op='pull.merge', repo=repo, review_grant=grant, **merge_kwargs)
+            store.set_override_note(key, merge_sha, 'posted')
+        except Exception as exc:
+            message = str(exc) if isinstance(exc, reprise_gh.GhError) else type(exc).__name__
+            store.set_override_note(key, merge_sha, 'failed: %s' % message[:200])
+            _audit(who, 'POST', '/repos/%s/issues/%d/comments' % (repo, number), 'override_comment_failed',
+                   error=message, kwargs=kwargs, op='pull.merge', merge_sha=merge_sha)
     result = {'status': status, 'merged': True, 'merge_sha': merge_sha, 'head_sha': head_sha,
               'override': override_reason is not None, 'reviewed_by': (verdict or {}).get('approved_harnesses')}
-    result.update(_safe_ci(who, store, repo, number, merge_sha, **kwargs))
+    result.update(_safe_ci(who, store, key, number, merge_sha, **kwargs))
     return result
 
 
@@ -343,13 +402,40 @@ def _label_exists(who, repo, **kwargs):
         return False
 
 
+def _marker(repo, number, sha):
+    return '<!-- reprise-ci-red: %s#%d %s -->' % (repo, number, sha)
+
+
+def _existing_ci_issue(who, repo, sha, **kwargs):
+    """Issue ouverte portant deja le marqueur reprise-ci-red de ce sha (reponse perdue, course)."""
+    _status, issues = _request(who, 'GET', '/repos/%s/issues?state=open&per_page=100' % repo,
+                               op='read', **kwargs)
+    for issue in issues if isinstance(issues, list) else []:
+        body = issue.get('body') if isinstance(issue, dict) else None
+        if isinstance(body, str) and 'reprise-ci-red:' in body and sha in body:
+            number = issue.get('number')
+            if type(number) is int:
+                return number
+    return None
+
+
 def ci_check(who, store, repo, number, merge_sha, **kwargs):
-    """Lit la CI du commit fusionne ; failure = une issue par SHA, puis enregistre."""
+    """Lit la CI du commit fusionne ; failure = une issue par SHA, puis enregistre.
+
+    Idempotence : reservation atomique `failure_reporting` avant le POST, puis
+    recherche du marqueur dans les issues ouvertes avant toute creation.
+    """
     state, failed = ci_state(who, repo, merge_sha, **kwargs)
     row = store.merge_row(repo, merge_sha) or {}
     issue_number = row.get('ci_issue_number')
-    if state == 'failure' and issue_number is None:
-        lines = ['<!-- reprise-ci-red: %s#%d %s -->' % (repo, number, merge_sha), '',
+    if state != 'failure' or issue_number is not None:
+        store.set_ci(repo, merge_sha, state, issue_number)
+        return state, issue_number
+    if not store.reserve_report(repo, merge_sha):
+        return 'failure_reporting', None
+    issue_number = _existing_ci_issue(who, repo, merge_sha, **kwargs)
+    if issue_number is None:
+        lines = [_marker(repo, number, merge_sha), '',
                  'CI rouge apres la fusion par Reprise.', '',
                  '- PR : https://github.com/%s/pull/%d' % (repo, number),
                  '- Commit : https://github.com/%s/commit/%s' % (repo, merge_sha), '', 'En echec :']
@@ -359,14 +445,14 @@ def ci_check(who, store, repo, number, merge_sha, **kwargs):
             who['actor'], repo, 'CI rouge après fusion de #%d (%s)' % (number, merge_sha[:7]),
             '\n'.join(lines), labels, auth=who['auth'], token_id=who['token_id'], **kwargs)
         issue_number = payload.get('number') if isinstance(payload, dict) else None
-    store.set_ci(repo, merge_sha, state, issue_number)
-    return state, issue_number
+    store.set_ci(repo, merge_sha, 'failure', issue_number)
+    return 'failure', issue_number
 
 
 def ci_sweep(who, store, repo=None, **kwargs):
     """Repasse sur les fusions pending (et rouges sans issue) ; op ci.sweep."""
     if repo is not None:
-        repo = reprise_gh.repo_slug(repo)
+        repo = reprise_gh.repo_slug(repo).lower()
     policy = reprise_gh.load_policy(kwargs.get('policy_path'))
     decision, reason, rule = reprise_gh.decide(policy, who['actor'], 'ci.sweep', repo, who['auth'])
     if decision != 'allow':

@@ -198,7 +198,7 @@ class GhServer(object):
         self.actor = actor
         self._token = token
         self._registry_path = registry_path
-        self._reviews_path = reviews_path or reprise_gh_pulls.default_reviews_path(registry_path)
+        self._reviews_path = reprise_gh_pulls.default_reviews_path(registry_path, reviews_path)
         self._kwargs = {'policy_path': policy_path, 'audit_path': audit_path,
                         'token_provider': token_provider, 'audit_extra': dict(AUDIT_EXTRA)}
         self.auth, self.token_id, self.harness = self._verify()

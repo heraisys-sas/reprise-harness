@@ -139,8 +139,12 @@ def _from_v1(policy):
         _V1_WARNED.append(True)
         sys.stderr.write('reprise gh : politique v1 detectee, write_actors ignore ; '
                          'ecrire gh-policy.json au format v2 (voir HARNESS-INTEGRATION.md).\n')
+    enabled = policy.get('enabled', True)
+    if not isinstance(enabled, bool):
+        # "false" (chaine) ne doit jamais valoir vrai : booleen exige, comme en v2.
+        raise GhError('Politique invalide : enabled booleen attendu')
     migrated = default_policy()
-    migrated['enabled'] = bool(policy.get('enabled', True))
+    migrated['enabled'] = enabled
     return migrated
 
 
@@ -311,6 +315,28 @@ def audit(audit_path, actor, method, path, status, error=None, extra=None):
         handle.write(json.dumps(entry, ensure_ascii=False) + '\n')
 
 
+# Fusion par l'API brute : refusee, la regle de revue passe par `reprise gh merge` (revue #270).
+_MERGE_PATH_RE = re.compile(r'^/repos/[^/]+/[^/]+/pulls/\d+/merge/?(\?.*)?$', re.IGNORECASE)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse toute redirection : le jeton ne suit jamais une 30x (logs, tarballs, assets)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, 'redirect_refused', headers, fp)
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+_STDLIB_URLOPEN = urllib.request.urlopen
+
+
+def _urlopen(req, timeout):
+    """Opener sans redirection ; si urlopen a ete remplace (tests), il est appele tel quel."""
+    if urllib.request.urlopen is not _STDLIB_URLOPEN:
+        return urllib.request.urlopen(req, timeout=timeout)
+    return _OPENER.open(req, timeout=timeout)
+
+
 def request(
     actor,
     method,
@@ -346,6 +372,9 @@ def request(
         if op == 'read' and method not in READ_METHODS:
             extra.update({'decision': 'deny', 'reason': 'read_requires_get', 'rule': None})
             raise GhError('Operation read : GET ou HEAD uniquement')
+        if op == 'api.raw' and isinstance(path, str) and _MERGE_PATH_RE.match(path):
+            extra.update({'decision': 'deny', 'reason': 'merge_via_api_raw', 'rule': None})
+            raise GhError('Fusion par api.raw refusee : utiliser `reprise gh merge` (regle de revue)')
         decision, reason, rule = decide(load_policy(policy_path), actor, op, repo, auth)
         extra.update({'decision': decision, 'reason': reason, 'rule': rule})
         if decision == 'review_required' and review_grant in REVIEW_GRANTS:
@@ -373,7 +402,6 @@ def request(
         audit(audit_path, actor, method, path, 'unsent', error=str(exc), extra=extra)
         raise
     headers = {
-        'Authorization': 'Bearer %s' % token,
         'Accept': 'application/vnd.github+json',
         'User-Agent': USER_AGENT,
         'X-GitHub-Api-Version': API_VERSION,
@@ -383,12 +411,18 @@ def request(
         data = json.dumps(body, ensure_ascii=False).encode('utf-8')
         headers['Content-Type'] = 'application/json; charset=utf-8'
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    # Jamais recopie par un gestionnaire de redirection (en-tete non redirige).
+    req.add_unredirected_header('Authorization', 'Bearer %s' % token)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen(req, timeout) as resp:
             status = resp.status
             raw = resp.read()
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode('utf-8', 'replace')[:200]
+        if 300 <= exc.code < 400:
+            audit(audit_path, actor, method, path, exc.code, error='redirect_refused', extra=extra)
+            raise GhError('Redirection HTTP %s refusee sur %s %s : le jeton ne quitte jamais %s'
+                          % (exc.code, method, path, host))
+        detail = (exc.read() or b'').decode('utf-8', 'replace')[:200] if exc.fp else ''
         audit(audit_path, actor, method, path, exc.code, error=detail, extra=extra)
         raise GhError('HTTP %s sur %s %s : %s' % (exc.code, method, path, detail))
     except urllib.error.URLError as exc:
@@ -496,7 +530,8 @@ def _pulls_call(args, action):
     """Appel de reprise_gh_pulls (import differe : pas de cycle) ; identite issue du jeton."""
     import reprise_gh_pulls
     who = reprise_gh_pulls.identity(args.actor, args.harness_id, args.auth, args.token_id)
-    store = reprise_gh_pulls.ReviewStore(reprise_gh_pulls.DEFAULT_REVIEWS_PATH)
+    # Meme regle que le pont : --reviews, sinon frere de --registry, sinon defaut.
+    store = reprise_gh_pulls.ReviewStore(reprise_gh_pulls.default_reviews_path(args.registry, args.reviews))
     try:
         return action(reprise_gh_pulls, who, store)
     except reprise_gh_pulls.reprise_gh.GhError as exc:
@@ -542,9 +577,13 @@ def _operator_only(args, what):
         raise GhError('%s : terminal requis (operator_requires_tty)' % what)
 
 
+def _registry_path(args):
+    return args.registry or reprise_gh_actors.DEFAULT_ACTORS_PATH
+
+
 def _cmd_actors_issue(args):
     _operator_only(args, 'actors issue')
-    registry = reprise_gh_actors.ActorRegistry(reprise_gh_actors.DEFAULT_ACTORS_PATH)
+    registry = reprise_gh_actors.ActorRegistry(_registry_path(args))
     try:
         result = registry.issue(args.target, args.harness, args.out, replace=args.replace)
     finally:
@@ -561,7 +600,7 @@ def _cmd_actors_issue(args):
 
 def _cmd_actors_revoke(args):
     _operator_only(args, 'actors revoke')
-    registry = reprise_gh_actors.ActorRegistry(reprise_gh_actors.DEFAULT_ACTORS_PATH)
+    registry = reprise_gh_actors.ActorRegistry(_registry_path(args))
     try:
         count = registry.revoke(args.target, args.revoke_token_id)
     finally:
@@ -575,7 +614,7 @@ def _cmd_actors_revoke(args):
 def _cmd_actors_list(args):
     if args.token_file is not None or args.actor != OPERATOR:
         raise GhError("actors list : reserve a l'operateur (sans --token-file)")
-    registry = reprise_gh_actors.ActorRegistry(reprise_gh_actors.DEFAULT_ACTORS_PATH)
+    registry = reprise_gh_actors.ActorRegistry(_registry_path(args))
     try:
         rows = registry.list()
     finally:
@@ -596,6 +635,8 @@ def build_parser():
     parser.add_argument('--actor', type=_actor_name, default=None,
                         help="acteur (defaut : operator ; avec --token-file, controle de coherence)")
     parser.add_argument('--token-file', help="fichier de jeton d'acteur (chemin absolu, 0600)")
+    parser.add_argument('--registry', help='registre gh-actors.sqlite (defaut : reprise_gh_actors)')
+    parser.add_argument('--reviews', help='registre gh-reviews.sqlite (defaut : a cote du registre)')
     sub = parser.add_subparsers(dest='cmd', required=True)
     p_api = sub.add_parser('api', help='appel REST generique (ecriture = api.raw)')
     p_api.add_argument('method', choices=list(READ_METHODS) + list(WRITE_METHODS))
@@ -651,7 +692,8 @@ def main(argv=None):
     try:
         if args.cmd == 'init':
             return args.func(args)
-        args.actor, args.auth, args.token_id, args.harness_id = cli_identity(args.actor, args.token_file)
+        args.actor, args.auth, args.token_id, args.harness_id = cli_identity(args.actor, args.token_file,
+                                                                            args.registry)
         return args.func(args)
     except (GhError, reprise_gh_actors.ActorError) as exc:
         print('Erreur : %s' % exc, file=sys.stderr)

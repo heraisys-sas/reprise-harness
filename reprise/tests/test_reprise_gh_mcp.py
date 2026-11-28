@@ -207,7 +207,7 @@ class GhMcpTest(unittest.TestCase):
         seen = {}
 
         def fake_urlopen(req, timeout):
-            seen['auth'] = req.headers.get('Authorization')
+            seen['auth'] = req.get_header('Authorization')
             return _FakeResponse({'number': 270, 'title': 'Service gh'})
 
         with mock.patch.object(reprise_gh.urllib.request, 'urlopen', fake_urlopen):
