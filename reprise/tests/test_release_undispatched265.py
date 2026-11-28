@@ -18,7 +18,7 @@ class TestReleaseUndispatched265(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name) / 'state', daily_limit=2)
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name) / 'state')
         self.addCleanup(self.bridge.close)
 
     def admit(self, key, owner=DEAD_OWNER, channel='codex', terminal=None, payload=PAYLOAD):
