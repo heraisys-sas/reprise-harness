@@ -202,6 +202,131 @@ Délégation et écriture dans le projet ne sont plus des choix (#252) : toujour
 actives, elles suivent le projet du pont. Une modification de configuration ne révoque pas les processus
 MCP déjà chargés ; leur rechargement reste une opération distincte.
 
+## Service gh, pont MCP à acteur fixé (#270)
+
+`reprise/reprise_gh_mcp.py` est un serveur MCP stdio (trames bornées, sans écoute
+réseau) devant le service `reprise_gh.py`. L'intégration le lance avec
+`--actor <harness> --token-file <absolu>` ; `--registry`, `--policy` et `--audit`
+remplacent au besoin les chemins par défaut (`gh-actors.sqlite`, `gh-policy.json`,
+`gh-audit.jsonl`). Il expose `reprise_gh_read` (GET/HEAD sur `api.github.com`) et,
+seulement avec `--allow-write` **et** un jeton d'acteur valide, `reprise_gh_comment`
+et `reprise_gh_create_issue`. Aucun outil ne prend d'argument `actor` : une clé
+inconnue est refusée. Il n'existe ni verbe d'écriture générique, ni `init`, ni
+écriture de politique par ce canal.
+
+Jetons d'acteur (`reprise_gh_actors.py`) : l'opérateur les émet depuis un terminal
+avec `reprise gh actors issue --actor X --harness H --out /chemin/absolu [--replace]`
+(fichier `rgh_<token_id>_<secret>` créé en 0600, dossier 0700 hors dépôt ; seule
+l'empreinte SHA-256 est enregistrée), les révoque avec
+`reprise gh actors revoke --actor X [--token-id ID]` et les liste sans secret avec
+`reprise gh actors list`. `--replace` révoque les autres jetons de l'acteur. Le pont
+exige un fichier de jeton détenu par l'utilisateur, en mode 0600 exact, sans lien
+symbolique, de 100 octets au plus ; sinon il refuse de démarrer, avec un message sans
+secret sur stderr. Si le jeton est absent, invalide, révoqué ou appartient à un autre
+acteur, le pont reste en lecture seule ; la cause (`auth`) figure dans
+`initialize.instructions` et dans la ligne d'audit `START`. Les configs DSH ayant
+`failOnStartupError: False`, un refus de démarrage passerait inaperçu, d'où ce choix.
+Le registre est relu à chaque écriture : une révocation prend effet sans redémarrage.
+`--actor operator` est refusé par le pont.
+
+CLI opérateur : `reprise gh …` agit par défaut en acteur réservé `operator` ;
+écrire en `operator` exige un terminal (stdin et stdout), sinon le refus porte le
+motif `operator_requires_tty`. Avec `--token-file`, l'acteur vient du registre et un
+`--actor` contradictoire est refusé. `init` est retiré.
+
+Politique v2 (`gh-policy.json`, écrite directement par l'opérateur) :
+
+```json
+{"version": 2, "enabled": true, "default": "deny", "deny_actors": [],
+ "rules": [{"id": "default-read", "op": "read", "decision": "allow"},
+           {"id": "default-issue", "op": "issue.*", "decision": "allow"},
+           {"id": "default-pull-review", "op": "pull.review", "decision": "allow"},
+           {"id": "default-pull-create", "op": "pull.create", "decision": "allow"},
+           {"id": "default-pull-merge", "op": "pull.merge", "decision": "review_required",
+            "review": {"min_reviewers": 1, "min_reviewers_unknown_author": 2,
+                       "distinct_from_author": true}},
+           {"id": "default-ci-sweep", "op": "ci.sweep", "decision": "allow"},
+           {"id": "default-api-raw", "op": "api.raw", "decision": "allow", "actors": ["operator"]}]}
+```
+
+C'est aussi la politique appliquée en l'absence de fichier. Les opérations forment
+une liste fermée : `read`, `issue.comment`, `issue.create`, `pull.create`,
+`pull.review`, `pull.merge`, `ci.sweep`, `api.raw` (motifs `issue.*`, `pull.*`, `ci.*`,
+`api.*`, `*`). Le filtre
+`actors` est facultatif ; `deny_actors` pose un veto nominatif. La priorité est
+deny > review_required > allow ; une opération inconnue ou un `default` absent
+donne `deny`. Une politique invalide ou illisible refuse tout appel. Toute écriture
+d'un acteur autre qu'`operator` exige un jeton valide. `review_required` renvoie
+à la règle de fusion ci-dessous. Une politique v1 (`write_actors`) est
+traduite en mémoire vers la v2 par défaut, sans réécriture du fichier ;
+`write_actors` est ignoré, avec un avertissement unique.
+
+PR, revue croisée et fusion (lot 3). Ces écritures n'existent que sur un pont
+authentifié avec `--allow-write` et passent par la politique v2 :
+- `reprise_gh_create_pull` {repo, head, base, title, body} enregistre l'auteur et
+  son harness ;
+- `reprise_gh_review` {repo, number, verdict, body} lit le head courant, poste un
+  commentaire balisé `<!-- reprise-review: … -->` et enregistre la revue ;
+- `reprise_gh_merge` {repo, number, method}.
+
+Le harness vient toujours du registre des jetons. Aucun outil n'accepte d'acteur,
+d'auteur, de harness ni de sha. Les registres `gh_pulls`, `gh_reviews` et
+`gh_merges` vivent dans `gh-reviews.sqlite` (0600, dossier 0700), à côté de
+`gh-actors.sqlite`. Le pont et la CLI appliquent la même règle de chemin :
+`--reviews`, sinon le fichier voisin de `--registry`, sinon le chemin par défaut.
+La clé de dépôt est le `full_name` renvoyé par GitHub (`base.repo`), en minuscules,
+avec repli sur le dépôt saisi en minuscules : GitHub ignore la casse, et `O/r` ne
+contourne donc plus les revues enregistrées sous `o/r`.
+
+Règle de fusion :
+- seules comptent les revues `approve` sur le head exact ;
+- le harness de l'auteur est exclu, sauf avec `distinct_from_author: false` ;
+- les approbations d'un même harness ne comptent qu'une fois ;
+- tout `request_changes` sur ce head bloque ;
+- minimum : `min_reviewers` si l'auteur est connu, `min_reviewers_unknown_author`
+  (2) sinon ;
+- la fusion envoie `sha=<head revu>` à GitHub, qui refuse si le head a bougé ;
+- le refus indique les revues manquantes, les harness exclus et la marche à suivre
+  (`reprise_gh_review` depuis une autre route, ou `reprise_delegate` en revue).
+
+Contournement, CLI seulement :
+`reprise gh merge --repo R --number N [--method M] --override-review --reason "…"`.
+Il est réservé à `operator`, exige un terminal et un motif de 10 caractères au
+moins. Le commentaire `<!-- reprise-override: … -->` est posté après la fusion
+réussie. S'il échoue, la fusion reste acquise ; l'échec est tracé dans l'audit
+(`override_comment_failed`) et dans `gh_merges.override_note`. L'audit porte
+`reason: operator_override` et `override_reason`, et `gh_merges` le motif. Sans
+`--override-review`, l'opérateur suit la même règle. `reprise gh api PUT …/pulls/N/merge`
+(api.raw) est refusé (`merge_via_api_raw`) et renvoie vers `reprise gh merge`.
+
+CI après fusion, non bloquante. Reprise lit les statuts et les check-runs du commit
+de fusion. Un statut ou un check-run `failure`, `error`, `cancelled` ou `timed_out`
+ouvre une issue « CI rouge après fusion de #N (sha) », avec le label `ci:red`
+seulement s'il existe. Il n'y a qu'une issue par SHA :
+- une réservation atomique `failure_reporting` précède le POST ;
+- avant toute création, Reprise cherche le marqueur `reprise-ci-red` du sha dans
+  les issues ouvertes ;
+- une réservation de plus de 10 minutes est reprise par le sweep.
+
+`reprise gh ci-sweep [--repo R]` (op `ci.sweep`) reprend les CI `pending`, les CI
+illisibles (lecture tracée `ci_read_failed`, fusion acquise) et les CI `none`
+pendant les 7 jours qui suivent la fusion.
+
+Redirections : le client refuse toute redirection HTTP, quel que soit l'hôte. Une
+30x devient une erreur auditée (`redirect_refused`). L'en-tête `Authorization` est
+de plus non redirigeable : le jeton ne quitte jamais `api.github.com` (logs
+d'actions, tarballs, assets).
+
+Chaque ligne d'audit porte l'acteur, `channel` (`mcp` ou `cli`), `op`, `decision`,
+`reason`, `rule`, `auth` et `token_id`, jamais le secret, le jeton GitHub ni le
+corps. Corps et titres sont bornés ; la sortie est tronquée avec mention. Limites :
+le jeton d'acteur sert à l'attribution, à la révocation et à la politique par
+acteur, ce n'est pas une frontière de sécurité. Tout agent qui dispose de Bash
+tourne sous le même compte Unix et peut lire jetons, registre et politique. La
+garde par terminal est un frein contre l'usage involontaire. La lecture couvre tout
+ce que voit le jeton GitHub. Le branchement de ce serveur dans les intégrations
+harness gérées reste à venir.
+
 
 ## Réconciliation explicite d’un bloc divergent, sans sauvegarde
 

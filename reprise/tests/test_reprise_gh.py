@@ -17,41 +17,19 @@ import reprise_gh
 
 
 class PolicyTest(unittest.TestCase):
+    # Detail de la politique v2 et de la migration v1 : test_reprise_gh_policy_v2.
     def setUp(self):
         self.dir = tempfile.mkdtemp()
-        self.policy = os.path.join(self.dir, 'gh-policy.json')
-        self.audit = os.path.join(self.dir, 'gh-audit.jsonl')
 
-    def test_politique_absente_fail_closed_lecture_seule(self):
+    def test_politique_absente_v2_par_defaut(self):
         policy = reprise_gh.load_policy(os.path.join(self.dir, 'absent.json'))
-        self.assertTrue(policy['enabled'])
-        self.assertEqual(policy['write_actors'], [])
+        self.assertEqual(policy['version'], 2)
+        self.assertEqual(reprise_gh.decide(policy, 'metaai', 'read', None, 'missing')[0], 'allow')
+        self.assertEqual(reprise_gh.decide(policy, 'metaai', 'issue.comment', None, 'missing')[0], 'deny')
 
-    def test_lecture_autorisee_acteur_nomme(self):
-        reprise_gh.check_permission({'enabled': True, 'write_actors': []}, 'metaai', 'GET')
-
-    def test_ecriture_acteur_inconnu_refusee(self):
-        with self.assertRaises(reprise_gh.GhError):
-            reprise_gh.check_permission(
-                {'enabled': True, 'write_actors': ['claude']}, 'metaai', 'POST')
-
-    def test_ecriture_acteur_liste_permise(self):
-        reprise_gh.check_permission(
-            {'enabled': True, 'write_actors': ['claude']}, 'claude', 'POST')
-
-    def test_service_desactive_refuse_tout(self):
-        with self.assertRaises(reprise_gh.GhError):
-            reprise_gh.check_permission({'enabled': False, 'write_actors': ['x']}, 'x', 'GET')
-
-    def test_acteur_vide_refuse(self):
-        with self.assertRaises(reprise_gh.GhError):
-            reprise_gh.check_permission({'enabled': True, 'write_actors': []}, '  ', 'GET')
-
-    def test_init_ecrit_politique(self):
-        reprise_gh.save_policy({'enabled': True, 'write_actors': ['autoclaw', 'claude']},
-                               self.policy)
-        policy = reprise_gh.load_policy(self.policy)
-        self.assertEqual(policy['write_actors'], ['autoclaw', 'claude'])
+    def test_check_permission_et_init_policy_retires(self):
+        self.assertFalse(hasattr(reprise_gh, 'check_permission'))
+        self.assertFalse(hasattr(reprise_gh, 'init_policy'))
 
 
 class TokenTest(unittest.TestCase):
@@ -63,6 +41,11 @@ class TokenTest(unittest.TestCase):
     def test_resolve_token_absent_refuse(self):
         with self.assertRaises(reprise_gh.GhError):
             reprise_gh.resolve_token(runner=lambda host: 'protocol=https\nhost=github.com\n')
+
+
+def _lines(path):
+    with open(path, encoding='utf-8') as handle:
+        return [x for x in handle.read().splitlines() if x.strip()]
 
 
 class _FakeResponse(object):
@@ -86,13 +69,27 @@ class RequestTest(unittest.TestCase):
         self.policy = os.path.join(self.dir, 'gh-policy.json')
         self.audit = os.path.join(self.dir, 'gh-audit.jsonl')
 
+    def test_jeton_github_introuvable_audite_unsent(self):
+        reprise_gh.save_policy(reprise_gh.default_policy(), self.policy)
+
+        def missing():
+            raise reprise_gh.GhError('git credential fill a echoue (code 128)')
+
+        with mock.patch.object(reprise_gh.urllib.request, 'urlopen') as urlopen:
+            with self.assertRaises(reprise_gh.GhError):
+                reprise_gh.request('metaai', 'GET', '/repos/o/r/issues/270', token_provider=missing,
+                                   policy_path=self.policy, audit_path=self.audit)
+        urlopen.assert_not_called()
+        line = json.loads(_lines(self.audit)[-1])
+        self.assertEqual((line['status'], line['decision']), ('unsent', 'allow'))
+
     def test_lecture_auditee_sans_token_dans_le_journal(self):
-        reprise_gh.save_policy({'enabled': True, 'write_actors': []}, self.policy)
+        reprise_gh.save_policy(reprise_gh.default_policy(), self.policy)
         seen = {}
 
         def fake_urlopen(req, timeout):
             seen['url'] = req.full_url
-            seen['auth'] = req.headers.get('Authorization')
+            seen['auth'] = req.get_header('Authorization')
             return _FakeResponse({'ok': True})
 
         with mock.patch.object(reprise_gh.urllib.request, 'urlopen', fake_urlopen):
@@ -113,7 +110,7 @@ class RequestTest(unittest.TestCase):
         self.assertNotIn('SECRET', open(self.audit).read())
 
     def test_chemin_hors_hote_refuse_avant_jeton_issue_291(self):
-        reprise_gh.save_policy({'enabled': True, 'write_actors': []}, self.policy)
+        reprise_gh.save_policy(reprise_gh.default_policy(), self.policy)
         token = mock.Mock(return_value='SECRET')
         for path in ('.evil.example/x', '@evil.example/x', ':8443/x', '//evil.example/x',
                      'repos/o/r', '/repos/o r', '/repos/\nHost: x', '', None):
@@ -139,7 +136,7 @@ class RequestTest(unittest.TestCase):
                                    policy_path=self.policy, audit_path=self.audit)
 
     def test_ecriture_refusee_audit_sans_appel_reseau(self):
-        reprise_gh.save_policy({'enabled': True, 'write_actors': []}, self.policy)
+        reprise_gh.save_policy(reprise_gh.default_policy(), self.policy)
         with mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake:
             with self.assertRaises(reprise_gh.GhError):
                 reprise_gh.request(
@@ -151,7 +148,7 @@ class RequestTest(unittest.TestCase):
         self.assertEqual(lines[0]['status'], 'refused')
 
     def test_erreur_http_auditee_et_levee(self):
-        reprise_gh.save_policy({'enabled': True, 'write_actors': ['autoclaw']}, self.policy)
+        reprise_gh.save_policy(reprise_gh.default_policy(), self.policy)
 
         def fake_urlopen(req, timeout):
             raise urllib.error.HTTPError(
@@ -168,7 +165,6 @@ class RequestTest(unittest.TestCase):
         self.assertEqual(lines[0]['status'], 404)
 
     def test_comment_vise_le_bon_chemin(self):
-        reprise_gh.save_policy({'enabled': True, 'write_actors': ['autoclaw']}, self.policy)
         seen = {}
 
         def fake_urlopen(req, timeout):
@@ -179,7 +175,7 @@ class RequestTest(unittest.TestCase):
 
         with mock.patch.object(reprise_gh.urllib.request, 'urlopen', fake_urlopen):
             status, payload = reprise_gh.comment(
-                'autoclaw', 270, 'o/r', 'Bonjour',
+                'autoclaw', 270, 'o/r', 'Bonjour', auth='ok', token_id='0123456789abcdef',
                 token_provider=lambda: 'SECRET',
                 policy_path=self.policy, audit_path=self.audit)
         self.assertEqual(status, 200)
@@ -212,8 +208,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 1)
         fake.assert_not_called()
 
-    def test_api_ecriture_acteur_liste(self):
-        reprise_gh.save_policy({'enabled': True, 'write_actors': ['autoclaw']}, self.policy)
+    def test_api_raw_operator_avec_terminal(self):
         body = os.path.join(self.dir, 'corps.json')
         with open(body, 'w', encoding='utf-8') as handle:
             handle.write('{"body": "ok"}')
@@ -225,77 +220,197 @@ class CliTest(unittest.TestCase):
         # redirect_stdout : la CLI ecrit la reponse JSON sur stdout — ne pas fuiter dans le journal de tests.
         identifiants = 'protocol=https\nhost=github.com\npassword=SECRET'
         with mock.patch.object(reprise_gh, '_run_credential_fill', lambda host: identifiants), \
+                mock.patch.object(reprise_gh, '_isatty', return_value=True), \
                 mock.patch.object(reprise_gh.urllib.request, 'urlopen', fake_urlopen), \
                 redirect_stdout(io.StringIO()):
-            code = reprise_gh.main([
-                '--actor', 'autoclaw', 'api', 'POST', '/repos/o/r/issues',
-                '--body-file', body])
+            code = reprise_gh.main(['api', 'POST', '/repos/o/r/issues', '--body-file', body])
+        self.assertEqual(code, 0)
+        line = [json.loads(x) for x in _lines(self.audit)][-1]
+        self.assertEqual((line['actor'], line['op'], line['decision'], line['auth'], line['rule']),
+                         ('operator', 'api.raw', 'allow', 'tty', 'default-api-raw'))
+
+    def test_ecriture_operator_sans_terminal_refusee(self):
+        with mock.patch.object(reprise_gh, '_isatty', return_value=False), \
+                mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake, \
+                redirect_stderr(io.StringIO()) as err:
+            code = reprise_gh.main(['api', 'POST', '/repos/o/r/issues', '--body', '{}'])
+        self.assertEqual(code, 1)
+        fake.assert_not_called()
+        self.assertIn('operator_requires_tty', err.getvalue())
+        line = [json.loads(x) for x in _lines(self.audit)][-1]
+        self.assertEqual((line['decision'], line['reason']), ('deny', 'operator_requires_tty'))
+
+    def test_api_raw_refuse_a_un_acteur_a_jeton_par_defaut(self):
+        # api.raw est reserve a operator par la politique par defaut.
+        policy = reprise_gh.default_policy()
+        self.assertEqual(reprise_gh.decide(policy, 'autoclaw', 'api.raw', None, 'ok')[:2],
+                         ('deny', 'default'))
+
+    def test_lecture_operator_sans_terminal_permise(self):
+        with mock.patch.object(reprise_gh, '_run_credential_fill',
+                               lambda host: 'password=SECRET'), \
+                mock.patch.object(reprise_gh, '_isatty', return_value=False), \
+                mock.patch.object(reprise_gh.urllib.request, 'urlopen',
+                                  lambda req, timeout: _FakeResponse({'ok': 1})), \
+                redirect_stdout(io.StringIO()):
+            code = reprise_gh.main(['api', 'GET', '/repos/o/r'])
         self.assertEqual(code, 0)
 
 
 class InitTest(unittest.TestCase):
-    # init sans auto-elevation : l'acteur doit deja etre liste en ecriture ;
-    # l'amorcage est une ecriture directe de gh-policy.json par l'operateur.
+    # init est retire (lot 2) : il renvoie au format v2 sans rien ecrire.
+    def test_init_retire_renvoie_au_format_v2(self):
+        folder = tempfile.mkdtemp()
+        policy = os.path.join(folder, 'gh-policy.json')
+        ancien = (reprise_gh.DEFAULT_POLICY_PATH, reprise_gh.DEFAULT_AUDIT_PATH)
+        reprise_gh.DEFAULT_POLICY_PATH = policy
+        reprise_gh.DEFAULT_AUDIT_PATH = os.path.join(folder, 'gh-audit.jsonl')
+        try:
+            with mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake, \
+                    redirect_stderr(io.StringIO()) as err:
+                code = reprise_gh.main(['init', '--write-actors', 'metaai'])
+        finally:
+            reprise_gh.DEFAULT_POLICY_PATH, reprise_gh.DEFAULT_AUDIT_PATH = ancien
+        self.assertEqual(code, 1)
+        fake.assert_not_called()
+        self.assertIn('v2', err.getvalue())
+        self.assertFalse(os.path.exists(policy))
+
+
+# #270 lot 1 : credential fill sans prompt terminal, canal d'audit de la CLI.
+class CredentialFillTest(unittest.TestCase):
+    def test_credential_fill_sans_prompt_terminal(self):
+        proc = mock.Mock(returncode=0, stdout='password=TOKEN_270\n')
+        with mock.patch.object(reprise_gh.subprocess, 'run', return_value=proc) as run:
+            out = reprise_gh._run_credential_fill('github.com')
+        self.assertIn('TOKEN_270', out)
+        env = run.call_args.kwargs['env']
+        self.assertEqual(env['GIT_TERMINAL_PROMPT'], '0')
+        self.assertEqual(env.get('PATH'), os.environ.get('PATH'))
+        self.assertEqual(run.call_args.args[0], ['git', 'credential', 'fill'])
+
+
+class CliAuditChannelTest(unittest.TestCase):
+    def test_cli_audit_porte_channel_cli(self):
+        folder = tempfile.mkdtemp()
+        policy = os.path.join(folder, 'gh-policy.json')
+        audit = os.path.join(folder, 'gh-audit.jsonl')
+        ancien = (reprise_gh.DEFAULT_POLICY_PATH, reprise_gh.DEFAULT_AUDIT_PATH)
+        reprise_gh.DEFAULT_POLICY_PATH, reprise_gh.DEFAULT_AUDIT_PATH = policy, audit
+        try:
+            with mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake, \
+                    redirect_stderr(io.StringIO()):
+                code = reprise_gh.main(['--actor', 'metaai', 'api', 'POST', '/repos/o/r/issues'])
+        finally:
+            reprise_gh.DEFAULT_POLICY_PATH, reprise_gh.DEFAULT_AUDIT_PATH = ancien
+        self.assertEqual(code, 1)
+        fake.assert_not_called()
+        with open(audit, encoding='utf-8') as handle:
+            line = json.loads(handle.readline())
+        self.assertEqual((line['status'], line['channel'], line['actor']), ('refused', 'cli', 'metaai'))
+
+class ReviewFindingsTest(unittest.TestCase):
+    """Non-regression de la revue de abe49b1 : constats 2 (redirections) et 7 (fusion api.raw)."""
+
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         self.policy = os.path.join(self.dir, 'gh-policy.json')
         self.audit = os.path.join(self.dir, 'gh-audit.jsonl')
 
-    def test_init_acteur_non_liste_refuse_sans_auto_elevation(self):
-        reprise_gh.save_policy({'enabled': True, 'write_actors': ['claude']}, self.policy)
-        with self.assertRaises(reprise_gh.GhError):
-            reprise_gh.init_policy('metaai', ['metaai'],
+    def test_constat2_redirection_refusee_et_jeton_jamais_recopie(self):
+        import email.message
+        import urllib.response
+        seen = []
+
+        class FakeHttps(urllib.request.HTTPSHandler):
+            def https_open(self, req):
+                seen.append((req.full_url, req.get_header('Authorization')))
+                headers = email.message.Message()
+                headers['Location'] = 'https://pipelines.example.net/logs.zip'
+                response = urllib.response.addinfourl(io.BytesIO(b''), headers, req.full_url, 302)
+                response.msg = 'Found'
+                return response
+
+        opener = urllib.request.build_opener(reprise_gh._NoRedirect, FakeHttps)
+        with mock.patch.object(reprise_gh, '_OPENER', opener), \
+                mock.patch.object(reprise_gh, '_run_credential_fill', lambda host: 'password=SECRET'):
+            with self.assertRaisesRegex(reprise_gh.GhError, 'Redirection HTTP 302 refusee'):
+                reprise_gh.request('metaai', 'GET', '/repos/o/r/actions/runs/1/logs',
                                    policy_path=self.policy, audit_path=self.audit)
-        self.assertEqual(reprise_gh.load_policy(self.policy)['write_actors'], ['claude'])
-        lines = [json.loads(x) for x in open(self.audit) if x.strip()]
-        self.assertEqual(lines[-1]['status'], 'refused')
+        self.assertEqual(seen, [('https://api.github.com/repos/o/r/actions/runs/1/logs', 'Bearer SECRET')])
+        line = json.loads(_lines(self.audit)[-1])
+        self.assertEqual((line['status'], line['error']), (302, 'redirect_refused'))
+        self.assertNotIn('SECRET', ''.join(_lines(self.audit)))
+        # Meme avec le gestionnaire standard, Authorization (non redirige) n'est pas recopie.
+        captured = {}
 
-    def test_init_politique_absente_refuse_sans_ecriture(self):
-        with self.assertRaises(reprise_gh.GhError):
-            reprise_gh.init_policy('metaai', ['metaai'],
-                                   policy_path=self.policy, audit_path=self.audit)
-        self.assertFalse(os.path.exists(self.policy))
+        def fake_urlopen(req, timeout):
+            captured['req'] = req
+            return _FakeResponse({})
 
-    def test_init_acteur_liste_ok(self):
-        reprise_gh.save_policy({'enabled': True, 'write_actors': ['autoclaw']}, self.policy)
-        voie = reprise_gh.init_policy('autoclaw', ['autoclaw', 'claude'],
-                                      policy_path=self.policy, audit_path=self.audit)
-        self.assertEqual(voie, 'acteur_liste')
-        self.assertEqual(
-            reprise_gh.load_policy(self.policy)['write_actors'], ['autoclaw', 'claude'])
-        lines = [json.loads(x) for x in open(self.audit) if x.strip()]
-        self.assertEqual(lines[-1]['status'], 'ok')
-        self.assertEqual(lines[-1]['voie'], 'acteur_liste')
+        with mock.patch.object(reprise_gh.urllib.request, 'urlopen', fake_urlopen):
+            reprise_gh.request('metaai', 'GET', '/repos/o/r', token_provider=lambda: 'SECRET',
+                               policy_path=self.policy, audit_path=self.audit)
+        follow = urllib.request.HTTPRedirectHandler().redirect_request(
+            captured['req'], None, 302, 'Found', {}, 'https://pipelines.example.net/x')
+        self.assertIsNone(follow.get_header('Authorization'))
 
-    def test_init_acteur_non_liste_refuse_sans_ecriture(self):
-        reprise_gh.save_policy({'enabled': True, 'write_actors': ['autoclaw']}, self.policy)
-        avant = open(self.policy, 'r', encoding='utf-8').read()
-        with self.assertRaises(reprise_gh.GhError):
-            reprise_gh.init_policy('metaai', ['metaai'],
-                                   policy_path=self.policy, audit_path=self.audit)
-        self.assertEqual(open(self.policy, 'r', encoding='utf-8').read(), avant)
-        self.assertEqual(
-            reprise_gh.load_policy(self.policy)['write_actors'], ['autoclaw'])
-        lines = [json.loads(x) for x in open(self.audit) if x.strip()]
-        self.assertEqual(lines[-1]['status'], 'refused')
-        self.assertNotIn('consent', json.dumps(lines))
+    def test_constat7_fusion_par_api_raw_refusee(self):
+        for path in ('/repos/o/r/pulls/5/merge', '/REPOS/O/R/PULLS/5/MERGE', '/repos/o/r/pulls/5/merge/'):
+            with self.subTest(path=path), \
+                    mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake:
+                with self.assertRaisesRegex(reprise_gh.GhError, 'reprise gh merge'):
+                    reprise_gh.request('operator', 'PUT', path, {'sha': 'a' * 40}, auth='tty',
+                                       token_provider=lambda: 'SECRET', policy_path=self.policy,
+                                       audit_path=self.audit)
+                fake.assert_not_called()
+        line = json.loads(_lines(self.audit)[-1])
+        self.assertEqual((line['op'], line['reason']), ('api.raw', 'merge_via_api_raw'))
 
-    def test_init_cli_refuse_et_n_ecrit_pas(self):
-        ancien = (reprise_gh.DEFAULT_POLICY_PATH, reprise_gh.DEFAULT_AUDIT_PATH)
-        reprise_gh.DEFAULT_POLICY_PATH = self.policy
-        reprise_gh.DEFAULT_AUDIT_PATH = self.audit
-        try:
-            # redirect_stderr : le refus CLI imprime « Erreur : ... » — ne pas fuiter dans le journal de tests.
-            with mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake, \
-                    redirect_stderr(io.StringIO()):
-                code = reprise_gh.main([
-                    '--actor', 'metaai', 'init', '--write-actors', 'metaai'])
-            self.assertEqual(code, 1)
-            fake.assert_not_called()
-            self.assertFalse(os.path.exists(self.policy))
-        finally:
-            reprise_gh.DEFAULT_POLICY_PATH, reprise_gh.DEFAULT_AUDIT_PATH = ancien
+    def test_contre_revue_autres_voies_de_fusion_refusees(self):
+        provider = mock.Mock(return_value='SECRET')
+        for method, path in (('POST', '/repos/o/r/merges'), ('POST', '/graphql'),
+                             ('PATCH', '/repos/o/r/git/refs/heads/dev'), ('PUT', '/repos/o/r/pulls/5/%6Derge')):
+            with self.subTest(path=path), \
+                    mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake:
+                with self.assertRaisesRegex(reprise_gh.GhError, 'reprise gh merge'):
+                    reprise_gh.request('operator', method, path, {}, auth='tty', token_provider=provider,
+                                       policy_path=self.policy, audit_path=self.audit)
+                fake.assert_not_called()
+        provider.assert_not_called()
 
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RepriseCliDispatchTest(unittest.TestCase):
+    """`reprise gh …` délègue à reprise_gh.main avant tout import du scheduler (#270)."""
+
+    SCRIPT = Path(__file__).parents[1] / 'reprise'
+
+    def dispatch(self, argv):
+        main_mock = mock.Mock(return_value=0)
+        namespace = {'__name__': 'reprise_gh_cli_dispatch', '__file__': str(self.SCRIPT)}
+        with mock.patch.object(sys, 'argv', ['reprise', *argv]), \
+             mock.patch.object(reprise_gh, 'main', main_mock):
+            with self.assertRaises(SystemExit) as exit_context:
+                exec(compile(self.SCRIPT.read_text(), str(self.SCRIPT), 'exec'), namespace)
+        return exit_context.exception.code, main_mock
+
+    def test_acteur_operator_par_defaut(self):
+        code, main_mock = self.dispatch(['gh', 'api', 'GET', '/repos/o/r/issues/270'])
+        self.assertEqual(code, 0)
+        main_mock.assert_called_once_with(['--actor', 'operator', 'api', 'GET', '/repos/o/r/issues/270'])
+
+    def test_token_file_sans_injection_d_acteur(self):
+        # Lot 2 : avec --token-file, l'acteur vient du registre ; aucune injection.
+        for argv in (['gh', '--token-file', '/x/jeton', 'api', 'GET', '/x'],
+                     ['gh', '--token-file=/x/jeton', 'api', 'GET', '/x']):
+            _, main_mock = self.dispatch(argv)
+            main_mock.assert_called_once_with(argv[1:])
+
+    def test_acteur_explicite_conserve(self):
+        for argv in (['gh', '--actor', 'claude', 'api', 'GET', '/x'], ['gh', '--actor=claude', 'api', 'GET', '/x']):
+            _, main_mock = self.dispatch(argv)
+            main_mock.assert_called_once_with(argv[1:])

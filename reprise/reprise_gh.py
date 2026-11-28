@@ -3,35 +3,38 @@
 Directive operateur (26 novembre 2026) : soit centraliser tout, soit delivrer un
 service « gh » a tous les harness dans leur workspace. Les deux se combinent :
 
-- coeur central : ce module. Un seul point d'authentification (token resolu via
-  `git credential fill`, jamais logge), une politique fail-closed par acteur
-  (lecture autorisee si le service est active ; ecriture seulement pour les
-  acteurs listes), un journal d'audit JSONL commun (horodatage, acteur, methode,
-  chemin, statut HTTP — sans le token ni le corps de la requete).
-- livraison par workspace : un shim `bin/reprise-gh` par harness appelle ce
-  module avec l'identite de l'acteur (`--actor autoclaw`, `--actor claude`, ...).
+- coeur central : ce module. Un seul point d'authentification GitHub (token
+  resolu via `git credential fill`, jamais logge), une politique v2 par
+  operation (gh-policy.json, ecrite par l'operateur seulement) et un journal
+  d'audit JSONL commun (horodatage, acteur, operation, decision, statut HTTP —
+  sans token, ni secret d'acteur, ni corps de requete).
+- livraison aux harness : le pont MCP stdio `reprise_gh_mcp.py`, lance par
+  l'integration avec `--actor` et `--token-file` (jeton d'acteur emis par
+  `reprise gh actors issue`, registre reprise_gh_actors). Sans jeton valide,
+  le pont reste en lecture seule, meme avec `--allow-write`.
+- CLI operateur : sans `--token-file`, la CLI agit en acteur reserve
+  `operator` ; une ecriture `operator` exige un terminal (frein contre l'usage
+  involontaire, pas une frontiere). Avec `--token-file`, l'acteur vient du
+  registre et un `--actor` contradictoire est refuse.
 
-Meta AI n'est pas dans les acteurs d'ecriture : lecture seule tracee. C'est la
-reponse concrete a sa demande d'un « acces en lecture, stable » et d'un
-« pouvoir traçable, pas un pouvoir sans controle ».
+Le jeton d'acteur sert a l'attribution, a la revocation et a la politique par
+acteur ; ce n'est pas une frontiere de securite : tous les agents tournent sous
+le meme compte Unix et peuvent lire jetons, registre et politique.
 
-Fail-closed partout : politique absente = lecture seule pour tous ; acteur
-inconnu en ecriture = refus avant tout appel reseau ; toute reprise apres echec
-passe par un nouvel appel explicite (pas de relance automatique). `init`
-n'auto-eleve jamais un acteur : l'acteur doit deja etre liste en ecriture dans
-la politique courante ; le premier amorcage est une ecriture directe de
-gh-policy.json par l'operateur (hors CLI), jamais une option de la CLI
-(revue securite harness 26/11 : voie consent supprimee).
-
-L'acteur (`--actor`) est une etiquette d'audit declaree par l'appelant : elle
-n'est pas authentifiee et n'est pas une frontiere de securite. Toute ecriture
-de politique est operateur-only (fichier direct) ; la frontiere reelle est le
-compte Unix + le trousseau macOS, pas la chaine --actor.
+Politique v2 : regles par operation (`read`, `issue.comment`, `issue.create`,
+`pull.review`, `pull.merge`, `api.raw`), filtre `actors` facultatif, veto
+nominatif `deny_actors`, priorite deny > review_required > allow ; operation
+inconnue ou `default` absent = deny. Une politique v1 (`write_actors`) est
+traduite en memoire en v2 par defaut, sans reecriture du fichier ; write_actors
+est ignore (avertissement unique). `init` est retire : la politique s'ecrit
+directement par l'operateur.
 
 Usage CLI :
-    python3 reprise_gh.py --actor autoclaw api GET /repos/OWNER/REPO/issues/270
-    python3 reprise_gh.py --actor autoclaw comment 270 --repo OWNER/REPO \
-        --body-file commentaire.md
+    reprise gh api GET /repos/OWNER/REPO/issues/270
+    reprise gh comment 270 --repo OWNER/REPO --body-file commentaire.md
+    reprise gh actors issue --actor autoclaw --harness autoclaw --out /chemin/prive/jeton
+    reprise gh actors revoke --actor autoclaw
+    reprise gh actors list
 
 Convention du depot : compatible Python 3.9 (pas de PEP 604), zero dependance.
 """
@@ -46,7 +49,8 @@ import time
 import urllib.error
 import urllib.request
 import urllib.parse
-from typing import Callable, Dict, List, Optional
+
+import reprise_gh_actors
 
 DEFAULT_STATE_DIR = os.path.join(
     os.path.expanduser('~'), 'Library', 'Application Support', 'Reprise'
@@ -89,6 +93,8 @@ def _run_credential_fill(host):
             capture_output=True,
             text=True,
             timeout=30,
+            # Jamais de prompt interactif : sans identifiant enregistre, echec net.
+            env=dict(os.environ, GIT_TERMINAL_PROMPT='0'),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise GhError('git credential fill indisponible : %s' % exc)
@@ -97,33 +103,172 @@ def _run_credential_fill(host):
     return proc.stdout
 
 
+OPERATOR = reprise_gh_actors.OPERATOR
+OPERATIONS = ('read', 'issue.comment', 'issue.create', 'pull.create', 'pull.review', 'pull.merge',
+              'ci.sweep', 'api.raw')
+DECISIONS = ('allow', 'review_required', 'deny')
+_OP_PATTERNS = set(OPERATIONS) | {'issue.*', 'pull.*', 'ci.*', 'api.*', '*'}
+_RULE_KEYS = {'id', 'op', 'decision', 'actors', 'review'}
+# Regle de fusion (#270 lot 3) : revues croisees par harness distincts.
+DEFAULT_REVIEW = {'min_reviewers': 1, 'min_reviewers_unknown_author': 2, 'distinct_from_author': True}
+_POLICY_KEYS = {'version', 'enabled', 'default', 'deny_actors', 'rules'}
+DEFAULT_RULES = (
+    {'id': 'default-read', 'op': 'read', 'decision': 'allow'},
+    {'id': 'default-issue', 'op': 'issue.*', 'decision': 'allow'},
+    {'id': 'default-pull-review', 'op': 'pull.review', 'decision': 'allow'},
+    {'id': 'default-pull-create', 'op': 'pull.create', 'decision': 'allow'},
+    {'id': 'default-pull-merge', 'op': 'pull.merge', 'decision': 'review_required',
+     'review': dict(DEFAULT_REVIEW)},
+    {'id': 'default-ci-sweep', 'op': 'ci.sweep', 'decision': 'allow'},
+    {'id': 'default-api-raw', 'op': 'api.raw', 'decision': 'allow', 'actors': [OPERATOR]},
+)
+_V1_WARNED = []
+REVIEW_GRANTS = ('review_satisfied', 'operator_override')
+
+
 def default_policy():
-    """Politique fail-closed : service actif, ecriture pour personne."""
-    return {'enabled': True, 'write_actors': []}
+    """Politique v2 par defaut (fichier absent) : lecture pour tous, issue.* et
+    pull.review allow, pull.merge review_required, api.raw pour operator seul."""
+    return {'version': 2, 'enabled': True, 'default': 'deny', 'deny_actors': [],
+            'rules': [json.loads(json.dumps(rule)) for rule in DEFAULT_RULES]}
+
+
+def _from_v1(policy):
+    """v1 -> v2 en memoire ; le fichier n'est jamais reecrit."""
+    if 'write_actors' in policy and not _V1_WARNED:
+        _V1_WARNED.append(True)
+        sys.stderr.write('reprise gh : politique v1 detectee, write_actors ignore ; '
+                         'ecrire gh-policy.json au format v2 (voir HARNESS-INTEGRATION.md).\n')
+    enabled = policy.get('enabled', True)
+    if not isinstance(enabled, bool):
+        # "false" (chaine) ne doit jamais valoir vrai : booleen exige, comme en v2.
+        raise GhError('Politique invalide : enabled booleen attendu')
+    migrated = default_policy()
+    migrated['enabled'] = enabled
+    return migrated
+
+
+def _names(value, label):
+    if not isinstance(value, list) or not all(isinstance(x, str) and x for x in value):
+        raise GhError('Politique invalide : %s doit etre une liste de noms' % label)
+    return list(value)
+
+
+def _review(value, index):
+    if not isinstance(value, dict) or set(value) - set(DEFAULT_REVIEW):
+        raise GhError('Politique invalide : regle %d, review %s attendu' % (index, sorted(DEFAULT_REVIEW)))
+    review = dict(DEFAULT_REVIEW)
+    for key, item in value.items():
+        valid = (isinstance(item, bool) if key == 'distinct_from_author'
+                 else type(item) is int and 1 <= item <= 10)
+        if not valid:
+            raise GhError('Politique invalide : regle %d, review.%s' % (index, key))
+        review[key] = item
+    return review
+
+
+def review_params(policy, rule_id):
+    """Parametres de revue de la regle pull.merge retenue (defauts sinon)."""
+    for rule in policy.get('rules', []):
+        if rule_id is not None and rule.get('id') == rule_id and 'review' in rule:
+            return dict(rule['review'])
+    return dict(DEFAULT_REVIEW)
+
+
+def validate_policy(policy):
+    """Politique v2 normalisee ; GhError si la structure est invalide (fail-closed)."""
+    if not isinstance(policy, dict):
+        raise GhError('Politique invalide : objet JSON attendu')
+    if policy.get('version', 1) == 1:
+        # v1 = {enabled, write_actors} seulement : un v2 sans `version` est refuse,
+        # jamais remplace silencieusement par les defauts (veto perdu).
+        if set(policy) - {'version', 'enabled', 'write_actors'}:
+            raise GhError('Politique invalide : "version": 2 requis pour rules/deny_actors/default')
+        return _from_v1(policy)
+    if policy.get('version') != 2 or set(policy) - _POLICY_KEYS:
+        raise GhError('Politique invalide : version 2 et cles %s attendues' % sorted(_POLICY_KEYS))
+    if not isinstance(policy.get('enabled', True), bool):
+        raise GhError('Politique invalide : enabled booleen attendu')
+    rules = policy.get('rules', [])
+    if not isinstance(rules, list):
+        raise GhError('Politique invalide : rules doit etre une liste')
+    normalized = []
+    for index, rule in enumerate(rules):
+        if (not isinstance(rule, dict) or set(rule) - _RULE_KEYS
+                or rule.get('op') not in _OP_PATTERNS or rule.get('decision') not in DECISIONS):
+            raise GhError('Politique invalide : regle %d (op, decision, actors, id)' % index)
+        entry = {'id': str(rule.get('id') or 'rule-%d' % index), 'op': rule['op'],
+                 'decision': rule['decision']}
+        if 'actors' in rule:
+            entry['actors'] = _names(rule['actors'], 'actors')
+        if 'review' in rule:
+            entry['review'] = _review(rule['review'], index)
+        normalized.append(entry)
+    return {'version': 2, 'enabled': policy.get('enabled', True),
+            'default': policy.get('default'),
+            'deny_actors': _names(policy.get('deny_actors', []), 'deny_actors'),
+            'rules': normalized}
 
 
 def load_policy(path=None):
     path = path or DEFAULT_POLICY_PATH
     if not os.path.exists(path):
         return default_policy()
-    with open(path, 'r', encoding='utf-8') as handle:
-        policy = json.load(handle)
-    if not isinstance(policy, dict):
-        raise GhError('Politique invalide (%s) : objet JSON attendu' % path)
-    return {
-        'enabled': bool(policy.get('enabled', True)),
-        'write_actors': list(policy.get('write_actors', [])),
-    }
+    try:
+        with open(path, 'r', encoding='utf-8') as handle:
+            policy = json.load(handle)
+    except (OSError, ValueError):
+        raise GhError('Politique illisible (%s) : refus de tout appel' % path) from None
+    return validate_policy(policy)
 
 
 def save_policy(policy, path=None):
+    """Ecriture de politique pour l'operateur et les tests ; aucune CLI ne l'appelle."""
     path = path or DEFAULT_POLICY_PATH
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     tmp = path + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as handle:
         json.dump(policy, handle, ensure_ascii=False, indent=2)
         handle.write('\n')
     os.replace(tmp, path)
+
+
+def _op_matches(pattern, op):
+    return pattern == op or pattern == '*' or (pattern.endswith('.*') and op.startswith(pattern[:-1]))
+
+
+def decide(policy, actor, op, repo, auth):
+    """(decision, reason, rule_id) ; decision ∈ allow | review_required | deny.
+
+    auth : pour un acteur a jeton, ok | missing | invalid | revoked ; pour
+    `operator` (CLI), tty | no_tty. `repo` est reserve (pas de restriction par
+    depot dans ce lot). Toute ecriture d'un acteur sans jeton valide est refusee.
+    """
+    if not policy.get('enabled', False):
+        return 'deny', 'disabled', None
+    if op not in OPERATIONS:
+        return 'deny', 'unknown_op', None
+    actor = (actor or '').strip()
+    if not actor:
+        return 'deny', 'actor_required', None
+    if actor in policy.get('deny_actors', []):
+        return 'deny', 'deny_actor', 'deny_actors'
+    if op != 'read':
+        if actor == OPERATOR and auth != 'tty':
+            return 'deny', 'operator_requires_tty', None
+        if actor != OPERATOR and auth != 'ok':
+            return 'deny', 'auth_%s' % (auth or 'missing'), None
+    matched = {}
+    for rule in policy.get('rules', []):
+        if _op_matches(rule['op'], op) and ('actors' not in rule or actor in rule['actors']):
+            matched.setdefault(rule['decision'], rule['id'])
+    for decision in DECISIONS[::-1]:
+        if decision in matched:
+            return decision, 'rule', matched[decision]
+    default = policy.get('default')
+    if default in DECISIONS:
+        return default, 'default', None
+    return 'deny', 'no_default', None
 
 
 _PATH_RE = re.compile(r'^/[A-Za-z0-9._~!$&\'()*+,;=:@%/?-]*$')
@@ -152,46 +297,6 @@ def repo_slug(repo):
     return repo
 
 
-def check_permission(policy, actor, method):
-    """Porte unique : lecture si actif, ecriture si acteur liste. Fail-closed."""
-    if not policy.get('enabled', False):
-        raise GhError('Service gh desactive par la politique (%s)' % 'gh-policy.json')
-    actor = (actor or '').strip()
-    if not actor:
-        raise GhError('Acteur requis (--actor) : appel sans identite refuse')
-    if method.upper() not in READ_METHODS and actor not in policy.get('write_actors', []):
-        raise GhError(
-            "Ecriture refusee pour l'acteur « %s » : non liste dans "
-            "gh-policy.json (lecture seule tracee au journal d'audit)" % actor
-        )
-
-
-def init_policy(actor, write_actors, policy_path=None, audit_path=None):
-    """Ecrit la politique, sans auto-elevation.
-
-    Une seule voie : l'acteur est deja liste en ecriture dans la politique
-    courante (check_permission OK). Sinon refus avant toute ecriture —
-    l'amorcage est une ecriture directe de gh-policy.json par l'operateur,
-    jamais une option de la CLI (revue securite harness 26/11 : voie consent
-    supprimee).
-    """
-    policy_path = policy_path or DEFAULT_POLICY_PATH
-    audit_path = audit_path or DEFAULT_AUDIT_PATH
-    acteurs = [x.strip() for x in (write_actors or []) if x and x.strip()]
-    try:
-        check_permission(load_policy(policy_path), actor, 'POST')
-    except GhError as exc:
-        audit(audit_path, actor, 'INIT', policy_path, 'refused', error=str(exc))
-        raise GhError(
-            "init refuse pour « %s » : acteur non liste en ecriture. "
-            "L'amorcage est une ecriture directe de gh-policy.json par "
-            "l'operateur, jamais une option de la CLI : pas d'auto-elevation"
-            % actor)
-    save_policy({'enabled': True, 'write_actors': acteurs}, policy_path)
-    audit(audit_path, actor, 'INIT', policy_path, 'ok', extra={'voie': 'acteur_liste'})
-    return 'acteur_liste'
-
-
 def audit(audit_path, actor, method, path, status, error=None, extra=None):
     entry = {
         'ts': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
@@ -203,10 +308,35 @@ def audit(audit_path, actor, method, path, status, error=None, extra=None):
     if error:
         entry['error'] = error[:200]
     if extra:
-        entry.update(extra)
-    os.makedirs(os.path.dirname(audit_path) or '.', exist_ok=True)
+        # Les champs du coeur (acteur, statut...) priment sur les extras.
+        entry.update({k: v for k, v in extra.items() if k not in entry})
+    os.makedirs(os.path.dirname(audit_path) or '.', mode=0o700, exist_ok=True)
     with open(audit_path, 'a', encoding='utf-8') as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + '\n')
+
+
+# Fusion par l'API brute : refusee, la regle de revue passe par `reprise gh merge` (revue #270).
+_MERGE_PATH_RE = re.compile(r'^/repos/[^/]+/[^/]+/pulls/\d+/merge/?(\?.*)?$', re.IGNORECASE)
+# Autres voies d'integration de code (contre-revue #270) : refusees en ecriture api.raw.
+_MERGE_LIKE_RE = re.compile(r'^/(graphql|repos/[^/]+/[^/]+/(merges|git/refs))(/|\?|$)', re.IGNORECASE)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse toute redirection : le jeton ne suit jamais une 30x (logs, tarballs, assets)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, 'redirect_refused', headers, fp)
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+_STDLIB_URLOPEN = urllib.request.urlopen
+
+
+def _urlopen(req, timeout):
+    """Opener sans redirection ; si urlopen a ete remplace (tests), il est appele tel quel."""
+    if urllib.request.urlopen is not _STDLIB_URLOPEN:
+        return urllib.request.urlopen(req, timeout=timeout)
+    return _OPENER.open(req, timeout=timeout)
 
 
 def request(
@@ -219,21 +349,63 @@ def request(
     policy_path=None,
     audit_path=None,
     timeout=30,
+    audit_extra=None,
+    op=None,
+    auth=None,
+    token_id=None,
+    repo=None,
+    review_grant=None,
 ):
-    """Appel REST GitHub audite. body = objet JSON ou None. Retour = (statut, donnees)."""
+    """Appel REST GitHub audite. body = objet JSON ou None. Retour = (statut, donnees).
+
+    op : operation de politique (defaut : `read` pour GET/HEAD, sinon `api.raw`).
+    auth/token_id : etat du jeton d'acteur (voir decide) ; token_id seul est audite.
+    audit_extra : champs ajoutes a chaque ligne d'audit (ex. {'channel': 'mcp'}).
+    review_grant : `review_satisfied` ou `operator_override`, pose par
+    reprise_gh_pulls apres evaluation de la regle de fusion ; leve seulement une
+    decision review_required (jamais un deny).
+    """
     method = method.upper()
-    policy = load_policy(policy_path)
+    op = op or ('read' if method in READ_METHODS else 'api.raw')
     audit_path = audit_path or DEFAULT_AUDIT_PATH
+    extra = dict(audit_extra or {})
+    extra.update({'op': op, 'auth': auth, 'token_id': token_id})
     try:
-        check_permission(policy, actor, method)
-        url = api_url(host, path)
+        if op == 'read' and method not in READ_METHODS:
+            extra.update({'decision': 'deny', 'reason': 'read_requires_get', 'rule': None})
+            raise GhError('Operation read : GET ou HEAD uniquement')
+        if op == 'api.raw' and isinstance(path, str) and (
+                _MERGE_PATH_RE.match(path)
+                or method not in READ_METHODS and ('%' in path or _MERGE_LIKE_RE.match(path))):
+            extra.update({'decision': 'deny', 'reason': 'merge_via_api_raw', 'rule': None})
+            raise GhError('Fusion par api.raw refusee : utiliser `reprise gh merge` (regle de revue)')
+        decision, reason, rule = decide(load_policy(policy_path), actor, op, repo, auth)
+        extra.update({'decision': decision, 'reason': reason, 'rule': rule})
+        if decision == 'review_required' and review_grant in REVIEW_GRANTS:
+            decision, reason = 'allow', review_grant
+            extra.update({'decision': decision, 'reason': reason})
+        if decision == 'review_required':
+            raise GhError("Operation %s : revue requise (reprise_gh_merge evalue la regle)" % op)
+        if decision != 'allow':
+            raise GhError("Operation %s refusee pour l'acteur « %s » (%s)" % (op, actor, reason))
+        try:
+            url = api_url(host, path)
+        except GhError:
+            extra.update({'decision': 'deny', 'reason': 'invalid_path'})
+            raise
     except GhError as exc:
-        audit(audit_path, actor, method, str(path)[:200], 'refused', error=str(exc))
+        extra.setdefault('decision', 'deny')
+        extra.setdefault('reason', 'policy_unavailable')
+        audit(audit_path, actor, method, str(path)[:200], 'refused', error=str(exc), extra=extra)
         raise
     provider = token_provider or resolve_token
-    token = provider()
+    try:
+        token = provider()
+    except GhError as exc:
+        # Autorise par la politique mais jamais envoye : le journal le dit.
+        audit(audit_path, actor, method, path, 'unsent', error=str(exc), extra=extra)
+        raise
     headers = {
-        'Authorization': 'Bearer %s' % token,
         'Accept': 'application/vnd.github+json',
         'User-Agent': USER_AGENT,
         'X-GitHub-Api-Version': API_VERSION,
@@ -243,16 +415,23 @@ def request(
         data = json.dumps(body, ensure_ascii=False).encode('utf-8')
         headers['Content-Type'] = 'application/json; charset=utf-8'
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    # Jamais recopie par un gestionnaire de redirection (en-tete non redirige).
+    req.add_unredirected_header('Authorization', 'Bearer %s' % token)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _urlopen(req, timeout) as resp:
             status = resp.status
             raw = resp.read()
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode('utf-8', 'replace')[:200]
-        audit(audit_path, actor, method, path, exc.code, error=detail)
+        if 300 <= exc.code < 400:
+            audit(audit_path, actor, method, path, exc.code, error='redirect_refused', extra=extra)
+            hint = ' (depot renomme ? utiliser son nouveau nom)' if exc.code == 301 else ''
+            raise GhError('Redirection HTTP %s refusee sur %s %s : le jeton ne suit aucune redirection%s'
+                          % (exc.code, method, path, hint))
+        detail = (exc.read() or b'').decode('utf-8', 'replace')[:200] if exc.fp else ''
+        audit(audit_path, actor, method, path, exc.code, error=detail, extra=extra)
         raise GhError('HTTP %s sur %s %s : %s' % (exc.code, method, path, detail))
     except urllib.error.URLError as exc:
-        audit(audit_path, actor, method, path, 0, error=str(exc.reason))
+        audit(audit_path, actor, method, path, 0, error=str(exc.reason), extra=extra)
         raise GhError('Reseau indisponible pour %s %s : %s' % (method, path, exc.reason))
     payload = None
     if raw:
@@ -260,25 +439,64 @@ def request(
             payload = json.loads(raw.decode('utf-8'))
         except ValueError:
             payload = raw.decode('utf-8', 'replace')
-    audit(audit_path, actor, method, path, status)
+    audit(audit_path, actor, method, path, status, extra=extra)
     return status, payload
 
 
 def comment(actor, issue_number, repo, body_text, **kwargs):
-    """Poster un commentaire d'issue (ecriture tracee)."""
-    path = '/repos/%s/issues/%d/comments' % (repo_slug(repo), int(issue_number))
-    return request(actor, 'POST', path, {'body': body_text}, **kwargs)
+    """Poster un commentaire d'issue (operation issue.comment, tracee)."""
+    repo = repo_slug(repo)
+    path = '/repos/%s/issues/%d/comments' % (repo, int(issue_number))
+    return request(actor, 'POST', path, {'body': body_text}, op='issue.comment', repo=repo, **kwargs)
 
 
 def create_issue(actor, repo, title, body_text, labels=None, **kwargs):
-    """Ouvrir une issue (ecriture tracee)."""
+    """Ouvrir une issue (operation issue.create, tracee)."""
+    repo = repo_slug(repo)
     payload = {'title': title, 'body': body_text}
     if labels:
         payload['labels'] = list(labels)
-    return request(actor, 'POST', '/repos/%s/issues' % repo_slug(repo), payload, **kwargs)
+    return request(actor, 'POST', '/repos/%s/issues' % repo, payload, op='issue.create',
+                   repo=repo, **kwargs)
 
 
 # ---------------------------------------------------------------- CLI
+
+CLI_AUDIT = {'channel': 'cli'}
+
+
+def _isatty():
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def cli_identity(actor, token_file=None, registry_path=None):
+    """(acteur, auth, token_id, harness) de la CLI.
+
+    Sans --token-file : `operator` (ou l'acteur explicite, alors sans jeton :
+    lecture seule) ; auth tty|no_tty pour operator. Avec --token-file : acteur du
+    registre ; jeton absent, invalide ou revoque = refus ; --actor contradictoire
+    = refus.
+    """
+    if token_file is None:
+        actor = actor or OPERATOR
+        if actor == OPERATOR:
+            return actor, ('tty' if _isatty() else 'no_tty'), None, OPERATOR
+        return actor, 'missing', None, None
+    try:
+        token = reprise_gh_actors.read_token_file(token_file)
+    except reprise_gh_actors.ActorError as exc:
+        raise GhError(str(exc)) from None
+    auth, owner, token_id, harness = reprise_gh_actors.verify(token, registry_path)
+    if auth != 'ok':
+        raise GhError("Jeton d'acteur refuse (auth : %s)" % auth)
+    if actor and actor != owner:
+        raise GhError("--actor « %s » contredit l'acteur du jeton" % actor)
+    return owner, auth, token_id, harness
+
+
+def _identity_kwargs(args):
+    return {'auth': args.auth, 'token_id': args.token_id, 'audit_extra': CLI_AUDIT}
+
 
 def _cmd_api(args):
     body = None
@@ -287,7 +505,7 @@ def _cmd_api(args):
             body = json.load(handle)
     elif args.body:
         body = json.loads(args.body)
-    status, payload = request(args.actor, args.method, args.path, body)
+    status, payload = request(args.actor, args.method, args.path, body, **_identity_kwargs(args))
     if payload is not None:
         json.dump(payload, sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write('\n')
@@ -297,7 +515,7 @@ def _cmd_api(args):
 def _cmd_comment(args):
     with open(args.body_file, 'r', encoding='utf-8') as handle:
         text = handle.read()
-    status, payload = comment(args.actor, args.number, args.repo, text)
+    status, payload = comment(args.actor, args.number, args.repo, text, **_identity_kwargs(args))
     url = payload.get('html_url') if isinstance(payload, dict) else None
     print('HTTP %s %s' % (status, url or ''))
     return 0
@@ -307,24 +525,125 @@ def _cmd_create_issue(args):
     with open(args.body_file, 'r', encoding='utf-8') as handle:
         text = handle.read()
     labels = [x for x in (args.labels or '').split(',') if x]
-    status, payload = create_issue(args.actor, args.repo, args.title, text, labels)
+    status, payload = create_issue(args.actor, args.repo, args.title, text, labels,
+                                   **_identity_kwargs(args))
     print('HTTP %s #%s %s' % (status, payload.get('number'), payload.get('html_url')))
     return 0
 
 
-def _cmd_init(args):
-    acteurs = [x.strip() for x in (args.write_actors or '').split(',') if x.strip()]
-    voie = init_policy(args.actor, acteurs)
-    print('Politique ecrite : %s (voie : %s)' % (DEFAULT_POLICY_PATH, voie))
-    print('Acteurs en ecriture : %s' % (acteurs or '(aucun — lecture seule globale)'))
+def _pulls_call(args, action):
+    """Appel de reprise_gh_pulls (import differe : pas de cycle) ; identite issue du jeton."""
+    import reprise_gh_pulls
+    who = reprise_gh_pulls.identity(args.actor, args.harness_id, args.auth, args.token_id)
+    # Meme regle que le pont : --reviews, sinon frere de --registry, sinon defaut.
+    store = reprise_gh_pulls.ReviewStore(reprise_gh_pulls.default_reviews_path(args.registry, args.reviews))
+    try:
+        return action(reprise_gh_pulls, who, store)
+    except reprise_gh_pulls.reprise_gh.GhError as exc:
+        # Meme classe sauf si ce module tourne en __main__ : message conserve.
+        raise GhError(str(exc)) from None
+    finally:
+        store.close()
+
+
+def _cmd_merge(args):
+    if args.override_review and args.reason is None:
+        raise GhError('--override-review exige --reason "<motif>"')
+    if args.reason is not None and not args.override_review:
+        raise GhError('--reason ne vaut que avec --override-review')
+    override = args.reason if args.override_review else None
+    result = _pulls_call(args, lambda pulls, who, store: pulls.merge(
+        who, store, args.repo, args.number, args.method, override_reason=override,
+        audit_extra=CLI_AUDIT))
+    print('Fusion #%d : %s (head %s)%s ; CI : %s%s' % (
+        args.number, result['merge_sha'], result['head_sha'][:12],
+        ' [contournement]' if result['override'] else '', result['ci_state'],
+        ' (issue #%s)' % result['ci_issue_number'] if result.get('ci_issue_number') else ''))
     return 0
+
+
+def _cmd_ci_sweep(args):
+    results = _pulls_call(args, lambda pulls, who, store: pulls.ci_sweep(
+        who, store, args.repo, audit_extra=CLI_AUDIT))
+    json.dump(results, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write('\n')
+    return 0
+
+
+def _cmd_init(args):
+    raise GhError("init est retire (#270 lot 2) : l'operateur ecrit directement "
+                  "gh-policy.json au format v2 (voir HARNESS-INTEGRATION.md)")
+
+
+def _operator_only(args, what):
+    if args.token_file is not None or args.actor != OPERATOR:
+        raise GhError('%s : reserve a l\'operateur (sans --token-file)' % what)
+    if args.auth != 'tty':
+        raise GhError('%s : terminal requis (operator_requires_tty)' % what)
+
+
+def _registry_path(args):
+    return args.registry or reprise_gh_actors.DEFAULT_ACTORS_PATH
+
+
+def _cmd_actors_issue(args):
+    _operator_only(args, 'actors issue')
+    registry = reprise_gh_actors.ActorRegistry(_registry_path(args))
+    try:
+        result = registry.issue(args.target, args.harness, args.out, replace=args.replace)
+    finally:
+        registry.close()
+    audit(DEFAULT_AUDIT_PATH, OPERATOR, 'ACTORS_ISSUE', args.target, 'ok',
+          extra=dict(CLI_AUDIT, token_id=result['token_id'], harness=result['harness'],
+                     revoked_previous=result['revoked_previous']))
+    print('Jeton emis pour %s (token_id %s) : %s' % (result['actor'], result['token_id'],
+                                                    result['token_file']))
+    if result['revoked_previous']:
+        print('Jetons precedents revoques : %d' % result['revoked_previous'])
+    return 0
+
+
+def _cmd_actors_revoke(args):
+    _operator_only(args, 'actors revoke')
+    registry = reprise_gh_actors.ActorRegistry(_registry_path(args))
+    try:
+        count = registry.revoke(args.target, args.revoke_token_id)
+    finally:
+        registry.close()
+    audit(DEFAULT_AUDIT_PATH, OPERATOR, 'ACTORS_REVOKE', args.target, 'ok',
+          extra=dict(CLI_AUDIT, token_id=args.revoke_token_id, revoked=count))
+    print('Jetons revoques pour %s : %d' % (args.target, count))
+    return 0
+
+
+def _cmd_actors_list(args):
+    if args.token_file is not None or args.actor != OPERATOR:
+        raise GhError("actors list : reserve a l'operateur (sans --token-file)")
+    registry = reprise_gh_actors.ActorRegistry(_registry_path(args))
+    try:
+        rows = registry.list()
+    finally:
+        registry.close()
+    json.dump(rows, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write('\n')
+    return 0
+
+
+def _actor_name(value):
+    if not reprise_gh_actors.NAME_RE.match(value or ''):
+        raise argparse.ArgumentTypeError('acteur non vide attendu, motif [A-Za-z0-9._-]+')
+    return value
 
 
 def build_parser():
     parser = argparse.ArgumentParser(description='Service gh Reprise (#270)')
-    parser.add_argument('--actor', required=True, help='harness appelant (audit + politique)')
+    parser.add_argument('--actor', type=_actor_name, default=None,
+                        help="acteur (defaut : operator ; avec --token-file, controle de coherence)")
+    parser.add_argument('--token-file', help="fichier de jeton d'acteur (chemin absolu, 0600)")
+    parser.add_argument('--registry', help='registre gh-actors.sqlite (defaut : reprise_gh_actors)')
+    parser.add_argument('--reviews', help='registre gh-reviews.sqlite (defaut : a cote du registre)')
     sub = parser.add_subparsers(dest='cmd', required=True)
-    p_api = sub.add_parser('api', help='appel REST generique')
+    p_api = sub.add_parser('api', help='appel REST generique (ecriture = api.raw)')
     p_api.add_argument('method', choices=list(READ_METHODS) + list(WRITE_METHODS))
     p_api.add_argument('path', help='chemin API, ex. /repos/OWNER/REPO/issues/270')
     p_api.add_argument('--body', help='corps JSON litteral (ecriture)')
@@ -341,9 +660,34 @@ def build_parser():
     p_new.add_argument('--body-file', required=True)
     p_new.add_argument('--labels', default='')
     p_new.set_defaults(func=_cmd_create_issue)
-    p_init = sub.add_parser('init', help='ecrire la politique (sans auto-elevation)')
+    p_merge = sub.add_parser('merge', help='fusionner une PR (regle de revue croisee)')
+    p_merge.add_argument('--repo', required=True)
+    p_merge.add_argument('--number', type=int, required=True)
+    p_merge.add_argument('--method', choices=('merge', 'squash', 'rebase'), default='merge')
+    p_merge.add_argument('--override-review', action='store_true',
+                         help='contournement operateur (terminal, --reason, trace et commente)')
+    p_merge.add_argument('--reason', help='motif du contournement (10 caracteres au moins)')
+    p_merge.set_defaults(func=_cmd_merge)
+    p_sweep = sub.add_parser('ci-sweep', help='relire la CI des fusions pending (issue si rouge)')
+    p_sweep.add_argument('--repo')
+    p_sweep.set_defaults(func=_cmd_ci_sweep)
+    p_init = sub.add_parser('init', help='retire : ecrire gh-policy.json v2 directement')
     p_init.add_argument('--write-actors', default='')
     p_init.set_defaults(func=_cmd_init)
+    p_actors = sub.add_parser('actors', help="registre des jetons d'acteur (operateur)")
+    actors = p_actors.add_subparsers(dest='actors_cmd', required=True)
+    p_issue = actors.add_parser('issue', help='emettre un jeton (fichier 0600)')
+    p_issue.add_argument('--actor', dest='target', type=_actor_name, required=True)
+    p_issue.add_argument('--harness', type=_actor_name, required=True)
+    p_issue.add_argument('--out', required=True, help='chemin absolu, dossier 0700 hors depot')
+    p_issue.add_argument('--replace', action='store_true', help="revoque les autres jetons de l'acteur")
+    p_issue.set_defaults(func=_cmd_actors_issue)
+    p_revoke = actors.add_parser('revoke', help='revoquer les jetons d\'un acteur')
+    p_revoke.add_argument('--actor', dest='target', type=_actor_name, required=True)
+    p_revoke.add_argument('--token-id', dest='revoke_token_id')
+    p_revoke.set_defaults(func=_cmd_actors_revoke)
+    p_list = actors.add_parser('list', help='lister les jetons (sans secret)')
+    p_list.set_defaults(func=_cmd_actors_list)
     return parser
 
 
@@ -351,8 +695,12 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.cmd == 'init':
+            return args.func(args)
+        args.actor, args.auth, args.token_id, args.harness_id = cli_identity(args.actor, args.token_file,
+                                                                            args.registry)
         return args.func(args)
-    except GhError as exc:
+    except (GhError, reprise_gh_actors.ActorError) as exc:
         print('Erreur : %s' % exc, file=sys.stderr)
         return 1
 
