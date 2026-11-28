@@ -12,6 +12,7 @@ integration = fixture.integration
 class HarnessReconciliationTests(unittest.TestCase):
     setUp = fixture.HarnessIntegrationTests.setUp
     install = fixture.HarnessIntegrationTests.install
+    fake_claude = fixture.HarnessIntegrationTests.fake_claude
 
     def apply_plan(self, proposed):
         return integration.apply(self.root, proposed)
@@ -485,3 +486,25 @@ class HarnessReconciliationTests(unittest.TestCase):
         self.assertEqual(json.loads(journal.read_text())['status'], 'pending')
         self.apply_plan(proposed)
         self.assertEqual(json.loads(journal.read_text())['status'], 'completed')
+
+    def test_reconciliation_preserves_claude_program_issue_266(self):
+        program = self.fake_claude()
+        self.install(claude_program=str(program), claude_included_quota_confirmed=True)
+        text = self.config.read_bytes().decode()
+        entries = integration.block_entries(integration._reconcile_span(text).group())
+        entries[0]['config']['command'] = '/synthetic/broken-concatenated-release/runtime/bin/python3'
+        entries[0]['config']['args'][3] = '/synthetic/old-release/helpers/expert_mcp.py'
+        block = integration.START + '\n- insert: ' + json.dumps(entries) + '\n' + integration.END + '\n'
+        self.config.write_bytes(block.encode())
+        self.assertTrue(self.apply_plan(self.reconcile(integration.digest(block.encode())))['changed'])
+        manifest = json.loads((self.managed / 'managed.json').read_bytes())
+        self.assertEqual(manifest['claude_program'], str(program))
+        args = integration.block_entries(integration._reconcile_span(self.config.read_bytes().decode()).group())[0]['config']['args']
+        position = args.index('--claude-program')
+        self.assertEqual(args[position + 1:position + 3], [str(program), '--claude-included-quota-confirmed'])
+        # Re-plan sans option : le bloc réconcilié reste celui du manifeste (claude conservé).
+        # Seul managed.json peut différer (output_resume_project ajouté par la
+        # réconciliation, comportement préexistant indépendant de #266).
+        changed = [change['path'] for change in integration.plan(self.root, self.home, 'desktop', self.project)['changes']]
+        self.assertNotIn(str(self.config), changed)
+

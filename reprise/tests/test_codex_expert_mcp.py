@@ -418,6 +418,32 @@ class BridgeTests(RequestCalls, unittest.TestCase):
             self.assertEqual(tools[name]['inputSchema']['properties']['model']['type'], 'string')
             self.assertNotIn('model', tools[name]['inputSchema']['required'])
 
+    def test_invalid_claude_program_disables_only_claude_code_issue_266(self):
+        # #266 : un chemin Claude invalide ne bloque plus le démarrage du pont.
+        relative = 'relative/claude'
+        for program in (relative, str(Path(self.temp.name)/'missing-claude'), self.temp.name):
+            with self.subTest(program=program), patch('sys.stderr', io.StringIO()) as stderr:
+                bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state-266', claude_program=program,
+                                claude_subscription_only=True)
+                self.addCleanup(bridge.close)
+                bridge.program = 'codex'
+                self.seed_catalog(bridge)
+                self.assertIsNone(bridge.claude_program)
+                self.assertIn(program, bridge.claude_program_error)
+                self.assertIn('claude-code', stderr.getvalue())
+                rows = {row['id']: row for row in bridge.call('reprise_backends', {})['backends']}
+                self.assertFalse(rows['claude-code']['configured'])
+                self.assertFalse(rows['claude-code']['executable_configured'])
+                self.assertEqual(rows['claude-code']['reason'], bridge.claude_program_error)
+                self.assertTrue(rows['codex']['configured'])
+                with patch('expert_mcp.claude_review') as claude:
+                    refused = bridge.call('reprise_delegate', {'request_key': str(uuid.uuid4()), 'backend': 'claude-code',
+                                                               'kind': 'expertise', 'question': 'Review'})
+                claude.assert_not_called()
+                self.assertEqual(refused['status'], 'engine_unavailable')
+        rows = {row['id']: row for row in self.call('reprise_backends', {})['backends']}
+        self.assertNotIn('reason', rows['claude-code'])
+
     def test_followup_preserves_overrides_and_persists_model(self):
         self.bridge.claude_program = '/claude'
         self.bridge.claude_subscription_only = True
