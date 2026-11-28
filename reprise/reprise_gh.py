@@ -39,11 +39,13 @@ Convention du depot : compatible Python 3.9 (pas de PEP 604), zero dependance.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 from typing import Callable, Dict, List, Optional
 
 DEFAULT_STATE_DIR = os.path.join(
@@ -124,6 +126,32 @@ def save_policy(policy, path=None):
     os.replace(tmp, path)
 
 
+_PATH_RE = re.compile(r'^/[A-Za-z0-9._~!$&\'()*+,;=:@%/?-]*$')
+_REPO_RE = re.compile(r'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')
+
+
+def api_url(host, path):
+    """URL de l'API ; refuse tout chemin qui ferait sortir de `host` (#291).
+
+    Sans cette porte, `.evil.example/x` donnait https://api.github.com.evil.example/x
+    et le jeton partait vers un hôte tiers.
+    """
+    if not isinstance(path, str) or not _PATH_RE.match(path) or path.startswith('//'):
+        raise GhError('Chemin API invalide : chemin absolu « /… » sur %s attendu' % host)
+    url = 'https://%s%s' % (host, path)
+    parts = urllib.parse.urlsplit(url)
+    if (parts.scheme != 'https' or parts.hostname != host or parts.username is not None
+            or parts.password is not None or parts.port is not None):
+        raise GhError('Chemin API invalide : hôte résolu différent de %s' % host)
+    return url
+
+
+def repo_slug(repo):
+    if not isinstance(repo, str) or not _REPO_RE.match(repo) or '..' in repo:
+        raise GhError('Dépôt invalide : OWNER/REPO attendu')
+    return repo
+
+
 def check_permission(policy, actor, method):
     """Porte unique : lecture si actif, ecriture si acteur liste. Fail-closed."""
     if not policy.get('enabled', False):
@@ -198,12 +226,12 @@ def request(
     audit_path = audit_path or DEFAULT_AUDIT_PATH
     try:
         check_permission(policy, actor, method)
+        url = api_url(host, path)
     except GhError as exc:
-        audit(audit_path, actor, method, path, 'refused', error=str(exc))
+        audit(audit_path, actor, method, str(path)[:200], 'refused', error=str(exc))
         raise
     provider = token_provider or resolve_token
     token = provider()
-    url = 'https://%s%s' % (host, path)
     headers = {
         'Authorization': 'Bearer %s' % token,
         'Accept': 'application/vnd.github+json',
@@ -238,7 +266,7 @@ def request(
 
 def comment(actor, issue_number, repo, body_text, **kwargs):
     """Poster un commentaire d'issue (ecriture tracee)."""
-    path = '/repos/%s/issues/%s/comments' % (repo, issue_number)
+    path = '/repos/%s/issues/%d/comments' % (repo_slug(repo), int(issue_number))
     return request(actor, 'POST', path, {'body': body_text}, **kwargs)
 
 
@@ -247,7 +275,7 @@ def create_issue(actor, repo, title, body_text, labels=None, **kwargs):
     payload = {'title': title, 'body': body_text}
     if labels:
         payload['labels'] = list(labels)
-    return request(actor, 'POST', '/repos/%s/issues' % repo, payload, **kwargs)
+    return request(actor, 'POST', '/repos/%s/issues' % repo_slug(repo), payload, **kwargs)
 
 
 # ---------------------------------------------------------------- CLI

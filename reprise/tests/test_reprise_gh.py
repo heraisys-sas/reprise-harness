@@ -112,6 +112,32 @@ class RequestTest(unittest.TestCase):
         self.assertEqual(lines[0]['status'], 200)
         self.assertNotIn('SECRET', open(self.audit).read())
 
+    def test_chemin_hors_hote_refuse_avant_jeton_issue_291(self):
+        reprise_gh.save_policy({'enabled': True, 'write_actors': []}, self.policy)
+        token = mock.Mock(return_value='SECRET')
+        for path in ('.evil.example/x', '@evil.example/x', ':8443/x', '//evil.example/x',
+                     'repos/o/r', '/repos/o r', '/repos/\nHost: x', '', None):
+            with self.subTest(path=path), \
+                    mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake:
+                with self.assertRaisesRegex(reprise_gh.GhError, 'Chemin API invalide'):
+                    reprise_gh.request('metaai', 'GET', path, token_provider=token,
+                                       policy_path=self.policy, audit_path=self.audit)
+                fake.assert_not_called()
+        token.assert_not_called()
+        lines = [json.loads(x) for x in open(self.audit) if x.strip()]
+        self.assertTrue(lines and all(x['status'] == 'refused' for x in lines))
+        self.assertNotIn('SECRET', open(self.audit).read())
+
+    def test_chemin_valide_reste_sur_l_hote(self):
+        self.assertEqual(reprise_gh.api_url('api.github.com', '/repos/o/r/issues?state=open&per_page=5'),
+                         'https://api.github.com/repos/o/r/issues?state=open&per_page=5')
+
+    def test_depot_invalide_refuse(self):
+        for repo in ('o', 'o/r/x', '../r', 'o/..', 'evil.example/x?'):
+            with self.subTest(repo=repo), self.assertRaisesRegex(reprise_gh.GhError, 'Dépôt invalide'):
+                reprise_gh.comment('claude', 1, repo, 'x', token_provider=lambda: 'SECRET',
+                                   policy_path=self.policy, audit_path=self.audit)
+
     def test_ecriture_refusee_audit_sans_appel_reseau(self):
         reprise_gh.save_policy({'enabled': True, 'write_actors': []}, self.policy)
         with mock.patch.object(reprise_gh.urllib.request, 'urlopen') as fake:
