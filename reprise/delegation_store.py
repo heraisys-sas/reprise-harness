@@ -21,7 +21,17 @@ def file_evidence(root, paths=None, file_paths=None):
             if project_relative and Path(name).is_absolute():
                 raise ValueError("Project-relative path required")
             path = (root / name) if project_relative else Path(name)
-            path = path.resolve(strict=True)
+            if project_relative:
+                # Forme vérifiée avant résolution, détail des OSError masqué : un chemin
+                # hors projet ne révèle ni son existence ni un chemin privé (#298).
+                if not Path(os.path.normpath(path)).is_relative_to(root):
+                    raise ValueError("Project-relative path required")
+                try:
+                    path = path.resolve(strict=True)
+                except OSError:
+                    raise ValueError("Project file not found") from None
+            else:
+                path = path.resolve(strict=True)
             if project_relative and not path.is_relative_to(root):
                 raise ValueError("Project-relative path required")
             if not path.is_file() or path.stat().st_size > 31457280:

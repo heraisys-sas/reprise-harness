@@ -219,6 +219,20 @@ class DurableTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 file_evidence(link, [bad])
 
+    def test_outside_paths_give_one_refusal_without_existence_oracle_issue_298(self):
+        project = self.root / 'project'
+        project.mkdir()
+        (self.root / 'present.txt').write_text('x')
+        (project / 'dangling').symlink_to(self.root / 'absent-target')
+        from delegation_store import file_evidence
+        messages = []
+        for bad in ('../present.txt', '../absent.txt', 'dangling'):
+            with self.subTest(bad=bad), self.assertRaises(ValueError) as refused:
+                file_evidence(project, [bad])
+            self.assertNotIn(str(self.root), str(refused.exception))
+            messages.append(str(refused.exception))
+        self.assertEqual(messages[0], messages[1])
+
     def test_oversized_implementation_result_is_bounded_like_any_full_result(self):
         bridge = Bridge(self.root, {}, self.state)
         bridge.program = 'codex'

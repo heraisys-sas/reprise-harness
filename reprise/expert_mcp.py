@@ -996,8 +996,9 @@ class Bridge:
             pass
 
     def attempt_substitution(self, name, args, mode, attach, result, key=None):
-        """Substitution automatique de délégation (opt-in, flag OFF par
-        défaut). Sur un refus déclencheur (quota_blocked, billing_unverified,
+        """Substitution automatique de délégation, pilotée par le manifeste
+        (automatic_fallback: true dans experts-manifest.json, confirmé par
+        l'opérateur le 28/11, #298 ; champ absent = désactivée). Sur un refus déclencheur (quota_blocked, billing_unverified,
         engine_unavailable — hors portes manifeste définitives, jamais
         substituées), route vers le meilleur backend admissible, configuré et
         non exclu : cible explicite défaillante → external_rankings.route_choice ;
@@ -1033,6 +1034,12 @@ class Bridge:
         # Le modèle demandé appartient au catalogue de la cible défaillante :
         # retiré sans condition (un élu codex refuserait un modèle claude-code).
         dispatch_args.pop('model', None)
+        # Budgets non admis par le servi (#298) : le délai demandé à la cible
+        # ne doit pas rendre la substitution impossible (BudgetNotSupported).
+        admitted = BACKEND_BUDGETS.get(served, ())
+        for budget in BUDGET_ARGUMENTS.values():
+            if budget not in admitted:
+                dispatch_args.pop(budget, None)
         try:
             served_result = self._call(name, dispatch_args, on_turn=attach)
         except Exception:

@@ -483,6 +483,22 @@ class ExpertRouterTests(unittest.TestCase):
                   if e['type'] == 'routing_substituted']
         self.assertEqual(len(events), 1)
 
+    def test_substitution_drops_budgets_not_admitted_by_served_issue_298(self):
+        """wait_seconds (envoyé par défaut par les clients MCP) ne doit pas tuer la substitution."""
+        document = json.loads(json.dumps(FULL_MANIFEST))
+        document['default_chain'] = ['codex', 'foundation-models']
+        bridge = self.bridge(document)
+        self.codex_admissible(bridge)
+        with patch.object(expert_mcp, 'review',
+                          return_value={'status': 'quota_blocked', 'reason': 'quota exhausted'}), \
+             patch.object(apple_expert, 'configured', return_value=True), \
+             patch.object(apple_expert, 'review',
+                          return_value={'status': 'finished', 'response': 'ok'}) as served:
+            result = self.delegate(bridge, request_key='probe-budget', wait_seconds=30)
+        self.assertEqual(result['status'], 'finished')
+        self.assertEqual(result['served_route'], 'foundation-models')
+        served.assert_called_once()
+
     def test_default_chain_first_entry_not_admissible_falls_to_second(self):
         import expert_router
         document = json.loads(json.dumps(FULL_MANIFEST))
