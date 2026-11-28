@@ -96,6 +96,37 @@ class TestPerimetreGuard(unittest.TestCase):
             self.assertEqual(resultat["refuse"], "HORS_PERIMETRE")
             self.assertIn("ancien.txt", resultat["hors_perimetre"])
 
+    def test_fichier_non_suivi_hors_perimetre_refuse_issue_293(self):
+        with tempfile.TemporaryDirectory() as dossier:
+            base = self._init(dossier)
+            self._ecrire(dossier, "src/a.py", "a = 1\n")
+            self._git(dossier, "add", ".")
+            self._ecrire(dossier, "hors/nouveau.py", "x = 1\ny = 2")
+            resultat = verifier_perimetre_diff(dossier, base, ["src/**"], max_diff_lines=1000)
+            self.assertFalse(resultat["ok"])
+            self.assertEqual(resultat["refuse"], "HORS_PERIMETRE")
+            self.assertEqual(resultat["hors_perimetre"], ["hors/nouveau.py"])
+            self.assertEqual(resultat["lignes_ajoutees"], 3)
+
+    def test_fichier_non_suivi_compte_et_change_le_digest(self):
+        with tempfile.TemporaryDirectory() as dossier:
+            base = self._init(dossier)
+            self._ecrire(dossier, "src/n.py", "n = 1\n")
+            premier = verifier_perimetre_diff(dossier, base, ["src/**"], max_diff_files=0)
+            self.assertEqual(premier["refuse"], "BUDGET_FICHIERS_DEPASSE")
+            self._ecrire(dossier, "src/n.py", "n = 2\n")
+            second = verifier_perimetre_diff(dossier, base, ["src/**"])
+            self.assertTrue(second["ok"])
+            self.assertNotEqual(premier["digest_diff"], second["digest_diff"])
+
+    def test_non_suivi_binaire_et_ignore(self):
+        with tempfile.TemporaryDirectory() as dossier:
+            base = self._init(dossier, {"init.txt": "init\n", ".gitignore": "build/\n"})
+            self._ecrire(dossier, "build/out.o", b"\x00\x01")
+            self.assertTrue(verifier_perimetre_diff(dossier, base, ["src/**"])["ok"])
+            self._ecrire(dossier, "src/blob.dat", b"\x00\x01")
+            self.assertEqual(verifier_perimetre_diff(dossier, base, ["src/**"])["refuse"], "BINAIRE_INTERDIT")
+
     def test_symlink_refuse(self):
         # Symlink ajoute.
         with tempfile.TemporaryDirectory() as dossier:

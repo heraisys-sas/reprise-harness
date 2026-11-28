@@ -77,6 +77,22 @@ class ChatgptProjectionTests(unittest.TestCase):
         self.assertFalse(result['admission_only'])
         self.assertEqual(result['delivery'], 'captured')
 
+    def test_chatgpt_tolerates_wait_seconds_only_issue_293(self):
+        bridge = Bridge(self.root, {}, self.root / 'expert',
+                        desktop_state=self.root / 'desktop', chatgpt_state=str(self.state),
+                        chatgpt_dispatch=True)
+        self.addCleanup(bridge.close)
+        captured = {'status': 'confirmed', 'attempted': True, 'click_observed': True,
+                    'response_text': 'R.', 'response_excerpt': 'R.', 'response_complete': True,
+                    'response_chars': 2, 'response_sha256': 'c' * 64}
+        with mock.patch('chatgpt_quick.dispatch_to_holder', return_value=captured):
+            result = bridge.call('reprise_delegate', {'question': 'Revue', 'kind': 'expertise', 'backend': 'chatgpt',
+                                                      'request_key': 'ws', 'wait_seconds': 30})
+        self.assertEqual(result['response'], 'R.')
+        with self.assertRaisesRegex(ValueError, 'Only wait_seconds applies to the chatgpt backend'):
+            bridge.call('reprise_delegate', {'question': 'Revue', 'kind': 'expertise', 'backend': 'chatgpt',
+                                             'request_key': 'ws2', 'wait_seconds': 30, 'execution_seconds': 10})
+
     def test_chatgpt_dispatch_refusal_stays_admission_only(self):
         bridge = Bridge(self.root, {}, self.root / 'expert',
                         desktop_state=self.root / 'desktop', chatgpt_state=str(self.state),

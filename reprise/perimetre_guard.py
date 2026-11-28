@@ -146,11 +146,35 @@ def _parse_numstat(texte_brut):
         entrees.append({"ajoutees": ajoutees, "supprimees": supprimees, "chemin": chemin})
     return {"entrees": entrees, "binaire": binaire, "entrees_ignorees": entrees_ignorees}
 
+def _non_suivis(repo):
+    # Fichiers non suivis (#293) : git diff ne les voit pas ; ils entrent dans
+    # le diff comme des ajouts, binaire detecte comme git (octet nul en tete).
+    sortie = subprocess.run(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=str(repo), stdout=subprocess.PIPE, check=True, timeout=30).stdout
+    entrees, binaire, empreinte = [], [], b""
+    for brut in sortie.split(b"\x00"):
+        if not brut:
+            continue
+        chemin = brut.decode("utf-8", errors="replace")
+        complet = os.path.join(str(repo), chemin)
+        contenu = b"" if os.path.islink(complet) else open(complet, "rb").read()
+        empreinte += b"untracked\x00" + brut + b"\x00" + hashlib.sha256(contenu).hexdigest().encode() + b"\x00"
+        if b"\x00" in contenu[:8000]:
+            binaire.append(chemin)
+            entrees.append({"ajoutees": 0, "supprimees": 0, "chemin": chemin})
+            continue
+        lignes = contenu.count(b"\n") + (1 if contenu and not contenu.endswith(b"\n") else 0)
+        entrees.append({"ajoutees": lignes, "supprimees": 0, "chemin": chemin})
+    return entrees, binaire, empreinte
+
+
 def calculer_diff(repo, base_sha):
-    # Calcule le diff avec git, parse numstat -z.
+    # Calcule le diff avec git (numstat -z), fichiers non suivis compris.
     resultat = subprocess.run(["git", "diff", "--no-renames", "--numstat", "-z", base_sha], cwd=str(repo), stdout=subprocess.PIPE, check=True, timeout=30)
     parse = _parse_numstat(resultat.stdout)
-    parse["texte_brut"] = resultat.stdout
+    entrees, binaire, empreinte = _non_suivis(repo)
+    parse["entrees"] += entrees
+    parse["binaire"] += binaire
+    parse["texte_brut"] = resultat.stdout + empreinte
     return parse
 def verifier_perimetre_diff(repo, base_sha, allowed_paths, prohibited=None, fichier_regles_sensibles=None, acteur=None, acteurs_locaux=("ironclaw",), max_diff_files=None, max_diff_lines=None):
     # Verifie le diff entier, refus net, aucune troncature.
