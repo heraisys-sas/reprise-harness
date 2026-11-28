@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]/'local-routing-eval'
+ROOT = Path(__file__).resolve().parents[1]/'eval'/'local-routing-eval'
 spec = importlib.util.spec_from_file_location('local_routing_eval', ROOT/'evaluate.py')
 evaluation = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(evaluation)

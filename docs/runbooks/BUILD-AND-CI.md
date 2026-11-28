@@ -23,7 +23,7 @@ Répartition Linux / macOS (#286) :
 
 | Job | Déclencheur | Commande |
 |---|---|---|
-| `linux-tests` (`ubuntu-24.04`, Python du runner) | chaque push et PR | `ci_test.py --guard-skips` : suite complète ; échoue si un test sauté sort de la sélection macOS |
+| `linux-tests` (`ubuntu-24.04`, Python du runner) | chaque push et PR | `ci_test.py --guard-skips` : suite complète ; échoue si un test sauté sort de la sélection macOS ; puis `unittest discover -s tools/tests` (#285) |
 | `tests` macOS, sélection | push sur `dev` | `ci_test.py --macos-only` : modules contenant un saut conditionnel (`skipIf`/`skipUnless`/`skipTest`/`support_portability`), puis `test-build` |
 | `tests` macOS, 4 shards | PR vers `main`, nuit (`schedule`), `workflow_dispatch` | `ci_test.py --shard-index i --shard-count 4`, puis `test-build` |
 
