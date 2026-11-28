@@ -331,3 +331,28 @@ class CliAuditChannelTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RepriseCliDispatchTest(unittest.TestCase):
+    """`reprise gh …` délègue à reprise_gh.main avant tout import du scheduler (#270)."""
+
+    SCRIPT = Path(__file__).parents[1] / 'reprise'
+
+    def dispatch(self, argv):
+        main_mock = mock.Mock(return_value=0)
+        namespace = {'__name__': 'reprise_gh_cli_dispatch', '__file__': str(self.SCRIPT)}
+        with mock.patch.object(sys, 'argv', ['reprise', *argv]), \
+             mock.patch.object(reprise_gh, 'main', main_mock):
+            with self.assertRaises(SystemExit) as exit_context:
+                exec(compile(self.SCRIPT.read_text(), str(self.SCRIPT), 'exec'), namespace)
+        return exit_context.exception.code, main_mock
+
+    def test_acteur_operator_par_defaut(self):
+        code, main_mock = self.dispatch(['gh', 'api', 'GET', '/repos/o/r/issues/270'])
+        self.assertEqual(code, 0)
+        main_mock.assert_called_once_with(['--actor', 'operator', 'api', 'GET', '/repos/o/r/issues/270'])
+
+    def test_acteur_explicite_conserve(self):
+        for argv in (['gh', '--actor', 'claude', 'api', 'GET', '/x'], ['gh', '--actor=claude', 'api', 'GET', '/x']):
+            _, main_mock = self.dispatch(argv)
+            main_mock.assert_called_once_with(argv[1:])
