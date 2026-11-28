@@ -350,12 +350,14 @@ class LocalExecution:
                     result.pop('response_ciphertext', None)
                     if answer is not None: result['response'] = answer
                     self.jobs.local_update(project, operation, run, stage='recorded', receipt=result)
-        except Exception:
+        except Exception as error:
             if process is not None:
                 try: _stop(process)
                 except Exception: pass
             # Never retry or claim no effect after an exception crossing these boundaries.
-            self.jobs.local_update(project, operation, run, stage='indeterminate')
+            # Issue #149 : qualify the uncertainty with the exception class and stable code only.
+            self.jobs.local_update(project, operation, run, stage='indeterminate',
+                                   cause={'error': type(error).__name__, 'code': getattr(error, 'code', None)})
         finally:
             if process is not None:
                 if process.stdin: process.stdin.close()

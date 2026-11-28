@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import siri_inbox_store as store
+from support_portability import requires_acl
 
 
 def crypt(data, purpose, operation):
@@ -21,6 +22,7 @@ def crypt(data, purpose, operation):
     raise ValueError('invalid ciphertext')
 
 
+@requires_acl
 class InboxStoreTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -96,6 +98,7 @@ def concurrent_put(directory, ident, start, results):
         results.put(type(exc).__name__)
 
 
+@requires_acl
 class InboxConcurrencyTests(unittest.TestCase):
     def test_multiple_processes_preserve_single_request_identity(self):
         import multiprocessing
@@ -116,6 +119,7 @@ class InboxConcurrencyTests(unittest.TestCase):
             self.assertEqual(statuses, ['pending'] * len(workers))
             self.assertEqual(len(store.Inbox(folder, crypt=crypt).list()), 1)
 
+@requires_acl
 class InboxLossTests(unittest.TestCase):
     def test_deleted_registry_is_not_treated_as_empty(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -28,8 +28,8 @@ class HarnessIntegrationUITests(unittest.TestCase):
         source = SOURCE.read_text()
         for selection in ('integrationHome', 'integrationProject', 'integrationProfile',
                           'integrationAsi1Effort', 'integrationOutputResume',
-                          'integrationOutputResumeProject', 'integrationCodexWorkspaceWrite',
-                          'integrationDelegate', 'integrationAgentRole', 'selectedProjectID'):
+                          'integrationOutputResumeProject',
+                          'integrationAgentRole', 'selectedProjectID'):
             self.assertIn('.onChange(of: app.' + selection + ')', source)
         self.assertIn('!app.integrationAcknowledged || !app.harnessPlanReady', source)
         self.assertIn('path("Projet du plan"', source)
@@ -53,9 +53,7 @@ final class App {
     var integrationHome = "/tmp/reprise-harness-config"
     var integrationProfile = "standard"
     var integrationProject = "/tmp/reprise-harness-project"
-    var integrationDelegate = false, integrationCodexWorkspaceWrite = false
     var integrationOutputResume = false, integrationAsi1Effort = false
-    var integrationCodexWorkspaceWriteInstalled = false
     var integrationOutputResumeProject = ""
     var integrationAgentRole = "standard"
     var integrationPlan: [String: Any]? = nil
@@ -83,7 +81,7 @@ final class App {
     let app = App()
     func plan(_ project: String = "/tmp/reprise-harness-project", _ profile: String = "standard") -> [String: Any] {
         ["action": "install", "home": "/tmp/reprise-harness-config", "profile": profile,
-         "project": project, "delegate": false, "fingerprint": String(repeating:"a", count:64)]
+         "project": project, "fingerprint": String(repeating:"a", count:64)]
     }
     let correct = plan()
 

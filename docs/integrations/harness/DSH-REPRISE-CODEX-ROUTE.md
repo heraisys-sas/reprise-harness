@@ -1,6 +1,6 @@
 # De DeepSeek Harness à Codex par Reprise — route opérateur
 
-> **Référence humaine pour les futures demandes d'évolution.** Cette page décrit la route **DSH → Reprise → Codex** telle qu'implémentée dans `dev@a55d593b357b0d0a40ec3539acc17c049feb31a7` (17 novembre 2026). Elle explique le fonctionnement du code, **sans prétendre que la release et le profil actuellement chargés sur le Mac sont identiques**. Après une mise à jour, confirmer les capacités réelles avec `reprise_backends` et les reçus de bout en bout.
+> **Référence humaine pour les futures demandes d'évolution.** Cette page décrit la route **DSH → Reprise → Codex** telle qu'implémentée dans `dev@a55d593b357b0d0a40ec3539acc17c049feb31a7` (17 novembre 2026), avec les options révisées par #252 et #250 (27 novembre 2026 : écriture projet et délégation actives par défaut, anciens interrupteurs et alias supprimés). Elle explique le fonctionnement du code, **sans prétendre que la release et le profil actuellement chargés sur le Mac sont identiques**. Après une mise à jour, confirmer les capacités réelles avec `reprise_backends` et les reçus de bout en bout.
 
 ## Définir précisément « déléguer à Codex »
 
@@ -46,10 +46,9 @@ Le schéma distingue le processus **client** `codex app-server proxy --sock ...`
 
 ### 1. Exposer le bon outil dans le bon projet
 
-Le parcours de gestion de Reprise prépare l'intégration du profil DSH via `reprise harness-integration-inspect`, `harness-integration-plan --action install --delegate`, `harness-integration-apply` et `harness-integration-verify`. Le plan doit viser explicitement **le projet** et **le profil** autorisés. Le pont installé utilise `@deepseek-ai/dsh-mcp-client`, `transport: stdio`, `serverName: reprise_experts`, le Python de la **release d'intégration versionnée**, `expert_mcp.py` et les paramètres `--project-root`, `--state`, `--tools`. L'installateur ne retouche pas les identifiants Codex ni ne démarre DSH.
+Le parcours de gestion de Reprise prépare l'intégration du profil DSH via `reprise harness-integration-inspect`, `harness-integration-plan --action install`, `harness-integration-apply` et `harness-integration-verify`. Le plan doit viser explicitement **le projet** et **le profil** autorisés. Le pont installé utilise `@deepseek-ai/dsh-mcp-client`, `transport: stdio`, `serverName: reprise_experts`, le Python de la **release d'intégration versionnée**, `expert_mcp.py` et les paramètres `--project-root`, `--state`, `--tools`. L'installateur ne retouche pas les identifiants Codex ni ne démarre DSH.
 
-- Sans `--delegate`, la liste des outils est bornée par `OBSERVE` : `reprise_backends`, `reprise_requests`, `reprise_quotas`, `approval_list`, `wait_result`. Une installation donnée peut encore présenter une ancienne allowlist ; **c'est `tools/list` qui décide**.
-- Avec `--delegate`, s'ajoutent `reprise_delegate`, `reprise_followup`, `reprise_reconcile`. `approval_respond` n'est pas automatiquement exposé.
+- La liste des outils est `OBSERVE` (`reprise_backends`, `reprise_requests`, `reprise_quotas`, `approval_list`, `wait_result`) plus `DELEGATE` (`reprise_delegate`, `reprise_followup`, `reprise_reconcile`), toujours exposés depuis #252. `approval_respond` n'est pas exposé. Une installation antérieure peut encore présenter une ancienne allowlist ; **c'est `tools/list` qui décide**.
 - Après l'application, **recharger le profil ou une nouvelle session DSH**. Le `verify` lance une sonde directe `initialize` / `tools/list`, ce qui ne prouve pas que DSH lui-même a chargé le pont.
 - Dans DSH, découvrir `mcp__reprise_experts__reprise_backends` ; confirmer le `project_root`, `configured`, `modes`, `models` et les outils réellement visibles. Le projet de la session DSH et le `project_root` fixé dans la configuration MCP peuvent être différents. Nuance : un profil géré déployé avant le renommage n'est pas régénéré automatiquement — le préfixe legacy `mcp__reprise_codex__*` peut encore apparaître jusqu'à la prochaine installation/régénération ; les deux conventions désignent le même serveur.
 
@@ -76,9 +75,9 @@ Le `project_root` et les chemins ciblés empêchent d'envoyer cette demande vers
 | Mode | Comportement effectif |
 | --- | --- |
 | `mode: "expertise"` (défaut) | Sandbox native `readOnly`, réseau désactivé, instructions interdisant les modifications ; avis, revue ou patch complet à faire appliquer/vérifier par le demandeur |
-| `mode: "implementation"` | Seulement si l'installateur a accordé `--codex-workspace-write` pour ce projet. Sandbox native `workspaceWrite`, réseau désactivé, modifications et tests locaux permis. Cela **n'autorise pas** automatiquement push, merge, déploiement ou changement de service |
+| `mode: "implementation"` | Permis par défaut depuis #252 dans le projet du pont. Sandbox native `workspaceWrite`, réseau désactivé, modifications et tests locaux permis. Cela **n'autorise pas** automatiquement push, merge, déploiement ou changement de service |
 
-Une demande `mode: "implementation"` **ne peut pas activer elle-même** le droit d'écriture. Le mode est attaché au thread et hérité lors de `reprise_followup` ; on ne transforme pas une revue en session inscriptible en cours de route. Les approbations Codex restent humaines ; Reprise ne répond pas automatiquement à leur place.
+L'écriture dans le projet est permise par défaut (#252) ; elle reste bornée au `project_root` du pont, réseau coupé. Le mode est attaché au thread et hérité lors de `reprise_followup` ; on ne transforme pas une revue en session inscriptible en cours de route. Les approbations Codex restent humaines ; Reprise ne répond pas automatiquement à leur place.
 
 ### 5. Suivre et terminer le tour sans confondre les preuves
 

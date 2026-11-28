@@ -8,6 +8,8 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'probes'))
 import quickapply_census as census
 
 # Archive built by the official @electron/asar tool: index.js, package.json, node_modules/x/i.js.

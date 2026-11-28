@@ -66,74 +66,50 @@ CONNECTOR_NAME = 'reprise-harness'
 AUTHORIZATION_NOTICE = 'Dans Claude, autorisez les outils du connecteur reprise-harness pour recevoir les tâches, rendre les résultats et déléguer. Reprise ne peut pas accorder ces autorisations à votre place.'
 
 
-def managed_name(servers, old):
-    if old and old.get('connector_name') in servers:
-        return old['connector_name']
-    if old and 'reprise' in servers and old.get('entry_sha256') == entry_hash(servers['reprise']):
-        return 'reprise'
-    return (old or {}).get('connector_name') or CONNECTOR_NAME
-
-
 def inspect(root, home=None):
     home, config, managed = paths(home or Path.home())
     value, old = read_config(config), metadata(managed)
     servers = value.get('mcpServers', {})
-    name = managed_name(servers, old)
-    entry = servers.get(name)
+    entry = servers.get(CONNECTOR_NAME)
     return {'status': 'inspected', 'home': str(home), 'config_exists': config.exists(),
-            'connector_name': name if entry is not None else None,
-            'manifest_connector_name': old.get('connector_name') if old else None,
-            'connector_name_matches': bool(old and entry is not None and old.get('connector_name') == name),
+            'connector_name': CONNECTOR_NAME if entry is not None else None,
             'configuration_written': entry is not None,
             'managed': bool(old and entry is not None and old.get('entry_sha256') == entry_hash(entry)),
             'project': old.get('project') if old else None,
             'memory': memory_integration.selected(old),
-            'enable_await': manifest_enable_await(old) if old and old.get('status') == 'installed' else False,
-            'enable_queue': manifest_enable_queue(old) if old and old.get('status') == 'installed' else False,
+            'retired_options': retired_options(entry),
             'client_loaded': 'unknown', 'message': 'Inspection locale ; aucun client chargé ni redémarré.'}
 
 
-def manifest_enable_await(manifest):
-    value = manifest.get('enable_await', False)
-    if type(value) is not bool:
-        raise ValueError('Option enable_await invalide dans le manifeste.')
-    return value
+# #252 : await_task et claim_next sont toujours exposés. Une entrée ou un
+# manifeste installés avant portent encore ces options : un nouveau plan les
+# retire, et verify refuse l'entrée tant qu'elle n'a pas été réinstallée.
+RETIRED_OPTIONS = ('--enable-await', '--enable-queue')
+RETIRED_MANIFEST_KEYS = ('enable_await', 'enable_queue')
 
 
-def manifest_enable_queue(manifest):
-    value = manifest.get('enable_queue', False)
-    if type(value) is not bool:
-        raise ValueError('Option enable_queue invalide dans le manifeste.')
-    return value
+def retired_options(entry):
+    args = entry.get('args') if isinstance(entry, dict) else None
+    return [arg for arg in RETIRED_OPTIONS if isinstance(args, list) and arg in args]
 
 
-def desired(root, home, project, replace_probe, action='install', enable_await=None, enable_queue=None, memory_access=None, memory_project_id=None, memory_scope_id=None):
+def desired(root, home, project, replace_probe, action='install', memory_access=None, memory_project_id=None, memory_scope_id=None):
     home, config, managed = paths(home)
     project = Path(project).expanduser().resolve(strict=True)
-    if not project.is_dir() or type(replace_probe) is not bool or (enable_await is not None and type(enable_await) is not bool) or (enable_queue is not None and type(enable_queue) is not bool):
+    if not project.is_dir() or type(replace_probe) is not bool:
         raise ValueError('Projet existant et options valides requises.')
     original = read_config(config)
     old = metadata(managed)
+    if old:
+        old = {key: value for key, value in old.items() if key not in RETIRED_MANIFEST_KEYS}
     memory = memory_integration.selected(old, memory_access, memory_project_id, memory_scope_id, action=action)
     memory_managed = memory['access'] != 'off' or 'memory' in (old or {}) or memory_project_id is not None or memory_scope_id is not None
-    preserve_removed_setting = action == 'remove' and old and old.get('status') == 'removed'
-    if enable_await is None:
-        effective_enable_await = manifest_enable_await(old) if old and (old.get('status') == 'installed' or preserve_removed_setting) else False
-    else:
-        effective_enable_await = enable_await
-    if enable_queue is None:
-        effective_enable_queue = manifest_enable_queue(old) if old and (old.get('status') == 'installed' or preserve_removed_setting) else False
-    else:
-        effective_enable_queue = enable_queue
     servers = dict(original.get('mcpServers', {}))
     memory_existing = servers.get(memory_integration.CONNECTOR)
     if memory_integration.CONNECTOR in servers and (not old or not old.get('memory_entry_sha256') or entry_hash(memory_existing) != old['memory_entry_sha256']):
         raise ValueError('Entrée reprise-memory personnalisée ou non gérée ; aucun écrasement.')
-    name = managed_name(servers, old)
-    existing = servers.get(name)
-    if old and old.get('status') == 'installed' and name not in servers and 'reprise' in servers:
-        raise ValueError('Entrée historique reprise différente du manifeste ; réconciliation explicite requise.')
-    if name in servers and (not old or old.get('entry_sha256') != entry_hash(existing)):
+    existing = servers.get(CONNECTOR_NAME)
+    if existing is not None and (not old or old.get('entry_sha256') != entry_hash(existing)):
         raise ValueError('Entrée reprise-harness personnalisée ou non gérée ; aucun écrasement.')
     if action not in ('install', 'remove'):
         raise ValueError('Action invalide.')
@@ -142,9 +118,9 @@ def desired(root, home, project, replace_probe, action='install', enable_await=N
             raise ValueError('Aucune intégration Claude gérée à retirer.')
         if old.get('project') != str(project):
             raise ValueError('Projet sélectionné différent du connecteur géré.')
-        servers.pop(name, None)
+        servers.pop(CONNECTOR_NAME, None)
         servers.pop(memory_integration.CONNECTOR, None)
-        manifest = dict(old, status='removed', entry_sha256=None, enable_await=effective_enable_await, enable_queue=effective_enable_queue)
+        manifest = dict(old, status='removed', entry_sha256=None)
         if memory_managed:
             manifest.update(memory=memory, memory_entry_sha256=None)
         return home, config, managed, dict(original, mcpServers=servers), manifest, None, None
@@ -177,15 +153,7 @@ def desired(root, home, project, replace_probe, action='install', enable_await=N
             '--project-root', str(project), '--state', str(quick_state), '--expert-state', str(main_state),
             '--socket', str(home / '.codex/app-server-control/app-server-control.sock'),
             '--chatgpt-state', str(chatgpt_state)]
-    if effective_enable_await:
-        args.append('--enable-await')
-    if effective_enable_queue:
-        args.append('--enable-queue')
     entry = {'command': str(program), 'args': args}
-    if name != CONNECTOR_NAME:
-        if CONNECTOR_NAME in servers:
-            raise ValueError('Entrée reprise-harness déjà présente ; migration refusée.')
-        servers.pop(name, None)
     servers[CONNECTOR_NAME] = entry
     memory_entry = memory_integration.entry(release, main_state, memory, 'claude-desktop')
     if memory_entry is None:
@@ -195,8 +163,7 @@ def desired(root, home, project, replace_probe, action='install', enable_await=N
     configured = dict(original, mcpServers=servers)
     manifest = {'format': 1, 'status': 'installed', 'connector_name': CONNECTOR_NAME, 'project': str(project),
                 'state': str(main_state), 'quick_state': str(quick_state),
-                'entry_sha256': entry_hash(entry), 'release': str(release), 'release_identity': identity,
-                'enable_await': effective_enable_await, 'enable_queue': effective_enable_queue}
+                'entry_sha256': entry_hash(entry), 'release': str(release), 'release_identity': identity}
     if memory_managed:
         manifest.update(memory=memory, memory_entry_sha256=entry_hash(memory_entry) if memory_entry else None)
     if replaced_probe is not None:
@@ -204,20 +171,14 @@ def desired(root, home, project, replace_probe, action='install', enable_await=N
     return home, config, managed, configured, manifest, helpers, runtime
 
 
-def plan(root, home, project, replace_probe=False, action='install', enable_await=None, enable_queue=None, memory_access=None, memory_project_id=None, memory_scope_id=None):
-    if enable_await is not None and type(enable_await) is not bool:
-        raise ValueError('Option enable_await booléenne ou absente requise.')
-    if enable_queue is not None and type(enable_queue) is not bool:
-        raise ValueError('Option enable_queue booléenne ou absente requise.')
-    home, config, managed, configured, manifest, _, _ = desired(root, home, project, replace_probe, action, enable_await, enable_queue, memory_access, memory_project_id, memory_scope_id)
+def plan(root, home, project, replace_probe=False, action='install', memory_access=None, memory_project_id=None, memory_scope_id=None):
+    home, config, managed, configured, manifest, _, _ = desired(root, home, project, replace_probe, action, memory_access, memory_project_id, memory_scope_id)
     changes = []
     for target, value in ((config, configured), (managed / 'managed.json', manifest)):
         before, after = file_hash(target), digest(encoded(value).encode())
         if before != after:
             changes.append({'path': str(target), 'before_sha256': before, 'after_sha256': after})
     public = {'format': 1, 'action': action, 'home': str(home), 'project': manifest['project'], 'replace_probe': replace_probe,
-              'enable_await': manifest_enable_await(manifest),
-              'enable_queue': manifest_enable_queue(manifest),
               'config_sha256': file_hash(config), 'manifest_sha256': file_hash(managed / 'managed.json'),
               'release': manifest['release'], 'release_identity': manifest['release_identity'], 'changes': changes}
     if 'memory' in manifest:
@@ -247,17 +208,11 @@ def apply(root, public):
         raise ValueError('Plan modifié ; refaire la prévisualisation.')
     home, config, managed = paths(public['home'])
     with locked(managed, home):
-        enable_await = public.get('enable_await')
-        if type(enable_await) is not bool:
-            raise ValueError('Option enable_await booléenne requise.')
-        enable_queue = public.get('enable_queue')
-        if type(enable_queue) is not bool:
-            raise ValueError('Option enable_queue booléenne requise.')
-        if plan(root, home, public['project'], public['replace_probe'], public['action'], enable_await, enable_queue, public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id')) != public:
+        if plan(root, home, public['project'], public['replace_probe'], public['action'], public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id')) != public:
             raise ValueError('Configuration ou bundle modifié ; refaire le plan.')
         if not public['changes']:
             return {'status': 'completed', 'changed': False, 'client_loaded': 'unknown'}
-        _, _, _, configured, manifest, helpers, runtime = desired(root, home, public['project'], public['replace_probe'], public['action'], enable_await, enable_queue, public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id'))
+        _, _, _, configured, manifest, helpers, runtime = desired(root, home, public['project'], public['replace_probe'], public['action'], public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id'))
         if public['action'] == 'install':
             stage_release(helpers, runtime, Path(public['release']))
             release_check(Path(public['release']))
@@ -313,21 +268,16 @@ def verify(root, home=None, project=None):
     home, config, managed = paths(home or Path.home())
     old = metadata(managed)
     servers = read_config(config).get('mcpServers', {})
-    name = managed_name(servers, old)
-    entry = servers.get(name)
+    entry = servers.get(CONNECTOR_NAME)
     if not old or old.get('status') != 'installed' or entry is None:
         raise ValueError('Connecteur géré absent ou modifié.')
     if project is not None and str(Path(project).expanduser().resolve(strict=True)) != old.get('project'):
         raise ValueError('Le workspace sélectionné ne correspond pas au projet du connecteur installé.')
-    if name != CONNECTOR_NAME or old.get('connector_name') != name:
-        raise ValueError('Nom du connecteur incohérent ; migration gérée requise avant vérification.')
-    enable_await = manifest_enable_await(old)
-    enable_queue = manifest_enable_queue(old)
+    if old.get('connector_name') != CONNECTOR_NAME:
+        raise ValueError('Manifeste sans le nom de connecteur reprise-harness ; refaire claude-integration-plan puis apply.')
     args = entry.get('args') if isinstance(entry, dict) else None
-    if not isinstance(args, list) or args.count('--enable-await') != int(enable_await):
-        raise ValueError('Option await du manifeste et de la configuration divergente.')
-    if not isinstance(args, list) or args.count('--enable-queue') != int(enable_queue):
-        raise ValueError('Option queue du manifeste et de la configuration divergente.')
+    if not isinstance(args, list) or retired_options(entry):
+        raise ValueError('Connecteur installé avant #252 ; refaire claude-integration-plan puis apply.')
     if entry_hash(entry) != old.get('entry_sha256'):
         raise ValueError('Connecteur géré absent ou modifié.')
     memory = memory_integration.selected(old)
@@ -345,19 +295,13 @@ def verify(root, home=None, project=None):
     release_check(release)
     command = [str(release / 'Contents/Resources/runtime/bin/python3'), '-E', '-s', '-B',
                str(release / 'Contents/Resources/helpers/claude_mcp.py'), '--project-root', old['project']]
-    if enable_await:
-        command.append('--enable-await')
-    if enable_queue:
-        command.append('--enable-queue')
     requests = [{'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {}},
                 {'jsonrpc': '2.0', 'method': 'notifications/initialized'},
                 {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list', 'params': {}}]
     with tempfile.TemporaryDirectory(prefix='reprise-claude-check-') as temporary:
         command += ['--state', str(Path(temporary) / 'quick'), '--expert-state', str(Path(temporary) / 'expert'),
-                    '--socket', str(home / '.codex/app-server-control/app-server-control.sock')]
-        # The old installed Claude connector has no --chatgpt-state option.
-        if '--chatgpt-state' in args:
-            command += ['--chatgpt-state', str(Path(temporary) / 'chatgpt-state')]
+                    '--socket', str(home / '.codex/app-server-control/app-server-control.sock'),
+                    '--chatgpt-state', str(Path(temporary) / 'chatgpt-state')]
         env = {k: v for k, v in os.environ.items() if not k.startswith(('PYTHON', 'DYLD_')) and k != 'AGENT_RESUME_STATE'}
         response = subprocess.run(command, input='\n'.join(json.dumps(r) for r in requests) + '\n',
                                   capture_output=True, text=True, timeout=20, env=env, check=True)
@@ -365,10 +309,8 @@ def verify(root, home=None, project=None):
     info = next(m['result']['serverInfo'] for m in messages if m.get('id') == 1)
     tools = next(m['result']['tools'] for m in messages if m.get('id') == 2)
     names = sorted(tool['name'] for tool in tools)
-    if not {'get_task', 'submit_result', 'reprise_backends', 'reprise_requests', 'reprise_delegate', 'reprise_followup'}.issubset(names):
+    if not {'get_task', 'submit_result', 'await_task', 'claim_next', 'reprise_backends', 'reprise_requests', 'reprise_delegate', 'reprise_followup'}.issubset(names):
         raise ValueError('Outils du connecteur unifié incomplets.')
-    if ('await_task' in names) != enable_await:
-        raise ValueError('Exposition await_task différente de l’option installée.')
     daemon = {'binding': 'unknown', 'dispatch_supported': 'unknown', 'capabilities_observed': False}
     client = None
     try:
@@ -389,7 +331,6 @@ def verify(root, home=None, project=None):
             client.close()
     memory_probe = memory_integration.probe(expected_memory, memory)
     return {'status': 'verified', 'memory': memory_probe, 'daemon': daemon, 'bridge_tools': names, 'bridge_version': info['version'],
-            'enable_await': enable_await, 'await_tool_exposed': 'await_task' in names,
             'client_loaded': 'unknown', 'inference_executed': False,
             'next_step': 'Recharger Claude lorsque son travail le permet et démarrer le claude-desktopd de cette release ; vérifier le rattachement projet/état.',
             'message': 'Release vérifié par initialize/tools/list ; chargement par Claude Desktop non observé.'}
@@ -407,17 +348,6 @@ def main(root, argv=None):
             command.add_argument('--project', required=True)
             command.add_argument('--replace-probe', action='store_true')
             command.add_argument('--action', choices=('install', 'remove'), default='install')
-            await_group = command.add_mutually_exclusive_group()
-            await_group.add_argument('--enable-await', dest='enable_await', action='store_const', const=True,
-                                     help='exposer await_task dans la configuration gérée')
-            await_group.add_argument('--disable-await', dest='enable_await', action='store_const', const=False,
-                                     help='désactiver await_task dans la configuration gérée')
-            queue_group = command.add_mutually_exclusive_group()
-            queue_group.add_argument('--enable-queue', dest='enable_queue', action='store_const', const=True,
-                                     help='exposer claim_next dans la configuration gérée')
-            queue_group.add_argument('--disable-queue', dest='enable_queue', action='store_const', const=False,
-                                     help='désactiver claim_next dans la configuration gérée')
-            command.set_defaults(enable_await=None, enable_queue=None)
             command.add_argument('--memory-access', choices=('off', 'read', 'write'), default=None)
             command.add_argument('--memory-project-id')
             command.add_argument('--memory-scope-id', help='Scope v2 préexistant explicitement sélectionné')
@@ -428,9 +358,7 @@ def main(root, argv=None):
         if args.command.endswith('-inspect'):
             result = inspect(root, args.home)
         elif args.command.endswith('-plan'):
-            if args.action == 'remove' and (args.enable_await is not None or args.enable_queue is not None):
-                raise ValueError('Les options await et queue ne s’appliquent pas au retrait.')
-            result = {'status': 'planned', 'plan': plan(root, args.home, args.project, args.replace_probe, args.action, args.enable_await, args.enable_queue, args.memory_access, args.memory_project_id, args.memory_scope_id)}
+            result = {'status': 'planned', 'plan': plan(root, args.home, args.project, args.replace_probe, args.action, args.memory_access, args.memory_project_id, args.memory_scope_id)}
         elif args.command.endswith('-apply'):
             result = apply(root, json.loads(sys.stdin.read(1024 * 1024))['plan'])
         else:

@@ -307,7 +307,7 @@ class BoundedWaitTests(Cycle):
         self.store.admit('pending', 'prompt en attente')
         time = FakeTime()
         facade = ClaudeMCP(self.store, Mock(), max_wait=5, clock=time.clock,
-                           wait=time.wait, enable_await=True)
+                           wait=time.wait)
         before = call(facade, 'get_result', {'request_key': 'pending'})
         result = facade.await_task(self.store, {'request_key': 'absent', 'claim_key': 'w1',
                                                 'wait_seconds': 5})
@@ -321,24 +321,10 @@ class BoundedWaitTests(Cycle):
         self.assertEqual(before['acknowledged'], after['acknowledged'])
         self.assertEqual(after['result_sha256'], before['result_sha256'])
 
-    def test_await_task_is_hidden_and_refused_by_default(self):
-        default = ClaudeMCP(self.store, Mock())
-        self.assertFalse(default.enable_await)
-        names = {item['name'] for item in default.dispatch({'method': 'tools/list'})['tools']}
-        self.assertNotIn('await_task', names)
-        self.store.admit('hidden', 'prompt caché')
-        with self.assertRaises(ValueError):
-            call(default, 'await_task', {'request_key': 'hidden', 'claim_key': 'w1'})
-        row = self.row('hidden')
-        self.assertIsNone(row[2])  # ni réservation ni livraison
-        enabled = ClaudeMCP(self.store, Mock(), enable_await=True)
-        names = {item['name'] for item in enabled.dispatch({'method': 'tools/list'})['tools']}
-        self.assertIn('await_task', names)
-
     def test_late_result_is_collected_after_expiry_without_new_dispatch(self):
         time = FakeTime()
         facade = ClaudeMCP(self.store, Mock(), max_wait=2, clock=time.clock,
-                           wait=time.wait, enable_await=True)
+                           wait=time.wait)
         idle = facade.await_task(self.store, {'request_key': 'late', 'claim_key': 'w1',
                                               'wait_seconds': 2})
         self.assertTrue(json.loads(idle['content'][0]['text'])['idle'])

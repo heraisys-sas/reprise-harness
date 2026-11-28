@@ -54,7 +54,8 @@ def load_config() -> dict:
         raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         legacy = [k for k in raw if k in LEGACY_DAV_KEYS]
         if legacy:
-            log(f"⚠ clés WebDAV ignorées (serveur retiré le 24/11) : {', '.join(legacy)}")
+            # Refus net (#276) : jamais de repli sur les défauts avec une config WebDAV.
+            raise SystemExit(f"metaaid : clés WebDAV supprimées à retirer de {CONFIG_PATH} : {', '.join(legacy)}")
         cfg.update({k: v for k, v in raw.items() if k in CONFIG_DEFAULTS and v is not None})
         log(f"config chargée: {CONFIG_PATH}")
     except FileNotFoundError:

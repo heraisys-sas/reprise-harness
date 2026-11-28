@@ -4,11 +4,13 @@ import subprocess
 import tempfile
 import sys
 import unittest
+from support_portability import requires_apple_sdk
 
 ROOT = Path(__file__).parents[1]
 
 
 class BrowserUITests(unittest.TestCase):
+    @requires_apple_sdk
     def test_delayed_selection_responses_and_new_durable_intent_fail_closed(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); state = root/'state'; state.mkdir(mode=0o700)

@@ -5,7 +5,7 @@ Décision du 24/10/2026, issue #62. La création d’une session Codex et son ac
 ## Contrat minimal
 
 - `reprise_delegate` conserve kind expertise/review/batch et accepte mode expertise (défaut) ou implementation. Le mode décrit les permissions ; kind décrit le résultat demandé.
-- L’installation doit accorder explicitement `codex_workspace_write` au profil/projet. Le pont reçoit `--codex-workspace-write` depuis cette configuration opérateur ; un argument de l’appel modèle ne peut pas activer cette capacité. Une installation existante reste en expertise sans opt-in.
+- Depuis #252 (décision opérateur du 27/11/2026), l’écriture dans le projet du pont est permise par défaut : `mode: implementation` est toujours disponible pour Codex, sandbox `workspaceWrite` limitée au `project_root`, réseau coupé, approbations natives conservées. `mode: expertise` reste en lecture seule. Il n’existe plus de grant `--codex-workspace-write`.
 - Découverte : modes autorisés, writes et projet réellement liés au pont. Ne pas confondre configuration autorisée et essai réel réussi. Le premier installateur géré est celui de DeepSeek Harness ; les autres clients ne reçoivent pas ce droit implicitement.
 - Expertise : read-only, instructions de conseil/patch, mêmes protections de fichiers d’entrée qu’avant.
 - Implémentation : sandbox native workspace-write, racine canonique du projet explicite, réseau désactivé et approbations on-request. Les accès temporaires natifs peuvent rester disponibles ; ce n’est pas une isolation des lectures ou une sandbox réseau autorisant GitHub. Respecter les instructions du projet, les réservations et les changements des autres agents.

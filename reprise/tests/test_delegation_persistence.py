@@ -41,7 +41,7 @@ class DurableTests(unittest.TestCase):
         self.state = self.root / 'state'
 
     def bridge(self):
-        bridge = Bridge(self.root, {}, self.state, daily_limit=0)
+        bridge = Bridge(self.root, {}, self.state)
         bridge.program = 'codex'
         seed_catalog(bridge)
         self.addCleanup(bridge.close)
@@ -61,6 +61,21 @@ class DurableTests(unittest.TestCase):
             for _ in range(2):
                 self.assertTrue(restarted.call('reprise_requests', {'request_key': 'one', 'acknowledge': True})['acknowledged'])
             self.assertEqual(len(restarted.call('reprise_requests', {})['requests']), 1)
+
+    def test_listing_exposes_thread_and_backend_for_followup(self):
+        # Issue #22 : after a lost answer the caller picks the session to
+        # continue from the listing alone, without reading expert_threads.
+        result = {'status': 'finished', 'response': 'answer', 'thread_id': 'thread-22', 'resumable': True}
+        with patch('expert_mcp.review', return_value=result):
+            bridge = self.bridge()
+            bridge.call('reprise_delegate', self.args('listed'))
+        bridge.requests.begin('pending-22', {'question': 'Autre', 'backend': 'codex'})
+        bridge.requests.attach('pending-22', {'phase': 'starting', 'thread_id': 'thread-native', 'turn_id': None})
+        rows = {row['request_key']: row for row in bridge.call('reprise_requests', {})['requests']}
+        self.assertEqual(rows['listed']['thread_id'], 'thread-22')
+        self.assertEqual(rows['listed']['backend'], 'codex')
+        self.assertEqual(rows['pending-22']['thread_id'], 'thread-native')
+        self.assertEqual(rows['pending-22']['state'], 'indeterminate')
 
     def test_crash_leaves_uncertain_even_with_a_new_key(self):
         with patch('expert_mcp.review', side_effect=OSError('lost after send')) as run:
@@ -90,7 +105,6 @@ class DurableTests(unittest.TestCase):
 
     def test_crash_after_native_attach_keeps_mode_route_and_blocks_followup(self):
         bridge = self.bridge()
-        bridge.codex_workspace_write = True
         def crash(*args, **kwargs):
             kwargs['on_turn']({'phase': 'active', 'thread_id': ID, 'turn_id': 'turn-1'})
             raise OSError('MCP client disconnected')
@@ -206,7 +220,7 @@ class DurableTests(unittest.TestCase):
                 file_evidence(link, [bad])
 
     def test_oversized_implementation_result_is_bounded_like_any_full_result(self):
-        bridge = Bridge(self.root, {}, self.state, daily_limit=0, codex_workspace_write=True)
+        bridge = Bridge(self.root, {}, self.state)
         bridge.program = 'codex'
         seed_catalog(bridge)
         self.addCleanup(bridge.close)
@@ -453,13 +467,13 @@ class DurableTests(unittest.TestCase):
             other.begin('child', {'question': 'B'}, 'key')
 
     def test_quick_ack_lost_and_legacy_counter_ignored_after_restart(self):
-        endpoint = Endpoint(self.state, daily_limit=0)
+        endpoint = Endpoint(self.state)
         self.addCleanup(endpoint.close)
         endpoint.db.execute('INSERT INTO quick_calls VALUES (?,?,?)', (endpoint.scope, 0, 999999))
         endpoint.db.commit()
         payload = {'request_key': 'quick', 'prompt': 'Review this contract'}
         receipt = endpoint.submit(payload)
-        other = Endpoint(self.state, daily_limit=-1)
+        other = Endpoint(self.state)
         self.addCleanup(other.close)
         self.assertEqual(other.submit(payload), receipt)
         self.assertTrue(receipt['admission_only'])
@@ -601,7 +615,7 @@ class DurableTests(unittest.TestCase):
         self.assertEqual(db.execute('SELECT count(*) FROM delegation_requests').fetchone()[0], 1)
 
     def test_desktop_receipt_remains_admission_only_after_recovery(self):
-        bridge = Bridge(self.root, {}, self.state, daily_limit=0, desktop_socket='/private/tmp/quick.sock')
+        bridge = Bridge(self.root, {}, self.state, desktop_socket='/private/tmp/quick.sock')
         bridge.program = 'codex'
         seed_catalog(bridge)
         self.addCleanup(bridge.close)
@@ -712,7 +726,7 @@ class ReceiptPaginationTests(unittest.TestCase):
                 self.assertFalse(self.db.in_transaction)
         self.assertEqual(self.store.lookup({}), {'status': 'finished', 'requests': [{
             'request_key': 'key', 'state': 'recorded', 'parent_request_key': None,
-            'acknowledged': 0}], 'limit': 100})
+            'acknowledged': 0, 'thread_id': None, 'backend': None}], 'limit': 100})
         self.assertEqual(self.store.lookup({'request_key': 'missing'}),
                          {'status': 'not_found', 'request_key': 'missing'})
 

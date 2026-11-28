@@ -118,3 +118,14 @@ class SourceExportTests(unittest.TestCase):
                         dependency = module.split('.')[0] + '.py'
                         if (ROOT / dependency).is_file():
                             self.assertIn(dependency, names, (name, dependency))
+
+    def test_export_lists_only_additions_to_bundle_assets_issue_274(self):
+        # #255, #271 : une seule liste des fichiers livrés. Les tuples locaux de
+        # share_files() ne répètent aucun élément d'ASSETS.
+        from package_helpers import ASSETS
+        tree = ast.parse((ROOT / 'reprise').read_text())
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'share_files')
+        local = [elt.value for node in ast.walk(function) if isinstance(node, ast.Assign)
+                 and isinstance(node.value, ast.Tuple) for elt in node.value.elts if isinstance(elt, ast.Constant)]
+        self.assertTrue(local)
+        self.assertEqual(sorted(set(local) & set(ASSETS)), [])

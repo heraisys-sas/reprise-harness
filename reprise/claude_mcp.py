@@ -38,64 +38,21 @@ INBOX_TOOLS = [
     {'name': 'get_result', 'description': 'Retrieve a durable result. Acknowledge explicitly only after safely retaining it.', 'inputSchema': schema({'request_key': TEXT, 'acknowledge': {'type': 'boolean', 'default': False}, 'view': {'type': 'string', 'enum': ['receipt','page','full'], 'default': 'receipt'}, **PAGE_PROPERTIES}, ['request_key'])},
 ]
 OUTBOUND = {'reprise_backends', 'reprise_requests', 'reprise_quotas', 'reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup'}
-# Backends removed from every façade schema enum, plus their known aliases.
-CLAUDE_REMOVED_BACKENDS = ('claude-desktop',)
-CHATGPT_REMOVED_BACKENDS = ('chatgpt',)
-BACKEND_ALIASES = {
-    'claude-desktop': ('claude_desktop', 'reprise-claude-desktop'),
-    'chatgpt': ('chat_gpt', 'gpt', 'reprise-chatgpt'),
-}
 
 
-def outbound_tools(removed=()):
-    """Façade tool schemas: drop backends not reachable from this connector.
-
-    List AND dict enum forms are filtered; aliases of a removed backend are
-    removed too, so a loopback cannot re-enter under another spelling.
-    """
-    blocked = set(removed)
-    for name in removed:
-        blocked.update(BACKEND_ALIASES.get(name, ()))
-    tools = copy.deepcopy([item for item in TOOLS if item['name'] in OUTBOUND])
-    for item in tools:
-        backend = item['inputSchema'].get('properties', {}).get('backend')
-        if not backend:
-            continue
-        if 'enum' in backend:
-            backend['enum'] = [value for value in backend['enum'] if value not in blocked]
-        if 'oneOf' in backend:
-            variants = []
-            for variant in backend['oneOf']:
-                if 'enum' in variant:
-                    filtered = [value for value in variant['enum'] if value not in blocked]
-                    if filtered:
-                        variant = dict(variant, enum=filtered)
-                        variants.append(variant)
-                elif 'const' in variant:
-                    if variant['const'] not in blocked:
-                        variants.append(variant)
-                else:
-                    variants.append(variant)
-            if variants:
-                backend['oneOf'] = variants
-            else:
-                del backend['oneOf']
-    return tools
+def outbound_tools():
+    """Façade tool schemas of the outbound delegation tools."""
+    return copy.deepcopy([item for item in TOOLS if item['name'] in OUTBOUND])
 
 
 class ClaudeMCP:
-    def __init__(self, tasks, bridge, max_wait=DEFAULT_MAX_WAIT, poll=0.25, progress_interval=0, clock=time.monotonic, wait=None, enable_await=False, enable_queue=False):
+    def __init__(self, tasks, bridge, max_wait=DEFAULT_MAX_WAIT, poll=0.25, progress_interval=0, clock=time.monotonic, wait=None):
         if type(max_wait) is not int or not 1 <= max_wait <= MAX_WAIT_CEILING:
             raise ValueError('max_wait must be an integer from 1 to %d' % MAX_WAIT_CEILING)
         self.tasks, self.bridge = tasks, bridge
         # progress_interval = 0 (default): no progress notification, i.e. no artificial heartbeat.
         self.max_wait, self.poll, self.progress_interval = max_wait, poll, progress_interval
         self.clock = clock
-        # await_task is an operator decision per connector configuration: hidden and refused by default.
-        self.enable_await = bool(enable_await)
-        # claim_next (opt-in queue) follows the same operator-decision pattern.
-        self.enable_queue = bool(enable_queue)
-        self.hidden_tools = {name for name, enabled in (('await_task', self.enable_await), ('claim_next', self.enable_queue)) if not enabled}
         # wait(cancel, seconds): injectable so tests control time without sleeping.
         self.wait = wait or (lambda cancel, seconds: cancel.wait(seconds) if cancel is not None else time.sleep(seconds))
 
@@ -178,8 +135,8 @@ class ClaudeMCP:
         if method == 'ping':
             return {}
         if method == 'tools/list':
-            tools = [item for item in INBOX_TOOLS if item['name'] not in self.hidden_tools]
-            if self.enable_await and self.max_wait != MAX_WAIT_CEILING:
+            tools = list(INBOX_TOOLS)
+            if self.max_wait != MAX_WAIT_CEILING:
                 # Advertise the effective per-instance cap: the connector may run with a lower
                 # max_wait than MAX_WAIT_CEILING, and a schema advertising 600 makes any larger
                 # wait_seconds fail with an opaque -32602 (observed live, 2026-11-01).
@@ -193,7 +150,7 @@ class ClaudeMCP:
         name, args = params.get('name'), params.get('arguments', {})
         if not isinstance(args, dict):
             raise ValueError('Object arguments required')
-        definitions = {item['name']: item for item in INBOX_TOOLS if item['name'] not in self.hidden_tools}
+        definitions = {item['name']: item for item in INBOX_TOOLS}
         if name in definitions:
             expected = set(definitions[name]['inputSchema']['properties'])
             required = set(definitions[name]['inputSchema']['required'])
@@ -327,18 +284,12 @@ def main():
     parser.add_argument('--state', required=True)
     parser.add_argument('--expert-state', required=True)
     parser.add_argument('--socket')
-    parser.add_argument('--chatgpt-state', '--chatgpt-socket', dest='chatgpt_state')
-    # Issue #282 : même défaut que expert_mcp.py — dispatch holder actif.
-    parser.add_argument('--chatgpt-dispatch', dest='chatgpt_dispatch', action='store_true', default=True,
-                        help='Compatibility no-op: admitted ChatGPT tasks are pushed to the CDP holder by default')
-    parser.add_argument('--no-chatgpt-dispatch', dest='chatgpt_dispatch', action='store_false',
+    parser.add_argument('--chatgpt-state')
+    # #282 : même défaut que expert_mcp.py — dispatch holder actif.
+    parser.add_argument('--no-chatgpt-dispatch', dest='chatgpt_dispatch', action='store_false', default=True,
                         help='Admission only: never push admitted ChatGPT tasks to the holder')
     parser.add_argument('--max-wait', type=int, default=DEFAULT_MAX_WAIT,
                         help='longest await_task wait in seconds; raise only after proving the client tolerates it')
-    parser.add_argument('--enable-await', action='store_true',
-                        help='expose await_task (hidden and refused by default; an operator decision per connector configuration)')
-    parser.add_argument('--enable-queue', action='store_true',
-                        help='expose claim_next (hidden and refused by default; an operator decision per connector configuration)')
     parser.add_argument('--progress-interval', type=float, default=0,
                         help='seconds between notifications/progress during await_task; 0 (default) sends none')
     args = parser.parse_args()
@@ -347,8 +298,8 @@ def main():
     chatgpt_state = args.chatgpt_state or str(state_location(Path(__file__).parent, 'chatgpt-state').absolute())
     bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.expert_state,
                     desktop_state=args.state, allowed_tools=OUTBOUND,
-                    chatgpt_socket=chatgpt_state, chatgpt_dispatch=args.chatgpt_dispatch)
-    facade = ClaudeMCP(tasks, bridge, max_wait=args.max_wait, progress_interval=args.progress_interval, enable_await=args.enable_await, enable_queue=args.enable_queue)
+                    chatgpt_state=chatgpt_state, chatgpt_dispatch=args.chatgpt_dispatch)
+    facade = ClaudeMCP(tasks, bridge, max_wait=args.max_wait, progress_interval=args.progress_interval)
     await_requests = AwaitRequests()
     connection = mcp_transport.Connection(lambda text: print(text, end='', flush=True))
 
@@ -408,7 +359,7 @@ def main():
                 params = message.get('params') or {}
                 if not isinstance(params, dict):
                     raise ValueError('Object params required')
-                if facade.enable_await and message.get('method') == 'tools/call' and isinstance(params, dict) and params.get('name') == 'await_task':
+                if message.get('method') == 'tools/call' and isinstance(params, dict) and params.get('name') == 'await_task':
                     arguments = params.get('arguments', {})
                     definition = next(item for item in INBOX_TOOLS if item['name'] == 'await_task')
                     if not isinstance(arguments, dict) or arguments.keys() - set(definition['inputSchema']['properties']) or not {'request_key', 'claim_key'} <= arguments.keys():

@@ -43,7 +43,7 @@ donc pas les workspaces des clients.
   Conserver l'ancien `output_resume_project` si ses conversations sont actives ;
   il est distinct du périmètre d'expertise du nouveau connecteur.
 - Claude : préparer `claude-integration-plan --project`, puis apply et verify.
-  Omettre le choix `--enable-await`/`--disable-await` conserve la valeur existante.
+  `await_task` et `claim_next` sont toujours exposés (#252) ; le plan retire les anciennes options `--enable-await`/`--enable-queue`.
   Le daemon encore lié à l'ancien projet produit un mismatch jusqu'au rebind.
 - Codex : utiliser son CLI natif `codex mcp add` après inventaire de l'entrée
   existante. Ne changer que release/runtime et projet explicitement choisis ;

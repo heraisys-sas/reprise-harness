@@ -108,8 +108,7 @@ def resolve_binding(root, project_root=None, quick_state=None, *, home=None):
         if manifest is None:
             return None, 'not_configured'
         settings = claude_integration.read_config(config)
-        name = claude_integration.managed_name(settings.get('mcpServers', {}), manifest)
-        entry = settings.get('mcpServers', {}).get(name)
+        entry = settings.get('mcpServers', {}).get(claude_integration.CONNECTOR_NAME)
         if (manifest.get('status') != 'installed' or not isinstance(entry, dict)
                 or manifest.get('entry_sha256') != claude_integration.entry_hash(entry)):
             return None, 'binding_mismatch'

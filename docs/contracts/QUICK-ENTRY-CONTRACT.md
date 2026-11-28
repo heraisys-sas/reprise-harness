@@ -1,7 +1,7 @@
 # Contrat Quick Entry natif (`QTi`) — pipeline de soumission Desktop
 
 Source : chunk main `.vite/build/index.chunk-BBUaTQ8d.js` de Desktop 4.23118.0
-(Electron 44.9.3), extrait par le recensement (`reprise/quickapply_census.py`).
+(Electron 44.9.3), extrait par le recensement (`tools/probes/quickapply_census.py`).
 Ce contrat décrit le pipeline natif que le patch #124 utilise pour déclencher
 l'exécuteur sans intervention.
 

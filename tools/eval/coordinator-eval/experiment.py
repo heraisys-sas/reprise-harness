@@ -133,7 +133,7 @@ def delegate(cases, catalog, advisory):
         if len(question(cases, catalog, supplied)) > 11700:
             raise ValueError('Batch exceeds bridge prompt bound; no calls submitted')
     sys.path.insert(0, str(REPO/'reprise'))
-    from codex_expert_mcp import Bridge
+    from expert_mcp import Bridge
     bridge = Bridge(REPO, {}, REPO/'reprise/state')
     try:
         # Use existing scope/day counter, never a new ledger to evade its call cap.
@@ -145,7 +145,7 @@ def delegate(cases, catalog, advisory):
         results = {}
         for arm, supplied in (('without', None), ('with', hints)):
             prompt = question(cases, catalog, supplied)
-            if len(prompt)+len(__import__('codex_expert_mcp').MODES['batch'])+2 > 12000:
+            if len(prompt)+len(__import__('expert_mcp').MODES['batch'])+2 > 12000:
                 raise ValueError('Batch exceeds bridge prompt bound')
             start = time.monotonic()
             result = bridge.call('reprise_delegate', {'kind': 'batch', 'level': 'standard', 'question': prompt})

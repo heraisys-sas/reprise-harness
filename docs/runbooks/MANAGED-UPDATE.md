@@ -94,7 +94,7 @@ python3 -B reprise/reprise harness-integration-verify --home ~/.dsh --profile de
 # Si update_required=true ou bridge_capabilities.delegation.configured=false :
 python3 -B reprise/reprise harness-integration-plan \
   --home ~/.dsh --profile desktop --project /projet/autorisé \
-  --action install --delegate > /chemin/prive/harness-plan.json
+  --action install > /chemin/prive/harness-plan.json
 # Après examen et consentement explicite :
 python3 -B reprise/reprise harness-integration-apply < /chemin/prive/harness-plan.json
 python3 -B reprise/reprise harness-integration-verify --home ~/.dsh --profile desktop

@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -59,6 +60,41 @@ def partition_modules(count, tests_dir=TESTS_DIR):
         shards[target].append(name)
         loads[target] += weights[name]
     return shards
+
+
+# Un module qui peut sauter un test selon la machine (outil, chemin, API, OS)
+# est rejoué sur macOS à chaque push (#286) ; les autres suffisent sous Linux.
+CONDITIONAL_SKIP = re.compile(r'skipIf|skipUnless|skipTest|SkipTest|support_portability')
+
+
+def macos_modules(tests_dir=TESTS_DIR):
+    """Modules de test dont un test peut être sauté hors macOS, triés."""
+    return sorted(path.stem for path in Path(tests_dir).glob('test_*.py')
+                  if CONDITIONAL_SKIP.search(path.read_text(encoding='utf-8')))
+
+
+def skipped_module(test):
+    """Module d'un test sauté, y compris un setUpClass sauté (_ErrorHolder)."""
+    test = getattr(test, 'test_case', test)  # sous-test sauté (_SubTest)
+    module = type(test).__module__
+    if module.startswith('unittest'):
+        match = re.search(r'\((\w+)\.', test.id())
+        return match.group(1) if match else test.id()
+    return module
+
+
+def run_guarded(tests_dir=TESTS_DIR, stream=None):
+    """Suite complète ; échoue si un test sauté sort de la sélection macOS (#286)."""
+    selected = set(macos_modules(tests_dir))
+    suite = unittest.TestLoader().discover(str(tests_dir))
+    result = unittest.TextTestRunner(stream=stream or sys.stderr, verbosity=1).run(suite)
+    stray = sorted({f'{skipped_module(test)}: {reason}' for test, reason in result.skipped
+                    if skipped_module(test) not in selected})
+    for line in stray:
+        print(f'Test sauté hors de la sélection macOS : {line}', file=sys.stderr)
+    print(f'{len(result.skipped)} tests sautés, tous dans la sélection macOS ({len(selected)} modules).'
+          if not stray else f'{len(stray)} saut(s) hors sélection macOS.')
+    return 0 if result.wasSuccessful() and not stray else 1
 
 
 def parse_shard_args(parser, args):
@@ -172,6 +208,10 @@ def main():
                         help='exécute les N shards ci-dessus en parallèle (local, même partition que la CI)')
     parser.add_argument('--reuse-log', nargs='?', const=10, type=int, default=None, metavar='MINUTES',
                         help="avec --parallel : réutilise le log de moins de N minutes (défaut 10) au lieu de relancer")
+    parser.add_argument('--macos-only', action='store_true',
+                        help='exécute seulement les modules dont un test peut être sauté hors macOS (#286)')
+    parser.add_argument('--guard-skips', action='store_true',
+                        help='suite complète ; échoue si un test sauté sort de la sélection --macos-only (job Linux)')
     parser.add_argument('--force', action='store_true',
                         help='avec --parallel : relance même si un log frais existe')
     args = parser.parse_args()
@@ -179,6 +219,14 @@ def main():
         print('Python >= 3.11 requis (le runtime épinglé est 3.13) : les tests sur interpréteurs anciens crashent (sqlite3/mémoire).')
         return 2
     shard = parse_shard_args(parser, args)
+    if args.guard_skips:
+        with tempfile.TemporaryDirectory(prefix='reprise-test-home-') as home:
+            os.environ.update(HOME=home, PYTHONDONTWRITEBYTECODE='1')
+            os.environ.pop('AGENT_RESUME_STATE', None)
+            sys.dont_write_bytecode = True
+            os.chdir(TESTS_DIR)
+            sys.path.insert(0, str(TESTS_DIR))
+            return run_guarded()
     if args.parallel:
         log_path = INTERP_CACHE / 'test-parallel.log'
         if args.reuse_log is not None and not args.force:
@@ -209,16 +257,20 @@ def main():
     with tempfile.TemporaryDirectory(prefix='reprise-test-home-') as home:
         env = dict(os.environ, HOME=home, PYTHONDONTWRITEBYTECODE='1')
         env.pop('AGENT_RESUME_STATE', None)
-        if shard is None:
+        if shard is None and not args.macos_only:
             command = [sys.executable, '-B', '-m', 'unittest', 'discover', '-s',
                        str(TESTS_DIR), '-q']
         else:
-            index, count = shard
-            modules = partition_modules(count)[index]
-            if not modules:
-                print(f'Shard {index}/{count} vide : aucun module de test affecté.')
-                return 2
-            print(f'Shard {index}/{count} : {len(modules)} modules')
+            if args.macos_only:
+                modules = macos_modules()
+                print(f'Sélection macOS : {len(modules)} modules')
+            else:
+                index, count = shard
+                modules = partition_modules(count)[index]
+                if not modules:
+                    print(f'Shard {index}/{count} vide : aucun module de test affecté.')
+                    return 2
+                print(f'Shard {index}/{count} : {len(modules)} modules')
             try:
                 python, extra_env = pinned_interpreter()
             except (FileNotFoundError, ValueError) as exc:

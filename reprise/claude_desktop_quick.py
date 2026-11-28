@@ -113,7 +113,7 @@ def _cdp_pipe():
 class Endpoint:
     """Bounded admission and payload hand-off for Quick Entry submissions."""
 
-    def __init__(self, state, daily_limit=8, project_root=None):
+    def __init__(self, state, project_root=None):
         state = Path(state)
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.state = state
@@ -787,9 +787,8 @@ def main():
     parser.add_argument('--socket', default=str(claude_desktop.DEFAULT_SOCKET))
     parser.add_argument('--state', default=str(state_location(Path(__file__).parent, 'quick-state')))
     parser.add_argument('--project-root', help='Bind the inbox/result channel to this project; legacy admission remains unbound')
-    parser.add_argument('--daily-limit', type=int, help='Deprecated compatibility option; ignored')
     args = parser.parse_args()
-    endpoint = Endpoint(args.state, args.daily_limit, args.project_root)
+    endpoint = Endpoint(args.state, args.project_root)
     def terminate(signum, frame):
         # A profile lock does not establish ownership of a Chrome process.
         raise SystemExit(128 + signum)

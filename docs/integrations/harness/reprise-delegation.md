@@ -147,7 +147,7 @@ backend fallback or automatic retry is introduced.
 
 Use `mcp__reprise_experts__reprise_followup` only for an owned returned session, with its thread ID and explicit `backend: "codex"` or `backend: "claude-code"`. It retains the recorded model and effort. For the same subject or project, prefer continuing that session over opening a new one while the required competence level is unchanged: the expert keeps its prior exploration of the project and the stable instructions, which reliably saves turns, cost and latency; remote prefix-cache reuse itself is not guaranteed. Open a new session when the competence level changes, the subject diverges or the remote history has become unwieldy. Send the answer or changed facts rather than full history. Legacy bridges may also expose the Codex-specific `codex_followup` alias; use it only if actually discovered. Follow-ups are not a bidirectional Claude Desktop channel.
 
-Respect `quota_blocked`, `budget_blocked`, `busy`, `running`, `awaiting_approval`, `interrupted`, `owner_unavailable`, `blocked_permission`, `needs_review`, `billing_unverified` and `blocked_auth`. No repeated polling, automatic retry, credential copying, authentication on the user's behalf or paid API fallback. A wait expiry is not a failure, a stop or a completion; it may already have consumed quota and truncated output is incomplete. One request at a time. No backend has a local daily call cap: legacy `--daily-limit` and `expert_calls`/`quick_calls` counters are inert. Provider checks, including the current Codex 5% reserve, remain in force. Explicit user budgets remain separate from provider quotas.
+Respect `quota_blocked`, `budget_blocked`, `busy`, `running`, `awaiting_approval`, `interrupted`, `owner_unavailable`, `blocked_permission`, `needs_review`, `billing_unverified` and `blocked_auth`. No repeated polling, automatic retry, credential copying, authentication on the user's behalf or paid API fallback. A wait expiry is not a failure, a stop or a completion; it may already have consumed quota and truncated output is incomplete. One request at a time. No backend has a local daily call cap: `--daily-limit` was removed (#276) and `expert_calls`/`quick_calls` counters are inert. Provider checks, including the current Codex 5% reserve, remain in force. Explicit user budgets remain separate from provider quotas.
 
 ## Backend and quota limits
 
@@ -256,3 +256,16 @@ Cancellation notifications and EOF release workers without changing task state.
 The next managed integration plan grants this tool and a 630000 ms call timeout;
 existing profiles require explicit plan/apply and client reload. Validate a real
 long-lived background call independently; source/schema checks do not prove it.
+
+## Reprise après réponse perdue (issue #22)
+
+- `reprise_requests` sans `request_key` liste les 100 dernières demandes avec
+  `thread_id` (tour natif, sinon résultat persisté) et `backend` : l'appelant
+  choisit la session à poursuivre via `reprise_followup` sans autre lecture.
+- `timed_out` ou une réponse perdue laissent la demande `indeterminate` ; la
+  barrière d'ancêtre et de signature de `begin()` refuse alors toute demande
+  équivalente jusqu'à réconciliation (`reprise_reconcile`, voir aussi
+  `release_undispatched`, #265). C'est voulu : jamais de double exécution.
+- Tactique validée le 23/10 : déléguer en **tranches bornées** (diff d'abord,
+  aucune commande de vérification dans le même tour). Un lot complet a produit
+  `timed_out` à réponse vide là où la même charge en tranches a abouti.

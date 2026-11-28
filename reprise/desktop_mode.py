@@ -121,10 +121,10 @@ def launch():
         return {'ok': False, 'launched': False, 'reason': f'Ouverture impossible : {error}'}
 
 
-def start(socket=None, state=None, daily_limit=8):
+def start(socket=None, state=None):
     """Use the managed daemon launcher for the app's Connections start action."""
     try:
-        return daemon_start(socket=socket, state=state, daily_limit=daily_limit)
+        return daemon_start(socket=socket, state=state)
     except OSError as error:
         return {'ok': False, 'started': False, 'reason': f'Démarrage impossible : {error}'}
 
@@ -151,15 +151,15 @@ def daemon_pid(state=None):
     return None
 
 
-def daemon_start(socket=None, state=None, daily_limit=8, project_root=None, _lock_held=False):
+def daemon_start(socket=None, state=None, project_root=None, _lock_held=False):
     """Serialize manual and startup launches using one Reprise-owned lock."""
     state_path = Path(state or DEFAULT_STATE).expanduser().absolute()
     socket_path = Path(socket or DEFAULT_SOCKET).expanduser().absolute()
     if _lock_held:
-        return _daemon_start_impl(str(socket_path), str(state_path), daily_limit, project_root)
+        return _daemon_start_impl(str(socket_path), str(state_path), project_root)
     try:
         with _startup_locks(state_path, socket_path):
-            return _daemon_start_impl(str(socket_path), str(state_path), daily_limit, project_root)
+            return _daemon_start_impl(str(socket_path), str(state_path), project_root)
     except BlockingIOError:
         return {'ok': False, 'started': False, 'status': 'startup_busy',
                 'reason': 'Un autre démarrage cible ce socket ; aucun second processus lancé.'}
@@ -168,7 +168,7 @@ def daemon_start(socket=None, state=None, daily_limit=8, project_root=None, _loc
                 'reason': f'Chemin d’état non utilisable ({type(error).__name__}).'}
 
 
-def _daemon_start_impl(socket=None, state=None, daily_limit=8, project_root=None):
+def _daemon_start_impl(socket=None, state=None, project_root=None):
     """Start the Quick Apply daemon (detached), independent of Desktop being ready.
 
     The server binds its socket without needing Claude Desktop, so it may start

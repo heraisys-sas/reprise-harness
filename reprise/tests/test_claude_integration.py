@@ -86,8 +86,6 @@ class ClaudeIntegrationTests(unittest.TestCase):
         entry = json.loads(self.config.read_text())['mcpServers']['reprise-harness']
         self.assertIn('/integration-releases/', entry['command'])
         self.assertIn('--expert-state', entry['args'])
-        self.assertNotIn('--enable-await', entry['args'])
-        self.assertNotIn('--enable-queue', entry['args'])
         self.assertIn(str(self.state / 'quick-state'), entry['args'])
         self.assertEqual(entry['args'][:3], ['-E', '-s', '-B'])
         self.assertTrue(integration.inspect(self.root, self.home)['managed'])
@@ -95,77 +93,42 @@ class ClaudeIntegrationTests(unittest.TestCase):
         for item in (self.managed / 'backups').rglob('*.json'):
             self.assertEqual(item.stat().st_mode & 0o777, 0o600)
 
-    def test_enable_queue_is_explicit_and_idempotent(self):
-        preview = self.plan(enable_queue=True)
-        self.assertTrue(preview['enable_queue'])
-        self.assertNotEqual(preview['fingerprint'], self.plan()['fingerprint'])
+    def test_await_and_queue_are_always_exposed_without_options_issue_252(self):
+        preview = self.plan()
+        self.assertNotIn('enable_await', preview)
+        self.assertNotIn('enable_queue', preview)
         self.assertTrue(integration.apply(self.root, preview)['changed'])
-        value = json.loads(self.config.read_text())
-        self.assertIn('--enable-queue', value['mcpServers']['reprise-harness']['args'])
+        args = json.loads(self.config.read_text())['mcpServers']['reprise-harness']['args']
+        self.assertFalse(set(integration.RETIRED_OPTIONS) & set(args))
         manifest = json.loads((self.managed / 'managed.json').read_text())
-        self.assertIs(manifest['enable_queue'], True)
-        self.assertFalse(integration.apply(self.root, self.plan(enable_queue=True))['changed'])
+        self.assertFalse(set(integration.RETIRED_MANIFEST_KEYS) & set(manifest))
+        self.assertEqual(integration.inspect(self.root, self.home)['retired_options'], [])
+        with self.assertRaises(TypeError):
+            self.plan(enable_await=True)
 
-    def test_enable_await_is_explicit_idempotent_and_can_be_removed_managed(self):
-        preview = self.plan(enable_await=True)
-        self.assertTrue(preview['enable_await'])
-        self.assertNotEqual(preview['fingerprint'], self.plan()['fingerprint'])
-        self.assertTrue(integration.apply(self.root, preview)['changed'])
-        value = json.loads(self.config.read_text())
-        self.assertIn('--enable-await', value['mcpServers']['reprise-harness']['args'])
-        manifest = json.loads((self.managed / 'managed.json').read_text())
-        self.assertIs(manifest['enable_await'], True)
-        self.assertFalse(integration.apply(self.root, self.plan(enable_await=True))['changed'])
-
-        update = self.plan()  # an ordinary managed update preserves the installed setting
-        self.assertTrue(update['enable_await'])
-        self.assertFalse(integration.apply(self.root, update)['changed'])
-
-        disable = self.plan(enable_await=False)
-        self.assertFalse(disable['enable_await'])
-        self.assertTrue(integration.apply(self.root, disable)['changed'])
-        value = json.loads(self.config.read_text())
-        self.assertNotIn('--enable-await', value['mcpServers']['reprise-harness']['args'])
-        manifest = json.loads((self.managed / 'managed.json').read_text())
-        self.assertIs(manifest['enable_await'], False)
-        self.assertFalse(self.install()['changed'])
-
-    def test_repeated_remove_preserves_setting_but_new_install_defaults_disabled(self):
-        integration.apply(self.root, self.plan(enable_await=True))
-        remove = self.plan(action='remove')
-        self.assertTrue(remove['enable_await'])
-        self.assertTrue(integration.apply(self.root, remove)['changed'])
-        removed_manifest = (self.managed / 'managed.json').read_bytes()
-
-        repeated = self.plan(action='remove')
-        self.assertTrue(repeated['enable_await'])
-        self.assertFalse(repeated['changes'])
-        self.assertFalse(integration.apply(self.root, repeated)['changed'])
-        self.assertEqual((self.managed / 'managed.json').read_bytes(), removed_manifest)
-        self.assertFalse(integration.inspect(self.root, self.home)['enable_await'])
-
-        self.assertTrue(self.install()['changed'])
-        manifest = json.loads((self.managed / 'managed.json').read_text())
-        self.assertIs(manifest['enable_await'], False)
-        self.assertNotIn('--enable-await', json.loads(self.config.read_text())['mcpServers']['reprise-harness']['args'])
-
-    def test_legacy_managed_name_migrates_and_other_reprise_is_preserved(self):
+    def test_entry_installed_before_252_is_flagged_then_rewritten(self):
         self.install()
         value = json.loads(self.config.read_text())
-        value['mcpServers']['reprise'] = value['mcpServers'].pop('reprise-harness')
+        entry = value['mcpServers']['reprise-harness']
+        entry['args'] += ['--enable-await', '--enable-queue']
         self.config_write(value)
-        target = self.managed / 'managed.json'
-        old = json.loads(target.read_text())
-        old.pop('connector_name')
-        target.write_text(json.dumps(old))
-        self.install()
-        self.assertNotIn('reprise', json.loads(self.config.read_text())['mcpServers'])
-        value = json.loads(self.config.read_text())
-        value['mcpServers']['reprise'] = {'command': 'unrelated-store-connector'}
-        self.config_write(value)
-        self.install()
-        self.assertEqual(json.loads(self.config.read_text())['mcpServers']['reprise'],
-                         {'command': 'unrelated-store-connector'})
+        path = self.managed / 'managed.json'
+        manifest = json.loads(path.read_text())
+        manifest.update(enable_await=True, enable_queue=True, entry_sha256=integration.entry_hash(entry))
+        path.write_text(json.dumps(manifest))
+        self.assertEqual(integration.inspect(self.root, self.home)['retired_options'], ['--enable-await', '--enable-queue'])
+        with patch.object(integration.subprocess, 'run') as run:
+            with self.assertRaisesRegex(ValueError, '#252'):
+                integration.verify(self.root, self.home)
+        run.assert_not_called()
+        update = self.plan()
+        self.assertTrue(update['changes'])
+        self.assertTrue(integration.apply(self.root, update)['changed'])
+        args = json.loads(self.config.read_text())['mcpServers']['reprise-harness']['args']
+        self.assertFalse(set(integration.RETIRED_OPTIONS) & set(args))
+        self.assertFalse(set(integration.RETIRED_MANIFEST_KEYS) & set(json.loads(path.read_text())))
+        with patch.object(integration.subprocess, 'run', return_value=self.bridge_response()):
+            self.assertEqual(integration.verify(self.root, self.home)['status'], 'verified')
 
     def test_custom_entry_and_managed_edit_refused(self):
         self.config_write({'mcpServers': {'reprise-harness': {'command': 'custom'}}})
@@ -178,51 +141,21 @@ class ClaudeIntegrationTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.plan()
         with self.assertRaises(ValueError): self.plan(action='remove')
 
-    def legacy_entry(self, modified=False):
+    def test_old_connector_name_is_not_adopted_issue_276(self):
+        # Suppression nette (#276) : une entrée « reprise » n'est plus reprise
+        # ni migrée ; seul reprise-harness est géré.
         self.install()
         value = json.loads(self.config.read_text())
-        entry = value['mcpServers'].pop('reprise-harness')
-        if modified:
-            entry['args'].append('--custom')
-        value['mcpServers']['reprise'] = entry
+        value['mcpServers']['reprise'] = value['mcpServers'].pop('reprise-harness')
         self.config_write(value)
-
-    def test_manifest_name_drift_migrates_only_hash_matched_legacy(self):
-        self.legacy_entry()
-        inspected = integration.inspect(self.root, self.home)
-        self.assertTrue(inspected['managed'])
-        self.assertEqual(inspected['connector_name'], 'reprise')
-        self.assertEqual(inspected['manifest_connector_name'], 'reprise-harness')
-        self.assertFalse(inspected['connector_name_matches'])
-        self.assertTrue(self.install()['changed'])
-        servers = json.loads(self.config.read_text())['mcpServers']
-        self.assertEqual(set(servers), {'reprise-harness'})
-        self.assertTrue(integration.inspect(self.root, self.home)['connector_name_matches'])
-        self.assertFalse(self.install()['changed'])
-
-    def test_manifest_name_drift_modified_legacy_refuses_install_and_remove(self):
-        self.legacy_entry(modified=True)
-        before = harness_integration.tree_files(self.home)
-        inspected = integration.inspect(self.root, self.home)
-        self.assertFalse(inspected['managed'])
-        self.assertFalse(inspected['connector_name_matches'])
-        for action in ('install', 'remove'):
-            with self.subTest(action=action), self.assertRaisesRegex(ValueError, 'réconciliation explicite'):
-                self.plan(action=action)
-        self.assertEqual(harness_integration.tree_files(self.home), before)
-
-    def test_manifest_name_drift_remove_only_hash_matched_legacy(self):
-        self.legacy_entry()
-        integration.apply(self.root, self.plan(action='remove'))
-        self.assertEqual(json.loads(self.config.read_text())['mcpServers'], {})
-        self.assertFalse(integration.apply(self.root, self.plan(action='remove'))['changed'])
-
-    def test_manifest_name_drift_verify_requires_migration_before_probe(self):
-        self.legacy_entry()
+        self.assertIsNone(integration.inspect(self.root, self.home)['connector_name'])
         with patch.object(integration.subprocess, 'run') as run:
-            with self.assertRaisesRegex(ValueError, 'migration gérée'):
+            with self.assertRaisesRegex(ValueError, 'absent ou modifié'):
                 integration.verify(self.root, self.home)
         run.assert_not_called()
+        self.install()
+        servers = json.loads(self.config.read_text())['mcpServers']
+        self.assertEqual(set(servers), {'reprise', 'reprise-harness'})
 
     def test_concurrent_configuration_and_tampered_plan_refused(self):
         proposed = self.plan()
@@ -310,97 +243,31 @@ class ClaudeIntegrationTests(unittest.TestCase):
         self.assertNotEqual(command[command.index('--expert-state')+1], str(self.state))
         self.assertNotIn('tools/call', run.call_args.kwargs['input'])
 
-    def bridge_response(self, enable_await=False):
-        names = ['get_task', 'get_result', 'submit_result', 'reprise_backends', 'reprise_requests', 'reprise_delegate', 'reprise_followup']
-        if enable_await:
-            names.append('await_task')
+    def bridge_response(self):
+        names = ['get_task', 'get_result', 'submit_result', 'await_task', 'claim_next', 'reprise_backends', 'reprise_requests', 'reprise_delegate', 'reprise_followup']
         return subprocess.CompletedProcess([], 0, stdout='\n'.join(json.dumps(m) for m in [
             {'id': 1, 'result': {'serverInfo': {'version': 'fixture'}}},
             {'id': 2, 'result': {'tools': [{'name': name} for name in names]}}]), stderr='')
 
-    def test_verify_probes_await_only_when_enabled(self):
-        for enabled in (False, True):
-            with self.subTest(enabled=enabled):
-                self.install()
-                if enabled:
-                    integration.apply(self.root, self.plan(enable_await=True))
-                with patch.object(integration.subprocess, 'run', return_value=self.bridge_response(enabled)) as run:
-                    verified = integration.verify(self.root, self.home)
-                command = run.call_args.args[0]
-                self.assertEqual('--enable-await' in command, enabled)
-                self.assertNotEqual(command[command.index('--state')+1], str(self.state / 'quick-state'))
-                self.assertNotIn('tools/call', run.call_args.kwargs['input'])
-                self.assertEqual(verified['enable_await'], enabled)
-                self.assertEqual(verified['await_tool_exposed'], enabled)
-                self.assertEqual(('await_task' in verified['bridge_tools']), enabled)
-
-    def test_verify_refuses_manifest_config_option_divergence(self):
+    def test_verify_requires_await_and_queue_tools(self):
         self.install()
-        value = json.loads(self.config.read_text())
-        value['mcpServers']['reprise-harness']['args'].append('--enable-await')
-        self.config_write(value)
-        with patch.object(integration.subprocess, 'run') as run:
-            with self.assertRaisesRegex(ValueError, 'divergente'):
-                integration.verify(self.root, self.home)
-        run.assert_not_called()
-
-    def test_old_manifest_without_enable_await_means_disabled(self):
-        self.install()
-        path = self.managed / 'managed.json'
-        manifest = json.loads(path.read_text())
-        manifest.pop('enable_await')
-        path.write_text(json.dumps(manifest))
-        with patch.object(integration.subprocess, 'run', return_value=self.bridge_response(False)) as run:
+        with patch.object(integration.subprocess, 'run', return_value=self.bridge_response()) as run:
             verified = integration.verify(self.root, self.home)
-        self.assertFalse(verified['enable_await'])
-        self.assertNotIn('--enable-await', run.call_args.args[0])
+        command = run.call_args.args[0]
+        self.assertFalse(set(integration.RETIRED_OPTIONS) & set(command))
+        self.assertLessEqual({'await_task', 'claim_next'}, set(verified['bridge_tools']))
+        missing = self.bridge_response()
+        missing.stdout = missing.stdout.replace('{"name": "claim_next"}, ', '')
+        with patch.object(integration.subprocess, 'run', return_value=missing):
+            with self.assertRaisesRegex(ValueError, 'incomplets'):
+                integration.verify(self.root, self.home)
 
-    def test_enable_await_plan_tamper_and_staleness_are_refused(self):
-        proposed = self.plan(enable_await=True)
-        tampered = dict(proposed, enable_await=False)
-        with self.assertRaisesRegex(ValueError, 'Plan modifié'):
-            integration.apply(self.root, tampered)
-        self.config_write({'concurrent': True})
-        with self.assertRaises(ValueError):
-            integration.apply(self.root, proposed)
-        self.assertEqual(json.loads(self.config.read_text()), {'concurrent': True})
-
-    def test_cli_accepts_explicit_enable_and_disable_options(self):
-        output = io.StringIO()
-        with patch('sys.stdout', output):
-            result = integration.main(self.root, ['claude-integration-plan', '--home', str(self.home),
-                                                  '--project', str(self.project), '--enable-await'])
-        self.assertEqual(result, 0)
-        payload = json.loads(output.getvalue())
-        self.assertTrue(payload['plan']['enable_await'])
-        integration.apply(self.root, payload['plan'])
-
-        output = io.StringIO()
-        with patch('sys.stdout', output):
-            result = integration.main(self.root, ['claude-integration-plan', '--home', str(self.home),
-                                                  '--project', str(self.project)])
-        self.assertEqual(result, 0)
-        self.assertTrue(json.loads(output.getvalue())['plan']['enable_await'])
-
-        output = io.StringIO()
-        with patch('sys.stdout', output):
-            result = integration.main(self.root, ['claude-integration-plan', '--home', str(self.home),
-                                                  '--project', str(self.project), '--disable-await'])
-        self.assertEqual(result, 0)
-        self.assertFalse(json.loads(output.getvalue())['plan']['enable_await'])
-
-    def test_cli_rejects_await_options_for_remove(self):
-        self.install()
-        before = harness_integration.tree_files(self.home)
-        for option in ('--enable-await', '--disable-await'):
-            with self.subTest(option=option):
-                output = io.StringIO()
-                with patch('sys.stdout', output):
-                    result = integration.main(self.root, ['claude-integration-plan', '--home', str(self.home),
-                                                          '--project', str(self.project), '--action', 'remove', option])
-                self.assertEqual(result, 1)
-                self.assertEqual(json.loads(output.getvalue())['status'], 'refused')
-                self.assertEqual(harness_integration.tree_files(self.home), before)
+    def test_cli_has_no_await_or_queue_options(self):
+        for option in ('--enable-await', '--disable-await', '--enable-queue', '--disable-queue'):
+            with self.subTest(option=option), patch('sys.stderr', io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    integration.main(self.root, ['claude-integration-plan', '--home', str(self.home),
+                                                 '--project', str(self.project), option])
 
     def test_verify_keeps_daemon_version_when_capabilities_fail(self):
         from engines import Unavailable

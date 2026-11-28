@@ -20,7 +20,7 @@ class MetaaiBridgeTests(RequestCalls, unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state')
         self.bridge.program = 'codex'
         self.addCleanup(self.bridge.close)
 
@@ -28,7 +28,7 @@ class MetaaiBridgeTests(RequestCalls, unittest.TestCase):
         root = Path(self.temp.name)
         return {'enabled': enabled,
                 'taskstore': str(root / 'metaai-tasks.sqlite'),
-                'dav_root': str(root / 'webdav')}
+                'bridge_root': str(root / 'webdav')}
 
     def wire(self, values):
         # Même contrat que Bridge.__init__ : enabled:false laisse le store
@@ -37,7 +37,7 @@ class MetaaiBridgeTests(RequestCalls, unittest.TestCase):
         if values.get('enabled', True) is False:
             return
         self.bridge.metaai_tasks = TaskStore(values['taskstore'])
-        self.bridge.metaai_inbox = Path(values['dav_root']).expanduser() / 'inbox'
+        self.bridge.metaai_inbox = Path(values['bridge_root']).expanduser() / 'inbox'
         self.addCleanup(self._close_metaai)
 
     def _close_metaai(self):
@@ -51,7 +51,7 @@ class MetaaiBridgeTests(RequestCalls, unittest.TestCase):
     def test_backends_lists_metaai_declared_and_unconfigured_by_default(self):
         # #258 lot 3 : metaai est listé systématiquement ; `writes` est la
         # capacité déclarée (table WORKSPACE_WRITE_BACKENDS), configured reflète
-        # la connexion (taskstore + dav_root).
+        # la connexion (taskstore + bridge_root).
         backends = self.call('reprise_backends', {})['backends']
         entry = next(row for row in backends if row['id'] == 'metaai')
         self.assertFalse(entry['configured'])
@@ -183,7 +183,7 @@ class MetaaiBridgeTests(RequestCalls, unittest.TestCase):
     def rebuild(self, values):
         # Nouveau Bridge par __init__ ; le précédent est fermé par son cleanup.
         self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state',
-                             daily_limit=2, metaai_values=values)
+                             metaai_values=values)
         self.bridge.program = 'codex'
         self.addCleanup(self.bridge.close)
 
@@ -198,15 +198,13 @@ class MetaaiBridgeTests(RequestCalls, unittest.TestCase):
         self.assertTrue(entry['configured'])
         self.assertTrue(entry['task_return_supported'])
 
-    def test_bridge_init_accepts_legacy_dav_root_config(self):
-        # Ancien format de connexion (dav_root, avant le 24/11) : l'init doit
-        # encore le résoudre via le repli du helper metaai_bridge_root.
+    def test_bridge_init_refuses_retired_dav_root_issue_276(self):
+        # Ancien format de connexion (dav_root, avant le 24/11) : refus net.
         values = self.bridge_values()
         del values['bridge_root']
         values['dav_root'] = str(Path(self.temp.name) / 'webdav')
-        self.rebuild(values)
-        self.assertIsInstance(self.bridge.metaai_tasks, TaskStore)
-        self.assertEqual(self.bridge.metaai_inbox, Path(self.temp.name) / 'webdav' / 'inbox')
+        with self.assertRaisesRegex(ValueError, 'dav_root supprimée'):
+            self.rebuild(values)
 
     def test_retry_task_store_recreates_inbox_from_bridge_root(self):
         self.rebuild(self.bridge_values())

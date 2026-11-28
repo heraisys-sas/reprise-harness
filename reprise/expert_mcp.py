@@ -34,14 +34,6 @@ from datetime import datetime, timezone
 from engines import Unavailable, executable, options
 
 
-WORKSPACE_WRITE_ENABLE = ('harness_integration harness-integration-plan --action install --delegate '
-                          '--codex-workspace-write, puis harness-integration-apply et redémarrage du pont')
-
-
-class WorkspaceWriteNotAuthorized(ValueError):
-    """Implementation refused: the operator never granted project workspace writes (issue #104)."""
-
-
 class RequestNotFound(ValueError):
     """An exact request_key does not exist in this bridge scope."""
 
@@ -57,16 +49,18 @@ class ThreadNotOwned(ValueError):
             'emitted, or open a new session with reprise_delegate.')
 
 
+METAAI_RETIRED_KEYS = ('dav_root',)
+
+
+def metaai_retired_keys(values):
+    """Clés de connexion Meta AI de l'ère WebDAV, refusées depuis #276."""
+    return [key for key in METAAI_RETIRED_KEYS if key in values]
+
+
 def metaai_bridge_root(values):
-    """Répertoire pont du canal metaai : clé bridge_root (format actuel, écrit
-    par l'app depuis le pont fichiers du 24/11), repli dav_root (legacy,
-    lecteurs restés sur l'ancien nom — issue #267). None si aucune des deux
-    clés n'est une chaîne non vide."""
-    for key in ('bridge_root', 'dav_root'):
-        value = values.get(key)
-        if isinstance(value, str) and value.strip():
-            return value
-    return None
+    """Répertoire pont du canal metaai (clé bridge_root) ; None si absent ou vide."""
+    value = values.get('bridge_root')
+    return value if isinstance(value, str) and value.strip() else None
 
 
 def error_payload(exc):
@@ -85,14 +79,6 @@ def error_payload(exc):
                 'data': {'kind': 'thread_not_owned', 'backend': exc.backend, 'thread_id': exc.thread_id,
                          'resume_with': 'parent_request_key',
                          'alternative': 'open a new session with reprise_delegate', 'error': detail}}
-    if isinstance(exc, WorkspaceWriteNotAuthorized):
-        # Operator configuration, not a secret: say exactly why and how to fix it instead of the generic refusal.
-        return {'code': code,
-                'message': ('Implementation mode refused: project workspace writes are not authorized '
-                            '(workspace_write_authorized=false). Use mode \'expertise\' for a read-only '
-                            'patch, or ask the operator to enable --codex-workspace-write. No automatic retry.'),
-                'data': {'kind': 'workspace_write_not_authorized', 'reason': 'workspace_write_authorized_false',
-                         'error': detail, 'enable_with': WORKSPACE_WRITE_ENABLE}}
     if isinstance(exc, Unavailable):
         # Backend/engine down is an availability failure, not a caller mistake.
         kind, code = 'unavailable', -32000
@@ -165,10 +151,6 @@ CODEX_EFFORT_PREFERENCES = {'deep': 'high', 'batch': 'medium', 'default': 'mediu
 # juge sur cet ordre, pas sur l'ordre lexicographique ('high' < 'medium' en ASCII).
 CODEX_EFFORT_ORDER = {'minimal': 0, 'low': 1, 'medium': 2, 'high': 3, 'xhigh': 4}
 INFERENCE_TOOLS = ('reprise_delegate', 'reprise_followup', 'codex_review', 'codex_followup')
-# Lot C (#238) : capacité du slot Codex ; les singletons physiques restent mono-slot.
-# #258 lot 2 : valeur de repli legacy — la source de vérité est experts-manifest.json.
-CODEX_PARALLEL_SLOTS = 2
-
 # Manifeste expert déclaratif (#258 lot 2) : le manifeste décrit les backends
 # (capacité, resumable, sémantique de session) ; la disponibilité, elle, se
 # mesure (programmes, sockets, TaskStores). Erreur de schéma/type = échec de
@@ -181,17 +163,20 @@ EXPERTS_HANDLED_BACKENDS = ('codex', 'ironclaw', 'claude-code', 'claude-desktop'
                             'foundation-models', 'chatgpt', 'metaai')
 
 
-def load_experts_manifest(path=None):
-    """Charge experts-manifest.json avec validation stricte.
-
-    Fichier absent : {} (repli legacy documenté — CODEX_PARALLEL_SLOTS pour
-    codex, 1 sinon). Fichier présent mais invalide : ValueError, le bridge
-    refuse de démarrer (fail-fast sur schéma/types uniquement)."""
+def _read_manifest(path=None):
+    """experts-manifest.json est livré dans le bundle : son absence est une installation incomplète."""
     manifest_path = Path(path) if path is not None else EXPERTS_MANIFEST_PATH
-    if not manifest_path.exists():
-        return {}
-    with open(manifest_path, encoding='utf-8') as handle:
-        document = json.load(handle)
+    try:
+        with open(manifest_path, encoding='utf-8') as handle:
+            return json.load(handle)
+    except FileNotFoundError:
+        raise ValueError(f'experts-manifest.json absent ({manifest_path}) : bundle incomplet, reconstruire Reprise.') from None
+
+
+def load_experts_manifest(path=None):
+    """Charge experts-manifest.json avec validation stricte ; absent ou invalide :
+    ValueError, le bridge refuse de démarrer."""
+    document = _read_manifest(path)
     if not isinstance(document, dict) or document.get('schema_version') != EXPERTS_MANIFEST_VERSION:
         raise ValueError(f'experts manifest requires schema_version {EXPERTS_MANIFEST_VERSION}')
     backends = document.get('backends')
@@ -477,13 +462,9 @@ def wait_content(result, ident):
 
 def load_default_chain(path=None):
     """Charge le champ optionnel `default_chain` (liste ordonnée d'ids de
-    backends) du manifeste. Fichier/champ absent → [] (repli legacy) ; ids
-    invalides, non uniques ou inconnus des backends déclarés → ValueError."""
-    manifest_path = Path(path) if path is not None else EXPERTS_MANIFEST_PATH
-    if not manifest_path.exists():
-        return []
-    with open(manifest_path, encoding='utf-8') as handle:
-        document = json.load(handle)
+    backends) du manifeste. Champ absent → [] ; ids invalides, non uniques ou
+    inconnus des backends déclarés → ValueError."""
+    document = _read_manifest(path)
     chain = document.get('default_chain')
     if chain is None:
         return []
@@ -500,13 +481,9 @@ def load_default_chain(path=None):
 
 def load_fallback_flag(path=None):
     """Charge le champ optionnel `automatic_fallback` (bool) du manifeste.
-    Fichier/champ absent → False (défaut code inchangé) ; type non-bool →
-    ValueError (fail-fast, même contrat que le manifeste)."""
-    manifest_path = Path(path) if path is not None else EXPERTS_MANIFEST_PATH
-    if not manifest_path.exists():
-        return False
-    with open(manifest_path, encoding='utf-8') as handle:
-        document = json.load(handle)
+    Champ absent → False ; type non-bool → ValueError (fail-fast, même contrat
+    que le manifeste)."""
+    document = _read_manifest(path)
     flag = document.get('automatic_fallback')
     if flag is None:
         return False
@@ -516,18 +493,15 @@ def load_fallback_flag(path=None):
 
 
 class Bridge:
-    def __init__(self, root, values, state, daily_limit=8, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, codex_workspace_write=False, chatgpt_socket=None, chatgpt_dispatch=False, metaai_values=None, automatic_fallback_enabled=None):
-        if type(codex_workspace_write) is not bool:
-            raise ValueError('Explicit workspace-write grant required')
+    def __init__(self, root, values, state, *, claude_program=None, claude_subscription_only=False, desktop_socket=None, desktop_state=None, allowed_tools=None, ironclaw_values=None, chatgpt_state=None, chatgpt_dispatch=False, metaai_values=None, automatic_fallback_enabled=None):
         if automatic_fallback_enabled is not None and type(automatic_fallback_enabled) is not bool:
             raise ValueError('Explicit automatic-fallback grant required')
         if type(chatgpt_dispatch) is not bool:
             raise ValueError('Explicit ChatGPT dispatch grant required')
-        if chatgpt_socket is not None and (not isinstance(chatgpt_socket, str) or not Path(chatgpt_socket).is_absolute()):
+        if chatgpt_state is not None and (not isinstance(chatgpt_state, str) or not Path(chatgpt_state).is_absolute()):
             raise ValueError('Absolute ChatGPT state directory required')
-        self.chatgpt_socket = chatgpt_socket
+        self.chatgpt_configured = chatgpt_state is not None
         self.chatgpt_dispatch = chatgpt_dispatch
-        self.codex_workspace_write = codex_workspace_write
         known_tools = {item['name'] for item in TOOLS}
         if allowed_tools is not None and (not allowed_tools or set(allowed_tools) - known_tools):
             raise ValueError('Unknown or empty tool selection')
@@ -558,8 +532,8 @@ class Bridge:
         self.db.execute('CREATE TABLE IF NOT EXISTS expert_routes(scope TEXT,id TEXT,model TEXT,effort TEXT,PRIMARY KEY(scope,id))')
         self.db.execute('CREATE TABLE IF NOT EXISTS claude_expert_routes(scope TEXT,id TEXT,program TEXT,model TEXT,effort TEXT,PRIMARY KEY(scope,id))')
         self.db.execute('CREATE TABLE IF NOT EXISTS expert_thread_modes(scope TEXT,id TEXT,mode TEXT NOT NULL,PRIMARY KEY(scope,id))')
-        # Lot C / issue #238 : une ligne par tour d'inférence actif. Codex accepte
-        # CODEX_PARALLEL_SLOTS tours parallèles ; les singletons physiques un seul.
+        # Lot C / issue #238 : une ligne par tour d'inférence actif, autant de slots
+        # que la capacité déclarée par experts-manifest.json.
         # Une ligne ne meurt que par observation d'un reçu terminal, jamais par âge.
         self.db.execute('''CREATE TABLE IF NOT EXISTS expert_active_turns(
             backend TEXT, slot TEXT, thread_id TEXT, request_key TEXT,
@@ -576,7 +550,7 @@ class Bridge:
         self._codex_catalog_time = None
         self._release_terminal_slots()
         # Manifeste expert déclaratif (#258 lot 2) : échec de schéma = bridge
-        # refusé au démarrage ; fichier absent = repli legacy ({}).
+        # ou fichier absent = bridge refusé au démarrage.
         self.experts = load_experts_manifest()
         self.default_chain = load_default_chain()
         # Flag automatic_fallback : kwarg explicite (True/False) gagne ; None
@@ -596,25 +570,26 @@ class Bridge:
             self.desktop_tasks = None
         # ChatGPT roundtrip: same TaskStore contract over a dedicated state directory
         # (channel independence), opened only when the local channel is configured.
-        # The ChatGPT MCP "socket" parameter is a local *state directory*.
         # Admission and the return-channel TaskStore must use that exact path,
         # including isolated integration-verification and nondefault installs.
-        self.chatgpt_state = (Path(self.chatgpt_socket).resolve() if self.chatgpt_socket
+        self.chatgpt_state = (Path(chatgpt_state).resolve() if chatgpt_state
                               else state_location(self.root, 'chatgpt-state'))
         self.chatgpt_tasks = None
-        if self.chatgpt_socket:
+        if self.chatgpt_configured:
             try:
                 self.chatgpt_tasks = TaskStore(self.chatgpt_state, self.root)
             except (OSError, sqlite3.Error, ValueError):
                 self.chatgpt_tasks = None
         # Pont Meta AI (#258 lot 3) : TaskStore partagé avec le service metaaid
         # + répertoire inbox du pont fichiers, lus depuis la connexion Reprise
-        # (connections/metaai.json, clé bridge_root, repli legacy dav_root —
+        # (connections/metaai.json, clé bridge_root —
         # issue #267). Sans valeurs ou avec enabled:false → backend non
         # configuré, déclaré honnête, jamais routé ailleurs ; une connexion
         # incomplète est ignorée ici (le CLI affiche l'avertissement, pas de
         # repli silencieux de routage).
         self.metaai_values = metaai_values if isinstance(metaai_values, dict) else {}
+        if metaai_retired_keys(self.metaai_values):
+            raise ValueError('Connexion Meta AI : clé dav_root supprimée (#276) ; la renommer bridge_root.')
         self.metaai_tasks = None
         self.metaai_inbox = None
         if self.metaai_values and self.metaai_values.get('enabled', True) is not False:
@@ -837,7 +812,7 @@ class Bridge:
                 return False
         if self.chatgpt_tasks is not None:
             return True
-        if not self.chatgpt_socket:
+        if not self.chatgpt_configured:
             return False
         try:
             self.chatgpt_tasks = TaskStore(self.chatgpt_state, self.root)
@@ -907,8 +882,6 @@ class Bridge:
                 raise ValueError('Backend chatgpt refused in v1: consultative expertise/review only, no implementation mode.')
             if name not in ('reprise_delegate', 'reprise_followup') or args.get('backend', 'codex') != 'codex':
                 raise ValueError('Implementation requires generic Codex delegation tools')
-            if not self.codex_workspace_write:
-                raise WorkspaceWriteNotAuthorized('Project workspace writes not authorized by the integration')
         return mode
 
     def _acquire_slot(self, name, args):
@@ -930,11 +903,9 @@ class Bridge:
                 self.db.commit()
                 key = args.get('request_key')
                 return (backend, row[0], key if row[1] == key else None)
-        # #258 lot 2 : la capacité vient du manifeste ; repli legacy documenté
-        # (CODEX_PARALLEL_SLOTS pour codex, 1 sinon) quand le manifeste est absent
-        # ou ne déclare pas ce backend.
+        # La capacité vient du manifeste ; un backend non déclaré a un seul slot.
         entry = self.experts.get(backend)
-        capacity = entry['capacity'] if entry else (CODEX_PARALLEL_SLOTS if backend == 'codex' else 1)
+        capacity = entry['capacity'] if entry else 1
         for index in range(capacity):
             slot = str(index)
             try:
@@ -1398,12 +1369,11 @@ class Bridge:
                  'models_source': catalog['source'],
                  'models_updated_at': catalog['updated_at'],
                  'billing': 'ChatGPT quota',
-                 'modes': ['expertise'] + (['implementation'] if self.codex_workspace_write else []),
-                 'workspace_write_authorized': self.codex_workspace_write,
-                 'implementation_scope': str(self.root) if self.codex_workspace_write else None,
-                 **({} if self.codex_workspace_write else {
-                     'implementation_unavailable_reason': 'workspace_write_not_authorized',
-                     'enable_with': WORKSPACE_WRITE_ENABLE}),
+                 # #252 : écriture du projet permise par défaut (réseau coupé,
+                 # approbations natives conservées) ; expertise reste en lecture seule.
+                 'modes': ['expertise', 'implementation'],
+                 'workspace_write_authorized': True,
+                 'implementation_scope': str(self.root),
                  'kinds': list(MODES), 'levels': ['standard', 'deep'], 'writes': workspace_writes('codex')}
             if catalog['error']:
                 codex_entry['models_error'] = catalog['error']
@@ -1637,7 +1607,7 @@ class Bridge:
         if backend == 'foundation-models' and not apple_expert.configured():
             return {'status': 'engine_unavailable', 'backend': backend,
                     'reason': 'Apple fm executable unavailable.', 'automatic_fallback': False}
-        if backend == 'chatgpt' and not self.chatgpt_socket:
+        if backend == 'chatgpt' and not self.chatgpt_configured:
             return {'status': 'engine_unavailable',
                     'reason': '--chatgpt-state non configuré'}
         if backend == 'chatgpt' and self.chatgpt_tasks is None and not self._retry_task_store('chatgpt'):
@@ -1657,7 +1627,7 @@ class Bridge:
             # peut pas être matérialisée, refus AVANT enqueue (issue #267) pour
             # ne plus laisser de tâches bloquées en dispatched sans réponse.
             return {'status': 'return_channel_unavailable', 'backend': backend,
-                    'reason': "Connexion Meta AI sans répertoire pont (clé bridge_root, repli legacy dav_root) ; l'inbox ne peut pas être écrite. Corrigez connections/metaai.json ou relancez metaai-install.py.",
+                    'reason': "Connexion Meta AI sans répertoire pont (clé bridge_root) ; l'inbox ne peut pas être écrite. Corrigez connections/metaai.json ou relancez metaai-install.py.",
                     'automatic_fallback': False}
         if backend == 'metaai' and self.metaai_tasks is None and not self._retry_task_store('metaai'):
             return {'status': 'return_channel_unavailable', 'backend': backend,
@@ -1729,7 +1699,7 @@ class Bridge:
         if backend == 'chatgpt':
             result = chatgpt_quick.review(self.root, question, kind=args.get('kind', 'expertise'),
                                           level=args.get('level', 'standard'), paths=args.get('paths'),
-                                          socket=self.chatgpt_socket, request_key=self.requests.active_key)
+                                          state=self.chatgpt_state, request_key=self.requests.active_key)
             if self.chatgpt_dispatch:
                 result = chatgpt_quick.finish_with_holder_dispatch(self.root, self.chatgpt_state, result)
             routing_events.finalize(self.db, event_id, str(result.get('status') or 'unknown'))
@@ -1756,7 +1726,7 @@ class Bridge:
                 # avec une inbox non résolue (Path(None) levait un TypeError
                 # générique, issue #267).
                 routing_events.finalize(self.db, event_id, 'dispatch_refused')
-                raise ValueError("Répertoire inbox Meta AI non résolu (bridge_root/dav_root) ; corrigez la connexion Reprise metaai.json avant de redéléguer.")
+                raise ValueError("Répertoire inbox Meta AI non résolu (bridge_root) ; corrigez la connexion Reprise metaai.json avant de redéléguer.")
             inbox_file = self.metaai_tasks.dispatch_write_inbox(task, self.metaai_inbox)
             result = {'status': 'finished', 'response': None, 'task_id': task_id,
                       'task_type': 'expert_delegate', 'inbox_file': inbox_file,
@@ -2078,22 +2048,16 @@ def main():
     parser.add_argument('--socket')
     parser.add_argument('--state')
     parser.add_argument('--tools', help='Explicit comma-separated exposed tool allowlist; legacy default exposes all')
-    parser.add_argument('--daily-limit', type=int, default=8, help='Deprecated compatibility option; ignored for all backends')
     parser.add_argument('--claude-program', help='Explicit absolute Claude CLI path; disabled by default')
     parser.add_argument('--claude-included-quota-confirmed', action='store_true', help='Operator confirms paid usage credits disabled; CLI cannot verify this')
-    parser.add_argument('--codex-workspace-write', action='store_true', help='Operator grant: implementation may write this project; native approvals remain required')
     parser.add_argument('--desktop-socket', help='Explicit absolute Quick Entry socket path; disabled by default')
-    parser.add_argument('--chatgpt-state', '--chatgpt-socket', dest='chatgpt_state',
+    parser.add_argument('--chatgpt-state',
                         help='ChatGPT state directory, ledger and TaskStore (not a network socket)')
-    # Issue #282 (décision opérateur du 27/11) : le dispatch holder est actif
-    # par défaut ; --chatgpt-dispatch reste accepté pour les configurations
-    # existantes, --no-chatgpt-dispatch est la seule désactivation.
-    parser.add_argument('--chatgpt-dispatch', dest='chatgpt_dispatch', action='store_true', default=True,
-                        help='Compatibility no-op: admitted ChatGPT tasks are pushed to the CDP holder (profil dédié) by default')
-    parser.add_argument('--no-chatgpt-dispatch', dest='chatgpt_dispatch', action='store_false',
+    # #282 : dispatch holder actif par défaut ; --no-chatgpt-dispatch est la seule bascule.
+    parser.add_argument('--no-chatgpt-dispatch', dest='chatgpt_dispatch', action='store_false', default=True,
                         help='Admission only: never push admitted ChatGPT tasks to the holder')
     parser.add_argument('--metaai-config',
-                        help='JSON de connexion Meta AI (taskstore, bridge_root ; repli legacy dav_root) ; défaut : connexion Reprise standard si présente')
+                        help='JSON de connexion Meta AI (taskstore, bridge_root) ; défaut : connexion Reprise standard si présente')
     parser.add_argument('--ironclaw-config', help='JSON 0600: {host,port,user,key} du point d’acceptation IronClaw')
     args = parser.parse_args()
     ironclaw_values = {}
@@ -2102,8 +2066,6 @@ def main():
             ironclaw_values = json.loads(Path(args.ironclaw_config).read_text())
         except (OSError, ValueError):
             raise SystemExit('--ironclaw-config doit être un JSON 0600 lisible')
-    if '--chatgpt-socket' in sys.argv:
-        print('Warning: --chatgpt-socket is deprecated; use --chatgpt-state', file=sys.stderr)
     metaai_values = {}
     metaai_source = args.metaai_config
     if metaai_source is None:
@@ -2115,21 +2077,23 @@ def main():
             metaai_values = json.loads(Path(metaai_source).read_text())
             if not isinstance(metaai_values, dict):
                 raise ValueError('objet JSON attendu')
+            if metaai_retired_keys(metaai_values):
+                raise ValueError('clé dav_root supprimée (#276) ; la renommer bridge_root')
             if metaai_values and not (isinstance(metaai_values.get('taskstore'), str)
                                       and metaai_values.get('taskstore', '').strip()
                                       and metaai_bridge_root(metaai_values)):
-                print('Warning: connexion Meta AI sans taskstore ou répertoire pont (bridge_root, repli dav_root) valides, backend metaai non configuré', file=sys.stderr)
+                print('Warning: connexion Meta AI sans taskstore ou bridge_root valides, backend metaai non configuré', file=sys.stderr)
         except (OSError, ValueError) as detail:
             if args.metaai_config is not None:
                 raise SystemExit('--metaai-config doit être un JSON lisible : ' + str(detail))
             print('Warning: connexion Meta AI illisible, backend metaai non configuré : ' + str(detail), file=sys.stderr)
             metaai_values = {}
     chatgpt_state = args.chatgpt_state or str(state_location(Path(__file__).parent, 'chatgpt-state').absolute())
-    bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.state or str(state_directory(Path(__file__).parent)), args.daily_limit,
+    bridge = Bridge(args.project_root, {'socket': args.socket} if args.socket else {}, args.state or str(state_directory(Path(__file__).parent)),
                     claude_program=args.claude_program, claude_subscription_only=args.claude_included_quota_confirmed,
                     desktop_socket=args.desktop_socket, allowed_tools=args.tools.split(',') if args.tools is not None else None,
-                    ironclaw_values=ironclaw_values, codex_workspace_write=args.codex_workspace_write,
-                    chatgpt_socket=chatgpt_state,
+                    ironclaw_values=ironclaw_values,
+                    chatgpt_state=chatgpt_state,
                     chatgpt_dispatch=args.chatgpt_dispatch, metaai_values=metaai_values)
     def terminate(signum, frame):
         # Unwind active CLI cleanup before closing the DB and releasing the lock.

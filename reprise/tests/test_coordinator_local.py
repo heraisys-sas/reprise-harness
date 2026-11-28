@@ -18,6 +18,7 @@ from coordinator_jobs import Jobs
 from coordinator_local import LocalExecution, Control, SUPERVISION_CONTRACT
 from project_registry import ProjectRegistry
 from apple_pilot_service import Service
+from support_portability import requires_apple_sdk
 
 
 def uid(): return str(uuid.uuid4())
@@ -216,6 +217,7 @@ class LocalExecutionTests(unittest.TestCase):
             payload = self.local._parts(row)[3]
             self.assertEqual(digest({'payload':payload,'parent':None}), identity)
 
+    @requires_apple_sdk
     def test_native_prompt_formatter_without_model(self):
         swift = Path(__file__).parents[1]/'swift/FoundationExplain.swift'
         source = swift.read_text()
@@ -422,7 +424,8 @@ finally: connection.close()
             self.local.run(self.project, self.operation, run, Control())
         self.assertEqual(spawn.call_count, 1, 'execution helper must be launched after admission')
         row = self.local.recover(self.project, self.operation)
-        self.assertEqual(row['status'], 'local_recorded')
+        # Issue #149 : a CI recurrence must name its cause, not just the status.
+        self.assertEqual(row['status'], 'local_recorded', row['local_execution'].get('indeterminate_cause'))
         receipt = row['local_execution']['receipt']
         self.assertIsNotNone(receipt, 'terminal result should be durable after admission')
         self.assertEqual(receipt['status'], 'interrupted')
@@ -431,6 +434,21 @@ finally: connection.close()
         self.assertTrue(receipt['process_reaped'])
         self.assertFalse(receipt['work_completed'])
         self.assertNotIn('response', receipt)
+
+    def test_indeterminate_stage_records_bounded_cause(self):
+        # Issue #149 : the uncertainty keeps the reached stage and the error
+        # class/code, never request or response content.
+        self.script('import time\ntime.sleep(20)\n')
+        from apple_pilot_transport import TransportError
+        with patch('coordinator_local._probe', return_value=None), \
+             patch.object(type(self.local), '_wait', side_effect=TransportError('cleanup_unconfirmed')):
+            run, _, _ = self.reserve(seconds=1)
+            self.local.run(self.project, self.operation, run, Control())
+        row = self.local.recover(self.project, self.operation)
+        self.assertEqual(row['status'], 'local_indeterminate')
+        self.assertEqual(row['local_execution']['indeterminate_cause'],
+                         {'stage_reached': 'running', 'error': 'TransportError', 'code': 'cleanup_unconfirmed'})
+        self.assertIsNone(row['local_execution']['receipt'])
 
     def test_invalid_helper_output_after_admission_is_terminal_not_success(self):
         self.script('print("not-json")\n')

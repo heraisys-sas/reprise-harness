@@ -97,11 +97,6 @@ class NativeClient:
 
 ENTRIES = {'reprise-harness': 'expert_mcp.py'}
 
-# Le shim codex_expert_mcp.py embarqué dans le bundle n'existe que pour un
-# cycle de release (#258) : une installation d'avant renommage doit pouvoir
-# être réécrite, mais le mapping reste borné à ce couple.
-_LEGACY_HELPERS = {'codex_expert_mcp.py': 'expert_mcp.py'}
-
 
 def _digest(value):
     return hashlib.sha256(value).hexdigest()
@@ -168,6 +163,9 @@ def _runtime_executable(command, runtime):
     raise ValueError('Chaîne de liens du runtime trop longue.')
 
 
+RETIRED_SWITCHES = frozenset(('--codex-workspace-write', '--chatgpt-dispatch'))
+
+
 def _rewrite(entry, script, release_base, target):
     if not isinstance(entry, dict) or not isinstance(entry.get('command'), str) or not isinstance(entry.get('args'), list):
         raise ValueError('Entrée MCP non reconnue.')
@@ -179,10 +177,8 @@ def _rewrite(entry, script, release_base, target):
         raise ValueError('Chemin de runtime ambigu.')
     _safe(command.parent)
     suffix = Path('Contents/Resources/helpers') / script
-    legacy = _LEGACY_HELPERS.get(Path(helper).name)
     if not str(helper).endswith('/' + str(suffix)):
-        if legacy != script or not str(helper).endswith('/Contents/Resources/helpers/' + Path(helper).name):
-            raise ValueError('Helper MCP étranger.')
+        raise ValueError('Helper MCP étranger.')
     old = helper.parents[3]
     _release(old, release_base)
     runtime = old / 'Contents/Resources/runtime'
@@ -192,15 +188,17 @@ def _rewrite(entry, script, release_base, target):
     # The helper flags and their values, including scopes, remain byte-for-byte
     # equal as JSON values. Reject a second script/executable or malformed flags.
     options = {
-        'expert_mcp.py': ({'--project-root', '--socket', '--state', '--tools', '--daily-limit',
+        'expert_mcp.py': ({'--project-root', '--socket', '--state', '--tools',
                                   '--claude-program', '--desktop-socket', '--ironclaw-config'},
-                                 {'--claude-included-quota-confirmed', '--codex-workspace-write',
-                                  '--chatgpt-dispatch', '--no-chatgpt-dispatch'},
+                                 {'--claude-included-quota-confirmed', '--no-chatgpt-dispatch'},
                                  {'--project-root', '--state'}),
     }
     valued, switches, required = options[script]
+    # #252 : drapeaux retirés (écriture et dispatch actifs par défaut) ; la mise
+    # à jour les supprime au lieu de produire une commande que le pont refuserait.
+    kept = [arg for arg in args[4:] if arg not in RETIRED_SWITCHES]
     seen = set()
-    remainder = iter(args[4:])
+    remainder = iter(kept)
     for option in remainder:
         if option in seen or option not in valued | switches:
             raise ValueError('Options MCP ambiguës ou non reconnues.')
@@ -213,7 +211,7 @@ def _rewrite(entry, script, release_base, target):
         raise ValueError('Périmètre MCP insuffisamment explicite.')
     updated = dict(entry)
     updated['command'] = str(target / 'Contents/Resources/runtime/bin/python3')
-    updated['args'] = args[:3] + [str(target / suffix)] + args[4:]
+    updated['args'] = args[:3] + [str(target / suffix)] + kept
     return updated
 
 

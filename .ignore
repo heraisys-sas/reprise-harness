@@ -1,0 +1,8 @@
+# #272 : fichiers sans valeur de lecture pour un agent, exclus des recherches
+# ripgrep (Claude Code, Codex, Harness). Sans effet sur Git ni sur le build.
+pnpm-lock.yaml
+*.tar.gz
+/routing/embeddings/benchmark-*.json
+/routing/embeddings/comparison-*.json
+/routing/embeddings/evaluation*.json
+/routing/embeddings/latency-*.json

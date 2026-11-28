@@ -225,16 +225,15 @@ class ManagedUpdateTests(unittest.TestCase):
         helpers=self.source/'Contents/Resources/helpers'
         with update.settings(self.state):
             original=integration.plan(helpers,self.home/'.dsh','desktop',self.base,
-                delegate=True,agent_role='coordinator',output_resume=True,
-                output_resume_project=self.home,codex_workspace_write=True)
+                agent_role='coordinator',output_resume=True,
+                output_resume_project=self.home)
             integration.apply(helpers,original)
         value=self.plan(components=('harness',),profiles=('desktop',))
         selected=value['nested']['harness'][0]
-        self.assertTrue(selected['delegate'])
         self.assertEqual(selected['agent_role'],'coordinator')
         self.assertTrue(selected['output_resume'])
         self.assertEqual(selected['output_resume_project'],str(self.home))
-        self.assertTrue(selected['codex_workspace_write'])
+        self.assertNotIn('codex_workspace_write',selected)
         self.assertEqual(selected['project'],str(self.base))
         self.assertEqual(selected['state'],str(self.state))
 
@@ -246,10 +245,9 @@ class ManagedUpdateTests(unittest.TestCase):
         helpers = self.source / 'Contents/Resources/helpers'
         with update.settings(self.state):
             initial = integration.plan(helpers, self.home / '.dsh', 'desktop',
-                                       self.base, delegate=False)
+                                       self.base)
             integration.apply(helpers, initial)
         value = self.plan(components=('harness',), profiles=('desktop',))
-        self.assertFalse(value['nested']['harness'][0]['delegate'])
         update.apply(value)
         observed = {'status': 'verified', 'update_required': True,
                     'missing_delegation_tools': list(integration.DELEGATE),
@@ -265,7 +263,6 @@ class ManagedUpdateTests(unittest.TestCase):
                              set(integration.DELEGATE))
             with self.assertRaises(ValueError):
                 update.cleanup(self.receipt(value))
-        self.assertFalse(value['nested']['harness'][0]['delegate'])
 
     def test_default_state_does_not_turn_quick_state_into_a_child(self):
         from app_paths import state_location

@@ -403,7 +403,7 @@ class Jobs:
                 return self._public(row), True
             raise ValueError('Job not found')
 
-    def local_update(self, project_id, operation_id, run_id, *, stage=None, receipt=None, stop=False):
+    def local_update(self, project_id, operation_id, run_id, *, stage=None, receipt=None, stop=False, cause=None):
         """Host projection only; never establishes an admission or repeats work."""
         project, operation, run = _uuid(project_id), _uuid(operation_id), _uuid(run_id)
         if stage not in (None, 'admitted', 'running', 'recorded', 'indeterminate'):
@@ -415,6 +415,12 @@ class Jobs:
                 if not execution or execution['run_id'] != run: raise ValueError('Execution identity conflict')
                 if execution['stage'] == 'recorded': return self._public(row)
                 if stop: execution['stop_requested'] = True
+                if cause is not None:
+                    # Issue #149 : diagnostic borné de l'incertitude (stade
+                    # atteint, classe et code d'erreur) ; jamais de contenu.
+                    if stage != 'indeterminate': raise ValueError('Cause only qualifies an indeterminate stage')
+                    execution['indeterminate_cause'] = {'stage_reached': execution['stage'],
+                        'error': str(cause.get('error'))[:80], 'code': str(cause.get('code'))[:80] if cause.get('code') else None}
                 if stage:
                     execution['stage'] = stage
                     row['status'] = 'local_' + stage

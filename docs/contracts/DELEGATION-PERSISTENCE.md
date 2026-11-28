@@ -54,7 +54,7 @@ Dans `ux_review_probe.py`, démarrer avec `--request-key` persistée avant le d�
 
 ## Plafonds et limites conservées
 
-Les plafonds quotidiens Claude Code, Claude Desktop et Quick Apply sont supprimés. `expert_calls` et `quick_calls` hérités restent inertes ; ils ne sont ni lus pour l’admission ni incrémentés. `daily_limit` et `--daily-limit` sont uniquement acceptés comme compatibilité obsolète, sans validation de plage ni effet. Les nouveaux launchers et plists ne les émettent plus.
+Les plafonds quotidiens Claude Code, Claude Desktop et Quick Apply sont supprimés. `expert_calls` et `quick_calls` hérités restent inertes ; ils ne sont ni lus pour l’admission ni incrémentés. `daily_limit` et `--daily-limit` sont supprimés (#276) : l'option est refusée comme argument inconnu.
 
 La garde fournisseur Codex, dont la réserve **5 %** et le refus de quota inconnu, reste inchangée. Aucun budget utilisateur explicite n’est retiré. La connaissance fraîche des quotas par compte/profil/pool et la politique de reprise associée constituent le prochain lot.
 
@@ -175,9 +175,9 @@ La réservation d'une livraison dispatch QTi et la réservation du socket sont i
 - La livraison MCP ne transporte que `delivery`, `attempt_id` et `claim_key`.
 - Les anciens writers doivent être arrêtés ou mis à niveau avant la migration : ils ne respectent pas cette table.
 
-## File d'attente opt-in par projet (`claim_next`)
+## File d'attente par projet (`claim_next`)
 
-Décision d'opérateur par intégration (`--enable-queue` : l'outil est masqué et refusé par défaut, sur le modèle de `--enable-await`) : le connecteur expose `claim_next(claim_key)` — la plus ancienne tâche **fraîche** du scope (jamais réclamée, jamais tentée, sans réponse), dans l'ordre du registre d'insertion. L'autorisation = l'armement explicite d'une conversation par l'opérateur ; le `claim_key` est généré et persisté par la session exécutrice.
+Toujours exposée depuis #252 (décision opérateur du 27/11/2026 ; plus d'option `--enable-queue` ni `--enable-await`) : le connecteur expose `claim_next(claim_key)` — la plus ancienne tâche **fraîche** du scope (jamais réclamée, jamais tentée, sans réponse), dans l'ordre du registre d'insertion. L'autorisation = l'armement explicite d'une conversation par l'opérateur ; le `claim_key` est généré et persisté par la session exécutrice.
 
 Gardes : un seul claim **actif par `claim_key`**, jamais de redelivery d'un envoi incertain — les livraisons incertaines sont **ignorées** par la file et restent à réconcilier par l'opérateur ; scoping par `--project-root` ; file vide = état explicite. La réservation et la sélection sont atomiques dans la même transaction `BEGIN IMMEDIATE`. Si le `claim_key` possède déjà une tâche non soumise, `claim_next` retourne `state="busy"`, sa clé et son `attempt_id` sans `prompt` ; aucun nouveau travail n'est livré. Une soumission validée libère la réservation du `claim_key`. Répéter `claim_next` avec une clé active n'est jamais une autorisation de réexécuter la tentative précédente.
 
@@ -269,7 +269,7 @@ empreinte SHA-256 sont vérifiées, la projection vers `acknowledged` est
 permise directement depuis `admitted` ou `attempted`. Un résultat absent ou
 une tentative différente ne sont pas réparés automatiquement.
 
-Le chemin `chatgpt_socket` utilisé par le pont est, dans ce contrat,
+Le chemin `--chatgpt-state` (`Bridge(chatgpt_state=…)`) utilisé par le pont est, dans ce contrat,
 un **répertoire d'état local**, non un socket réseau. Il est aussi la source
 du `TaskStore` ChatGPT du pont et de l'`Endpoint` de réadmission,
 notamment lors de l'inspection d'une installation isolée. Aucune bascule

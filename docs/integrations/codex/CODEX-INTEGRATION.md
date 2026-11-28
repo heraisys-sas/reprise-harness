@@ -14,7 +14,7 @@ The installer preserves the rest of the profile, backs up modified files under `
 
 `reprise_delegate` takes `kind` (`expertise`, `review`, `batch`), `level` (`standard`, `deep`), `question`, and optional project-relative `paths`. The Codex model lineup is dynamic: it is fetched live from the server catalog (`model/list`, 30 s TTL cache) and persisted as last-known-good in `~/Library/Application Support/Reprise/codex-models.json`; when the catalog service is unavailable, the persisted lineup is used and explicit models are admitted against it (a later dispatch fails clearly if the model is really gone). Ordered routing preferences are resolved against the current catalog — default expertise/review and batch use medium effort, deep uses high. Models and efforts are checked against the current catalog before admission to a model turn. Batch generation returns code or patches: Harness applies them and runs deterministic checks. In default `mode: expertise` it does not write; the separately authorized `mode: implementation` can apply project edits and run checks under native workspace-write, without any implicit push, merge or deployment authorization. The historical full response transport was bounded; current deployments support persisted compact receipts and paginated recovery (`return_mode: receipt`), and full results above the current transport threshold return a manifest. See the current operator route and [delegation persistence contract](../../contracts/DELEGATION-PERSISTENCE.md). Split large jobs into coherent lots.
 
-A follow-up remains bound to an allowlisted expert thread, model and effort. It can reload that thread if unloaded, but does not steer an active session. Quota failures never change accounts or billing automatically. `reprise_backends` reports Codex and optional Claude configuration and AutoClaw unvalidated, without inference; this is capability information, not a live quota check.
+A follow-up remains bound to an allowlisted expert thread, model and effort. It can reload that thread if unloaded, but does not steer an active session. Quota failures never change accounts or billing automatically. `reprise_backends` reports, without inference, every backend of the bridge (`codex`, `foundation-models`, `autoclaw`, `claude-code`, `claude-desktop`, `ironclaw`, `chatgpt`, `metaai`) with its configuration state; this is capability information, not a live quota check.
 
 Live validation through the bundled DSH MCP SDK succeeded: Luna returned `323`, then an allowlisted follow-up returned `324` on the same thread/model. This used the included ChatGPT allowance. Astra/high also started a real targeted code review, read the requested files and stopped at an approval request; the bridge reported `blocked_permission` and interrupted its own turn. This is a verified permission boundary, not a completed review. The test exposed and corrected two earlier simulated-test blind spots: quoted MCP override keys created malformed server entries; resuming a just-created thread before its first turn failed because no rollout existed. Thread-specific configuration disables each inherited server with nested override objects; a real thread-scoped MCP inventory must report every entry disabled before a model turn is admitted. An empty table does not disable inherited entries because configuration tables merge recursively. Only follow-ups call `thread/resume`.
 
@@ -115,7 +115,7 @@ The last command is an **historical manual** MCP STDIO entrypoint, not an intera
 
 Calls return the bounded response, Codex thread/turn IDs, event types and explicit errors. `codex_followup` accepts only review threads recorded by this bridge for its fixed project and endpoint, and reuses their Codex history. No full DSH conversation is copied. Approvals or user questions stop the tool and are reported to DSH; the bridge does not grant them, impersonate a user reply or claim an unfinished review succeeded.
 
-The bridge retains its existing five-percent provider quota reserve and one active expertise request. No backend has a local daily call cap; legacy --daily-limit and stored expert_calls counts are inert. All inference tools require caller-persisted request_key; recovery and lineage are described in [DELEGATION-PERSISTENCE.md](../../contracts/DELEGATION-PERSISTENCE.md). This is an admission policy, not a maximum token guarantee: one accepted agent turn can contain many model/tool steps. Read-only sandbox and no command network access are requested on every turn. Inherited MCP servers, apps, plugins, hooks, browser/computer tools and subagents are disabled for these expertise threads through thread-specific overrides; the rest of Codex is unchanged. The fixed cwd and path validation constrain requests, not a hard OS confidentiality boundary for all local reads.
+The bridge retains its existing five-percent provider quota reserve and one active expertise request. No backend has a local daily call cap; --daily-limit was removed (#276) and is refused; stored expert_calls counts are inert. All inference tools require caller-persisted request_key; recovery and lineage are described in [DELEGATION-PERSISTENCE.md](../../contracts/DELEGATION-PERSISTENCE.md). This is an admission policy, not a maximum token guarantee: one accepted agent turn can contain many model/tool steps. Read-only sandbox and no command network access are requested on every turn. Inherited MCP servers, apps, plugins, hooks, browser/computer tools and subagents are disabled for these expertise threads through thread-specific overrides; the rest of Codex is unchanged. The fixed cwd and path validation constrain requests, not a hard OS confidentiality boundary for all local reads.
 
 Validation: protocol discovery with the actual bundled DSH MCP client succeeded (`codex_review`, `codex_followup`); fake-server contract tests cover responses, quota reserve, API-account refusal, tool policy, follow-up ownership, scope escape, approvals and persistent call limits. The real Codex socket initialization succeeded without model inference. A live review remains unverified; no paid request or subscription quota was spent on testing.
 
@@ -124,20 +124,13 @@ Validation: protocol discovery with the actual bundled DSH MCP client succeeded 
 
 Le [contrat multi-harness](../../contracts/HARNESS-SUPERVISION-ARCHITECTURE.md) prévoit un même point d’entrée logique pour demander une expertise, recevoir une tâche et rendre/récupérer un résultat. Codex conserve ses transports natifs et garanties existantes ; le regroupement MCP reste à implémenter. Priorité fonctionnelle immédiate : permettre à un harness demandeur d’obtenir une réponse Claude Desktop, y compris compte gratuit.
 
-## Mode `implementation` : autorisation d'écriture du projet (#104)
+## Mode `implementation` : écriture du projet permise par défaut (#104, #252)
 
-`reprise_delegate`/`reprise_followup` avec `mode: "implementation"` ne sont acceptés que si l'opérateur a accordé les écritures du workspace projet **à l'installation de l'intégration**. Sans cette autorisation, `reprise_backends` rapporte pour `codex` : `workspace_write_authorized: false`, `writes: false`, `modes: ["expertise"]`, ainsi que `implementation_unavailable_reason: "workspace_write_not_authorized"` et `enable_with` (la marche à suivre).
+Depuis #252 (décision opérateur du 27/11/2026), `reprise_delegate`/`reprise_followup` acceptent toujours `mode: "implementation"` pour Codex. `reprise_backends` rapporte pour `codex` : `modes: ["expertise", "implementation"]`, `workspace_write_authorized: true` et `implementation_scope` = le `project_root` du pont.
 
-Le refus a lieu **avant toute admission** (aucune ligne `delegation_requests`, aucun tour Codex) et renvoie une erreur explicite, `data.kind: "workspace_write_not_authorized"`, au lieu du refus générique « Request refused or unavailable » (les autres refus restent génériques, cf. #53). Contournement sans autorisation : `mode: "expertise"` renvoie un patch en lecture seule que le coordinateur applique lui-même.
+Garde-fous conservés : sandbox native `workspaceWrite` limitée au projet, réseau coupé, approbations natives Codex requises (`awaiting_human` ; voir #284 pour leur centralisation). `mode: "expertise"` reste en lecture seule. Le mode est attaché au thread et hérité par `reprise_followup` ; une revue ne devient pas une session inscriptible en cours de route.
 
-Activation (l'autorisation est une décision de l'opérateur, jamais déduite d'une demande) :
-
-```
-harness_integration harness-integration-plan --home … --profile … --project /absolute/project --action install --delegate --codex-workspace-write
-harness_integration harness-integration-apply
-```
-
-`--codex-workspace-write` exige `--delegate`. Le périmètre inscriptible est `implementation_scope` = le `project_root` du pont ; les approbations natives Codex restent requises. L'autorisation est lue au démarrage du pont : **redémarrer le pont** après `harness-integration-apply`, puis vérifier `reprise_backends` (`workspace_write_authorized: true`, `implementation_scope` renseigné).
+Il n'existe plus de grant `--codex-workspace-write` ni d'option `--delegate` : un pont installé avant #252 est réécrit par le prochain `harness-integration-plan`/`apply`, puis doit être redémarré.
 
 ## Manifeste experts déclaratif (#258 lot 2, #259)
 
@@ -160,9 +153,9 @@ Champs par backend (`reprise.expert_mcp`) :
 - `resumable` — booléen, défaut `false`.
 
 Clés inconnues, types invalides ou `session` absente : `ValueError` à la
-construction du pont (échec rapide). Fichier absent : repli legacy `{}` —
-capacité codex = `CODEX_PARALLEL_SLOTS` (2, valeur historique documentée),
-1 pour les autres ; aucune erreur. `reload_experts_manifest()` relit le
+construction du pont (échec rapide). Fichier absent : même refus (#276), le
+manifeste fait partie du bundle ; un backend non déclaré a un seul slot.
+`reload_experts_manifest()` relit le
 fichier à chaud ; un manifeste invalide au rechargement lève `ValueError`
 sans écraser l'état courant.
 
@@ -249,8 +242,8 @@ de `PipeTransport` n'établissent pas la fonctionnalité Desktop.
 
 Les connecteurs gérés DeepSeek Harness et Claude Desktop propagent désormais
 `--chatgpt-state` (répertoire d'état SQLite, pas un socket réseau), avec le
-même périmètre projet que le pont ChatGPT (TaskStore `chatgpt-state`). L'ancien argument
-`--chatgpt-socket` est accepté comme alias transitoire.
+même périmètre projet que le pont ChatGPT (TaskStore `chatgpt-state`). L'ancien alias
+`--chatgpt-socket` est supprimé depuis #250 (refusé par les ponts).
 `reprise_backends` liste `chatgpt` même lorsque son état est absent
 (`configured: false`) ; avec l'état partagé initialisable,
 `configured: true` signifie uniquement que le canal d'admission/retour
@@ -297,8 +290,8 @@ aller-retour consultatif se ferme sur le receipt holder seul.
 ### Issue #226 — Chaînon admission → dispatch holder (actif par défaut depuis #282)
 
 Décision opérateur du 27/11/2026 (#282) : le dispatch holder est actif par
-défaut sur `expert_mcp.py` et `claude_mcp.py` ; `--chatgpt-dispatch` reste
-accepté sans effet et `--no-chatgpt-dispatch` est la seule désactivation.
+défaut sur `expert_mcp.py` et `claude_mcp.py` ; `--no-chatgpt-dispatch` est la
+seule désactivation (l'ancien `--chatgpt-dispatch` est retiré par #252).
 Le holder est démarré à la demande par `chatgpt_desktop_pipe.send` et reste
 vivant ensuite. Le pont enchaîne après
 chaque admission fraîche ou rejouée : `chatgpt_quick.dispatch_to_holder`
@@ -328,7 +321,7 @@ upstream sont documentés dans le [runbook APP-CLONES](../runbooks/APP-CLONES.md
 le branchement comme composant natif `managed_update` suit avec la release.
 
 **Déploiement** : reconstruire la release depuis `dev`, prévisualiser/appliquer
-à nouveau les connecteurs gérés (DeepSeek avec `--delegate`, Claude, ChatGPT),
+à nouveau les connecteurs gérés (DeepSeek, Claude, ChatGPT),
 puis recharger les clients. Lire `reprise_backends` depuis chacun et tenter
 une délégation `backend: chatgpt` avec un `request_key` nouveau. Exiger une
 preuve distincte d'arrivée Desktop et de capture de réponse (receipt holder,

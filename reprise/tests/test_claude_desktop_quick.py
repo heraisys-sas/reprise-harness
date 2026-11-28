@@ -18,7 +18,7 @@ from claude_desktop_quick import Endpoint
 class EndpointTests(unittest.TestCase):
     def setUp(self):
         self.state = tempfile.mkdtemp(prefix='quick-test-')
-        self.endpoint = Endpoint(self.state, daily_limit=2)
+        self.endpoint = Endpoint(self.state)
         self.addCleanup(self.endpoint.close)
 
     def submit(self, args):
@@ -32,7 +32,7 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(result['dispatch'], 'dispatchOnQuickEntrySubmit')
         self.assertTrue(result['submission_id'])
 
-    def test_legacy_daily_limit_does_not_block(self):
+    def test_no_daily_cap_on_submissions(self):
         self.submit({'prompt': 'Un message valide'})
         self.submit({'prompt': 'Deuxième message valide'})
         result = self.submit({'prompt': 'Troisième message valide'})
@@ -178,8 +178,12 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(row[0], 1)
 
     def test_cdp_resume_supported_in_capabilities(self):
-        caps = self.endpoint.call('quick_entry/capabilities', {})
-        self.assertTrue(caps['cdp_resume_supported'])
+        # La capacité suit la présence du binaire Chrome, simulée ici dans les deux sens.
+        import claude_cdp_pipe
+        with mock.patch.object(claude_cdp_pipe, '_chrome_bin', return_value=sys.executable):
+            self.assertTrue(self.endpoint.call('quick_entry/capabilities', {})['cdp_resume_supported'])
+        with mock.patch.object(claude_cdp_pipe, '_chrome_bin', return_value='/nonexistent/chrome'):
+            self.assertFalse(self.endpoint.call('quick_entry/capabilities', {})['cdp_resume_supported'])
 
     def test_capabilities_expose_only_enabled_targets(self):
         """capabilities liste uniquement les cibles activées (aucune par défaut)."""

@@ -55,49 +55,27 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         catalog_patcher = patch('expert_mcp.CATALOG_PATH', self.catalog_path)
         catalog_patcher.start()
         self.addCleanup(catalog_patcher.stop)
-        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state')
         self.bridge.program = 'codex'
         self.seed_catalog()
         self.addCleanup(self.bridge.close)
-    def test_implementation_requires_installed_grant_before_admission(self):
-        with patch('expert_mcp.review') as review:
-            with self.assertRaises(ValueError):
-                self.call('reprise_delegate', {'question':'Implement', 'kind':'batch', 'mode':'implementation'})
-            review.assert_not_called()
-        self.assertEqual(self.bridge.db.execute('SELECT COUNT(*) FROM delegation_requests').fetchone()[0], 0)
-        # #258 lot 3 : `writes` devient déclaratif (capacité du backend),
-        # le grant CLI reste mesuré par workspace_write_authorized et gate le mode.
-        codex = self.call('reprise_backends', {})['backends'][0]
-        self.assertTrue(codex['writes'])
-        self.assertFalse(codex['workspace_write_authorized'])
-
-    def test_ungranted_implementation_refusal_is_explicit_issue_104(self):
-        with patch('expert_mcp.review') as review:
-            with self.assertRaises(ValueError) as caught:
-                self.call('reprise_delegate', {'question':'Implement', 'kind':'batch', 'mode':'implementation'})
-            review.assert_not_called()
-        payload = error_payload(caught.exception)
-        self.assertIn('workspace_write_authorized=false', payload['message'])
-        self.assertIn("mode 'expertise'", payload['message'])
-        self.assertEqual(payload['data']['kind'], 'workspace_write_not_authorized')
-        self.assertIn('--codex-workspace-write', payload['data']['enable_with'])
-        # Les autres refus gardent le message générique uniforme.
-        self.assertEqual(error_payload(ValueError('x'))['message'], 'Request refused or unavailable; no automatic retry.')
-
-    def test_backends_reports_how_to_enable_writes_and_reflects_grant_issue_104(self):
-        codex = self.call('reprise_backends', {})['backends'][0]
-        self.assertFalse(codex['workspace_write_authorized'])
-        self.assertEqual(codex['implementation_unavailable_reason'], 'workspace_write_not_authorized')
-        self.assertIn('--codex-workspace-write', codex['enable_with'])
-        self.bridge.codex_workspace_write = True
+    def test_backends_reports_project_writes_enabled_by_default_issue_252(self):
         codex = self.call('reprise_backends', {})['backends'][0]
         self.assertTrue(codex['workspace_write_authorized'])
-        self.assertIn('implementation', codex['modes'])
+        self.assertEqual(codex['modes'], ['expertise', 'implementation'])
+        # L'écriture par défaut ne s'étend pas à l'expertise : sans mode ou en
+        # mode expertise, le tour Codex reste en lecture seule.
+        output = {'status': 'finished', 'resumable': True, 'thread_id': ID, 'response': 'Avis'}
+        for extra in ({}, {'mode': 'expertise'}):
+            with patch('expert_mcp.review', return_value=output.copy()) as review:
+                self.call('reprise_delegate', {'question': 'Review', 'kind': 'review', **extra})
+                self.assertFalse(review.call_args.kwargs.get('implementation', False))  # défaut read-only de codex_expert.review
+        self.assertEqual(codex['implementation_scope'], str(Path(self.temp.name).resolve()))
+        self.assertTrue(codex['writes'])
         self.assertNotIn('implementation_unavailable_reason', codex)
         self.assertNotIn('enable_with', codex)
 
     def test_new_implementation_invalid_input_is_rejected_before_admission(self):
-        self.bridge.codex_workspace_write = True
         with patch('expert_mcp.review') as review:
             with self.assertRaises(ValueError):
                 self.call('reprise_delegate', {'question':'Implement','kind':'batch','mode':'implementation','paths':['missing.py']})
@@ -105,12 +83,11 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.assertEqual(self.bridge.db.execute('SELECT COUNT(*) FROM delegation_requests').fetchone()[0], 0)
 
     def test_implementation_followup_inherits_mode_after_restart_and_alias_cannot_promote(self):
-        self.bridge.codex_workspace_write = True
         output = {'status':'finished', 'resumable':True, 'thread_id':ID, 'response':'Implemented'}
         with patch('expert_mcp.review', return_value=output.copy()) as review:
             self.call('reprise_delegate', {'question':'Implement', 'kind':'batch', 'mode':'implementation'})
             self.assertTrue(review.call_args.kwargs['implementation'])
-        restarted = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', codex_workspace_write=True)
+        restarted = Bridge(self.temp.name, {}, Path(self.temp.name)/'state')
         self.addCleanup(restarted.close)
         restarted.program = 'codex'
         self.seed_catalog(restarted)
@@ -119,19 +96,14 @@ class BridgeTests(RequestCalls, unittest.TestCase):
             self.assertTrue(review.call_args.kwargs['implementation'])
             with self.assertRaises(ValueError):
                 restarted.call('codex_followup', {'request_key':'legacy-alias', 'thread_id':ID, 'question':'Continue'})
-        restarted.codex_workspace_write = False
-        with self.assertRaises(ValueError):
-            restarted.call('reprise_followup', {'request_key':'revoked', 'thread_id':ID, 'backend':'codex', 'question':'Continue'})
 
     def test_legacy_review_cannot_be_promoted_by_prompt_or_mode(self):
-        self.bridge.codex_workspace_write = True
         with patch('expert_mcp.review', return_value={'status':'finished','resumable':True,'thread_id':ID,'response':'Review'}):
             self.call('codex_review', {'question':'Review'})
         with self.assertRaises(ValueError):
             self.call('reprise_followup', {'thread_id':ID,'backend':'codex','question':'Implement','mode':'implementation'})
 
     def test_expected_implementation_edit_is_not_an_input_integrity_failure(self):
-        self.bridge.codex_workspace_write = True
         target = Path(self.temp.name) / 'source.py'
         target.write_text('before')
         def implementation(*args, **kwargs):
@@ -187,7 +159,7 @@ class BridgeTests(RequestCalls, unittest.TestCase):
     def test_codex_has_no_local_cap_even_after_restart_and_old_counter(self):
         with patch('expert_mcp.review', return_value={'status': 'quota_blocked'}) as review:
             for _ in range(2): self.call('codex_review', {'question': 'review'})
-            other = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
+            other = Bridge(self.temp.name, {}, Path(self.temp.name)/'state')
             other.program = 'codex'
             self.seed_catalog(other)
             try:
@@ -708,7 +680,7 @@ class ClaudeDesktopBridgeTests(RequestCalls, unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=8,
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state',
                              desktop_socket='/private/tmp/quick.sock')
         self.addCleanup(self.bridge.close)
 
@@ -743,7 +715,7 @@ class ClaudeDesktopBridgeTests(RequestCalls, unittest.TestCase):
             self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise', 'backend': 'nope'})
 
     def test_delegate_refuses_claude_desktop_without_desktop_socket(self):
-        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state-nosock', daily_limit=8)
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state-nosock')
         self.addCleanup(self.bridge.close)
         with patch('claude_desktop.review') as review:
             result = self.call('reprise_delegate', {'question': 'Explique', 'kind': 'expertise', 'backend': 'claude-desktop'})
@@ -839,7 +811,7 @@ class IronclawBridgeTests(RequestCalls, unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state')
         self.bridge.program = 'codex'
         self.addCleanup(self.bridge.close)
 
@@ -1060,43 +1032,37 @@ class CompactReceiptTests(unittest.TestCase):
             self.dispatch('reprise_requests', {
                 'request_key': 'key', 'view': 'page', 'acknowledge': True})
 
-class ChatGptStateRenameTests(unittest.TestCase):
-    """Issue #217 : le chemin ChatGPT est nommé --chatgpt-state (répertoire
-    d'état, ledger et TaskStore), --chatgpt-socket n'est qu'un alias déprécié."""
+class ChatGptStateTests(unittest.TestCase):
+    """Issue #250 : seul --chatgpt-state nomme le répertoire d'état ChatGPT."""
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state', daily_limit=2)
+        self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state')
         self.bridge.program = 'codex'
         self.bridge._codex_catalog_cache = simulated_codex_catalog(CODEX_TEST_MODELS)
         self.bridge._codex_catalog_time = time.monotonic()
         self.addCleanup(self.bridge.close)
 
     def test_refusal_names_chatgpt_state(self):
-        # Le Bridge est construit sans chatgpt_socket : le refus backend chatgpt
-        # (Bridge.call reprise_delegate, ligne du refus 'non configuré') doit
-        # nommer la nouvelle option, jamais l'alias déprécié.
-        self.assertIsNone(self.bridge.chatgpt_socket)
+        self.assertFalse(self.bridge.chatgpt_configured)
         payload = self.bridge.call('reprise_delegate', {
             'request_key': str(uuid.uuid4()), 'backend': 'chatgpt',
             'kind': 'review', 'question': 'Revue'})
         self.assertEqual(payload['status'], 'engine_unavailable')
         self.assertIn('--chatgpt-state', payload['reason'])
-        self.assertNotIn('--chatgpt-socket', payload['reason'])
 
-    def test_parser_accepts_legacy_alias(self):
-        # L'alias déprécié reste accepté par le parser : --help rend 0 et
-        # documente la nouvelle option (parse_args sort avant de servir).
+    def test_parser_rejects_removed_alias(self):
         # Chemin absolu : les shards CI (#257) lancent les tests avec
         # cwd = reprise/tests/, où le chemin relatif reprise/... est inexistant.
+        # argparse refuse l'option inconnue avant toute ouverture d'état.
         script = str(Path(__file__).parents[1] / 'expert_mcp.py')
         completed = subprocess.run(
             [sys.executable, script, '--project-root', self.temp.name,
-             '--chatgpt-socket', self.temp.name, '--help'],
+             '--chatgpt-socket', self.temp.name],
             capture_output=True, text=True, timeout=30)
-        self.assertEqual(completed.returncode, 0)
-        self.assertIn('--chatgpt-state', completed.stdout + completed.stderr)
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn('--chatgpt-socket', completed.stderr)
 
 
 class BridgeFinalizerTests(unittest.TestCase):
@@ -1108,7 +1074,7 @@ class BridgeFinalizerTests(unittest.TestCase):
         import weakref as weakref_module
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        bridge = Bridge(temp.name, {}, Path(temp.name)/'state', daily_limit=2)
+        bridge = Bridge(temp.name, {}, Path(temp.name)/'state')
         # pre-close sentinel: rexec works now, must fail after collection
         bridge.db.execute('SELECT 1')
         bridge_ref = weakref_module.ref(bridge)
@@ -1142,7 +1108,7 @@ class ChatGptFollowupTests(RequestCalls, unittest.TestCase):
         # partagent le même fichier chatgpt.sqlite.
         self.chatgpt_state = Path(self.temp.name)/'chatgpt-state'
         self.bridge = Bridge(self.temp.name, {}, Path(self.temp.name)/'state',
-                             daily_limit=2, chatgpt_socket=str(self.chatgpt_state))
+                             chatgpt_state=str(self.chatgpt_state))
         self.bridge.program = 'codex'
         self.addCleanup(self.bridge.close)
 

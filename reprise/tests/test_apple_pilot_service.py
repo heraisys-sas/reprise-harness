@@ -11,6 +11,7 @@ import uuid
 sys.path.insert(0, str(Path(__file__).parents[1]))
 import apple_pilot_service as service
 import apple_pilot_transport
+from support_portability import requires_directory
 
 
 def uid():
@@ -282,6 +283,7 @@ class PilotServiceTests(unittest.TestCase):
         self.assertEqual(self.open()['status'], 'opened')
         self.assertEqual(self.await_response(self.send('memory_bind', enabled=True, project_id=uid()))['status'], 'scope_mismatch')
 
+    @requires_directory('/private/tmp')
     def test_process_catalog_only_without_inference(self):
         program = Path(service.__file__)
         request = json.dumps({'id': uid(), 'op': 'catalog'}) + '\n'

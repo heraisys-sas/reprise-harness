@@ -57,7 +57,7 @@ class PackageHelpersTests(unittest.TestCase):
     def test_bundle_ships_every_local_import(self):
         """#255, #271 : un import local absent d'ASSETS ne casse qu'en release."""
         local = {path.stem for path in SOURCE.glob('*.py')}
-        exempt = {'package_runtime'}  # importé par package_helpers seul, dont l'export est refusé dans le bundle
+        exempt = {'package_helpers'}  # #274 : importé par l'export des sources seul, refusé dans le bundle
         todo = [name for name in ASSETS if name.endswith('.py') or name == 'reprise']
         seen, missing = set(), set()
         while todo:
@@ -185,7 +185,7 @@ class PackageHelpersTests(unittest.TestCase):
             ]
             launched = subprocess.run([sys.executable, str(root / 'claude_mcp.py'),
                                         '--project-root', str(project), '--state', str(quick_state),
-                                        '--expert-state', str(expert_state), '--enable-await'],
+                                        '--expert-state', str(expert_state)],
                                        cwd=folder, env=environment,
                                        input='\n'.join(json.dumps(message) for message in requests) + '\n',
                                        capture_output=True, text=True, timeout=20)

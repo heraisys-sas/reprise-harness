@@ -240,7 +240,7 @@ def block_entries(block_text):
     return entries
 
 
-def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, codex_workspace_write=False, desktop_socket=None, bash_sandbox_disabled=False, memory=None, chatgpt_state=None, chatgpt_dispatch=False):
+def _bridge_entries(release, state, tools, project, profile, managed, output_resume=False, output_resume_project=None, desktop_socket=None, bash_sandbox_disabled=False, memory=None, chatgpt_state=None):
     program = release / 'Contents/Resources/runtime/bin/python3'
     args = ['-E', '-s', '-B', str(release / 'Contents/Resources/helpers/expert_mcp.py'),
             '--project-root', project]
@@ -248,11 +248,7 @@ def _bridge_entries(release, state, tools, project, profile, managed, output_res
         args.extend(['--desktop-socket', str(desktop_socket)])
     if chatgpt_state:
         args.extend(['--chatgpt-state', str(chatgpt_state)])
-    if chatgpt_dispatch:
-        args.append('--chatgpt-dispatch')
     args.extend(['--state', state, '--tools', ','.join(tools)])
-    if codex_workspace_write:
-        args.append('--codex-workspace-write')
     entries = [
         {'id': 'reprise-codex-expert', 'name': '@deepseek-ai/dsh-mcp-client', 'config': {
             'transport': 'stdio', 'serverName': 'reprise_experts', 'command': str(program), 'args': args,
@@ -275,11 +271,11 @@ def _bridge_entries(release, state, tools, project, profile, managed, output_res
     return entries
 
 
-# Résidu legacy (#156 → #161) : l'ancienne génération écrivait --chatgpt-socket
-# (pont ChatGPT remplacé par la config MCP ~/.codex/config.toml) dans les args de
-# reprise-codex-expert. La migration autorisée est un retrait pur : le drapeau et
-# sa valeur éventuelle, aucune autre divergence.
-_LEGACY_FLAGS = ('--chatgpt-socket',)
+# #252 : écriture projet et dispatch ChatGPT actifs par défaut, délégation
+# toujours exposée. Ces interrupteurs et clés de manifeste sont retirés des
+# installations existantes au prochain plan.
+RETIRED_SWITCHES = ('--codex-workspace-write', '--chatgpt-dispatch')
+RETIRED_MANIFEST_KEYS = ('codex_workspace_write', 'chatgpt_dispatch')
 
 
 def _strip_legacy_args(entries):
@@ -291,19 +287,8 @@ def _strip_legacy_args(entries):
         args = (entry.get('config') or {}).get('args')
         if not isinstance(args, list):
             continue
-        kept, skip = [], False
-        for arg in args:
-            if skip:
-                skip = False
-                if isinstance(arg, str) and not arg.startswith('-'):
-                    removed.append(arg)
-                    continue
-            if arg in _LEGACY_FLAGS:
-                removed.append(arg)
-                skip = True
-                continue
-            kept.append(arg)
-        entry['config']['args'] = kept
+        removed += [arg for arg in args if arg in RETIRED_SWITCHES]
+        entry['config']['args'] = [arg for arg in args if arg not in RETIRED_SWITCHES]
     return cleaned, removed
 
 
@@ -727,11 +712,10 @@ def inspect(home, profile=None):
             result['output_resume'] = old.get('output_resume', False)
             result['output_resume_project'] = old.get('output_resume_project', old.get('project'))
             result['asi1_effort'] = old.get('asi1_effort', False)
-            result['delegate'] = 'reprise_delegate' in old.get('tools', [])
             result['agent_role'] = old.get('agent_role', 'standard')
         result['bash_sandbox_disabled'] = (old or {}).get('bash_sandbox_disabled', False)
         result['desktop_socket'] = (old or {}).get('desktop_socket')
-        result['codex_workspace_write'] = (old or {}).get('codex_workspace_write', False)
+        result['retired_options'] = sorted(set(RETIRED_MANIFEST_KEYS) & set(old or {}))
         reconciliation = managed / 'reconciliation.json'
         if reconciliation.exists() or reconciliation.is_symlink():
             data = read_journal(reconciliation)
@@ -999,9 +983,11 @@ def apply_asi1_preset(text, old, enable, plugin_path):
     return ''.join(lines), [digest(''.join(block).encode())], False
 
 
-def desired(root, home, profile, project, action, delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False, bash_sandbox_disabled=None, memory_access=None, memory_project_id=None, memory_scope_id=None):
+def desired(root, home, profile, project, action, agent_role='standard', output_resume=False, output_resume_project=None, asi1_effort=False, bash_sandbox_disabled=None, memory_access=None, memory_project_id=None, memory_scope_id=None):
     home, folder, managed = context(home, profile)
     old = manifest(managed)
+    if old:
+        old = {key: value for key, value in old.items() if key not in RETIRED_MANIFEST_KEYS}
     memory = memory_integration.selected(old, memory_access, memory_project_id, memory_scope_id, action=action)
     memory_managed = memory['access'] != 'off' or 'memory' in (old or {}) or memory_project_id is not None or memory_scope_id is not None
     if bash_sandbox_disabled is None:
@@ -1059,8 +1045,8 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
             raise ValueError('Reconstruire le bundle avec le connecteur mémoire.')
         release = Path(state).parent / 'integration-releases' / identity
         chatgpt_state = str(state_location(root, 'chatgpt-state').absolute())
-        tools = OBSERVE + (DELEGATE if delegate else ())
-        # Issue #117 T2a : --delegate n'expose plus approval_respond. L'outil reviendra
+        tools = OBSERVE + DELEGATE
+        # Issue #117 T2a : la délégation n'expose pas approval_respond. L'outil reviendra
         # en T2b seulement avec un approval_delegate explicite ; la réponse opérateur
         # passe par desktop_task_store.resolve_approval (voie CLI/app, pas MCP).
         # Socket Quick Apply : valeur locale générée par défaut quand le socket existe ;
@@ -1069,9 +1055,9 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
         if DESKTOP_SOCKET.exists():
             desktop_socket = str(DESKTOP_SOCKET)
         entries = _bridge_entries(release, state, tools, project, profile, managed,
-                                  output_resume, resume_project, codex_workspace_write,
+                                  output_resume, resume_project,
                                   desktop_socket, bash_sandbox_disabled, memory,
-                                  chatgpt_state=chatgpt_state, chatgpt_dispatch=True)
+                                  chatgpt_state=chatgpt_state)
         if mismatched_block:
             try:
                 parsed = block_entries(block)
@@ -1080,15 +1066,15 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
             # Harness can reformat the managed YAML block. Establish ownership against the
             # installed manifest first, then permit an explicit new plan to change settings.
             # Comparing live entries with the proposed entries incorrectly refused every
-            # real update (for example, adding --codex-workspace-write) after a harmless reformat.
+            # real update (for example, changing output resume) after a harmless reformat.
             if old and old.get('status') == 'installed':
                 previous_memory = memory_integration.selected(old)
                 expected = _bridge_entries(
                     Path(old['release']), old['state'], old.get('tools', []), old['project'],
                     profile, managed, old.get('output_resume', False),
-                    old.get('output_resume_project'), old.get('codex_workspace_write', False),
+                    old.get('output_resume_project'),
                     old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), previous_memory,
-                    old.get('chatgpt_state'), old.get('chatgpt_dispatch', False))
+                    old.get('chatgpt_state'))
             else:
                 expected = entries
             if parsed != expected:
@@ -1137,12 +1123,9 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
             next_manifest['asi1_effort_preexisting'] = asi1_preexisting
             next_manifest['asi1_preset_blocks'] = asi1_preset_blocks
             next_manifest['asi1_preset_preexisting'] = asi1_preset_preexisting
-        if codex_workspace_write:
-            next_manifest['codex_workspace_write'] = True
         if desktop_socket:
             next_manifest['desktop_socket'] = desktop_socket
         next_manifest['chatgpt_state'] = chatgpt_state
-        next_manifest['chatgpt_dispatch'] = True
         if bash_sandbox_disabled:
             next_manifest['bash_sandbox_disabled'] = True
         if reconciled_from:
@@ -1186,18 +1169,18 @@ def desired(root, home, profile, project, action, delegate=False, agent_role='st
     return files, extra, next_manifest
 
 
-def plan(root, home, profile, project, action='install', delegate=False, agent_role='standard', output_resume=False, output_resume_project=None, codex_workspace_write=False, asi1_effort=False, bash_sandbox_disabled=None, memory_access=None, memory_project_id=None, memory_scope_id=None):
+def plan(root, home, profile, project, action='install', agent_role='standard', output_resume=False, output_resume_project=None, asi1_effort=False, bash_sandbox_disabled=None, memory_access=None, memory_project_id=None, memory_scope_id=None):
     if bash_sandbox_disabled is None:
         old = manifest(context(home, profile)[2])
         previous = old if old and old.get('status') == 'installed' else {}
         if previous.get('bash_sandbox_disabled') and str(Path(project).resolve(strict=True)) != previous.get('project'):
             raise ValueError('Projet différent : sélectionner explicitement le droit bash-sandbox.')
         bash_sandbox_disabled = previous.get('bash_sandbox_disabled', False)
-    if action not in ('install', 'remove') or type(delegate) is not bool or agent_role not in ('standard', 'coordinator') or type(output_resume) is not bool or type(codex_workspace_write) is not bool or type(asi1_effort) is not bool or type(bash_sandbox_disabled) is not bool or (codex_workspace_write and not delegate):
+    if action not in ('install', 'remove') or agent_role not in ('standard', 'coordinator') or type(output_resume) is not bool or type(asi1_effort) is not bool or type(bash_sandbox_disabled) is not bool:
         raise ValueError('Action ou capacité invalide.')
     if inspect(home, profile).get('pending_plan'):
         raise ValueError('Reprendre l’opération partielle conservée avant de créer un autre plan.')
-    files, extra, _ = desired(root, home, profile, project, action, delegate, agent_role, output_resume, output_resume_project, codex_workspace_write, asi1_effort, bash_sandbox_disabled, memory_access, memory_project_id, memory_scope_id)
+    files, extra, _ = desired(root, home, profile, project, action, agent_role, output_resume, output_resume_project, asi1_effort, bash_sandbox_disabled, memory_access, memory_project_id, memory_scope_id)
     changes = []
     for path, text in files.items():
         before, after = file_hash(path), digest(text.encode()) if text is not None else None
@@ -1206,10 +1189,8 @@ def plan(root, home, profile, project, action='install', delegate=False, agent_r
                             'before_sha256': before, 'after_sha256': after})
     canonical_home, _, _ = context(home, profile)
     result = {'format': 1, 'action': action, 'home': str(canonical_home), 'profile': profile,
-              'project': str(Path(project).expanduser().resolve(strict=True)), 'delegate': delegate,
+              'project': str(Path(project).expanduser().resolve(strict=True)),
               'changes': changes, **extra}
-    if codex_workspace_write:
-        result['codex_workspace_write'] = True
     if agent_role != 'standard':
         result['agent_role'] = agent_role
     if output_resume:
@@ -1256,12 +1237,12 @@ def apply(root, public):
             if journal['plan'] != public:
                 raise ValueError('Un autre plan est en attente ; reprendre ce plan sans écrasement.')
         else:
-            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False), public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id'))
+            current = plan(root, public['home'], public['profile'], public['project'], public['action'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False), public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id'))
             if current != public:
                 raise ValueError('Entrées modifiées depuis la prévisualisation. Refaire le plan.')
             if not public['changes']:
                 return {'status': 'completed', 'changed': False, 'message': 'Configuration identique ; aucune écriture.'}
-            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public['delegate'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('codex_workspace_write', False), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False), public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id'))
+            files, _, _ = desired(root, public['home'], public['profile'], public['project'], public['action'], public.get('agent_role', 'standard'), public.get('output_resume', False), public.get('output_resume_project'), public.get('asi1_effort', False), public.get('bash_sandbox_disabled', False), public.get('memory', {}).get('access'), public.get('memory', {}).get('project_id'), public.get('memory', {}).get('scope_id'))
             if public['action'] == 'install':
                 helpers, runtime, identity = bundle_info(root)
                 if identity != Path(public['release']).name:
@@ -1331,9 +1312,9 @@ def _reconcile_span(text):
     return match
 
 
-def _reconcile_inputs(root, home, profile, project, resume_project, write, accepted_block):
-    if type(write) is not bool or not isinstance(accepted_block, str) or not re.fullmatch('[0-9a-f]{64}', accepted_block):
-        raise ValueError('Choix explicite du droit write et empreinte du bloc requis.')
+def _reconcile_inputs(root, home, profile, project, resume_project, accepted_block):
+    if not isinstance(accepted_block, str) or not re.fullmatch('[0-9a-f]{64}', accepted_block):
+        raise ValueError('Empreinte du bloc requise.')
     home, folder, managed = context(home, profile)
     for name in ('managed.json', 'operation.json', 'reconciliation.json'):
         safe_profile_path(managed / name, folder)
@@ -1348,8 +1329,6 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
     resume_project = str(Path(resume_project).expanduser().resolve(strict=True))
     if project != old['project'] or not Path(project).is_dir() or not Path(resume_project).is_dir():
         raise ValueError('Projet du pont inchangé et répertoires de projet existants requis.')
-    if write and 'reprise_delegate' not in old['tools']:
-        raise ValueError('Write requiert la délégation déjà autorisée.')
     journal = read_journal(managed / 'operation.json')
     if journal.get('status') == 'pending':
         raise ValueError('Opération ordinaire partielle : aucune adoption.')
@@ -1371,9 +1350,9 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
         raise ValueError('État Reprise préexistant requis ; aucun registre neuf implicite.')
     memory = memory_integration.selected(old)
     expected = _bridge_entries(Path(old['release']), old['state'], old['tools'], project, profile, managed,
-        resume, old.get('output_resume_project'), old.get('codex_workspace_write', False),
+        resume, old.get('output_resume_project'),
         old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory,
-        old.get('chatgpt_state'), old.get('chatgpt_dispatch', False))
+        old.get('chatgpt_state'))
     actual = block_entries(block.replace('\r\n', '\n'))
     # Normalize only fields explicitly replaced by this operation. All remaining
     # arguments, tools, permissions and plugin settings must match the old owner.
@@ -1396,11 +1375,9 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
             config_live['command'] = config_owned['command']
             args[3] = config_owned['args'][3]
             if owned['id'] == 'reprise-codex-expert':
-                if args.count('--codex-workspace-write') > 1:
-                    raise ValueError('Droit write ambigu.')
-                args[:] = [arg for arg in args if arg != '--codex-workspace-write']
-                if old.get('codex_workspace_write', False):
-                    args.append('--codex-workspace-write')
+                if any(args.count(switch) > 1 for switch in RETIRED_SWITCHES):
+                    raise ValueError('Option retirée ambiguë.')
+                args[:] = [arg for arg in args if arg not in RETIRED_SWITCHES]
         elif owned['id'] == 'reprise-output-resume':
             if not isinstance(live.get('name'), str) or Path(live['name']).name != 'harness-output-resume.cjs':
                 raise ValueError('Plugin de continuation non reconnu.')
@@ -1410,13 +1387,13 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
                 raise ValueError('Projet de continuation non reconnu.')
             live['config']['projectRoot'] = owned['config']['projectRoot']
     if normalized != expected:
-        raise ValueError('Différence hors chemins, continuation et droit write ; adoption refusée.')
+        raise ValueError('Différence hors chemins, continuation et options retirées ; adoption refusée.')
     helpers, runtime, identity = bundle_info(root)
     release = Path(old['state']).parent / 'integration-releases' / identity
     memory_integration.validate_binding(old['state'], memory, project, 'harness')
     entries = _bridge_entries(release, old['state'], old['tools'], project, profile, managed,
-        resume, resume_project, write, old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory,
-        old.get('chatgpt_state'), old.get('chatgpt_dispatch', False))
+        resume, resume_project, old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory,
+        old.get('chatgpt_state'))
     _validate_target_entries(entries)
     if not _canonical_paths(entries):
         raise ValueError('Bloc non canonique : une seule ligne entre les délimiteurs, sans continuation.')
@@ -1428,15 +1405,15 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
     if block.endswith('\n'):
         target_block += newline
     target_config = text[:span.start()] + target_block + text[span.end():]
-    target_manifest = dict(old, release=str(release), output_resume_project=resume_project,
-        codex_workspace_write=write, block_sha256=digest(target_block.encode()),
+    target_manifest = dict(_without_retired(old), release=str(release), output_resume_project=resume_project,
+        block_sha256=digest(target_block.encode()),
         reconciled_from_sha256=accepted_block)
     guards = {name: file_hash(managed / name) for name in ('managed.json', 'operation.json', 'reconciliation.json')}
     guards['cordis.patch.yml'] = file_hash(config)
     if guards['managed.json'] != manifest_before or guards['operation.json'] != journal_before or guards['cordis.patch.yml'] != digest(text.encode()):
         raise ValueError('Entrées modifiées pendant la lecture ; refaire le plan.')
     public = {'format': 2, 'action': 'reconcile', 'home': str(home), 'profile': profile,
-        'project': project, 'output_resume_project': resume_project, 'codex_workspace_write': write,
+        'project': project, 'output_resume_project': resume_project,
         'accepted_block_sha256': accepted_block, 'release': str(release), 'guards': guards,
         'metadata': {name: _simple_metadata(folder / name if name == 'cordis.patch.yml' else managed / name) for name in guards},
         'concurrency': 'operator-exclusive-access-required',
@@ -1446,13 +1423,17 @@ def _reconcile_inputs(root, home, profile, project, resume_project, write, accep
     return public, target_block, target_manifest, helpers, runtime
 
 
-def reconcile_plan(root, home, profile, project, output_resume_project, codex_workspace_write, accepted_block_sha256):
+def _without_retired(value):
+    return {key: item for key, item in value.items() if key not in RETIRED_MANIFEST_KEYS}
+
+
+def reconcile_plan(root, home, profile, project, output_resume_project, accepted_block_sha256):
     _, _, managed = context(home, profile)
     pending = managed / 'reconciliation.json'
     if file_hash(pending) is not None and read_journal(pending).get('status') == 'pending':
         raise ValueError('Réconciliation partielle : reprendre le même plan.')
     return _reconcile_inputs(root, home, profile, project, output_resume_project,
-                             codex_workspace_write, accepted_block_sha256)[0]
+                             accepted_block_sha256)[0]
 
 
 def reconcile_apply(root, public):
@@ -1461,9 +1442,9 @@ def reconcile_apply(root, public):
         raise ValueError('Plan de réconciliation altéré ou incompatible.')
     _, folder, managed = context(public['home'], public['profile'])
     required = {'format', 'action', 'home', 'profile', 'project', 'output_resume_project',
-        'codex_workspace_write', 'accepted_block_sha256', 'release', 'guards', 'outside_sha256',
+        'accepted_block_sha256', 'release', 'guards', 'outside_sha256',
         'after_config_sha256', 'after_manifest_sha256', 'fingerprint', 'metadata', 'concurrency'}
-    if (set(public) != required or type(public['codex_workspace_write']) is not bool
+    if (set(public) != required
             or not isinstance(public['guards'], dict)
             or set(public['guards']) != {'managed.json', 'operation.json', 'reconciliation.json', 'cordis.patch.yml'}
             or public['concurrency'] != 'operator-exclusive-access-required'
@@ -1478,7 +1459,7 @@ def reconcile_apply(root, public):
             if journal.get('status') == 'pending':
                 raise ValueError('Autre réconciliation partielle ; aucune écriture.')
             current, block, target, helpers, runtime = _reconcile_inputs(root, public['home'], public['profile'], public['project'],
-                public['output_resume_project'], public['codex_workspace_write'], public['accepted_block_sha256'])
+                public['output_resume_project'], public['accepted_block_sha256'])
             if current != public:
                 raise ValueError('Entrées modifiées depuis le plan ; aucune écriture.')
             stage_release(helpers, runtime, Path(public['release']))
@@ -1487,7 +1468,7 @@ def reconcile_apply(root, public):
                 if file_hash(path) != expected_hash:
                     raise ValueError('Entrées modifiées pendant la préparation du release.')
             # No old content or full config is copied into this journal.
-            updates = {key: target[key] for key in ('release', 'output_resume_project', 'codex_workspace_write', 'block_sha256', 'reconciled_from_sha256')}
+            updates = {key: target[key] for key in ('release', 'output_resume_project', 'block_sha256', 'reconciled_from_sha256')}
             journal = {'format': 1, 'status': 'pending', 'plan': public, 'target_block': block, 'manifest_updates': updates}
             _reconcile_atomic(journal_path, encoded(journal), public['metadata']['reconciliation.json'])
         release_check(Path(public['release']))
@@ -1496,18 +1477,17 @@ def reconcile_apply(root, public):
         _sync_directory(Path(public['release']).parent.parent)
         block, updates = journal.get('target_block'), journal.get('manifest_updates')
         if (not isinstance(block, str) or not isinstance(updates, dict)
-                or set(updates) != {'release', 'output_resume_project', 'codex_workspace_write', 'block_sha256', 'reconciled_from_sha256'}
+                or set(updates) != {'release', 'output_resume_project', 'block_sha256', 'reconciled_from_sha256'}
                 or digest(block.encode()) != updates.get('block_sha256')
                 or updates.get('release') != public['release']
                 or updates.get('output_resume_project') != public['output_resume_project']
-                or updates.get('codex_workspace_write') is not public['codex_workspace_write']
                 or updates.get('reconciled_from_sha256') != public['accepted_block_sha256']):
             raise ValueError('Cible du journal altérée ; aucune écriture.')
         manifest_path = managed / 'managed.json'
         if file_hash(manifest_path) not in (public['guards']['managed.json'], public['after_manifest_sha256']):
             raise ValueError('Conflit manifeste après interruption ; aucune restauration automatique.')
         # Reconstruct from the surviving manifest, never from a copy of old metadata.
-        target = dict(manifest(managed), **updates)
+        target = dict(_without_retired(manifest(managed)), **updates)
         if digest(encoded(target).encode()) != public['after_manifest_sha256']:
             raise ValueError('Cible manifeste altérée ; aucune écriture.')
         for key in ('project', 'output_resume_project'):
@@ -1602,10 +1582,10 @@ def verify(home, profile, root=None, project=None):
     if block is None or digest(block.encode()) != old['block_sha256']:
         expected = _bridge_entries(Path(old['release']), old['state'], old['tools'], old['project'],
                                    old['profile'], managed, old.get('output_resume', False),
-                                   old.get('output_resume_project'), old.get('codex_workspace_write', False),
+                                   old.get('output_resume_project'),
                                    old.get('desktop_socket'), old.get('bash_sandbox_disabled', False), memory_integration.selected(old),
-                                   old.get('chatgpt_state'), old.get('chatgpt_dispatch', False))
-        if block is None or block_entries(block) != expected:
+                                   old.get('chatgpt_state'))
+        if block is None or _strip_legacy_args(block_entries(block))[0] != expected:
             raise ValueError('Configuration Reprise absente ou modifiée.')
         # Bloc reformatté équivalent : accepté sans réécriture ici.
         reconciled = digest(block.encode())
@@ -1646,11 +1626,9 @@ def verify(home, profile, root=None, project=None):
     with tempfile.TemporaryDirectory(prefix='reprise-bridge-check-') as temporary:
         program = release / 'Contents/Resources/runtime/bin/python3'
         command = [str(program), '-E', '-s', '-B', str(release / 'Contents/Resources/helpers/expert_mcp.py'),
-                   '--project-root', old['project'], '--state', temporary, '--tools', ','.join(old['tools'])]
-        # Legacy releases do not recognize the new flag. Verification never
-        # writes ChatGPT state in the user's active profile.
-        if old.get('chatgpt_state'):
-            command += ['--chatgpt-state', str(Path(temporary) / 'chatgpt-state')]
+                   '--project-root', old['project'], '--state', temporary, '--tools', ','.join(old['tools']),
+                   # Verification never writes ChatGPT state in the user's active profile.
+                   '--chatgpt-state', str(Path(temporary) / 'chatgpt-state')]
         env = {k: v for k, v in os.environ.items() if not k.startswith(('PYTHON', 'DYLD_')) and k != 'AGENT_RESUME_STATE'}
         env['PYTHONDONTWRITEBYTECODE'] = '1'
         response = subprocess.run(command, input='\n'.join(json.dumps(r) for r in requests) + '\n',
@@ -1718,9 +1696,6 @@ def main(root, argv=None):
         if name == 'harness-integration-plan':
             command.add_argument('--project', required=True)
             command.add_argument('--action', choices=('install', 'remove'), required=True)
-            toggle = command.add_mutually_exclusive_group()
-            toggle.add_argument('--delegate', action='store_true', default=None)
-            toggle.add_argument('--no-delegate', dest='delegate', action='store_false', default=None)
             command.add_argument('--output-resume-project', help='Explicit project for native continuation; defaults to bridge project')
             toggle = command.add_mutually_exclusive_group()
             toggle.add_argument('--output-resume', action='store_true', default=None, help='Explicitly authorize same-session continuation after output-token limit')
@@ -1728,9 +1703,6 @@ def main(root, argv=None):
             toggle = command.add_mutually_exclusive_group()
             toggle.add_argument('--asi1-effort', action='store_true', default=None, help='Installer l’effort ASI1 bas pour le preset asi1-orchestrator')
             toggle.add_argument('--no-asi1-effort', dest='asi1_effort', action='store_false', default=None)
-            toggle = command.add_mutually_exclusive_group()
-            toggle.add_argument('--codex-workspace-write', action='store_true', default=None, help='Autoriser les implémentations Codex dans le projet sélectionné')
-            toggle.add_argument('--no-codex-workspace-write', dest='codex_workspace_write', action='store_false', default=None)
             toggle = command.add_mutually_exclusive_group()
             toggle.add_argument('--disable-bash-sandbox', action='store_true', default=None, help='Générer l’entrée plugin bash-sandbox désactivée (choix local persisté)')
             toggle.add_argument('--enable-bash-sandbox', dest='disable_bash_sandbox', action='store_false', default=None)
@@ -1744,9 +1716,6 @@ def main(root, argv=None):
     command.add_argument('--project', required=True)
     command.add_argument('--output-resume-project', required=True)
     command.add_argument('--accept-block-sha256', required=True)
-    toggle = command.add_mutually_exclusive_group(required=True)
-    toggle.add_argument('--codex-workspace-write', action='store_true', default=None)
-    toggle.add_argument('--no-codex-workspace-write', dest='codex_workspace_write', action='store_false')
     command = sub.add_parser('harness-integration-release-diagnose')
     command.add_argument('--release', required=True,
                          help='Chemin explicite d’une release MCP ; inventaire seul, sans exécution.')
@@ -1760,17 +1729,13 @@ def main(root, argv=None):
             result = inspect(args.home, args.profile)
         elif args.command == 'harness-integration-reconcile-plan':
             result = {'status': 'planned', 'plan': reconcile_plan(root, args.home, args.profile, args.project,
-                args.output_resume_project, args.codex_workspace_write, args.accept_block_sha256),
+                args.output_resume_project, args.accept_block_sha256),
                 'message': 'Plan explicite sans écriture ni sauvegarde ; aucune activation ni rollback.'}
         elif args.command == 'harness-integration-plan':
             old = manifest(context(args.home, args.profile)[2])
             installed = old if old and old.get('status') == 'installed' else {}
             changed_project = bool(installed and str(Path(args.project).resolve(strict=True)) != installed.get('project'))
-            for option, default in (('delegate', 'reprise_delegate' in installed.get('tools', [])),
-                    ('output_resume', installed.get('output_resume', False)),
-                    # Workspace writes are a strict opt-in on every installation plan:
-                    # omitting the flag revokes a previously granted capability.
-                    ('codex_workspace_write', False),
+            for option, default in (('output_resume', installed.get('output_resume', False)),
                     ('asi1_effort', installed.get('asi1_effort', False)),
                     ('disable_bash_sandbox', installed.get('bash_sandbox_disabled', False)),
                     ('agent_role', installed.get('agent_role', 'standard'))):
@@ -1781,7 +1746,7 @@ def main(root, argv=None):
             if args.output_resume and args.output_resume_project is None and not changed_project:
                 args.output_resume_project = installed.get('output_resume_project')
             result = {'status': 'planned', 'message': 'Plan sans écriture. L’installation n’autorise ni inférence ni activation automatique.',
-                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.delegate, args.agent_role, args.output_resume, args.output_resume_project, args.codex_workspace_write, args.asi1_effort, args.disable_bash_sandbox, args.memory_access, args.memory_project_id, args.memory_scope_id)}
+                      'plan': plan(root, args.home, args.profile, args.project, args.action, args.agent_role, args.output_resume, args.output_resume_project, args.asi1_effort, args.disable_bash_sandbox, args.memory_access, args.memory_project_id, args.memory_scope_id)}
         elif args.command == 'harness-integration-apply':
             public = json.loads(sys.stdin.read(1024 * 1024))['plan']
             result = apply(root, public)
