@@ -22,7 +22,7 @@ Décisions utilisateur du 27 novembre 2026. Chaque affectation de rôle s’expr
 
 | Rôle | Chaîne de routes (failover ordonné) | Notes |
 |---|---|---|
-| Mass code (E5) | 1. `metaai` (pont WebDAV, TaskStore) → 2. `dsh` harness-cli (profil headless dédié) → 3. `autoclaw` (déclarée le 27/11) | Répartir les lots entre les canaux ; SOD maintenue : auteur tests ≠ auteur code ; routes ajoutées du 27/11 plus bas |
+| Mass code (E5) | 1. `metaai` (pont fichiers, TaskStore) → 2. `dsh` harness-cli (profil headless dédié) → 3. `autoclaw` (déclarée le 27/11) | Répartir les lots entre les canaux ; SOD maintenue : auteur tests ≠ auteur code ; routes ajoutées du 27/11 plus bas |
 | Revue de code (E7) | 1. `chatgpt` (accès dépôt public) | Contre-regard, jamais une preuve ; captures incomplètes = jamais de relance |
 | Architecture / specs (E3) | 1. `claude-desktop` (Quick Apply orchestré) | Flux compatible daemon publié tant que #269 n’est pas republié |
 | Red team front-end | 1. `ironclaw` / agent distant équivalent (déclarée le 27/11, non admissible tant que non prouvée) | Constats nommés avec preuves ; jamais l’auteur du livrable éprouvé (SOD) ; le verdict E6 reste au runner |

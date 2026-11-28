@@ -163,9 +163,8 @@ Refus deterministes (statut `engine_unavailable`, `automatic_fallback: false`,
 jamais de tombée vers un autre backend) :
 
 - backend `enabled: false` → « désactivé dans le manifeste » ;
-- backend déclaré sans handler de dispatch (ex. `metaai`, déclaré
-  `enabled: false` : l'infrastructure TaskStore/WebDAV existe, aucun handler
-  d'expert n'est branché) → « déclaré sans handler » ;
+- backend déclaré dans le manifeste sans handler de dispatch → « déclaré
+  sans handler » (`metaai` a désormais son handler, pont fichiers #258 lot 3) ;
 - backend connu de l'enum mais absent du manifeste → « inconnu du manifeste ».
 
 Le nouveau diagnostic `reprise_experts_list` (sans argument) croise
