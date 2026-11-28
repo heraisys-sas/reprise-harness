@@ -232,6 +232,18 @@ class MetaaiBridgeTests(RequestCalls, unittest.TestCase):
         self.assertIn('FICHIER:', payload['question'])
         self.assertIn('REMPLACER PAR:', payload['question'])
 
+    def test_delegate_metaai_tolerates_wait_seconds_only_issue_293(self):
+        # f959fa0 (#279) : les clients MCP envoient wait_seconds par défaut ;
+        # l'admission metaai est asynchrone et l'ignore. Les autres budgets restent refusés.
+        self.rebuild(self.bridge_values())
+        result = self.call('reprise_delegate', {'question': 'Revue', 'kind': 'review',
+                                                'backend': 'metaai', 'wait_seconds': 30})
+        self.assertEqual(result['status'], 'finished')
+        for extra in ({'execution_seconds': 10}, {'inactivity_seconds': 10}):
+            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, r'Only wait_seconds applies to the metaai backend|Budget not supported for backend metaai'):
+                self.call('reprise_delegate', {'question': 'Revue', 'kind': 'review', 'backend': 'metaai',
+                                               'wait_seconds': 30, **extra})
+
     def test_delegate_metaai_without_bridge_root_refuses_before_enqueue(self):
         # Config avec taskstore mais aucun répertoire pont : refus
         # return_channel_unavailable AVANT l'enfilement — aucune ligne
