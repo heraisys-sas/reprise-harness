@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-path = Path(__file__).resolve().parents[1]/'routing-eval/run.py'
+path = Path(__file__).resolve().parents[1]/'eval'/'routing-eval'/'run.py'
 spec = importlib.util.spec_from_file_location('routing_eval_runner', path)
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)

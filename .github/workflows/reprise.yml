@@ -30,6 +30,10 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: '1'
         run: python3 reprise/ci_test.py --guard-skips
+      - name: Tools tests (#285)
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -m unittest discover -s tools/tests -q
   tests:
     # #286 : macOS seulement sur push de dev (sélection propre à macOS), sur PR vers
     # main, en planifié et à la demande (suite complète en 4 shards).

@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]/'coordinator-eval'
+ROOT = Path(__file__).resolve().parents[1]/'eval'/'coordinator-eval'
 spec = importlib.util.spec_from_file_location('coordinator_eval', ROOT/'experiment.py')
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
