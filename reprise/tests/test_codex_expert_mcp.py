@@ -733,6 +733,23 @@ class ClaudeDesktopBridgeTests(RequestCalls, unittest.TestCase):
                              desktop_socket='/private/tmp/quick.sock')
         self.addCleanup(self.bridge.close)
 
+    def test_return_channel_unavailable_is_recorded_issue_296(self):
+        """Un refus prouvé avant envoi est recorded : il ne bloque pas une demande équivalente."""
+        self.bridge.desktop_tasks = None
+        args = {'question': 'Explique X', 'kind': 'expertise', 'backend': 'claude-desktop'}
+        with patch('expert_mcp.TaskStore', side_effect=sqlite3.OperationalError('down')), \
+                patch.object(self.bridge, '_lazy_claude_start', return_value=None), \
+                patch('claude_desktop.review') as review:
+            first = self.bridge.call('reprise_delegate', {'request_key': 'k296-a', **args})
+            self.bridge.desktop_tasks = None
+            second = self.bridge.call('reprise_delegate', {'request_key': 'k296-b', **args})
+        review.assert_not_called()
+        self.assertEqual((first['status'], second['status']),
+                         ('return_channel_unavailable', 'return_channel_unavailable'))
+        states = dict(self.bridge.db.execute(
+            "SELECT request_key, state FROM delegation_requests WHERE request_key LIKE 'k296-%'"))
+        self.assertEqual(states, {'k296-a': 'recorded', 'k296-b': 'recorded'})
+
     def test_backends_include_claude_desktop(self):
         ids = {b['id'] for b in self.call('reprise_backends', {})['backends']}
         self.assertIn('claude-desktop', ids)

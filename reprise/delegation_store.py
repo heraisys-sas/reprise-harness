@@ -84,8 +84,11 @@ def validate_key(key):
 # emitted before the turn is submitted ("no turn submitted"); blocked_permission is not listed
 # because it also covers a human approval requested mid-turn. Anything else stays uncertain.
 # `interrupted` is terminal but the work was not achieved: recorded, never finished.
+# return_channel_unavailable / admissibility_refused : portes de expert_mcp._call, toujours
+# avant tout envoi (#296) ; un refus prouvé avant envoi n'est jamais incertain.
 RECORDED_STATUSES = ('finished', 'interrupted', 'quota_blocked', 'blocked_auth', 'billing_unverified',
-                     'engine_unavailable', 'busy', 'blocked_owner', 'blocked_session')
+                     'engine_unavailable', 'busy', 'blocked_owner', 'blocked_session',
+                     'return_channel_unavailable', 'admissibility_refused')
 # A submitted native turn whose outcome is not captured yet. Not recorded: no acknowledgement,
 # no collection, and no equivalent redispatch before reconciliation.
 RUNNING_STATUSES = ('running', 'awaiting_approval')
