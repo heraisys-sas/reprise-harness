@@ -280,3 +280,24 @@ Avec le dispatch holder (#226, actif par défaut depuis #282), un reçu holder t
 `admission_only` tombe : `reprise_requests` stocke un résultat terminé et
 le reçu borné vit en colonne `dispatch_receipt` — jamais le texte intégral
 dans le ledger durable. Avec `--no-chatgpt-dispatch`, la sémantique ci-dessus est inchangée.
+
+## Issue #265 — Sortie prouvée d'une admission `indeterminate` sans envoi
+
+Une admission reste `indeterminate` quand le pont meurt entre l'`INSERT`
+d'admission et le premier tour natif ; sa signature bloquait alors toute
+délégation équivalente sans issue documentée. `reprise_reconcile` accepte
+désormais `action="release_undispatched"` qui passe la ligne à `recorded`
+(`status: not_dispatched`, `work_completed: false`) **uniquement sur preuve** :
+
+1. route Codex (dernier `routing_events` de la clé sur le canal `codex`) :
+   Codex persiste son tour (`on_turn` « starting ») **avant** `turn/start`,
+   donc l'absence de ligne `delegation_turns` prouve qu'aucun prompt n'est parti ;
+2. aucune ligne `delegation_turns` pour la clé ;
+3. l'admetteur ne peut plus envoyer : `admitted_owner` (posé par `begin`) est
+   un processus mort — `proof: admitting_owner_dead` ; pour une ligne héritée
+   sans propriétaire, un refus pré-envoi journalisé (`quota_blocked`,
+   `billing_unverified`…) — `proof: legacy_pre_dispatch_refusal`.
+
+Toute autre situation est refusée (propriétaire vivant, tour persisté, autre
+backend, ligne déjà `recorded`). Jamais de libération par âge, jamais
+d'écriture SQLite directe ; les preuves sont conservées dans `evidence`.

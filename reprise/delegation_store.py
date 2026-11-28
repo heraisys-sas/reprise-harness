@@ -207,6 +207,9 @@ class Store:
                 updated_at REAL, context TEXT, PRIMARY KEY(scope,request_key))''')
             if 'context' not in {row[1] for row in db.execute('PRAGMA table_info(delegation_turns)')}:
                 db.execute('ALTER TABLE delegation_turns ADD COLUMN context TEXT')
+            if 'admitted_owner' not in {row[1] for row in db.execute('PRAGMA table_info(delegation_requests)')}:
+                # Issue #265 : propriétaire vivant de l'admission ; NULL = ligne héritée.
+                db.execute('ALTER TABLE delegation_requests ADD COLUMN admitted_owner TEXT')
             delegation_notifications.install(db)
             self._reconcile_awaiting_human_locked()
 
@@ -440,7 +443,7 @@ class Store:
             self.db.execute('UPDATE delegation_turns SET owner=NULL WHERE scope=? AND request_key=? AND owner=?',
                             (self.scope, key, owner))
 
-    def begin(self, key, payload, parent=None):
+    def begin(self, key, payload, parent=None, owner=None):
         validate_key(key)
         if parent is not None:
             validate_key(parent)
@@ -448,8 +451,51 @@ class Store:
         with self.db:
             self.db.execute('BEGIN IMMEDIATE')
             result = self._begin_locked(key, payload, parent)
+            if result is None and owner is not None:
+                self.db.execute('UPDATE delegation_requests SET admitted_owner=? WHERE scope=? AND request_key=?',
+                                (owner, self.scope, key))
         if result is None:
             self.active_key = key
+        return result
+
+    def release_undispatched(self, key, evidence, alive=None):
+        """Issue #265 : sortie documentée d'une admission `indeterminate` sans envoi.
+
+        L'appelant (pont) a établi que la route ne persiste son tour natif
+        qu'AVANT l'envoi (Codex : on_turn « starting » précède turn/start).
+        Ici, dans une seule transaction : la ligne est encore `indeterminate`,
+        aucun tour n'est persisté, et l'admetteur ne peut plus envoyer
+        (propriétaire mort) — ou, ligne héritée sans propriétaire, l'appelant
+        fournit un refus pré-envoi journalisé. Jamais par âge.
+        """
+        alive = alive or owner_alive
+        self._require_fresh_write_transaction()
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            row = self.db.execute('SELECT state,attempt,admitted_owner FROM delegation_requests WHERE scope=? AND request_key=?',
+                                  (self.scope, key)).fetchone()
+            if row is None:
+                raise ValueError('Unknown request_key')
+            if row[0] != 'indeterminate':
+                raise ValueError('Only an indeterminate admission can be released')
+            if self.db.execute('SELECT 1 FROM delegation_turns WHERE scope=? AND request_key=?',
+                               (self.scope, key)).fetchone():
+                raise ValueError('A native turn is persisted; reconcile it instead')
+            if row[2] is not None:
+                if alive(row[2]):
+                    raise ValueError('The admitting owner is still alive; it may still dispatch')
+                proof = 'admitting_owner_dead'
+            elif evidence.get('pre_dispatch_refusal'):
+                proof = 'legacy_pre_dispatch_refusal'
+            else:
+                raise ValueError('Legacy admission without owner or pre-dispatch refusal evidence')
+            result = {'status': 'not_dispatched', 'request_key': key, 'attempt_id': row[1],
+                      'work_completed': False, 'proof': proof, 'evidence': evidence,
+                      'reason': 'No native turn was ever started; the admission is released, '
+                                'an equivalent request may be admitted again.'}
+            self.db.execute("UPDATE delegation_requests SET state='recorded',result=? WHERE scope=? AND request_key=?",
+                            (json.dumps(result, ensure_ascii=False), self.scope, key))
+            self._record_notifications(key, 'recorded', result)
         return result
 
     def _begin_locked(self, key, payload, parent=None):
