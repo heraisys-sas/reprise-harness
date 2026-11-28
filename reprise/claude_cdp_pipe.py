@@ -244,12 +244,20 @@ def _hostname_pid_lock(profile):
     return lock_path, lock_path
 
 
+def _lock_pid(lock_path):
+    """PID read from the lock; <= 1 would make kill(pid, 0) probe a group or launchd (#94)."""
+    pid = int(lock_path.read_text().strip())
+    if pid <= 1:
+        raise ValueError('PID de verrou invalide : %d' % pid)
+    return pid
+
+
 def sweep_dead_lock(lock_path):
     """If the PID file points to a dead process, unlink it. Return True if swept."""
     if not lock_path.exists():
         return False  # nothing to sweep
     try:
-        pid = int(lock_path.read_text().strip())
+        pid = _lock_pid(lock_path)
         os.kill(pid, 0)
         return False  # still alive
     except (ValueError, OSError):
@@ -263,7 +271,7 @@ def sweep_dead_lock(lock_path):
 def check_profile_busy(lock_path):
     """Return {'ok': False, 'status': 'profile_busy', ...} or None if free."""
     try:
-        pid = int(lock_path.read_text().strip())
+        pid = _lock_pid(lock_path)
         os.kill(pid, 0)
         mtime = lock_path.stat().st_mtime
         return {'ok': False, 'status': 'profile_busy', 'pid': pid,

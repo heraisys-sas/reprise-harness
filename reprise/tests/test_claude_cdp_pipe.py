@@ -133,6 +133,18 @@ class TestProfileHelpers(unittest.TestCase):
             self.assertTrue(result)
             self.assertFalse(lock_path.exists())
 
+    def test_lock_pid_le_one_is_never_probed_issue_94(self):
+        """Un verrou à 0, -1 ou 1 vise un groupe ou launchd : verrou libre, aucun kill."""
+        from claude_cdp_pipe import check_profile_busy, sweep_dead_lock
+        with tempfile.TemporaryDirectory() as td, mock.patch('claude_cdp_pipe.os.kill') as kill:
+            lock_path = Path(td) / 'test-pid'
+            for value in ('0', '-1', '1', '-4242'):
+                lock_path.write_text(value)
+                self.assertIsNone(check_profile_busy(lock_path))
+                self.assertTrue(sweep_dead_lock(lock_path))
+                self.assertFalse(lock_path.exists())
+            kill.assert_not_called()
+
     def test_check_profile_busy_alive(self):
         """check_profile_busy avec PID vivant retourne dict."""
         # Utiliser notre propre PID (toujours vivant)
