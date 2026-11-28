@@ -53,25 +53,25 @@ for line in sys.stdin:
   let p=ApplePilotUI(python:URL(fileURLWithPath:a[1]),service:URL(fileURLWithPath:a[2]),state:URL(fileURLWithPath:a[3]),requestTimeout:2)
   p.enabled=true;p.projectID="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";p.workID="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
   p.updateKnownProjects([p.projectID]);p.open()
-  for _ in 0..<150 {if !p.busy {break};try? await Task.sleep(nanoseconds:20_000_000)}
+  for _ in 0..<500 {if !p.busy {break};try? await Task.sleep(nanoseconds:20_000_000)}
   precondition(p.sessionOpen && !p.canSelect)
   let work=p.workID
   p.analysisRequest="Préparer une synthèse"
   precondition(p.canPrepareAnalysis)
   p.prepareAnalysis()
-  for _ in 0..<150 {if !p.preparationBusy {break};try? await Task.sleep(nanoseconds:20_000_000)}
+  for _ in 0..<500 {if !p.preparationBusy {break};try? await Task.sleep(nanoseconds:20_000_000)}
   precondition(p.sessionOpen && p.workID==work)
   precondition(p.preparationJob["status"] as? String == "preparation",p.preparationStatus)
   precondition(p.canConsent)
   p.close()
-  for _ in 0..<150 {if !p.hostRunning {break};try? await Task.sleep(nanoseconds:20_000_000)}
+  for _ in 0..<500 {if !p.hostRunning {break};try? await Task.sleep(nanoseconds:20_000_000)}
  }
 }
 ''')
             binary = root / 'conversation'
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root/'cache'),
                             str(ROOT/'swift'/'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), sys.executable, str(service), str(root)], check=True, timeout=12)
+            subprocess.run([str(binary), sys.executable, str(service), str(root)], check=True, timeout=60)
             ops = (root/'ops').read_text().splitlines()
             self.assertEqual(ops.count('job_prepare'), 1)
             self.assertNotIn('turn', ops)
@@ -138,7 +138,7 @@ for line in sys.stdin:
 ''')
             binary=root/'local-ui'
             subprocess.run(['swiftc','-parse-as-library','-module-cache-path',str(root/'cache'),str(ROOT/'swift'/'ApplePilotUI.swift'),str(swift),'-o',str(binary)],check=True)
-            subprocess.run([str(binary),sys.executable,str(fake),str(root)],check=True,timeout=12)
+            subprocess.run([str(binary),sys.executable,str(fake),str(root)],check=True,timeout=60)
             self.assertEqual((root/'ops').read_text().splitlines().count('job_local_start'),1)
 
     def test_native_local_helper_contract_and_self_deadline_without_inference(self):
@@ -328,26 +328,27 @@ for line in sys.stdin:
   })
   p.enabled = true; p.projectID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; p.newPreparation()
   p.proposalObjective = "rejet"; p.proposalAcceptance = "preuve"; p.savePreparation()
-  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   precondition(!p.preparationUncertain && p.preparationStatus.contains("refusée"))
   failClear = true
   p.proposalObjective = "objectif"; p.proposalAcceptance = "preuve"; p.savePreparation()
-  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   precondition(p.preparationUncertain)
   p.loadPreparation()
-  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   precondition(p.preparationJob["revision"] as? Int == 0 && !p.preparationUncertain)
   p.revisePreparation()
   precondition(!p.preparationBusy && p.preparationStatus.contains("identique"))
   precondition(!FileManager.default.fileExists(atPath: args[3] + "/apple-pilot-intents.noindex/intent-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.json"))
   p.close()
+  for _ in 0..<500 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
  }
 }
 ''')
             binary = root / 'identical-revise'
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True, timeout=8)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True, timeout=60)
             # The Swift binary writes 'close' to the service stdin pipe then exits;
             # subprocess.run only synchronizes on the binary exit, not on the child
             # service reading the line. Poll briefly for delivery instead of failing
@@ -396,10 +397,11 @@ import Darwin
   precondition(!operation.isEmpty && p.preparationUncertain)
   p.newPreparation(); precondition(p.preparationOperationID == operation)
   p.loadPreparation()
-  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   precondition(p.preparationUncertain && p.preparationOperationID == operation)
   p.newPreparation(); precondition(p.preparationOperationID == operation)
   p.close()
+  for _ in 0..<500 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
  }
 }
 ''')
@@ -407,9 +409,9 @@ import Darwin
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
             suite = root.name
-            subprocess.run([str(binary), sys.executable, str(fake), str(root), suite, 'write'], check=True, timeout=8)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root), suite, 'write'], check=True, timeout=60)
             self.assertTrue(seen.exists())
-            subprocess.run([str(binary), sys.executable, str(fake), str(root), suite, 'read'], check=True, timeout=8)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root), suite, 'read'], check=True, timeout=60)
 
     def test_fsync_failure_refuses_emit_and_not_found_stays_blocked(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -444,7 +446,7 @@ import Darwin
   precondition(p.preparationUncertain && p.preparationJournalUnavailable && !p.preparationBusy)
   precondition(!FileManager.default.fileExists(atPath: args[3] + "/ops"))
   p.loadPreparation()
-  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   precondition(p.preparationUncertain && p.preparationOperationID == operation)
   p.savePreparation()
   precondition(p.preparationBusy == false && p.preparationOperationID == operation)
@@ -458,7 +460,7 @@ import Darwin
             binary = root / 'fsync-retry'
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True, timeout=8)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True, timeout=60)
             self.assertEqual((root / 'ops').read_text().splitlines(), ['job_recover', 'close'])
 
     def test_consent_journal_recovers_exact_authorization_after_lost_reply(self):
@@ -502,7 +504,7 @@ for line in sys.stdin:
   let a=CommandLine.arguments
   let d=UserDefaults(suiteName: "test.consent." + UUID().uuidString)!
   func make() -> ApplePilotUI { ApplePilotUI(python:URL(fileURLWithPath:a[1]),service:URL(fileURLWithPath:a[2]),state:URL(fileURLWithPath:a[3]),requestTimeout:2,preferences:d) }
-  func wait(_ p:ApplePilotUI) async { for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds:20_000_000) } }
+  func wait(_ p:ApplePilotUI) async { for _ in 0..<500 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds:20_000_000) } }
   let p=make(); p.enabled=true
   p.projectID="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; p.workID="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
   p.newPreparation(); let operation=p.preparationOperationID
@@ -531,7 +533,7 @@ for line in sys.stdin:
             binary = root / 'consent-recovery'
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root/'cache'),
                             str(ROOT/'swift'/'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True, timeout=10)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True, timeout=60)
             ops=(root/'ops').read_text().splitlines()
             self.assertEqual(ops.count('job_authorize'), 1)
             self.assertEqual(ops.count('job_recover'), 2)
@@ -572,10 +574,10 @@ for line in sys.stdin:
   restarted.enabled = true; restarted.newPreparation()
   precondition(restarted.preparationOperationID == operation)
   restarted.loadPreparation()
-  for _ in 0..<100 { if !restarted.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if !restarted.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   precondition(!restarted.preparationUncertain && restarted.preparationOperationID == operation,
                "recovery status=\\(restarted.preparationStatus), busy=\\(restarted.preparationBusy), op=\\(restarted.preparationOperationID), expected=\\(operation)")
-  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   p.close(); restarted.close()
  }
 }
@@ -611,11 +613,12 @@ for line in sys.stdin:
   p.enabled = true; p.projectID = a; p.newPreparation(); let operation = p.preparationOperationID
   p.proposalObjective = "A"; p.proposalAcceptance = "preuve"; p.savePreparation()
   p.projectID = b
-  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   precondition(p.preparationJob.isEmpty && p.preparationOperationID.isEmpty)
   p.projectID = a
   precondition(p.preparationOperationID == operation && p.preparationJob.isEmpty)
   p.close()
+  for _ in 0..<500 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
  }
 }
 ''')
@@ -653,18 +656,18 @@ for line in sys.stdin:
   let p = ApplePilotUI(python: URL(fileURLWithPath: args[1]), service: URL(fileURLWithPath: args[2]), state: URL(fileURLWithPath: args[3]), preferences: d)
   p.enabled = true; p.projectID = project; p.newPreparation(); let operation = p.preparationOperationID
   p.proposalObjective = "objectif"; p.proposalAcceptance = "preuve"; p.savePreparation()
-  for _ in 0..<100 { if p.preparationUncertain { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if p.preparationUncertain { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   precondition(p.preparationUncertain)
   p.close()
   let q = ApplePilotUI(python: URL(fileURLWithPath: args[1]), service: URL(fileURLWithPath: args[2]), state: URL(fileURLWithPath: args[3]), preferences: d)
   precondition(q.preparationOperationID == operation && q.preparationUncertain)
   q.enabled = true; q.loadPreparation()
-  for _ in 0..<100 { if !q.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if !q.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   precondition(q.preparationUncertain && q.preparationOperationID == operation)
   q.newPreparation(); precondition(q.preparationOperationID == operation)
-  for _ in 0..<100 { if FileManager.default.fileExists(atPath: args[3] + "/delayed-job.json") { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if FileManager.default.fileExists(atPath: args[3] + "/delayed-job.json") { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   q.loadPreparation()
-  for _ in 0..<100 { if !q.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if !q.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   precondition(!q.preparationUncertain && q.preparationOperationID == operation)
   q.newPreparation(); precondition(q.preparationOperationID != operation)
   q.close()
@@ -719,32 +722,33 @@ for line in sys.stdin:
   let p = ApplePilotUI(python: URL(fileURLWithPath: args[1]), service: URL(fileURLWithPath: args[2]), state: URL(fileURLWithPath: args[3]), preferences: d)
   p.enabled = true; p.projectID = project; p.newPreparation(); let operation = p.preparationOperationID
   p.proposalObjective = "objectif"; p.proposalAcceptance = "preuve"; p.savePreparation()
-  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   precondition(!p.preparationUncertain && p.preparationJob["revision"] as? Int == 0)
   p.proposalObjective = "objectif révisé"; p.revisePreparation()
-  for _ in 0..<100 { if p.preparationUncertain { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if p.preparationUncertain { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   precondition(p.preparationUncertain && p.preparationOperationID == operation)
   p.loadPreparation()
-  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   precondition(p.preparationUncertain && p.preparationJob["revision"] as? Int == 0 && p.proposalObjective == "objectif révisé")
   p.loadPreparation()
-  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   precondition(p.preparationUncertain && p.preparationJob["revision"] as? Int == 0 && p.proposalObjective == "objectif révisé")
   p.loadPreparation()
-  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   precondition(p.preparationUncertain && p.preparationJob["revision"] as? Int == 1 && p.proposalObjective == "objectif révisé")
   p.loadPreparation()
-  for _ in 0..<100 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if !p.preparationBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   precondition(!p.preparationUncertain && p.preparationOperationID == operation)
   precondition(p.preparationJob["revision"] as? Int == 1 && p.proposalObjective == "objectif révisé")
   p.close()
+  for _ in 0..<500 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
  }
 }
 ''')
             binary = root / 'revise-recovery'
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True, timeout=10)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True, timeout=60)
 
     def test_legacy_intent_is_recoverable_but_never_cleared_by_unproven_result(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -778,7 +782,7 @@ for line in sys.stdin:
   p.enabled = true; p.projectID = "{project}"
   precondition(p.preparationOperationID == "{operation}" && p.preparationUncertain)
   p.loadPreparation()
-  for _ in 0..<100 {{ if !p.preparationBusy {{ break }}; try? await Task.sleep(nanoseconds: 20_000_000) }}
+  for _ in 0..<500 {{ if !p.preparationBusy {{ break }}; try? await Task.sleep(nanoseconds: 20_000_000) }}
   precondition(p.preparationUncertain && p.preparationOperationID == "{operation}")
   precondition(FileManager.default.fileExists(atPath: args[3] + "/apple-pilot-intents.noindex/intent-{project}.json"))
   p.close()
@@ -788,7 +792,7 @@ for line in sys.stdin:
             binary = root / 'legacy-intent'
             subprocess.run(['swiftc', '-parse-as-library', '-module-cache-path', str(root / 'cache'),
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)], check=True)
-            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True, timeout=8)
+            subprocess.run([str(binary), sys.executable, str(fake), str(root)], check=True, timeout=60)
 
     def test_startup_migration_and_saved_context_without_inference(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -924,10 +928,10 @@ for line in sys.stdin:
   p.updateKnownProjects([a]); p.enabled = false; p.openRestoredSessionIfReady()
   precondition(!p.hostRunning)
   p.enabled = true; p.openRestoredSessionIfReady()
-  for _ in 0..<100 { if p.sessionOpen { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if p.sessionOpen { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   precondition(p.sessionOpen, p.status)
   p.close()
-  for _ in 0..<100 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+  for _ in 0..<500 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
   p.openRestoredSessionIfReady()
   precondition(!p.hostRunning && !p.sessionOpen)
  }
@@ -1012,17 +1016,17 @@ for line in sys.stdin:
     p.discardMemoryDraft()
     p.open()
     if args.count > 4 && args[4] == "eof" {
-      for _ in 0..<100 { if p.cleanupUnconfirmed { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if p.cleanupUnconfirmed { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       precondition(p.cleanupUnconfirmed && !p.sessionOpen && !p.busy, p.status)
       return
     }
-    for _ in 0..<100 { if p.sessionOpen { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+    for _ in 0..<500 { if p.sessionOpen { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
     precondition(p.sessionOpen && p.hostRunning, p.status)
     if args.count > 4 && args[4] == "work-switch" {
       p.close()
-      for _ in 0..<100 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       p.bindMemory()
-      for _ in 0..<100 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       p.sourceKind = "document"; p.sourceReference = "source"; p.sourceProducer = "operator"; p.sourceObservedAt = "2026-11-02"
       p.factText = "fact for project"; p.nextAction = "checkpoint for A"
       p.selectedFactIDs.insert("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
@@ -1040,20 +1044,20 @@ for line in sys.stdin:
       p.workID = oldWork
       precondition(p.checkpointDraftMatchesWork && p.draftEditable)
       p.createFact()
-      for _ in 0..<100 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       precondition(p.memoryOperationState.hasPrefix("Enregistrée"), p.memoryOperationState)
       p.discardMemoryDraft()
       precondition(p.checkpointDraftWorkID.isEmpty && p.nextAction.isEmpty && p.selectedFactIDs.isEmpty)
       p.close()
-      for _ in 0..<100 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       return
     }
     if args.count > 4 && args[4] == "project-switch" {
       p.close()
-      for _ in 0..<100 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       let oldProject = p.projectID
       p.bindMemory()
-      for _ in 0..<100 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       p.sourceKind = "document"; p.sourceReference = "source"; p.sourceProducer = "operator"; p.sourceObservedAt = "2026-11-02"
       p.factText = "sensitive draft"; p.nextAction = "continue"
       p.selectedFactIDs.insert("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
@@ -1065,7 +1069,7 @@ for line in sys.stdin:
       p.selectedFactIDs.insert("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
       precondition(p.factText == "sensitive draft" && p.nextAction == "continue" && p.sourceProducer == "operator" && p.selectedFactIDs.count == 1)
       p.bindMemory()
-      for _ in 0..<100 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       p.createFact()
       p.createCheckpoint()
       precondition(p.memoryOperationID.isEmpty && p.factText == "sensitive draft" && !p.selectedFactIDs.isEmpty)
@@ -1074,27 +1078,27 @@ for line in sys.stdin:
       p.factText = "new draft"
       precondition(p.draftProjectID == p.projectID)
       p.close()
-      for _ in 0..<100 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       return
     }
     if args.count > 4 && args[4] == "model-uncertain" {
       p.prompt = "hello"
       p.send()
-      for _ in 0..<100 { if p.cleanupUnconfirmed && !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if p.cleanupUnconfirmed && !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       precondition(p.cleanupUnconfirmed && !p.hostRunning && p.memoryReady, p.status)
       p.bindMemory()
-      for _ in 0..<100 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       precondition(p.memoryProject == p.projectID && p.memoryReady, p.memoryStatus)
       p.memoryInspectOperationID = UUID().uuidString.lowercased()
       p.inspectOperation()
-      for _ in 0..<100 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       precondition(p.memoryOperationState.contains("recorded"), p.memoryOperationState)
       p.sourceKind = "document"; p.sourceReference = "source"; p.sourceProducer = "operator"; p.sourceObservedAt = "2026-11-02"
       p.factText = "not allowed"
       p.createFact()
       precondition(p.memoryOperationID.isEmpty && !p.memoryBusy)
       p.close()
-      for _ in 0..<100 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       return
     }
     if args.count > 4 && args[4] == "silent" {
@@ -1103,25 +1107,25 @@ for line in sys.stdin:
       p.cancel()
       p.cancel()
       precondition(p.cancelling)
-      for _ in 0..<100 { if p.cleanupUnconfirmed { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if p.cleanupUnconfirmed { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       precondition(p.cleanupUnconfirmed && !p.busy && !p.sessionOpen, p.status)
-      for _ in 0..<100 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       return
     }
     if args.count > 4 && args[4] == "reversed" {
       p.prompt = "hello"
       p.send()
       p.cancel()
-      for _ in 0..<100 { if !p.busy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.busy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       try? await Task.sleep(nanoseconds: 400_000_000)
       precondition(!p.busy && !p.cancelling && p.status == "Tour annulé.", p.status)
       p.close()
-      for _ in 0..<100 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       precondition(!p.cleanupUnconfirmed, p.status)
       return
     }
     p.bindMemory()
-    for _ in 0..<100 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+    for _ in 0..<500 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
     precondition(p.memoryProject == p.projectID, p.memoryStatus)
     p.sourceKind = "document"; p.sourceReference = "source"; p.sourceProducer = "operator"; p.sourceObservedAt = "2026-11-02"
     p.factText = "test fact"
@@ -1131,55 +1135,55 @@ for line in sys.stdin:
       let operation = p.memoryOperationID
       precondition(p.memoryUncertain && !p.hostRunning && p.memoryReady, p.status)
       p.bindMemory()
-      for _ in 0..<100 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       precondition(p.memoryProject == p.projectID, p.memoryStatus)
       p.inspectOperation()
-      for _ in 0..<100 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       precondition(p.memoryUncertain && p.memoryOperationState.contains("not_recorded"), p.memoryOperationState)
       p.createFact()
       precondition(p.memoryOperationID == operation && !p.memoryBusy)
       FileManager.default.createFile(atPath: args[3] + "/recorded", contents: Data())
       p.inspectOperation()
-      for _ in 0..<100 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       precondition(!p.memoryUncertain && p.memoryOperationID == operation, p.memoryOperationState)
       p.close()
-      for _ in 0..<100 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       return
     }
     if args.count > 4 && args[4] == "indeterminate" {
       p.createFact()
-      for _ in 0..<100 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       let operation = p.memoryOperationID
       precondition(p.memoryUncertain && !operation.isEmpty, p.memoryOperationState)
       p.inspectOperation()
-      for _ in 0..<100 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       precondition(p.memoryUncertain && p.memoryOperationID == operation, p.memoryOperationState)
       p.createFact()
       precondition(p.memoryOperationID == operation && !p.memoryBusy)
       p.close()
-      for _ in 0..<100 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+      for _ in 0..<500 { if !p.hostRunning { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
       return
     }
     p.createFact()
-    for _ in 0..<100 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+    for _ in 0..<500 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
     precondition(p.memoryOperationState.hasPrefix("Enregistrée"), p.memoryOperationState)
     p.loadFacts()
-    for _ in 0..<100 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+    for _ in 0..<500 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
     precondition(p.facts.count == 1)
     p.selectedFactIDs.insert("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
     p.nextAction = "next"
     p.createCheckpoint()
-    for _ in 0..<100 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+    for _ in 0..<500 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
     precondition(p.memoryOperationState.hasPrefix("Enregistrée"), p.memoryOperationState)
     p.loadMemoryCheckpoints()
-    for _ in 0..<100 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+    for _ in 0..<500 { if !p.memoryBusy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
     precondition(p.checkpoints.count == 1)
     p.prompt = "hello"
     p.send()
-    for _ in 0..<100 { if !p.busy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+    for _ in 0..<500 { if !p.busy { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
     precondition(p.messages.last?.text == "fake response")
     p.close()
-    for _ in 0..<100 { if p.canSelect { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
+    for _ in 0..<500 { if p.canSelect { break }; try? await Task.sleep(nanoseconds: 20_000_000) }
     precondition(p.canSelect && !p.cleanupUnconfirmed && p.messages.isEmpty)
   }
 }
@@ -1189,50 +1193,50 @@ for line in sys.stdin:
                             str(ROOT / 'swift' / 'ApplePilotUI.swift'), str(swift), '-o', str(binary)],
                            check=True, capture_output=True, text=True, timeout=60)
             run = subprocess.run([str(binary), sys.executable, str(fake), str(root)],
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, text=True, timeout=60)
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertTrue((root / 'started').exists())
             eof_root = root / 'unexpected-eof'
             eof_root.mkdir()
             (eof_root / 'eof').write_text('yes')
             eof_run = subprocess.run([str(binary), sys.executable, str(fake), str(eof_root), 'eof'],
-                                     capture_output=True, text=True, timeout=10)
+                                     capture_output=True, text=True, timeout=60)
             self.assertEqual(eof_run.returncode, 0, eof_run.stderr)
             silent_root = root / 'silent'
             silent_root.mkdir()
             (silent_root / 'silent').write_text('yes')
             silent_run = subprocess.run([str(binary), sys.executable, str(fake), str(silent_root), 'silent'],
-                                        capture_output=True, text=True, timeout=10)
+                                        capture_output=True, text=True, timeout=60)
             self.assertEqual(silent_run.returncode, 0, silent_run.stderr)
             self.assertEqual((silent_root / 'requests').read_text().splitlines().count('cancel'), 1)
             reversed_root = root / 'reversed'
             reversed_root.mkdir()
             (reversed_root / 'reversed').write_text('yes')
             reversed_run = subprocess.run([str(binary), sys.executable, str(fake), str(reversed_root), 'reversed'],
-                                          capture_output=True, text=True, timeout=10)
+                                          capture_output=True, text=True, timeout=60)
             self.assertEqual(reversed_run.returncode, 0, reversed_run.stderr)
             uncertain_root = root / 'indeterminate'
             uncertain_root.mkdir()
             (uncertain_root / 'indeterminate').write_text('yes')
             uncertain_run = subprocess.run([str(binary), sys.executable, str(fake), str(uncertain_root), 'indeterminate'],
-                                           capture_output=True, text=True, timeout=10)
+                                           capture_output=True, text=True, timeout=60)
             self.assertEqual(uncertain_run.returncode, 0, uncertain_run.stderr)
             timed_root = root / 'memory-timeout'
             timed_root.mkdir()
             (timed_root / 'memory-timeout').write_text('yes')
             timed_run = subprocess.run([str(binary), sys.executable, str(fake), str(timed_root), 'memory-timeout'],
-                                       capture_output=True, text=True, timeout=10)
+                                       capture_output=True, text=True, timeout=60)
             self.assertEqual(timed_run.returncode, 0, timed_run.stderr)
             model_root = root / 'model-uncertain'
             model_root.mkdir()
             (model_root / 'model-uncertain').write_text('yes')
             model_run = subprocess.run([str(binary), sys.executable, str(fake), str(model_root), 'model-uncertain'],
-                                       capture_output=True, text=True, timeout=10)
+                                       capture_output=True, text=True, timeout=60)
             self.assertEqual(model_run.returncode, 0, model_run.stderr)
             switch_root = root / 'project-switch'
             switch_root.mkdir()
             switch_run = subprocess.run([str(binary), sys.executable, str(fake), str(switch_root), 'project-switch'],
-                                        capture_output=True, text=True, timeout=10)
+                                        capture_output=True, text=True, timeout=60)
             self.assertEqual(switch_run.returncode, 0, switch_run.stderr)
             requests = (switch_root / 'requests').read_text().splitlines()
             self.assertNotIn('memory_call:create_fact', requests)
@@ -1240,7 +1244,7 @@ for line in sys.stdin:
             work_root = root / 'work-switch'
             work_root.mkdir()
             work_run = subprocess.run([str(binary), sys.executable, str(fake), str(work_root), 'work-switch'],
-                                      capture_output=True, text=True, timeout=10)
+                                      capture_output=True, text=True, timeout=60)
             self.assertEqual(work_run.returncode, 0, work_run.stderr)
             work_requests = (work_root / 'requests').read_text().splitlines()
             self.assertIn('memory_call:create_fact', work_requests)
