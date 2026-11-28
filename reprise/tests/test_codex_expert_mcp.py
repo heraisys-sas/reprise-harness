@@ -14,7 +14,7 @@ import uuid
 from contextlib import redirect_stdout
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from expert_mcp import CODEX_CATALOG_TTL, Bridge, error_payload, main
+from expert_mcp import CODEX_CATALOG_TTL, BudgetNotSupported, Bridge, error_payload, main
 from test_codex_expert import ID
 
 # #253 : BACKEND_MODELS ne porte plus la lineup codex figée — les tests
@@ -248,6 +248,29 @@ class BridgeTests(RequestCalls, unittest.TestCase):
         self.assertTrue(payload['data']['error'].startswith('ValueError: '))
         self.assertIn('claude-desktop', payload['data']['error'])
         self.assertLessEqual(len(error_payload(OSError('x' * 500))['data']['error']), 200)
+
+    def test_budget_refusal_is_typed_per_backend_issue_279(self):
+        cases = {'foundation-models': ({'wait_seconds': 120}, ['wait_seconds'], []),
+                 'metaai': ({'wait_seconds': 30, 'execution_seconds': 10}, ['execution_seconds'], ['wait_seconds']),
+                 'chatgpt': ({'inactivity_seconds': 10}, ['inactivity_seconds'], ['wait_seconds']),
+                 'claude-desktop': ({'execution_seconds': 5, 'inactivity_seconds': 9},
+                                    ['execution_seconds', 'inactivity_seconds'], ['wait_seconds', 'stop_on_deadline']),
+                 'ironclaw': ({'stop_on_deadline': False}, ['stop_on_deadline'], [])}
+        for backend, (budgets, refused, allowed) in cases.items():
+            with self.subTest(backend=backend), patch('subprocess.run') as run:
+                with self.assertRaises(BudgetNotSupported) as caught:
+                    self.bridge.call('reprise_delegate', {'request_key': f'budget-{backend}', 'question': 'Q',
+                                                          'kind': 'expertise', 'backend': backend, **budgets})
+                run.assert_not_called()
+                payload = error_payload(caught.exception)
+                self.assertEqual(payload['code'], -32602)
+                self.assertEqual(payload['data']['kind'], 'budget_not_supported')
+                self.assertEqual(payload['data']['backend'], backend)
+                self.assertEqual(payload['data']['budgets'], refused)
+                self.assertEqual(payload['data']['allowed'], allowed)
+                self.assertIn(backend, payload['message'])
+                self.assertIn(refused[0], payload['message'])
+        self.assertEqual(self.bridge.call('reprise_requests', {'request_key': 'budget-metaai'})['status'], 'not_found')
 
     def test_error_payload_distinguishes_busy_from_unavailable(self):
         from engines import Unavailable

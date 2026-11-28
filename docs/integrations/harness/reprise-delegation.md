@@ -87,13 +87,12 @@ it expires, `turn/interrupt` is **not** called, the native turn keeps running, a
 receipt stays `status="running"` with `phase="active"` and `next_action="reconcile"`. The
 native `thread_id` and `turn_id` are persisted before the wait, so a reconnect, restart or
 compaction observes the turn instead of resending it.
-**Caution (observed 2026-11-27): for backends `metaai` and `chatgpt`, the admission is
-asynchronous and `wait_seconds` is refused before admission by
-`expert_mcp.call()` (`Wait and execution budgets apply to the Codex backend only`),
-surfaced to the MCP client as a generic "Request refused or unavailable" — with no trace
-in `delegation_requests`. Submit those backends WITHOUT `wait_seconds`, then collect with
-`wait_result(request_key=..., wait_seconds=240)` (re-entrant: same key, never re-dispatch).
-Fix tracked in issue #279 (typed budget refusals).** `inactivity_seconds` only produces a
+Budgets accepted per backend: `codex` all four; `claude-desktop` `wait_seconds` and
+`stop_on_deadline`; `metaai` and `chatgpt` only `wait_seconds` (their admission is
+asynchronous, so it is ignored: collect with `wait_result(request_key=..., wait_seconds=240)`,
+re-entrant, never re-dispatch); every other backend none. Any other budget is refused before
+admission with a typed error (#279): JSON-RPC `-32602`, `data.kind="budget_not_supported"`,
+`data.backend`, `data.budgets` (refused) and `data.allowed`; resubmit without them. `inactivity_seconds` only produces a
 diagnostic (`inactivity_observed`, `idle_seconds`, `events_observed`); it never stops the
 turn. An interruption happens only through `reprise_reconcile(action="stop")` with an
 explicit authorized `reason` (`user_stop`, `execution_deadline`, `budget`), journaled and

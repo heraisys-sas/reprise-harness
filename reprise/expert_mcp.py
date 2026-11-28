@@ -38,6 +38,24 @@ class RequestNotFound(ValueError):
     """An exact request_key does not exist in this bridge scope."""
 
 
+BUDGET_ARGUMENTS = {'wait_timeout': 'wait_seconds', 'execution_deadline': 'execution_seconds',
+                    'inactivity': 'inactivity_seconds', 'stop_on_deadline': 'stop_on_deadline'}
+BACKEND_BUDGETS = {'codex': ('wait_seconds', 'execution_seconds', 'inactivity_seconds', 'stop_on_deadline'),
+                   'claude-desktop': ('wait_seconds', 'stop_on_deadline'),
+                   'metaai': ('wait_seconds',), 'chatgpt': ('wait_seconds',)}
+
+
+class BudgetNotSupported(ValueError):
+    """Budget refused for this backend, named for the caller (issue #279)."""
+
+    def __init__(self, backend, budgets, allowed):
+        self.backend, self.budgets, self.allowed = backend, sorted(budgets), list(allowed)
+        accepted = ', '.join(self.allowed) if self.allowed else 'none'
+        super().__init__(
+            f'Budget not supported for backend {backend}: {", ".join(self.budgets)}. '
+            f'Accepted budgets: {accepted}. Resubmit without them; nothing was admitted.')
+
+
 class ThreadNotOwned(ValueError):
     """Followup refused: this bridge never created the requested thread (issue #100)."""
 
@@ -79,6 +97,11 @@ def error_payload(exc):
                 'data': {'kind': 'thread_not_owned', 'backend': exc.backend, 'thread_id': exc.thread_id,
                          'resume_with': 'parent_request_key',
                          'alternative': 'open a new session with reprise_delegate', 'error': detail}}
+    if isinstance(exc, BudgetNotSupported):
+        return {'code': code,
+                'message': str(exc),
+                'data': {'kind': 'budget_not_supported', 'backend': exc.backend, 'budgets': exc.budgets,
+                         'allowed': exc.allowed, 'error': detail}}
     if isinstance(exc, Unavailable):
         # Backend/engine down is an availability failure, not a caller mistake.
         kind, code = 'unavailable', -32000
@@ -1556,14 +1579,11 @@ class Bridge:
             raise ValueError('Execution deadline must fit inside the connected wait and inactivity windows')
         # #277 : wait_seconds est envoyé par défaut par les clients MCP (attente
         # connectée) ; l'admission metaai/chatgpt est asynchrone, il est ignoré.
-        # Les autres budgets (execution_seconds, inactivity_seconds,
-        # stop_on_deadline) restent refusés hors codex/claude-desktop.
-        if policy and backend not in ('codex', 'claude-desktop', 'metaai', 'chatgpt'):
-            raise ValueError('Wait and execution budgets apply to the Codex backend only')
-        if backend in ('metaai', 'chatgpt') and policy.keys() - {'wait_timeout'}:
-            raise ValueError('Only wait_seconds applies to the %s backend' % backend)
-        if backend == 'claude-desktop' and policy.keys() - {'wait_timeout', 'stop_on_deadline'}:
-            raise ValueError('Only wait_seconds applies to the claude-desktop backend')
+        # #279 : un budget non admis est un refus typé, nommé pour l'appelant.
+        allowed = BACKEND_BUDGETS.get(backend, ())
+        refused = {BUDGET_ARGUMENTS[key] for key in policy} - set(allowed)
+        if refused:
+            raise BudgetNotSupported(backend, refused, allowed)
         # Portes manifeste déterministes (#258 lot 2, lot 3) : évaluées une
         # seule fois AVANT les portes de connexion, pour le preflight comme
         # pour le tour réel — un backend désactivé, déclaré sans handler ou
